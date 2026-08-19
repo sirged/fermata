@@ -7,11 +7,13 @@ its two weakest parts replaced:
 
   - Rhythm: was a heuristic that treated inter-column x-spacing as
     proportional to duration (no dotted notes, no ties, wrong whenever
-    engraving spacing doesn't scale linearly with duration). Now each tab
-    column's duration is read directly off the paired standard-notation
+    engraving spacing doesn't scale linearly with duration). Now each
+    measure's beats are read directly off the paired standard-notation
     staff by decoding the actual notehead/flag/beam/dot music-font glyphs
-    at that x position - see glyph_rhythm.py for the full method and its
-    validation notes.
+    (see glyph_rhythm.py for the full method and its validation notes),
+    including rest beats (emitted as real alphaTex `r` beats, not dropped)
+    and dotted durations (emitted as the `{d}`/`{dd}` beat effect - a
+    trailing dot on the duration code itself is not valid alphaTex).
   - Time signature: was a best-effort scan for plain ASCII digit spans,
     which fails outright because time-signature digits are drawn in the
     same subsetted music font as everything else and extract as garbage
@@ -25,8 +27,8 @@ behavior so tab-only pages still extract fret numbers.
 """
 import sys
 import json
-import collections
 import argparse
+import collections
 from pathlib import Path
 
 import fitz  # pymupdf
@@ -49,19 +51,120 @@ def pair_standard_staff(tab_staff, std_staves):
     return min(above, key=lambda s: tab_staff.top - s.bottom)
 
 
-def match_duration(col_x, note_events, x_tol=None):
-    """Find the note event (glyph-decoded) closest in x to a tab column and
-    return (duration_code, dots, quarter_units) or None if nothing is close
-    enough to trust."""
+def _cluster_pitched_events(events, cluster_x_tol=1.5):
+    """Group note_events sharing (almost) the same x into one cluster - the
+    members of a chord (measured: chord noteheads land at IDENTICAL x, a
+    beat apart from its neighbors by a staff's full note-spacing, ~13pt in
+    a typical library file - so a tight tolerance cleanly separates the two
+    without any ambiguity), or of two overlapping voices notated at the
+    same onset. A cluster becomes ONE beat, not one beat per member -
+    matching every member independently against tab columns let a chord's
+    2nd/3rd/4th notehead each go looking for its own "nearest unused
+    column" once the first member had already claimed the correct one, and
+    in a dense passage the nearest still-unused column can easily be the
+    NEXT beat's column - silently stealing it and giving that neighboring
+    beat the wrong duration. This showed up as real, systematically
+    over-counted per-measure quarter-note totals (checked against the
+    page's own time signature), not just a cosmetic "extra unmatched
+    events" number."""
+    events = sorted(events, key=lambda n: n["x"])
+    clusters = []
+    for ev in events:
+        if clusters and abs(ev["x"] - clusters[-1][0]["x"]) <= cluster_x_tol:
+            clusters[-1].append(ev)
+        else:
+            clusters.append([ev])
+    return clusters
+
+
+def _cluster_duration(cluster):
+    """Pick one representative (duration_code, dots) for a cluster. Usually
+    every member agrees (chord noteheads share one stem, so one duration);
+    when they don't - genuinely overlapping voices with different notated
+    values at the same onset (e.g. a sustained melody quarter over a
+    plucked bass eighth - confirmed on real decoded events, not
+    speculation) - take the most common reading, breaking ties toward the
+    LONGER value. This is a judgment call, not a definitively "correct"
+    answer: true polyphony isn't modeled here (one beat, one duration), so
+    when two voices genuinely disagree, something is picked rather than
+    fragmenting the beat."""
+    counts = collections.Counter((ev["duration"], ev["dots"]) for ev in cluster)
+    return max(counts.items(), key=lambda kv: (kv[1], -kv[0][0]))[0]
+
+
+def build_measure_beats(m_cols, m_lo, m_hi, note_events, x_tol):
+    """Build one measure's beat list, driven by the glyph-decoded note/rest
+    events on the paired standard staff (when available) rather than by tab
+    columns alone.
+
+    Why driven by note_events: match_duration used to only ever look at
+    PITCHED glyph events and get called once per tab column, which meant
+    (a) rest events - which the glyph decoder finds correctly - were always
+    thrown away and no rest beat was ever emitted, so a bar containing a
+    rest came out short, and (b) a bar with NO tab digits at all (a
+    rest-only bar) was skipped entirely by the caller, shifting every later
+    bar's alignment against the source PDF. Walking note_events directly
+    fixes both: every rest becomes its own beat with no tab column
+    consumed, and a measure with zero tab columns but real rest events
+    still emits them instead of vanishing.
+
+    Returns (beats, unmatched_columns, unmatched_glyph_notes) where beats is
+    a list of (duration_code, dots, notes) ready for _fmt_beat, in x order;
+    unmatched_columns is how many tab columns had no glyph note within
+    x_tol (an honest count now that x_tol is tight - see the caller); and
+    unmatched_glyph_notes is how many PITCHED glyph notes had no tab column
+    to match (reported for the same honesty reason, though this direction
+    is expected to be rare - every played tab note should have a fret
+    number).
+    """
     if not note_events:
-        return None
-    pitched = [n for n in note_events if not n["is_rest"]]
-    if not pitched:
-        return None
-    best = min(pitched, key=lambda n: abs(n["x"] - col_x))
-    if x_tol is not None and abs(best["x"] - col_x) > x_tol:
-        return None
-    return best["duration"], best["dots"], best["quarter_units"]
+        # no standard-staff pairing to decode durations from at all - fall
+        # back to one beat per tab column with an eighth-note placeholder
+        # (matches the old heuristic's typical case); every column counts
+        # as unmatched since there was nothing to match against.
+        beats = sorted(((col["x"], 8, 0, col["notes"]) for col in m_cols), key=lambda b: b[0])
+        return [(c, d, n) for _, c, d, n in beats], len(m_cols), 0
+
+    measure_events = [n for n in note_events if m_lo <= n["x"] < m_hi]
+    rest_events = [n for n in measure_events if n["is_rest"]]
+    pitched_clusters = _cluster_pitched_events([n for n in measure_events if not n["is_rest"]])
+
+    cols_sorted = sorted(m_cols, key=lambda c: c["x"])
+    used = [False] * len(cols_sorted)
+
+    tagged = []  # (x, duration_code, dots, notes)
+    unmatched_glyph_notes = 0
+
+    for ev in rest_events:
+        tagged.append((ev["x"], ev["duration"], ev["dots"], []))
+
+    for cluster in pitched_clusters:
+        cx = sum(ev["x"] for ev in cluster) / len(cluster)
+        code, dots = _cluster_duration(cluster)
+        best_i, best_d = None, None
+        for i, col in enumerate(cols_sorted):
+            if used[i]:
+                continue
+            d = abs(col["xc"] - cx)
+            if d <= x_tol and (best_d is None or d < best_d):
+                best_i, best_d = i, d
+        if best_i is None:
+            # a pitched glyph cluster with no matching tab digit column - can
+            # happen on decode noise; nothing to emit a fret number for, so
+            # skip rather than fabricate one.
+            unmatched_glyph_notes += len(cluster)
+            continue
+        used[best_i] = True
+        tagged.append((cx, code, dots, cols_sorted[best_i]["notes"]))
+
+    unmatched_columns = 0
+    for i, col in enumerate(cols_sorted):
+        if not used[i]:
+            unmatched_columns += 1
+            tagged.append((col["x"], 8, 0, col["notes"]))  # conservative fallback, matches old heuristic's typical case
+
+    tagged.sort(key=lambda t: t[0])
+    return [(code, dots, notes) for _, code, dots, notes in tagged], unmatched_columns, unmatched_glyph_notes
 
 
 def process_page(pdf_path, page_no, out_dir, title_hint=None, ts_override=None):
@@ -80,8 +183,8 @@ def process_page(pdf_path, page_no, out_dir, title_hint=None, ts_override=None):
     if not fonts and not drawings and not text.strip():
         report["extractable"] = False
         report["reason"] = "no fonts, no vector drawings, no text - page is a raster scan"
-        base._save_report(out_dir, stem, report)
-        base._render_png(page, out_dir, stem)
+        base._save_report(out_dir, stem, report, page_no)
+        base._render_png(page, out_dir, stem, page_no)
         print(json.dumps(report, indent=2))
         return report
 
@@ -100,8 +203,8 @@ def process_page(pdf_path, page_no, out_dir, title_hint=None, ts_override=None):
             "a standard-notation-only score with fingering numbers rather "
             "than a real tab staff"
         )
-        base._save_report(out_dir, stem, report)
-        base._render_png(page, out_dir, stem)
+        base._save_report(out_dir, stem, report, page_no)
+        base._render_png(page, out_dir, stem, page_no)
         print(json.dumps(report, indent=2))
         return report
 
@@ -133,17 +236,20 @@ def process_page(pdf_path, page_no, out_dir, title_hint=None, ts_override=None):
         ts_by_std_top[s.top] = ts
         ts_reason_by_std_top[s.top] = ts_reason
 
-    # time signature is usually only printed once, at the first system -
-    # propagate the last-seen one forward for systems that don't restate it.
-    ts_sorted_tops = sorted(ts_by_std_top)
-    running_ts = None
+    # Time signature is usually only printed once, at the first system that
+    # states it - use the first one found (in top-to-bottom system order) as
+    # the single time signature for the whole page. KNOWN LIMITATION,
+    # documented rather than silently ignored: alphaTex emission here only
+    # supports one global `\ts` header, so a genuine mid-page meter change
+    # is not modeled - the page's LATER systems still decode their own
+    # correct rhythm from their own note glyphs regardless of what `\ts` was
+    # printed, only the emitted header text itself would be wrong for bars
+    # after the change.
     ts_first_reason = None
-    for top in ts_sorted_tops:
+    for top in sorted(ts_by_std_top):
         if ts_by_std_top[top] is not None:
-            running_ts = ts_by_std_top[top]
-            if ts_first_reason is None:
-                ts_first_reason = ts_by_std_top[top], ts_reason_by_std_top[top]
-        ts_by_std_top[top] = ts_by_std_top[top] or running_ts
+            ts_first_reason = ts_by_std_top[top], ts_reason_by_std_top[top]
+            break
 
     ts = ts_override if ts_override is not None else (
         ts_first_reason[0] if ts_first_reason else None
@@ -169,6 +275,7 @@ def process_page(pdf_path, page_no, out_dir, title_hint=None, ts_override=None):
     all_rows = []
     all_measures = []
     unmatched_columns = 0
+    unmatched_glyph_notes = 0
     total_columns = 0
     for si, staff in enumerate(sorted(tab_staves, key=lambda s: s.top)):
         toks = by_staff.get(si, [])
@@ -197,39 +304,61 @@ def process_page(pdf_path, page_no, out_dir, title_hint=None, ts_override=None):
 
         std_staff = pair_standard_staff(staff, std_staves)
         note_events = glyph_by_std_top.get(std_staff.top, {}).get("notes", []) if std_staff else []
-        # a note x-tolerance wider than typical column spacing keeps us from
-        # matching a column to a glyph note that belongs to a totally
-        # different beat when a staff has no standard-notation pairing.
-        x_tol = staff.spacing * 8.0
 
-        beats_per_measure = ts[0] if ts else 4
-        for m_cols in measures_for_staff:
-            if not m_cols:
+        # x tolerance for matching a tab column to the glyph-decoded note at
+        # (approximately) the same x position. This used to be
+        # staff.spacing * 8.0 (~50-60pt - wider than a whole measure of
+        # 16ths), which meant match_duration always found SOME note and
+        # "0/123 unmatched" was a vacuous metric: it could never reject a
+        # wrong neighbor. Two staff-line-spacings is comfortably wider than
+        # normal engraving jitter between a notehead and its tab digit, but
+        # tight enough to actually reject a mismatch in a dense passage.
+        x_tol = staff.spacing * 2.5
+
+        # col["x"] (from group_into_columns) is a fret digit's LEFT edge;
+        # note_events' "x" is the notehead bbox CENTER - comparing them
+        # directly is a systematic offset of about half a digit's width,
+        # which is enough to pick the wrong neighbor in dense passages.
+        # Approximate each column's center using this staff's own measured
+        # average digit width (not a guessed constant) and compare against
+        # that instead; store it alongside "x" rather than replacing it so
+        # bar-boundary assignment (which used "x" as a left-edge, order-only
+        # reference) is unaffected.
+        avg_digit_w = (sum(t.width for t in toks) / len(toks)) if toks else 5.0
+        for col in columns:
+            col["xc"] = col["x"] + avg_digit_w / 2
+
+        for (m_lo, m_hi), m_cols in zip(zip(bounds[:-1], bounds[1:]), measures_for_staff):
+            has_events_in_range = any(m_lo <= n["x"] < m_hi for n in note_events)
+            if not m_cols and not has_events_in_range:
                 continue
-            beats = []
-            for col in m_cols:
-                total_columns += 1
-                match = match_duration(col["x"], note_events, x_tol=x_tol) if note_events else None
-                if match is None:
-                    unmatched_columns += 1
-                    code, dots = 8, 0  # conservative fallback, matches old heuristic's typical case
-                else:
-                    code, dots, _qu = match
-                beats.append((_fmt_duration(code, dots), col["notes"]))
+            beats, unmatched, glyph_unmatched = build_measure_beats(m_cols, m_lo, m_hi, note_events, x_tol)
+            total_columns += len(m_cols)
+            unmatched_columns += unmatched
+            unmatched_glyph_notes += glyph_unmatched
             all_measures.append(beats)
+
+    rest_beats_emitted = sum(1 for measure in all_measures for _c, _d, notes in measure if not notes)
 
     report["extracted_note_count"] = len(all_rows)
     report["measure_count"] = len(all_measures)
     report["barline_detection"] = "vector vertical-line primitives spanning staff height"
     report["glyph_decoded_column_count"] = total_columns - unmatched_columns
     report["unmatched_column_count"] = unmatched_columns
+    report["unmatched_glyph_note_count"] = unmatched_glyph_notes
+    report["rest_beats_emitted"] = rest_beats_emitted
     report["rhythm_method_detail"] = (
-        "glyph decode: each tab column's duration is read from the nearest "
-        "note/rest event decoded off the paired standard staff's actual "
+        "glyph decode: each measure's beats are driven by the note/rest "
+        "events decoded off the paired standard staff's actual "
         "notehead+stem+flag+beam+dot glyphs (see glyph_rhythm.py), not "
-        "guessed from spacing. Falls back to an eighth-note placeholder only "
-        "when no standard staff is paired or no glyph note is within a "
-        "generous x tolerance."
+        "guessed from spacing - rests are emitted as real 'r' beats (not "
+        "dropped), and dotted durations are emitted as the {d}/{dd} beat "
+        "effect (a trailing dot on the duration code is not valid "
+        "alphaTex). A tab column only falls back to an eighth-note "
+        "placeholder when no standard staff is paired, or when no glyph "
+        "note is within a tolerance tight enough to actually reject a "
+        "wrong neighbor (see unmatched_column_count for how often that "
+        "happened - honestly, not tuned to read zero)."
     )
 
     title = title_hint or Path(pdf_path).stem
@@ -251,10 +380,6 @@ def process_page(pdf_path, page_no, out_dir, title_hint=None, ts_override=None):
     return report
 
 
-def _fmt_duration(code, dots):
-    return f"{code}" + ("." * dots)
-
-
 def _build_alphatex_with_dots(title, tempo, tuning, ts, measures):
     lines = [f'\\title "{title}"']
     if tempo:
@@ -266,16 +391,26 @@ def _build_alphatex_with_dots(title, tempo, tuning, ts, measures):
     lines.append(".")
     body_lines = []
     for measure in measures:
-        beats = " ".join(_fmt_beat(dur, notes) for dur, notes in measure)
+        beats = " ".join(_fmt_beat(code, dots, notes) for code, dots, notes in measure)
         body_lines.append(beats + " |")
     lines.append("\n".join(body_lines))
     return "\n".join(lines)
 
 
-def _fmt_beat(duration_code, notes):
-    body = " ".join(base.fmt_note(s, f) for s, f in notes) if len(notes) == 1 else \
-        "(" + " ".join(base.fmt_note(s, f) for s, f in notes) + ")"
-    return f":{duration_code} {body}"
+def _fmt_beat(duration_code, dots, notes):
+    # A dotted duration is NOT valid alphaTex as a trailing dot on the
+    # duration code (":8." / ":8.." fail to parse) - it's a beat effect
+    # appended to the note/chord body instead (":8 3.4{d}", or with a chord
+    # ":2 (3.4 5.3){d}"). Confirmed against the repo's own alphaTab
+    # importer; see verify_tex.mjs, which is the regression check for this.
+    if not notes:
+        body = "r"  # rest beat - no fret numbers, just the rest itself
+    elif len(notes) == 1:
+        body = base.fmt_note(*notes[0])
+    else:
+        body = "(" + " ".join(base.fmt_note(s, f) for s, f in notes) + ")"
+    dot_effect = "{d}" if dots == 1 else "{dd}" if dots == 2 else ""
+    return f":{duration_code} {body}{dot_effect}"
 
 
 if __name__ == "__main__":

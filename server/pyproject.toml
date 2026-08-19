@@ -15,5 +15,12 @@ dependencies = [
     "python-multipart>=0.0.9",
 ]
 
+# Offline analysis tools under tools/ (e.g. tools/tab_extract) are not part
+# of the server runtime and aren't needed to run it - their extra
+# dependencies live here instead of in `dependencies` above. Install with
+# `pip install -e ".[tools]"` from this directory.
+[project.optional-dependencies]
+tools = ["fonttools>=4.50"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["fermata"]
