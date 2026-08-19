@@ -96,8 +96,13 @@
   function practicedAgo(lastPracticed) {
     if (!lastPracticed) return "";
     const iso = lastPracticed.replace(" ", "T") + "Z";
-    const days = Math.floor((Date.now() - new Date(iso)) / 86400000);
-    if (days <= 0) return "practiced today";
+    const then = new Date(iso);
+    if (!Number.isFinite(then.getTime())) return "";
+    // Compare calendar dates (in local time), not raw elapsed milliseconds,
+    // so e.g. 23:00 yesterday reads as 1 day ago rather than "today".
+    const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const days = Math.round((startOfDay(new Date()) - startOfDay(then)) / 86400000);
+    if (days <= 0) return "practiced <24h ago";
     if (days === 1) return "practiced 1d ago";
     return `practiced ${days}d ago`;
   }

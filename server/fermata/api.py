@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import scanner
 from .config import FILE_TYPES, LIBRARY_DIR
@@ -14,6 +14,7 @@ from .thumbs import thumb_path
 router = APIRouter(prefix="/api")
 
 VALID_KINDS = {"notation", "tab", "both", "unknown"}
+VALID_PRACTICED = {"recent", "neglected"}
 
 
 def _score_row(conn, score_id: int):
@@ -69,6 +70,8 @@ def list_scores(
     favorite: bool = False,
     practiced: str = "",
 ):
+    if practiced and practiced not in VALID_PRACTICED:
+        raise HTTPException(422, f"practiced must be one of {sorted(VALID_PRACTICED)}")
     conn = connect()
     sql = "SELECT DISTINCT s.* FROM scores s"
     where, params = [], []
@@ -192,12 +195,12 @@ def patch_score(score_id: int, patch: ScorePatch):
 
 class PracticeIn(BaseModel):
     seconds: int
-    note: str | None = None
+    note: str | None = Field(default=None, max_length=2000)
 
 
 def _practice_totals(conn, score_id: int):
     row = conn.execute(
-        """SELECT COUNT(*) AS session_count, COALESCE(SUM(seconds), 0) AS total_seconds,
+        """SELECT COUNT(*) AS session_count, COALESCE(SUM(seconds), 0) AS practice_seconds,
                   MAX(started_at) AS last_practiced
            FROM practice_sessions WHERE score_id = ?""",
         (score_id,),
@@ -223,7 +226,7 @@ def get_practice(score_id: int):
     conn = connect()
     _score_row(conn, score_id)
     sessions = conn.execute(
-        "SELECT * FROM practice_sessions WHERE score_id = ? ORDER BY started_at DESC LIMIT 50",
+        "SELECT * FROM practice_sessions WHERE score_id = ? ORDER BY started_at DESC, id DESC LIMIT 50",
         (score_id,),
     ).fetchall()
     return {"sessions": [dict(r) for r in sessions], **_practice_totals(conn, score_id)}
@@ -237,9 +240,10 @@ def practice_summary():
            FROM practice_sessions WHERE started_at >= datetime('now', '-7 days')"""
     ).fetchone()
     top = conn.execute(
-        """SELECT s.id, s.title, SUM(p.seconds) AS total_seconds
+        """SELECT s.id, s.title, SUM(p.seconds) AS practice_seconds
            FROM practice_sessions p JOIN scores s ON s.id = p.score_id
-           GROUP BY p.score_id ORDER BY total_seconds DESC LIMIT 5"""
+           WHERE p.started_at >= datetime('now', '-7 days')
+           GROUP BY p.score_id ORDER BY practice_seconds DESC LIMIT 5"""
     ).fetchall()
     return {
         "week_seconds": week["total_seconds"],
