@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -32,4 +32,9 @@ if WEB_DIST and Path(WEB_DIST).is_dir():
         candidate = dist / full_path
         if full_path and candidate.is_file() and candidate.resolve().is_relative_to(dist.resolve()):
             return FileResponse(candidate)
+        # Only routes fall through to the app shell. Serving index.html for a
+        # missing asset hands HTML to whatever expected a font or soundfont,
+        # which surfaces as a parse error instead of a plain 404.
+        if Path(full_path).suffix:
+            raise HTTPException(404, "not found")
         return FileResponse(dist / "index.html")

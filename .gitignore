@@ -16,6 +16,8 @@ node_modules/
 web/dist/
 web/public/font/
 web/public/soundfont/
+# left behind by older checkouts that copied the runtime assets by hand
+web/public/alphatab/
 
 # editors / os
 .DS_Store
