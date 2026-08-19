@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from . import scanner
 from .config import FILE_TYPES, LIBRARY_DIR
 from .db import connect, tx
+from .glyph_rhythm import VALID_TS_DENOMINATORS
 from .tabextract import analyze as analyze_pdf, extract as extract_pdf
 from .thumbs import thumb_path
 
@@ -336,17 +337,20 @@ class TranscribeIn(BaseModel):
     time_signature: tuple[int, int] | None = None
 
 
-# alphaTab accepts a \ts numerator/denominator of 1-32; the denominator must
-# also be a power of two to mean anything as a note-duration unit.
-_VALID_TS_DENOMINATORS = {1, 2, 4, 8, 16, 32}
-
-
 def _validate_time_signature(ts: tuple[int, int]) -> None:
+    """Reject a signature alphaTab could not render. The rule itself lives
+    with the decoder (glyph_rhythm.time_signature_is_valid), which has to
+    apply it to signatures it reads off the page for exactly the same
+    reason - a signature that reaches \\ts is also STORED, and alphaTab
+    throws on e.g. `\\ts 3 12`, so a bad one makes the saved transcription
+    permanently unrenderable. Two copies of the rule would be two chances
+    to disagree."""
     num, den = ts
     if not 1 <= num <= 32:
         raise HTTPException(422, "time_signature numerator must be between 1 and 32")
-    if den not in _VALID_TS_DENOMINATORS:
-        raise HTTPException(422, f"time_signature denominator must be one of {sorted(_VALID_TS_DENOMINATORS)}")
+    if den not in VALID_TS_DENOMINATORS:
+        raise HTTPException(
+            422, f"time_signature denominator must be one of {sorted(VALID_TS_DENOMINATORS)}")
 
 
 @router.post("/scores/{score_id}/transcribe")
