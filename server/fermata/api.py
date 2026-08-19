@@ -1,20 +1,23 @@
+import json
 import re
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, Body, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from . import scanner
 from .config import FILE_TYPES, LIBRARY_DIR
 from .db import connect, tx
+from .tabextract import analyze as analyze_pdf, extract as extract_pdf
 from .thumbs import thumb_path
 
 router = APIRouter(prefix="/api")
 
 VALID_KINDS = {"notation", "tab", "both", "unknown"}
 VALID_PRACTICED = {"recent", "neglected"}
+MAX_TRANSCRIPTION_CHARS = 2_000_000
 
 
 def _score_row(conn, score_id: int):
@@ -28,6 +31,7 @@ def _with_tags(conn, rows):
     ids = [r["id"] for r in rows]
     tag_map: dict[int, list[str]] = {i: [] for i in ids}
     practice_map: dict[int, dict] = {}
+    transcribed_ids: set[int] = set()
     if ids:
         placeholders = ",".join("?" * len(ids))
         for r in conn.execute(
@@ -46,11 +50,17 @@ def _with_tags(conn, rows):
                 "practice_seconds": r["practice_seconds"],
                 "last_practiced": r["last_practiced"],
             }
+        for r in conn.execute(
+            f"""SELECT DISTINCT score_id FROM transcriptions WHERE score_id IN ({placeholders})""",
+            ids,
+        ):
+            transcribed_ids.add(r["score_id"])
     out = []
     for r in rows:
         d = dict(r)
         d["favorite"] = bool(d["favorite"])
         d["tags"] = tag_map.get(r["id"], [])
+        d["has_transcription"] = r["id"] in transcribed_ids
         d.update(practice_map.get(r["id"], {"practice_seconds": 0, "last_practiced": None}))
         out.append(d)
     return out
@@ -271,6 +281,126 @@ def get_thumb(score_id: int):
     if not path.is_file():
         raise HTTPException(404, "no thumbnail")
     return FileResponse(path, media_type="image/png")
+
+
+def _transcription_row(conn, score_id: int):
+    """Edited beats extracted when both exist - see db.py's schema comment
+    for why they're kept as separate rows instead of one mutated in place."""
+    return conn.execute(
+        """SELECT * FROM transcriptions WHERE score_id = ?
+           ORDER BY CASE source WHEN 'edited' THEN 0 ELSE 1 END LIMIT 1""",
+        (score_id,),
+    ).fetchone()
+
+
+def _transcription_dict(row) -> dict:
+    d = dict(row)
+    if d.get("confidence"):
+        try:
+            d["confidence"] = json.loads(d["confidence"])
+        except (TypeError, ValueError):
+            pass
+    return d
+
+
+@router.get("/scores/{score_id}/transcription")
+def get_transcription(score_id: int):
+    conn = connect()
+    _score_row(conn, score_id)
+    row = _transcription_row(conn, score_id)
+    if not row:
+        raise HTTPException(404, "no transcription for this score")
+    return _transcription_dict(row)
+
+
+@router.get("/scores/{score_id}/transcription/analysis")
+def get_transcription_analysis(score_id: int):
+    conn = connect()
+    row = _score_row(conn, score_id)
+    if row["file_type"] != "pdf":
+        return {
+            "extractable": False,
+            "reason": "transcription is only supported for pdf scores",
+            "vector": False,
+            "tab_staff_count": 0,
+            "standard_staff_count": 0,
+            "page_count": 0,
+        }
+    path = LIBRARY_DIR / row["path"]
+    if not path.is_file():
+        raise HTTPException(404, "file missing from library")
+    return analyze_pdf(path)
+
+
+class TranscribeIn(BaseModel):
+    time_signature: tuple[int, int] | None = None
+
+
+@router.post("/scores/{score_id}/transcribe")
+def transcribe(score_id: int, body: TranscribeIn | None = Body(default=None)):
+    conn = connect()
+    row = _score_row(conn, score_id)
+    if row["file_type"] != "pdf":
+        raise HTTPException(422, "transcription is only supported for pdf scores")
+    path = LIBRARY_DIR / row["path"]
+    if not path.is_file():
+        raise HTTPException(404, "file missing from library")
+
+    ts = tuple(body.time_signature) if body and body.time_signature else None
+    result = extract_pdf(path, time_signature=ts)
+    if not result.extractable:
+        raise HTTPException(422, result.reason or "pdf is not extractable")
+
+    # Only ever writes the source='extracted' row (see unique index on
+    # (score_id, source) in db.py) - a source='edited' row is untouched.
+    confidence_json = json.dumps({"warnings": result.warnings, "confidence": result.confidence})
+    with tx() as tx_conn:
+        tx_conn.execute(
+            """INSERT INTO transcriptions(score_id, format, content, source, confidence, updated_at)
+               VALUES (?, 'alphatex', ?, 'extracted', ?, datetime('now'))
+               ON CONFLICT(score_id, source) DO UPDATE SET
+                   content = excluded.content, confidence = excluded.confidence,
+                   updated_at = datetime('now')""",
+            (score_id, result.alphatex, confidence_json),
+        )
+
+    conn = connect()
+    saved = conn.execute(
+        "SELECT * FROM transcriptions WHERE score_id = ? AND source = 'extracted'", (score_id,)
+    ).fetchone()
+    d = _transcription_dict(saved)
+    d["warnings"] = result.warnings
+    d["bars"] = result.bars
+    d["beats"] = result.beats
+    d["notes"] = result.notes
+    d["tempo"] = result.tempo
+    d["tuning"] = result.tuning
+    d["tuning_label"] = result.tuning_label
+    d["time_signature"] = list(result.time_signature) if result.time_signature else None
+    d["time_signature_source"] = result.time_signature_source
+    return d
+
+
+class TranscriptionEditIn(BaseModel):
+    content: str = Field(min_length=1, max_length=MAX_TRANSCRIPTION_CHARS)
+
+
+@router.put("/scores/{score_id}/transcription")
+def save_transcription(score_id: int, body: TranscriptionEditIn):
+    with tx() as conn:
+        _score_row(conn, score_id)
+        conn.execute(
+            """INSERT INTO transcriptions(score_id, format, content, source, updated_at)
+               VALUES (?, 'alphatex', ?, 'edited', datetime('now'))
+               ON CONFLICT(score_id, source) DO UPDATE SET
+                   content = excluded.content, updated_at = datetime('now')""",
+            (score_id, body.content),
+        )
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM transcriptions WHERE score_id = ? AND source = 'edited'", (score_id,)
+    ).fetchone()
+    return _transcription_dict(row)
 
 
 @router.post("/scan")

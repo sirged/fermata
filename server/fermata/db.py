@@ -47,6 +47,22 @@ CREATE TABLE IF NOT EXISTS practice_sessions (
     note TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_practice_score ON practice_sessions(score_id);
+
+-- One extracted row and (at most) one edited row per score, distinguished by
+-- `source`. Kept as separate rows rather than one row with fields that get
+-- overwritten in place, so a re-extraction can freely replace the extracted
+-- row without ever touching an edited one - see api.py's transcribe().
+CREATE TABLE IF NOT EXISTS transcriptions (
+    id INTEGER PRIMARY KEY,
+    score_id INTEGER NOT NULL REFERENCES scores(id) ON DELETE CASCADE,
+    format TEXT NOT NULL DEFAULT 'alphatex',
+    content TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'extracted',
+    confidence TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_transcriptions_score_source ON transcriptions(score_id, source);
 """
 
 
