@@ -336,6 +336,19 @@ class TranscribeIn(BaseModel):
     time_signature: tuple[int, int] | None = None
 
 
+# alphaTab accepts a \ts numerator/denominator of 1-32; the denominator must
+# also be a power of two to mean anything as a note-duration unit.
+_VALID_TS_DENOMINATORS = {1, 2, 4, 8, 16, 32}
+
+
+def _validate_time_signature(ts: tuple[int, int]) -> None:
+    num, den = ts
+    if not 1 <= num <= 32:
+        raise HTTPException(422, "time_signature numerator must be between 1 and 32")
+    if den not in _VALID_TS_DENOMINATORS:
+        raise HTTPException(422, f"time_signature denominator must be one of {sorted(_VALID_TS_DENOMINATORS)}")
+
+
 @router.post("/scores/{score_id}/transcribe")
 def transcribe(score_id: int, body: TranscribeIn | None = Body(default=None)):
     conn = connect()
@@ -347,6 +360,8 @@ def transcribe(score_id: int, body: TranscribeIn | None = Body(default=None)):
         raise HTTPException(404, "file missing from library")
 
     ts = tuple(body.time_signature) if body and body.time_signature else None
+    if ts is not None:
+        _validate_time_signature(ts)
     result = extract_pdf(path, time_signature=ts)
     if not result.extractable:
         raise HTTPException(422, result.reason or "pdf is not extractable")
@@ -400,6 +415,28 @@ def save_transcription(score_id: int, body: TranscriptionEditIn):
     row = conn.execute(
         "SELECT * FROM transcriptions WHERE score_id = ? AND source = 'edited'", (score_id,)
     ).fetchone()
+    return _transcription_dict(row)
+
+
+@router.delete("/scores/{score_id}/transcription")
+def delete_transcription(score_id: int):
+    """Discard a hand edit, reverting to the extracted transcription.
+
+    Deletes only the source='edited' row - the source='extracted' row (if
+    any) is left untouched, mirroring transcribe()'s promise that it never
+    touches an edited row. Returns whatever transcription remains, or 404
+    if there's none. Deleting an already-gone edited row is a harmless
+    no-op, not an error - only "no transcription at all" is a 404.
+    """
+    with tx() as conn:
+        _score_row(conn, score_id)
+        conn.execute(
+            "DELETE FROM transcriptions WHERE score_id = ? AND source = 'edited'", (score_id,)
+        )
+    conn = connect()
+    row = _transcription_row(conn, score_id)
+    if not row:
+        raise HTTPException(404, "no transcription for this score")
     return _transcription_dict(row)
 
 

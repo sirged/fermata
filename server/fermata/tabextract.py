@@ -50,6 +50,9 @@ class ExtractionResult:
     bars: int = 0
     beats: int = 0
     notes: int = 0
+    # Total tab / standard staff systems found across the whole document
+    # (summed across pages) - same definition analyze() uses, not a
+    # per-page maximum.
     tab_staff_count: int = 0
     standard_staff_count: int = 0
     pages_processed: int = 0
@@ -194,9 +197,16 @@ def _vertical_segments(page, min_len=15.0):
     return segs
 
 
-def _detect_barlines(page, staff):
-    """Vertical segments whose y-span covers most of this staff's height."""
-    segs = _vertical_segments(page)
+def _detect_barlines(segs, staff):
+    """Vertical segments whose y-span covers most of this staff's height.
+
+    `segs` is the page's full set of vertical line primitives (see
+    _vertical_segments) - callers must compute it once per page and reuse it
+    across staves. get_drawings() re-parses the page's whole content stream,
+    so calling _vertical_segments(page) once per staff here made a 2-page,
+    ~7-staves-per-page file re-parse the same page content ~14 times inside
+    a single synchronous request.
+    """
     xs = []
     span = staff.bottom - staff.top
     for x, y0, y1 in segs:
@@ -282,36 +292,69 @@ def _assign_tokens_to_tab_staves(tokens, tab_staves):
     return by_staff, unmatched
 
 
+# No standard guitar has more frets than this; a merge result above it is a
+# sign two unrelated notes were concatenated, not a real fret number.
+_MAX_SANE_FRET = 24
+
+
 def _merge_multidigit(tokens_for_staff, staff):
     """Merge adjacent 1-digit tokens on the same string line into 2-digit
-    fret numbers (e.g. "1" then "2" immediately right -> "12")."""
+    fret numbers (e.g. "1" then "2" immediately right -> "12").
+
+    Returns (merged_notes, rejected_count, suspicious_count):
+    - rejected_count is how many candidate merges were declined because the
+      result exceeded _MAX_SANE_FRET (kept as two separate notes instead).
+    - suspicious_count is how many notes - merged or original two-character
+      spans straight from the PDF text (e.g. Finale can emit a two-digit
+      fret as a single span, and occasionally two adjacent single-digit
+      frets end up close enough to read as one) - are still above
+      _MAX_SANE_FRET and were emitted as-is because there's no safe way to
+      split an already-single span back into two notes.
+    Callers should surface both as warnings rather than silently trusting
+    an impossible fret number.
+    """
     per_string = collections.defaultdict(list)
     for tok in tokens_for_staff:
         s = staff.string_for_y(tok.yc)
         per_string[s].append(tok)
 
     merged_notes = []  # (x0, string, fret_text, yc)
+    rejected = 0
+    suspicious = 0
     for s, toks in per_string.items():
         toks.sort(key=lambda t: t.x0)
         i = 0
-        avg_w = sum(t.width for t in toks) / len(toks) if toks else 5.0
+        # Only 1-char tokens are merge candidates; averaging in already-merged
+        # 2-char token widths inflated the window enough that two separate
+        # adjacent single-digit notes (e.g. a "5" then, well clear of it, a
+        # "7") could be pulled together into a nonsense fret like "57".
+        single_widths = [t.width for t in toks if len(t.text) == 1]
+        avg_w = sum(single_widths) / len(single_widths) if single_widths else 5.0
         while i < len(toks):
             t = toks[i]
             if (
                 len(t.text) == 1
                 and i + 1 < len(toks)
                 and len(toks[i + 1].text) == 1
-                and (toks[i + 1].x0 - t.x1) < avg_w * 0.5
+                and (toks[i + 1].x0 - t.x1) < avg_w * 0.35
                 and abs(toks[i + 1].yc - t.yc) < 1.5
             ):
                 nxt = toks[i + 1]
-                merged_notes.append((t.x0, s, t.text + nxt.text, (t.yc + nxt.yc) / 2))
-                i += 2
+                fret_text = t.text + nxt.text
+                if int(fret_text) > _MAX_SANE_FRET:
+                    rejected += 1
+                    merged_notes.append((t.x0, s, t.text, t.yc))
+                    i += 1
+                else:
+                    merged_notes.append((t.x0, s, fret_text, (t.yc + nxt.yc) / 2))
+                    i += 2
             else:
+                if len(t.text) == 2 and int(t.text) > _MAX_SANE_FRET:
+                    suspicious += 1
                 merged_notes.append((t.x0, s, t.text, t.yc))
                 i += 1
     merged_notes.sort(key=lambda n: n[0])
-    return merged_notes
+    return merged_notes, rejected, suspicious
 
 
 # ---------------------------------------------------------------------------
@@ -419,10 +462,25 @@ def _snap_duration(quarter_units):
     return best[1]
 
 
-def _infer_measure_rhythm(columns_in_measure, measure_quarter_len):
-    """Treat the x-gap from each column to the next as proportional to that
-    column's duration, normalized so gaps sum to measure_quarter_len, then
-    snapped per-column. Not a real rhythm decoder - see module docstring."""
+def _measure_quarter_length(ts: tuple[int, int]) -> float:
+    """Quarter-note budget for one measure of this time signature, e.g. 3/4
+    and 6/8 both budget 3.0 quarters. The denominator matters: using the
+    numerator alone would give 6/8 a budget of 6.0, doubling every
+    spacing-inferred duration in a compound meter."""
+    return ts[0] * 4.0 / ts[1]
+
+
+def _infer_measure_rhythm(columns_in_measure, measure_quarter_len, bar_end_x):
+    """Treat the x-gap from each column to the next - and from the last
+    column to the measure's own barline (bar_end_x) - as proportional to
+    that column's duration, normalized so gaps sum to measure_quarter_len,
+    then snapped per-column. Not a real rhythm decoder - see module
+    docstring.
+
+    bar_end_x must be the actual barline (or staff end) position for this
+    measure: using the mean of the preceding gaps instead systematically
+    shortened the last note of any bar that ends on a long note.
+    """
     if not columns_in_measure:
         return []
     xs = [c["x"] for c in columns_in_measure]
@@ -430,7 +488,7 @@ def _infer_measure_rhythm(columns_in_measure, measure_quarter_len):
         gaps = [measure_quarter_len]
     else:
         gaps = [b - a for a, b in zip(xs, xs[1:])]
-        gaps.append(sum(gaps) / len(gaps))
+        gaps.append(bar_end_x - xs[-1])
     total = sum(gaps)
     if total <= 0:
         return [measure_quarter_len / len(xs)] * len(xs)
@@ -447,6 +505,10 @@ def _fmt_note(string, fret):
 
 
 def _fmt_beat(duration_code, notes):
+    # An empty notes list marks a rest bar (see _extract's rest-only-measure
+    # handling) - alphaTex spells a rest beat as the bare identifier "r".
+    if not notes:
+        return f":{duration_code} r"
     body = (
         " ".join(_fmt_note(s, f) for s, f in notes)
         if len(notes) == 1
@@ -455,15 +517,28 @@ def _fmt_beat(duration_code, notes):
     return f":{duration_code} {body}"
 
 
+def _escape_tex_string(s: str) -> str:
+    """Escape a value for embedding inside an alphaTex quoted string
+    (backslash then double-quote, in that order so a literal backslash
+    isn't doubled by the quote-escaping pass)."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _build_alphatex(title, tempo, tuning, ts, measures):
     """measures: list of list of (duration_code, notes) beats."""
-    lines = [f'\\title "{title}"']
+    lines = [f'\\title "{_escape_tex_string(title)}"']
     if tempo:
         lines.append(f"\\tempo {tempo}")
     if ts:
         lines.append(f"\\ts {ts[0]} {ts[1]}")
     if tuning:
-        lines.append("\\tuning " + " ".join(tuning))
+        # alphaTex binds the FIRST \tuning entry to string 1, and
+        # _Staff.string_for_y assigns string 1 to the top tab line (the
+        # highest-pitched string). `tuning`/DEFAULT_TUNING/DROP_D_TUNING are
+        # kept low-to-high (index 0 = lowest string) everywhere else in this
+        # module and in the API response, so they must be reversed here -
+        # emitting them as-is puts every note on its mirrored string.
+        lines.append("\\tuning " + " ".join(reversed(tuning)))
     lines.append(".")
     body_lines = []
     for measure in measures:
@@ -585,8 +660,11 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     tempo = None
     tuning = list(DEFAULT_TUNING)
     tuning_label = None
-    max_tab_count = 0
-    max_std_count = 0
+    # tab_staff_count / standard_staff_count are the total number of tab /
+    # standard staff systems found across the whole document (summed across
+    # pages), matching analyze()'s definition - see ExtractionResult.
+    tab_count = 0
+    std_count = 0
     vector_pages = 0
     pages_with_tab = []  # (page, tab_staves) in page order
 
@@ -608,8 +686,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             )
         tab_staves = sorted((s for s in staves if s.kind == "tab"), key=lambda s: s.top)
         std_staves = sorted((s for s in staves if s.kind == "standard"), key=lambda s: s.top)
-        max_tab_count = max(max_tab_count, len(tab_staves))
-        max_std_count = max(max_std_count, len(std_staves))
+        tab_count += len(tab_staves)
+        std_count += len(std_staves)
 
         if ts is None and std_staves:
             detected = _detect_time_signature(page, std_staves[0])
@@ -642,8 +720,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                 "no 6-line tab staff groups found - pages are vector but appear to be "
                 "standard-notation only (fingering numbers are not fret numbers)"
             ),
-            tab_staff_count=max_tab_count,
-            standard_staff_count=max_std_count,
+            tab_staff_count=tab_count,
+            standard_staff_count=std_count,
             warnings=warnings,
         )
 
@@ -660,20 +738,29 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         "the score - treat as low confidence (no dotted notes or ties modeled)"
     )
 
+    measure_quarter_len = _measure_quarter_length(ts)
+
     # Pass 2: real extraction, now that ts/tempo/tuning are settled.
     all_measures = []  # list of measures, each a list of (duration_code, notes) beats
     unmatched_total = 0
+    rejected_merges_total = 0
+    suspicious_frets_total = 0
     for page, tab_staves in pages_with_tab:
         tokens = _extract_digit_tokens(page)
         by_staff, unmatched = _assign_tokens_to_tab_staves(tokens, tab_staves)
         unmatched_total += len(unmatched)
+        # Computed once per page and reused for every staff on it - see
+        # _detect_barlines docstring.
+        vseg = _vertical_segments(page)
         for si, staff in enumerate(tab_staves):
             toks = by_staff.get(si, [])
             if not toks:
                 continue
-            notes = _merge_multidigit(toks, staff)
+            notes, rejected, suspicious = _merge_multidigit(toks, staff)
+            rejected_merges_total += rejected
+            suspicious_frets_total += suspicious
             columns = _group_into_columns(notes)
-            barline_xs = _detect_barlines(page, staff)
+            barline_xs = _detect_barlines(vseg, staff)
             col_xs = [c["x"] for c in columns]
             lo, hi = min(col_xs) - 5, max(col_xs) + 5
             bars = [x for x in barline_xs if lo <= x <= hi]
@@ -686,16 +773,48 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                     measure_idx += 1
                 measures_for_staff[measure_idx].append(col)
 
-            for m_cols in measures_for_staff:
+            for i, m_cols in enumerate(measures_for_staff):
+                bar_end_x = bounds[i + 1]
                 if not m_cols:
+                    # No digit columns landed in this bar - emit an explicit
+                    # rest bar instead of dropping it. Skipping it entirely
+                    # would omit its "|" separator and shift every later
+                    # bar's number one position earlier than the PDF, which
+                    # breaks side-by-side comparison against the original.
+                    all_measures.append([(_snap_duration(measure_quarter_len), [])])
                     continue
-                durations_q = _infer_measure_rhythm(m_cols, float(ts[0]))
+                durations_q = _infer_measure_rhythm(m_cols, measure_quarter_len, bar_end_x)
                 beats = [(_snap_duration(dq), col["notes"]) for col, dq in zip(m_cols, durations_q)]
                 all_measures.append(beats)
 
     if unmatched_total:
         warnings.append(
             f"{unmatched_total} digit token(s) near a tab staff could not be assigned to a string"
+        )
+    if rejected_merges_total:
+        warnings.append(
+            f"{rejected_merges_total} adjacent-digit merge(s) were rejected because they would "
+            f"have produced a fret number above {_MAX_SANE_FRET} - kept as separate notes instead"
+        )
+    if suspicious_frets_total:
+        warnings.append(
+            f"{suspicious_frets_total} fret number(s) above {_MAX_SANE_FRET} were read directly "
+            "from the PDF's own text (not from a merge) - likely two adjacent notes rendered as "
+            "one text span in the source - treat those frets as low confidence"
+        )
+
+    if not all_measures:
+        return ExtractionResult(
+            extractable=False,
+            reason=(
+                "tab staff systems were found but no fret-number digits could be matched to a "
+                "string - likely an outlined-text export where fret numbers are vector paths, "
+                "not selectable text"
+            ),
+            tab_staff_count=tab_count,
+            standard_staff_count=std_count,
+            pages_processed=len(pages_with_tab),
+            warnings=warnings,
         )
 
     title = Path(pdf_path).stem
@@ -724,8 +843,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         bars=len(all_measures),
         beats=beats_total,
         notes=notes_total,
-        tab_staff_count=max_tab_count,
-        standard_staff_count=max_std_count,
+        tab_staff_count=tab_count,
+        standard_staff_count=std_count,
         pages_processed=len(pages_with_tab),
         confidence=confidence,
         warnings=warnings,
