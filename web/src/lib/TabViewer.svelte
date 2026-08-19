@@ -16,12 +16,18 @@
   let metronome = $state(false);
   let countIn = $state(false);
   let loadError = $state("");
+  let ladder = $state(false);
+  let ladderStart = $state(60);
+  let ladderStep = $state(5);
+  let ladderTarget = $state(100);
 
   const PROFILES = [
     ["score", "Notation"],
     ["tab", "Tab"],
     ["scoretab", "Both"],
   ];
+
+  const SPEEDS = [0.5, 0.75, 1, 1.25];
 
   const PROFILE_MAP = {
     score: alphaTab.StaveProfile.Score,
@@ -62,6 +68,19 @@
     at.playerStateChanged.on((e) => (playing = e.state === 1));
     at.error.on((e) => {
       loadError = e?.message ?? "failed to load score";
+    });
+    // playerFinished fires at the end of each loop pass (not just final stop),
+    // which is what makes it usable as the "one clean pass done" signal below.
+    at.playerFinished.on(() => {
+      if (!ladder) return;
+      const next = Math.round(speed * 100) + ladderStep;
+      if (next >= ladderTarget) {
+        speed = ladderTarget / 100;
+        ladder = false;
+      } else {
+        speed = next / 100;
+      }
+      at.playbackSpeed = speed;
     });
 
     if (demo) {
@@ -104,6 +123,34 @@
     countIn = !countIn;
     if (atApi) atApi.countInVolume = countIn ? 1 : 0;
   }
+
+  function clamp(n, lo, hi) {
+    if (Number.isNaN(n)) return lo;
+    return Math.min(hi, Math.max(lo, n));
+  }
+
+  function toggleLadder() {
+    ladder = !ladder;
+    if (!ladder) return;
+    looping = true;
+    speed = ladderStart / 100;
+    if (atApi) {
+      atApi.isLooping = true;
+      atApi.playbackSpeed = speed;
+    }
+  }
+
+  function setLadderStart(ev) {
+    ladderStart = clamp(Number(ev.target.value), 10, 100);
+  }
+
+  function setLadderStep(ev) {
+    ladderStep = clamp(Number(ev.target.value), 1, 25);
+  }
+
+  function setLadderTarget(ev) {
+    ladderTarget = clamp(Number(ev.target.value), 10, 200);
+  }
 </script>
 
 <div class="wrap">
@@ -119,10 +166,13 @@
       </button>
       <button disabled={!playerReady} onclick={() => atApi?.stop()}>■</button>
       <select value={speed} onchange={setSpeed} title="Playback speed">
-        <option value={0.5}>0.5×</option>
-        <option value={0.75}>0.75×</option>
-        <option value={1}>1×</option>
-        <option value={1.25}>1.25×</option>
+        {#if !SPEEDS.includes(speed)}
+          <!-- the ladder steps to speeds between the presets -->
+          <option value={speed}>{Math.round(speed * 100)}%</option>
+        {/if}
+        {#each SPEEDS as s}
+          <option value={s}>{s}×</option>
+        {/each}
       </select>
       <div class="practice">
         <button
@@ -138,6 +188,30 @@
         <button class:on={countIn} onclick={toggleCountIn} title="Count-in before playback starts">
           Count-in
         </button>
+        <button
+          class:on={ladder}
+          onclick={toggleLadder}
+          title="Tempo ladder — loop a passage and step the speed up automatically"
+        >
+          Ladder
+        </button>
+        {#if ladder}
+          <div class="ladder-controls">
+            <label>
+              Start
+              <input type="number" min="10" max="100" step="1" value={ladderStart} onchange={setLadderStart} />
+            </label>
+            <label>
+              Step
+              <input type="number" min="1" max="25" step="1" value={ladderStep} onchange={setLadderStep} />
+            </label>
+            <label>
+              Target
+              <input type="number" min="10" max="200" step="1" value={ladderTarget} onchange={setLadderTarget} />
+            </label>
+            <span class="ladder-readout">{Math.round(speed * 100)}%</span>
+          </div>
+        {/if}
       </div>
     </div>
   </div>
@@ -206,6 +280,35 @@
   .practice button.on {
     color: var(--brass-bright);
     border-color: var(--brass);
+  }
+
+  .ladder-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+
+  .ladder-controls label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--ink-dim);
+  }
+
+  .ladder-controls input {
+    width: 44px;
+    padding: 2px 4px;
+  }
+
+  .ladder-readout {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--brass);
   }
 
   .score-scroll {

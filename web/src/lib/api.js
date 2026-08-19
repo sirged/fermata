@@ -18,6 +18,7 @@ export const api = {
       body: JSON.stringify(body),
     }).then(j),
   collections: () => fetch("/api/collections").then(j),
+  duplicates: () => fetch("/api/duplicates").then(j),
   tags: () => fetch("/api/tags").then(j),
   scan: () => fetch("/api/scan", { method: "POST" }).then(j),
   scanStatus: () => fetch("/api/scan/status").then(j),

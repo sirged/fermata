@@ -82,6 +82,23 @@ def list_scores(
     return _with_tags(conn, rows)
 
 
+@router.get("/duplicates")
+def list_duplicates():
+    conn = connect()
+    dupes = conn.execute(
+        """SELECT hash, COUNT(*) AS count FROM scores
+           GROUP BY hash HAVING COUNT(*) > 1
+           ORDER BY count DESC, hash"""
+    ).fetchall()
+    groups = []
+    for d in dupes:
+        rows = conn.execute(
+            "SELECT * FROM scores WHERE hash = ? ORDER BY path", (d["hash"],)
+        ).fetchall()
+        groups.append({"hash": d["hash"], "count": d["count"], "scores": _with_tags(conn, rows)})
+    return groups
+
+
 @router.get("/collections")
 def list_collections():
     conn = connect()

@@ -12,6 +12,8 @@
   let scan = $state(null);
   let loading = $state(true);
   let uploadInput;
+  let showDuplicates = $state(false);
+  let duplicates = $state([]);
 
   const KINDS = [
     ["", "All"],
@@ -39,6 +41,11 @@
     void search, collection, kind, tag, favorite;
     const t = setTimeout(refresh, 150);
     return () => clearTimeout(t);
+  });
+
+  $effect(() => {
+    if (!showDuplicates) return;
+    api.duplicates().then((d) => (duplicates = d));
   });
 
   $effect(() => {
@@ -97,11 +104,14 @@
     </div>
 
     <nav>
-      <button class="side-item" class:active={!collection && !favorite} onclick={() => { collection = ""; favorite = false; }}>
+      <button class="side-item" class:active={!collection && !favorite && !showDuplicates} onclick={() => { collection = ""; favorite = false; showDuplicates = false; }}>
         All scores
       </button>
-      <button class="side-item" class:active={favorite} onclick={() => (favorite = !favorite)}>
+      <button class="side-item" class:active={favorite} onclick={() => { favorite = !favorite; showDuplicates = false; }}>
         ★ Favorites
+      </button>
+      <button class="side-item" class:active={showDuplicates} onclick={() => (showDuplicates = !showDuplicates)}>
+        ⧉ Duplicates
       </button>
 
       <div class="side-label">Collections</div>
@@ -109,7 +119,7 @@
         <button
           class="side-item"
           class:active={collection === c.collection}
-          onclick={() => (collection = collection === c.collection ? "" : c.collection)}
+          onclick={() => { collection = collection === c.collection ? "" : c.collection; showDuplicates = false; }}
         >
           {c.collection} <span class="count">{c.count}</span>
         </button>
@@ -119,7 +129,7 @@
         <div class="side-label">Tags</div>
         <div class="tag-cloud">
           {#each tags as t}
-            <button class="chip" class:active={tag === t.name} onclick={() => (tag = tag === t.name ? "" : t.name)}>
+            <button class="chip" class:active={tag === t.name} onclick={() => { tag = tag === t.name ? "" : t.name; showDuplicates = false; }}>
               {t.name}
             </button>
           {/each}
@@ -145,45 +155,68 @@
   </aside>
 
   <main>
-    <header>
-      <input class="search" type="search" placeholder="Search title, composer, source…" bind:value={search} />
-      <select bind:value={kind}>
-        {#each KINDS as [value, label]}
-          <option {value}>{label}</option>
-        {/each}
-      </select>
-      <span class="result-count">{scores.length} score{scores.length === 1 ? "" : "s"}</span>
-    </header>
+    {#if showDuplicates}
+      <header>
+        <span class="result-count">{duplicates.length} duplicate group{duplicates.length === 1 ? "" : "s"}</span>
+      </header>
 
-    {#if loading && !scores.length}
-      <p class="empty">Loading…</p>
-    {:else if !scores.length}
-      <p class="empty">
-        Nothing here yet. Drop files into your library folder and hit <em>Scan library</em>,
-        or use <em>Upload</em>.
-      </p>
+      {#if !duplicates.length}
+        <p class="empty">No duplicates found — every score in your library is unique.</p>
+      {:else}
+        <div class="dupe-list">
+          {#each duplicates as group (group.hash)}
+            <div class="dupe-group">
+              <div class="dupe-head">{group.count} copies — {group.scores[0]?.title ?? "Untitled"}</div>
+              <div class="dupe-paths">
+                {#each group.scores as s (s.id)}
+                  <a class="dupe-path" href={"#/score/" + s.id}>{s.path}</a>
+                {/each}
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
     {:else}
-      <div class="grid">
-        {#each scores as score (score.id)}
-          <a class="card" href={"#/score/" + score.id}>
-            <div class="sheet">
-              {#if score.file_type === "pdf"}
-                <img src={api.thumbUrl(score.id)} alt="" loading="lazy" onerror={(e) => (e.target.style.display = "none")} />
-              {:else}
-                <div class="sheet-icon">𝄞</div>
-              {/if}
-              <button class="fav" class:on={score.favorite} onclick={(e) => toggleFavorite(score, e)} title="Favorite">★</button>
-              {#if kindLabel[score.content_kind]}
-                <span class="kind">{kindLabel[score.content_kind]}</span>
-              {/if}
-            </div>
-            <div class="meta">
-              <div class="title">{score.title}</div>
-              <div class="sub">{score.source ?? score.composer ?? score.collection ?? ""}</div>
-            </div>
-          </a>
-        {/each}
-      </div>
+      <header>
+        <input class="search" type="search" placeholder="Search title, composer, source…" bind:value={search} />
+        <select bind:value={kind}>
+          {#each KINDS as [value, label]}
+            <option {value}>{label}</option>
+          {/each}
+        </select>
+        <span class="result-count">{scores.length} score{scores.length === 1 ? "" : "s"}</span>
+      </header>
+
+      {#if loading && !scores.length}
+        <p class="empty">Loading…</p>
+      {:else if !scores.length}
+        <p class="empty">
+          Nothing here yet. Drop files into your library folder and hit <em>Scan library</em>,
+          or use <em>Upload</em>.
+        </p>
+      {:else}
+        <div class="grid">
+          {#each scores as score (score.id)}
+            <a class="card" href={"#/score/" + score.id}>
+              <div class="sheet">
+                {#if score.file_type === "pdf"}
+                  <img src={api.thumbUrl(score.id)} alt="" loading="lazy" onerror={(e) => (e.target.style.display = "none")} />
+                {:else}
+                  <div class="sheet-icon">𝄞</div>
+                {/if}
+                <button class="fav" class:on={score.favorite} onclick={(e) => toggleFavorite(score, e)} title="Favorite">★</button>
+                {#if kindLabel[score.content_kind]}
+                  <span class="kind">{kindLabel[score.content_kind]}</span>
+                {/if}
+              </div>
+              <div class="meta">
+                <div class="title">{score.title}</div>
+                <div class="sub">{score.source ?? score.composer ?? score.collection ?? ""}</div>
+              </div>
+            </a>
+          {/each}
+        </div>
+      {/if}
     {/if}
   </main>
 </div>
@@ -332,6 +365,41 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     gap: 22px;
+  }
+
+  .dupe-list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .dupe-group {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 16px;
+  }
+
+  .dupe-head {
+    font-size: 14px;
+    margin-bottom: 8px;
+  }
+
+  .dupe-paths {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .dupe-path {
+    display: block;
+    font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+    font-size: 12px;
+    color: var(--ink-dim);
+  }
+
+  .dupe-path:hover {
+    color: var(--brass-bright);
   }
 
   .card {
