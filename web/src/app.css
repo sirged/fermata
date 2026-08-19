@@ -1,0 +1,109 @@
+:root {
+  --bg: #16130e;
+  --bg-raised: #201b13;
+  --surface: #282217;
+  --line: #3a3324;
+  --ink: #f0e8d6;
+  --ink-dim: #a89a7e;
+  --brass: #c9a45c;
+  --brass-bright: #e6c377;
+  --paper: #f7f2e6;
+  --danger: #c96a5c;
+  --radius: 10px;
+  --font-display: "Fraunces Variable", Georgia, serif;
+  --font-ui: "Figtree Variable", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1200px 600px at 70% -10%, #241e12 0%, transparent 60%),
+    var(--bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+#app {
+  height: 100%;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  margin: 0;
+}
+
+a {
+  color: var(--brass-bright);
+  text-decoration: none;
+}
+
+button,
+select,
+input {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 12px;
+}
+
+button {
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+}
+
+button:hover {
+  border-color: var(--brass);
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+button.primary {
+  background: var(--brass);
+  border-color: var(--brass);
+  color: #241d0f;
+  font-weight: 600;
+}
+
+button.primary:hover {
+  background: var(--brass-bright);
+}
+
+input:focus,
+select:focus {
+  outline: none;
+  border-color: var(--brass);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

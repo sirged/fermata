@@ -1,0 +1,21 @@
+# personal sheet music library and runtime data — never committed
+library/
+config/
+*.pdf
+*.zip
+
+# python
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+
+# node / frontend
+node_modules/
+web/dist/
+web/public/alphatab/
+
+# editors / os
+.DS_Store
+Thumbs.db

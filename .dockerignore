@@ -1,0 +1,9 @@
+library/
+config/
+web/node_modules/
+web/dist/
+web/public/alphatab/
+**/__pycache__/
+.git/
+*.zip
+*.pdf

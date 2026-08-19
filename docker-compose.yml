@@ -1,0 +1,10 @@
+services:
+  fermata:
+    build: .
+    container_name: fermata
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./library:/data/library
+      - ./config:/data/config
+    restart: unless-stopped
