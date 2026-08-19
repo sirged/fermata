@@ -12,6 +12,12 @@
     onStopPractice = () => {},
   } = $props();
 
+  // Viewer.svelte reassigns `score` to a fresh object on every metadata
+  // PATCH (favorite, content_kind, tags) - track only the id so those edits
+  // don't refire the transcription-load effect and blow away an in-progress
+  // draft
+  let scoreId = $derived(score.id);
+
   const LAYOUT_KEY = "fermata.layout";
 
   function loadStoredLayout() {
@@ -34,20 +40,33 @@
   // something to compare, since verification is the whole point
   let layout = $state(loadStoredLayout() ?? (untrack(() => score.has_transcription) ? "side" : "pdf"));
 
+  // localStorage is swallowed when unavailable (private browsing), which
+  // would otherwise make maybeDefaultToSide() re-read a null every time and
+  // snap the layout back to "side" on every load - track the choice here too
+  let userChoseLayout = loadStoredLayout() != null;
+
   function setLayout(l) {
     layout = l;
+    userChoseLayout = true;
     persistLayout(l);
   }
 
   function maybeDefaultToSide() {
-    if (loadStoredLayout()) return; // user already made an explicit choice
+    if (userChoseLayout) return; // user already made an explicit choice
     layout = "side";
   }
+
+  // gig mode must show exactly one HUD - side-by-side would mount two
+  // competing transport bars and exit buttons on a half-width stage view
+  let activeLayout = $derived(gigMode && layout === "side" ? "pdf" : layout);
 
   // "loading" | "none" | "transcribing" | "ready" | "error"
   let transcriptionState = $state("loading");
   let transcription = $state(null);
   let fetchError = $state("");
+  // whether this pdf can even be extracted - only known once /analysis
+  // answers; null means "haven't checked (or the endpoint isn't there)"
+  let analysis = $state(null);
 
   let tsNum = $state("");
   let tsDen = $state("");
@@ -58,34 +77,79 @@
   let saveError = $state("");
   let reverting = $state(false);
 
+  // POST /transcribe echoes warnings at the top level; GET /transcription
+  // nests them under confidence.warnings (and confidence may still be the
+  // raw JSON string if the backend's own parse of it ever failed) - read
+  // whichever shape actually showed up rather than assuming one
+  let warningsList = $derived.by(() => {
+    if (!transcription) return [];
+    if (Array.isArray(transcription.warnings)) return transcription.warnings;
+    let confidence = transcription.confidence;
+    if (typeof confidence === "string") {
+      try {
+        confidence = JSON.parse(confidence);
+      } catch {
+        confidence = null;
+      }
+    }
+    return Array.isArray(confidence?.warnings) ? confidence.warnings : [];
+  });
+
+  // guards against a slower response for a previously-viewed score landing
+  // after a newer navigation and overwriting what's on screen
+  let loadGen = 0;
+
+  async function loadAnalysis() {
+    try {
+      analysis = await api.transcriptionAnalysis(score.id);
+    } catch {
+      // endpoint not deployed yet, or it failed - fall back to just
+      // offering the transcribe button and letting that call fail loudly
+      analysis = null;
+    }
+  }
+
   async function loadTranscription() {
+    // read via scoreId, not score.id: this runs synchronously (up to the
+    // first await) inside the $effect below, and reading score.id directly
+    // here would re-attach the effect to the whole `score` object - right
+    // back to reloading on every metadata PATCH that this was meant to fix
+    const id = scoreId;
+    const gen = ++loadGen;
     transcriptionState = "loading";
     fetchError = "";
+    analysis = null;
     try {
-      const t = await api.transcription(score.id);
+      const t = await api.transcription(id);
+      if (gen !== loadGen) return; // superseded by a newer load
       transcription = t;
       draft = t.content;
       transcriptionState = "ready";
       maybeDefaultToSide();
     } catch (e) {
-      const msg = String(e?.message ?? e);
-      if (msg.startsWith("404")) {
+      if (gen !== loadGen) return;
+      if (e.status === 404) {
         transcriptionState = "none";
+        loadAnalysis();
       } else {
         // endpoint missing entirely, network down, backend not merged yet -
         // degrade rather than pretend a transcription exists
         transcriptionState = "error";
-        fetchError = msg;
+        fetchError = e.message;
       }
     }
   }
 
   $effect(() => {
-    void score.id;
+    void scoreId;
     loadTranscription();
+    return () => {
+      loadGen++; // invalidate any request still in flight from this run
+    };
   });
 
   async function runTranscribe() {
+    const gen = ++loadGen;
     transcriptionState = "transcribing";
     fetchError = "";
     const n = Number(tsNum);
@@ -96,13 +160,15 @@
     }
     try {
       const t = await api.transcribe(score.id, body);
+      if (gen !== loadGen) return;
       transcription = t;
       draft = t.content;
       transcriptionState = "ready";
       maybeDefaultToSide();
     } catch (e) {
+      if (gen !== loadGen) return;
       transcriptionState = "none";
-      fetchError = String(e?.message ?? e);
+      fetchError = e.message;
     }
   }
 
@@ -113,6 +179,12 @@
   }
 
   async function saveEdit() {
+    if (!draft.trim()) {
+      // the backend requires min_length=1 and would otherwise bounce this
+      // as an opaque 422 - catch it here with a clear message instead
+      saveError = "Can't save empty content.";
+      return;
+    }
     saving = true;
     saveError = "";
     try {
@@ -132,26 +204,42 @@
     reverting = true;
     fetchError = "";
     try {
-      const t = await api.transcribe(score.id);
+      // deletes only the edited row and hands back whatever's left - this
+      // is a real revert (the extracted row's original content/params),
+      // not a re-run of extraction that could bar things differently
+      const t = await api.deleteTranscription(score.id);
       transcription = t;
       draft = t.content;
       editorOpen = false;
     } catch (e) {
-      fetchError = String(e?.message ?? e);
+      if (e.status === 404) {
+        // no extracted row was left once the edit was removed - not a
+        // failure, but don't pretend the old edit is still showing either
+        transcription = null;
+        transcriptionState = "none";
+        fetchError = "Reverted — no extracted transcription was left to fall back to.";
+        loadAnalysis();
+      } else if (e.status === 405) {
+        // DELETE /transcription isn't deployed on this backend yet - say so
+        // plainly rather than silently leaving the stale edit in place
+        fetchError = "Revert isn't available yet - the server needs the latest backend deployed.";
+      } else {
+        fetchError = e.message;
+      }
     } finally {
       reverting = false;
     }
   }
 </script>
 
-{#snippet pdfPane()}
-  <div class="pane">
+{#snippet pdfPane(hidden)}
+  <div class="pane" class:hidden>
     <PdfViewer {score} {gigMode} {onToggleGig} {practiceLabel} {onStopPractice} />
   </div>
 {/snippet}
 
-{#snippet staffPane()}
-  <div class="pane staff-pane">
+{#snippet staffPane(hidden)}
+  <div class="pane staff-pane" class:hidden>
     {#if transcriptionState === "loading"}
       <p class="hint">Checking for a transcription…</p>
     {:else if transcriptionState === "error"}
@@ -164,32 +252,37 @@
     {:else if transcriptionState === "none"}
       <div class="empty-state">
         <div class="empty-icon">𝄢</div>
-        <h3>No staff transcription yet</h3>
-        <p>
-          Fermata can pull the guitar tab out of this PDF and render it as a playable,
-          editable staff. Fret and string extraction is accurate, but the rhythm and time
-          signature are guessed from spacing on the page — treat the staff as a draft to
-          check against the PDF, not a verified score.
-        </p>
-        <div class="ts-input">
-          <label>
-            Time signature <span class="opt">(optional — helps the rhythm guess)</span>
-            <span class="ts-fields">
-              <input type="number" min="1" max="32" placeholder="4" bind:value={tsNum} />
-              <span class="slash">/</span>
-              <input type="number" min="1" max="32" placeholder="4" bind:value={tsDen} />
-            </span>
-          </label>
-        </div>
-        {#if fetchError}<p class="hint warn">{fetchError}</p>{/if}
-        <button class="primary" onclick={runTranscribe}>Transcribe this PDF</button>
+        {#if analysis && !analysis.extractable}
+          <h3>No tab to extract</h3>
+          <p>{analysis.reason || "This PDF doesn't contain extractable tab or standard notation staves."}</p>
+        {:else}
+          <h3>No staff transcription yet</h3>
+          <p>
+            Fermata can pull the guitar tab out of this PDF and render it as a playable,
+            editable staff. Fret and string extraction is accurate, but the rhythm and time
+            signature are guessed from spacing on the page — treat the staff as a draft to
+            check against the PDF, not a verified score.
+          </p>
+          <div class="ts-input">
+            <label>
+              Time signature <span class="opt">(optional — helps the rhythm guess)</span>
+              <span class="ts-fields">
+                <input type="number" min="1" max="32" placeholder="4" bind:value={tsNum} />
+                <span class="slash">/</span>
+                <input type="number" min="1" max="32" placeholder="4" bind:value={tsDen} />
+              </span>
+            </label>
+          </div>
+          {#if fetchError}<p class="hint warn">{fetchError}</p>{/if}
+          <button class="primary" onclick={runTranscribe}>Transcribe this PDF</button>
+        {/if}
       </div>
     {:else if transcriptionState === "ready"}
-      {#if transcription.warnings?.length}
+      {#if warningsList.length}
         <div class="warnings">
           <div class="warnings-head">⚠ Unverified — check against the PDF</div>
           <ul>
-            {#each transcription.warnings as w}
+            {#each warningsList as w}
               <li>{w}</li>
             {/each}
           </ul>
@@ -201,7 +294,7 @@
           <div class="editor-actions">
             {#if saveError}<span class="hint warn">{saveError}</span>{/if}
             <button class="ghost" onclick={() => (editorOpen = false)}>Cancel</button>
-            <button class="primary" disabled={saving} onclick={saveEdit}>
+            <button class="primary" disabled={saving || !draft.trim()} onclick={saveEdit}>
               {saving ? "Saving…" : "Save & render"}
             </button>
           </div>
@@ -240,15 +333,13 @@
     </div>
   {/if}
 
-  <div class="panes" class:side={layout === "side"}>
-    {#if layout === "pdf"}
-      {@render pdfPane()}
-    {:else if layout === "staff"}
-      {@render staffPane()}
-    {:else}
-      {@render pdfPane()}
-      {@render staffPane()}
-    {/if}
+  <div class="panes" class:side={activeLayout === "side"}>
+    <!-- both panes always mount, one hidden with CSS rather than an {#if} -
+         switching layout used to unmount+remount PdfViewer (re-fetching and
+         re-rendering every page, losing scroll position) and tear down and
+         rebuild alphaTab (stopping playback) -->
+    {@render pdfPane(activeLayout === "staff")}
+    {@render staffPane(activeLayout === "pdf")}
   </div>
 </div>
 
@@ -323,6 +414,7 @@
   }
 
   .panes {
+    position: relative;
     flex: 1;
     min-height: 0;
     display: flex;
@@ -339,6 +431,18 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  /* both panes stay mounted always; the inactive one is pulled out of flow
+     and hidden rather than unmounted, so PdfViewer/TabViewer never get torn
+     down (and reset scroll/playback) on a layout switch. Absolute + inset
+     (not display:none) keeps it sized to the pane's normal footprint, so a
+     PdfViewer mounted while hidden still measures a real width to render at. */
+  .pane.hidden {
+    position: absolute;
+    inset: 0;
+    visibility: hidden;
+    pointer-events: none;
   }
 
   .panes.side .pane + .pane {
