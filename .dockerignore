@@ -3,6 +3,8 @@ config/
 web/node_modules/
 web/dist/
 web/public/alphatab/
+web/public/font/
+web/public/soundfont/
 **/__pycache__/
 .git/
 *.zip

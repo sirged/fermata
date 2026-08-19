@@ -54,13 +54,15 @@
 
   $effect(() => {
     const at = new alphaTab.AlphaTabApi(host, {
+      // worker/audio-worklet URLs are wired up by the @coderline/alphatab-vite
+      // plugin (vite.config.js); fontDirectory/soundFont still need to match
+      // where that plugin copies the assets (site root, see its README).
       core: {
-        scriptFile: "/alphatab/alphaTab.min.js",
-        fontDirectory: "/alphatab/font/",
+        fontDirectory: "/font/",
       },
       player: {
         enablePlayer: true,
-        soundFont: "/alphatab/soundfont/sonivox.sf2",
+        soundFont: "/soundfont/sonivox.sf2",
         scrollElement: scroller,
       },
       display: {
