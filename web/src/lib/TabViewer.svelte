@@ -6,6 +6,7 @@
   let {
     score = null,
     demo = false,
+    tex = null,
     gigMode = false,
     onToggleGig = () => {},
     practiceLabel = null,
@@ -53,6 +54,13 @@
 :2 (0.6 2.5 2.4 0.3 0.2 0.1) :2 (0.6 2.5 2.4 0.3 0.2 0.1)`;
 
   $effect(() => {
+    // a stale error or transport state from a previous load (e.g. a bad
+    // edit) must not linger once a new tex/score/demo load starts - without
+    // this, "Save & render" leaves the old Pause/enabled buttons showing
+    // while the new player is still loading its soundfont
+    loadError = "";
+    playerReady = false;
+    playing = false;
     const at = new alphaTab.AlphaTabApi(host, {
       // worker/audio-worklet URLs are wired up by the @coderline/alphatab-vite
       // plugin (vite.config.js); fontDirectory/soundFont still need to match
@@ -104,6 +112,10 @@
 
     if (demo) {
       at.tex(DEMO_TEX);
+    } else if (tex != null) {
+      // caller supplies alphaTex directly (e.g. a rendered transcription) -
+      // re-runs whenever tex changes, so saving/reverting an edit re-renders
+      at.tex(tex);
     } else if (score) {
       fetch(api.fileUrl(score.id))
         .then((r) => r.arrayBuffer())
