@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from "svelte";
   import * as alphaTab from "@coderline/alphatab";
   import { api } from "./api.js";
 
@@ -11,6 +12,9 @@
   let playing = $state(false);
   let playerReady = $state(false);
   let speed = $state(1);
+  let looping = $state(false);
+  let metronome = $state(false);
+  let countIn = $state(false);
   let loadError = $state("");
 
   const PROFILES = [
@@ -47,7 +51,9 @@
         scrollElement: scroller,
       },
       display: {
-        staveProfile: PROFILE_MAP[profile],
+        // untrack: profile changes are handled imperatively in setProfile;
+        // tracking it here would tear down and recreate the player.
+        staveProfile: PROFILE_MAP[untrack(() => profile)],
         scale: 1,
       },
     });
@@ -83,6 +89,21 @@
     speed = Number(ev.target.value);
     if (atApi) atApi.playbackSpeed = speed;
   }
+
+  function toggleLoop() {
+    looping = !looping;
+    if (atApi) atApi.isLooping = looping;
+  }
+
+  function toggleMetronome() {
+    metronome = !metronome;
+    if (atApi) atApi.metronomeVolume = metronome ? 1 : 0;
+  }
+
+  function toggleCountIn() {
+    countIn = !countIn;
+    if (atApi) atApi.countInVolume = countIn ? 1 : 0;
+  }
 </script>
 
 <div class="wrap">
@@ -103,6 +124,21 @@
         <option value={1}>1×</option>
         <option value={1.25}>1.25×</option>
       </select>
+      <div class="practice">
+        <button
+          class:on={looping}
+          onclick={toggleLoop}
+          title="Loop playback — drag across bars on the score to loop a section"
+        >
+          Loop
+        </button>
+        <button class:on={metronome} onclick={toggleMetronome} title="Metronome click during playback">
+          Metronome
+        </button>
+        <button class:on={countIn} onclick={toggleCountIn} title="Count-in before playback starts">
+          Count-in
+        </button>
+      </div>
     </div>
   </div>
 
@@ -157,6 +193,19 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  .practice {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-left: 8px;
+    border-left: 1px solid var(--line);
+  }
+
+  .practice button.on {
+    color: var(--brass-bright);
+    border-color: var(--brass);
   }
 
   .score-scroll {

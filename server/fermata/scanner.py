@@ -4,7 +4,7 @@ import time
 
 from .config import FILE_TYPES, LIBRARY_DIR
 from .db import connect
-from .metadata import parse_path
+from .metadata import musicxml_info, parse_path
 from .thumbs import generate_pdf_thumb, pdf_info
 
 _state = {
@@ -63,6 +63,14 @@ def _scan() -> None:
             pages, pdf_title, pdf_creator = pdf_info(path)
             generate_pdf_thumb(path, file_hash)
         meta = parse_path(rel, pdf_title, pdf_creator)
+        if file_type == "musicxml":
+            xml_title, xml_composer = musicxml_info(path)
+            if xml_title:
+                meta.title = xml_title
+            if xml_composer:
+                meta.composer = xml_composer
+            # Semantic files always support both display modes.
+            meta.content_kind = "both"
 
         if row:
             conn.execute(

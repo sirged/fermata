@@ -26,7 +26,8 @@ them.
 - **Notation / tab / both** — MusicXML and Guitar Pro files render
   interactively and can be switched between standard notation, tablature, or
   both staves at once, with audio playback, adjustable speed, and a moving
-  cursor.
+  cursor. The built-in synthesizer also drives practice tools: drag-select a
+  passage on the score to loop it, plus metronome and count-in toggles.
 - **Organize** — collections (from your folder layout), free-form tags,
   favorites, content-type labels (notation / tab / both), full-text search.
 - **Upload** — drag files in through the browser; they land in your library
@@ -86,9 +87,12 @@ library is PDF-only so far.
 
 ## Roadmap
 
-- Optical music recognition: optional sidecar to convert engraved PDFs to
-  MusicXML so they gain the notation/tab toggle
-- Setlists and practice sessions
+- **Score creation and editing** — build a staff from scratch in the browser,
+  instrument-agnostic with first-class guitar tablature support
+- **Optical music recognition** — convert engraved PDFs into editable,
+  playable scores
+- **Richer import metadata** — author/title extraction across more formats
+- Setlists and practice sessions with per-piece progress
 - Annotations on PDFs (fingerings, markings)
 - Splitting compilation books into individual pieces
 - Multi-user accounts

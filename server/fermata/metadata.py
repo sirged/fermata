@@ -1,6 +1,8 @@
 import re
+import zipfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 
 @dataclass
@@ -40,6 +42,34 @@ def _clean_pdf_title(pdf_title: str) -> str | None:
     if t and 2 < len(t) < 120 and not _JUNK_TITLE_RE.search(t):
         return t
     return None
+
+
+def musicxml_info(path: Path) -> tuple[str | None, str | None]:
+    """Return (title, composer) from a MusicXML or compressed .mxl file."""
+    try:
+        if path.suffix.lower() == ".mxl":
+            with zipfile.ZipFile(path) as z:
+                names = [
+                    n
+                    for n in z.namelist()
+                    if n.endswith(".xml") and not n.startswith("META-INF")
+                ]
+                if not names:
+                    return None, None
+                root = ET.fromstring(z.read(names[0]))
+        else:
+            root = ET.parse(path).getroot()
+        title = root.findtext("work/work-title") or root.findtext(
+            "movement-title"
+        )
+        composer = None
+        for creator in root.iterfind("identification/creator"):
+            if creator.get("type") in (None, "composer"):
+                composer = (creator.text or "").strip() or None
+                break
+        return (title or "").strip() or None, composer
+    except Exception:
+        return None, None
 
 
 def parse_path(rel_path: str, pdf_title: str | None = None, pdf_creator: str | None = None) -> ScoreMeta:
