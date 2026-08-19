@@ -42,6 +42,10 @@ def _scan() -> None:
         for p in LIBRARY_DIR.rglob("*")
         if p.is_file() and p.suffix.lower() in FILE_TYPES
     ]
+    # Fixed for the whole scan: lets _scan_file tell a genuinely-removed row
+    # (safe to re-link on a hash match) from one whose file just hasn't been
+    # visited yet in this pass.
+    disk_paths = {p.relative_to(LIBRARY_DIR).as_posix() for p in files}
     with _state_lock:
         _state.update(
             total=len(files),
@@ -57,7 +61,7 @@ def _scan() -> None:
     for path in files:
         rel = path.relative_to(LIBRARY_DIR).as_posix()
         try:
-            _scan_file(conn, path, rel, seen_paths)
+            _scan_file(conn, path, rel, seen_paths, disk_paths)
         except OSError as exc:
             # A file can vanish or lock between listing and reading it; skipping
             # keeps the rest of the scan (and the stale-row cleanup) running.
@@ -77,7 +81,7 @@ def _scan() -> None:
     conn.commit()
 
 
-def _scan_file(conn, path, rel: str, seen_paths: set) -> None:
+def _scan_file(conn, path, rel: str, seen_paths: set, disk_paths: set) -> None:
     seen_paths.add(rel)
     stat = path.stat()
     row = conn.execute(
@@ -110,28 +114,69 @@ def _scan_file(conn, path, rel: str, seen_paths: set) -> None:
         with _state_lock:
             _state["updated"] += 1
     else:
-        conn.execute(
-            """INSERT INTO scores
-               (title, composer, collection, series, source, path,
-                file_type, content_kind, pages, hash, size, mtime)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                meta.title,
-                meta.composer,
-                meta.collection,
-                meta.series,
-                meta.source,
-                rel,
-                file_type,
-                meta.content_kind,
-                pages,
-                file_hash,
-                stat.st_size,
-                stat.st_mtime,
-            ),
-        )
-        with _state_lock:
-            _state["added"] += 1
+        # No row at this path. Before treating it as a brand-new file, check
+        # whether it's actually a rename/move of an existing row: same content
+        # hash, and the row's old path is nowhere on disk this scan. Re-linking
+        # by id (instead of delete+insert) keeps practice_sessions attached
+        # (score_id has ON DELETE CASCADE) instead of losing them. Only do
+        # this when exactly one such candidate exists — with two or more
+        # (genuine duplicate content, one copy renamed) there's no way to
+        # know which one moved, so fall back to insert/delete and let the
+        # stale-row cleanup below drop whichever one truly vanished.
+        candidates = [
+            r
+            for r in conn.execute(
+                "SELECT id, path FROM scores WHERE hash = ?", (file_hash,)
+            ).fetchall()
+            if r["path"] not in disk_paths
+        ]
+        if len(candidates) == 1:
+            old_id = candidates[0]["id"]
+            conn.execute(
+                """UPDATE scores SET title=?, composer=?, collection=?, series=?, source=?,
+                   path=?, file_type=?, content_kind=?, pages=?, hash=?, size=?, mtime=?
+                   WHERE id=?""",
+                (
+                    meta.title,
+                    meta.composer,
+                    meta.collection,
+                    meta.series,
+                    meta.source,
+                    rel,
+                    file_type,
+                    meta.content_kind,
+                    pages,
+                    file_hash,
+                    stat.st_size,
+                    stat.st_mtime,
+                    old_id,
+                ),
+            )
+            with _state_lock:
+                _state["updated"] += 1
+        else:
+            conn.execute(
+                """INSERT INTO scores
+                   (title, composer, collection, series, source, path,
+                    file_type, content_kind, pages, hash, size, mtime)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    meta.title,
+                    meta.composer,
+                    meta.collection,
+                    meta.series,
+                    meta.source,
+                    rel,
+                    file_type,
+                    meta.content_kind,
+                    pages,
+                    file_hash,
+                    stat.st_size,
+                    stat.st_mtime,
+                ),
+            )
+            with _state_lock:
+                _state["added"] += 1
     conn.commit()
 
 

@@ -20,6 +20,14 @@ export const api = {
   collections: () => fetch("/api/collections").then(j),
   duplicates: () => fetch("/api/duplicates").then(j),
   tags: () => fetch("/api/tags").then(j),
+  practice: (id) => fetch(`/api/scores/${id}/practice`).then(j),
+  logPractice: (id, body) =>
+    fetch(`/api/scores/${id}/practice`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(j),
+  practiceSummary: () => fetch("/api/practice/summary").then(j),
   scan: () => fetch("/api/scan", { method: "POST" }).then(j),
   scanStatus: () => fetch("/api/scan/status").then(j),
   upload: (file, folder = "Uploads") => {
