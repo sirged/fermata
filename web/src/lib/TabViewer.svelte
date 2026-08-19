@@ -64,6 +64,16 @@
       },
     });
 
+    // A new player starts at its own defaults, so carry the practice settings
+    // over; switching scores reuses this component and would silently drop them.
+    // untrack keeps the toggles from tearing the player down when they change.
+    untrack(() => {
+      at.isLooping = looping;
+      at.playbackSpeed = speed;
+      at.metronomeVolume = metronome ? 1 : 0;
+      at.countInVolume = countIn ? 1 : 0;
+    });
+
     at.playerReady.on(() => (playerReady = true));
     at.playerStateChanged.on((e) => (playing = e.state === 1));
     at.error.on((e) => {
@@ -112,6 +122,8 @@
   function toggleLoop() {
     looping = !looping;
     if (atApi) atApi.isLooping = looping;
+    // the ladder advances on loop completions, so it cannot run unlooped
+    if (!looping) ladder = false;
   }
 
   function toggleMetronome() {
@@ -132,6 +144,8 @@
   function toggleLadder() {
     ladder = !ladder;
     if (!ladder) return;
+    // a target at or below the start would step downwards and quit at once
+    if (ladderTarget <= ladderStart) ladderTarget = Math.min(200, ladderStart + ladderStep);
     looping = true;
     speed = ladderStart / 100;
     if (atApi) {
@@ -141,7 +155,9 @@
   }
 
   function setLadderStart(ev) {
-    ladderStart = clamp(Number(ev.target.value), 10, 100);
+    // 13 is the floor the synth itself enforces; lower values would play
+    // faster than the readout claims
+    ladderStart = clamp(Number(ev.target.value), 13, 100);
   }
 
   function setLadderStep(ev) {
@@ -199,7 +215,7 @@
           <div class="ladder-controls">
             <label>
               Start
-              <input type="number" min="10" max="100" step="1" value={ladderStart} onchange={setLadderStart} />
+              <input type="number" min="13" max="100" step="1" value={ladderStart} onchange={setLadderStart} />
             </label>
             <label>
               Step
