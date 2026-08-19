@@ -1,7 +1,47 @@
+import json
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
 import fitz
 import pytest
 
 from fermata import tabextract
+
+
+def _parse_with_alphatab(tex: str) -> dict:
+    """Parse `tex` with the real alphaTab JS importer the web player uses -
+    not a Python re-implementation of alphaTex's grammar - via
+    tools/tab_extract/verify_tex.mjs. This is the actual regression check
+    for the dotted-duration bug that blocked this PR: a duration code with
+    a trailing dot (":8.") looks like plausible alphaTex but alphaTab's
+    parser rejects it outright; the correct spelling is a `{d}`/`{dd}` beat
+    effect. Skips (rather than fails) when node or the web project's
+    installed alphaTab build aren't available, since neither is present in
+    the production server's own runtime image.
+    """
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    repo_root = Path(__file__).resolve().parents[2]
+    alphatab = repo_root / "web" / "node_modules" / "@coderline" / "alphatab" / "dist" / "alphaTab.mjs"
+    if not alphatab.is_file():
+        pytest.skip("alphaTab.mjs not found - run `npm ci` in web/ first")
+    script = Path(__file__).resolve().parents[1] / "tools" / "tab_extract" / "verify_tex.mjs"
+
+    with tempfile.NamedTemporaryFile("w", suffix=".tex", delete=False, encoding="utf-8") as f:
+        f.write(tex)
+        tex_path = f.name
+    try:
+        proc = subprocess.run(
+            ["node", str(script), str(alphatab), tex_path],
+            capture_output=True, text=True, timeout=60,
+        )
+    finally:
+        Path(tex_path).unlink(missing_ok=True)
+
+    assert proc.returncode == 0, f"alphaTex failed to parse:\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
+    return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
 def _make_tab_pdf(path, pages):
@@ -61,7 +101,12 @@ def test_finale_tab_pdf_extracts_notes_and_bars(zanarkand_pdf):
     # the reverse of result.tuning (which stays low-to-high).
     assert '\\tuning E4 B3 G3 D3 A2 D2' in result.alphatex
     assert '\\ts 3 4' in result.alphatex
-    assert any("low confidence" in w for w in result.warnings)
+    # Rhythm was decoded from the engraving's own glyphs for this file (see
+    # test_glyph_decoded_time_signature_and_dots_without_override) - the old
+    # unconditional "inferred from spacing... low confidence" claim would
+    # now be false and must not be present.
+    assert not any("inferred from horizontal spacing" in w for w in result.warnings)
+    assert result.confidence["rhythm"].startswith("high")
 
 
 def test_finale_tab_pdf_analyze(zanarkand_pdf):
@@ -73,15 +118,36 @@ def test_finale_tab_pdf_analyze(zanarkand_pdf):
     assert info["page_count"] == 2
 
 
-def test_finale_tab_pdf_without_ts_override_still_extracts(zanarkand_pdf):
-    # Auto time-signature detection is a known-broken heuristic (see module
-    # docstring) - without an override the extractor must fall back to an
-    # assumed 4/4 and say so, not fail or silently mis-report success.
+def test_glyph_decoded_time_signature_and_dots_without_override(zanarkand_pdf):
+    """The engraved time signature (3/4 for this piece) and dotted note
+    durations must be read straight from the score's own notehead/flag/dot
+    glyphs - no manual time_signature override, and no reliance on the
+    old plain-text digit scan (which practically never finds a time
+    signature - see module docstring)."""
     result = tabextract.extract(zanarkand_pdf)
     assert result.extractable
-    assert result.time_signature == (4, 4)
-    assert result.time_signature_source == "not detected (assumed 4/4)"
-    assert any("time signature not detected" in w for w in result.warnings)
+    assert result.time_signature == (3, 4)
+    assert result.time_signature_source == "glyph-decoded"
+    assert not any("time signature not detected" in w for w in result.warnings)
+    assert "{d}" in result.alphatex or "{dd}" in result.alphatex
+
+
+def test_glyph_decoded_alphatex_parses_with_dotted_beats(zanarkand_pdf):
+    """The emitted alphaTex must actually parse with alphaTab, and the
+    dotted-duration beat effects must survive the round trip as real dotted
+    beats (not just a `{d}` substring that happens to be present but sits
+    somewhere a parser chokes on). Also confirms tuning is emitted high
+    string first: the piece is Drop D, and its first written note (`0.1`)
+    must sound MIDI 64 (high E untouched by the drop), not 38/40 (the
+    mirrored low string a low-to-high tuning emission would produce)."""
+    result = tabextract.extract(zanarkand_pdf, time_signature=(3, 4))
+    assert result.extractable
+    parsed = _parse_with_alphatab(result.alphatex)
+    assert parsed["bars"] == result.bars
+    assert parsed["beats"] == result.beats
+    assert parsed["notes"] == result.notes
+    assert parsed["dottedBeats"] > 0
+    assert parsed["firstNoteMidi"] == 64
 
 
 def test_notation_only_pdf_has_no_tab_staves(tarrega_pdf):

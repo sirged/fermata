@@ -3,7 +3,13 @@ Decode note durations and time signature from vector-engraved PDF pages by
 identifying the music-font glyphs actually used for noteheads, flags, rests,
 dots and time-signature digits - instead of guessing from x-spacing.
 
-How this works (see the accompanying report for full validation detail):
+Used by tabextract.extract() as the primary rhythm/time-signature source
+when a tab staff is paired with a standard-notation staff drawn in a
+recognised, TrueType/OpenType-embedded music font; tabextract falls back to
+its own spacing heuristic when that isn't the case (raster pages, CFF-flavor
+font embeddings, or a font family this module doesn't have a glyph map for).
+
+How this works (full validation detail):
 
   Finale exports embed a font called "Maestro" as a TrueType subset. The
   glyph *names* are stripped (post table format 3, "glyph00001" etc.) so
@@ -56,14 +62,9 @@ import io
 import math
 import collections
 import weakref
-from pathlib import Path
 
 import fitz  # pymupdf
-# fontTools is a tool-only dependency (not needed by the server itself) -
-# install with `pip install "fermata[tools]"` from server/, or just
-# `pip install fonttools`. See server/pyproject.toml's optional
-# [project.optional-dependencies] "tools" group.
-from fontTools.ttLib import TTFont
+from fontTools.ttLib import TTFont  # required runtime dependency - see pyproject.toml
 
 
 # ---------------------------------------------------------------------------
@@ -759,62 +760,3 @@ def decode_time_signature(page, staff_top, staff_bottom, staff_x0):
         "stacked digit glyphs (multi-digit aware)",
     )
 
-
-# ---------------------------------------------------------------------------
-# Convenience: full-page decode combining with a tab staff's note columns
-# ---------------------------------------------------------------------------
-
-def decode_page(pdf_path, page_no=0):
-    doc = fitz.open(pdf_path)
-    page = doc[page_no]
-
-    import sys
-    # staff detection lives in extract_tab.py, looked for next to this file
-    # first (production layout) and falling back to the sibling prototype
-    # directory used during development.
-    here = Path(__file__).parent
-    for candidate in (here, here.parent / "tabextract"):
-        if (candidate / "extract_tab.py").exists():
-            sys.path.insert(0, str(candidate))
-            break
-    import extract_tab as et
-
-    staves, anomalies = et.detect_staves(page)
-    std_staves = [s for s in staves if s.kind == "standard"]
-    tab_staves = [s for s in staves if s.kind == "tab"]
-
-    result = {"path": str(pdf_path), "page": page_no, "systems": []}
-    if not std_staves:
-        result["error"] = "no standard staff found - rhythm glyphs live on the standard staff"
-        return result
-
-    for si, staff in enumerate(sorted(std_staves, key=lambda s: s.top)):
-        ts, ts_reason = decode_time_signature(page, staff.top, staff.bottom, staff.x0)
-        notes, stats = decode_note_events(
-            page, staff.top, staff.bottom, staff.x0, staff.x1, staff.line_ys
-        )
-        result["systems"].append({
-            "staff_index": si,
-            "staff_top": staff.top,
-            "time_signature": ts,
-            "time_signature_reason": ts_reason,
-            "notes": [
-                {
-                    "x": round(n.x, 1), "duration": n.duration_code, "dots": n.dotted,
-                    "is_rest": n.is_rest, "category": n.category, "quarter_units": round(n.quarter_units, 4),
-                    "tied_next": n.tied_next,
-                }
-                for n in notes
-            ],
-            "stats": stats,
-        })
-    return result
-
-
-if __name__ == "__main__":
-    import sys
-    import json
-    pdf = sys.argv[1]
-    page_no = int(sys.argv[2]) if len(sys.argv) > 2 else 0
-    out = decode_page(pdf, page_no)
-    print(json.dumps(out, indent=2)[:4000])

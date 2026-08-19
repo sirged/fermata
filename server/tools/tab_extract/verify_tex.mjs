@@ -1,17 +1,24 @@
-// Regression check for extract_tab.py's alphaTex output: parse every
-// generated .tex file with the SAME alphaTab importer the web player
+// Regression check for tabextract's alphaTex output: parse a .tex file (or
+// a whole directory of them) with the SAME alphaTab importer the web player
 // actually uses, so a change that produces syntactically-plausible-looking
-// but unparseable alphaTex (e.g. the dotted-duration bug this check was
-// added for - see extract_tab.py's _fmt_beat) gets caught immediately
-// instead of only surfacing later when a real page fails to load.
+// but unparseable alphaTex (e.g. a dotted-duration bug where ":8." reaches
+// the importer instead of the valid ":8 ...{d}" beat-effect form) gets
+// caught immediately instead of only surfacing later when a real page fails
+// to load. This can't be done from the Python test suite - it needs the
+// real JS importer, not a re-implementation of alphaTex's grammar.
 //
 // Usage:
 //   node verify_tex.mjs <path-to-alphaTab.mjs> <tex-file-or-glob-dir> [...more]
 //
 // Each argument after the alphaTab path is either a .tex file or a
 // directory (all *.tex files directly inside it are checked). Prints one
-// JSON line per file: {file, ok, bars, beats, notes} or {file, ok: false,
-// error}. Exits 1 if any file failed to parse.
+// JSON line per file: {file, ok, bars, beats, notes, dottedBeats,
+// firstNoteMidi} or {file, ok: false, error}. Exits 1 if any file failed to
+// parse. dottedBeats and firstNoteMidi round out the same two things a
+// syntax-only check can't catch: that a `{d}`/`{dd}` beat effect actually
+// produced a dotted beat rather than just parsing without error, and that
+// tuning was emitted in the string order alphaTex expects (a mirrored
+// \tuning line parses fine but gives every note the wrong pitch).
 //
 // Example (from this directory, against the web project's own alphaTab):
 //   node verify_tex.mjs ../../../web/node_modules/@coderline/alphatab/dist/alphaTab.mjs out
@@ -51,19 +58,26 @@ async function main() {
             importer.logErrors = false;
             importer.initFromString(tex, new Settings());
             const score = importer.readScore();
-            let bars = 0, beats = 0, notes = 0;
+            let bars = 0, beats = 0, notes = 0, dottedBeats = 0;
+            let firstNoteMidi = null;
             for (const track of score.tracks) {
                 for (const staff of track.staves) {
                     bars = Math.max(bars, staff.bars.length);
                     for (const bar of staff.bars) {
                         for (const voice of bar.voices) {
-                            beats += voice.beats.length;
-                            for (const beat of voice.beats) notes += beat.notes.length;
+                            for (const beat of voice.beats) {
+                                beats += 1;
+                                if (beat.dots > 0) dottedBeats += 1;
+                                for (const note of beat.notes) {
+                                    notes += 1;
+                                    if (firstNoteMidi === null) firstNoteMidi = note.realValue;
+                                }
+                            }
                         }
                     }
                 }
             }
-            Object.assign(result, { ok: true, bars, beats, notes });
+            Object.assign(result, { ok: true, bars, beats, notes, dottedBeats, firstNoteMidi });
         } catch (e) {
             anyFailed = true;
             Object.assign(result, { ok: false, error: String(e && e.stack ? e.stack : e) });

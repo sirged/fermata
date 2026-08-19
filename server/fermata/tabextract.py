@@ -8,15 +8,24 @@ not used as a filter, since different engravers (Finale, Sibelius, Opus)
 pick different fonts for fret numbers. Barlines come from vertical line
 primitives spanning a staff's height.
 
-Rhythm is the weak link: durations are inferred from the horizontal spacing
-between note columns, normalized to a measure's quarter-note budget and
-snapped to the nearest plain duration. There is no dotted-note or tie model.
-Time signatures usually can't be read either - the glyphs live inside
-subsetted music fonts (Maestro, Opus, ...) at remapped codepoints that don't
-correspond to their visual meaning. Both limitations are surfaced through
-ExtractionResult.warnings rather than papered over; callers should treat
-durations as low confidence throughout and offer a manual time-signature
-override (see extract()'s time_signature argument).
+Rhythm and time signature: when a tab staff is paired with a standard-
+notation staff above it (score+tab layout) drawn in a music font
+glyph_rhythm knows how to read, durations and the time signature are decoded
+directly from the engraved notehead/stem/flag/beam/dot and digit glyphs
+(see glyph_rhythm.py) - not guessed. That covers the common case (Finale
+Maestro and Sibelius Opus exports, the bulk of the library).
+
+Where glyph decoding isn't possible - a raster page, a CFF-flavor font
+embedding, an unrecognised font family, or a tab staff with no standard
+staff above it - rhythm falls back to a weaker heuristic: durations inferred
+from the horizontal spacing between note columns, normalized to a measure's
+quarter-note budget and snapped to the nearest plain duration (no dotted
+notes or ties modeled), and the time signature falls back to a best-effort
+scan for stacked plain-text digits that frequently fails outright. Which
+path was used, and any resulting gaps, are surfaced through
+ExtractionResult.warnings and .confidence rather than papered over; callers
+can also offer a manual time-signature override (see extract()'s
+time_signature argument) for when auto-detection comes up empty.
 """
 
 from __future__ import annotations
@@ -27,6 +36,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import fitz  # PyMuPDF
+
+from . import glyph_rhythm as glyph
 
 DEFAULT_TUNING = ["E2", "A2", "D3", "G3", "B3", "E4"]
 DROP_D_TUNING = ["D2", "A2", "D3", "G3", "B3", "E4"]
@@ -496,6 +507,111 @@ def _infer_measure_rhythm(columns_in_measure, measure_quarter_len, bar_end_x):
 
 
 # ---------------------------------------------------------------------------
+# Rhythm decode from glyphs (high confidence - see glyph_rhythm.py)
+# ---------------------------------------------------------------------------
+
+
+def _pair_standard_staff(tab_staff, std_staves):
+    """The standard-notation staff for a tab staff is the nearest standard
+    staff directly above it (score+tab layouts always draw notation above
+    its own tab line)."""
+    above = [s for s in std_staves if s.bottom <= tab_staff.top + 2]
+    if not above:
+        return None
+    return min(above, key=lambda s: tab_staff.top - s.bottom)
+
+
+def _cluster_pitched_glyph_events(events, cluster_x_tol=1.5):
+    """Group glyph-decoded pitched note events sharing (almost) the same x
+    into one cluster - the members of a chord (chord noteheads land at
+    identical x, a beat apart from neighbors by a full note-spacing), or of
+    two overlapping voices notated at the same onset. A cluster becomes ONE
+    beat, not one beat per member: matching every member independently
+    against tab columns let a chord's later noteheads each go hunting for
+    their own "nearest unused column" once the first member had already
+    claimed the right one, silently stealing a neighboring beat's column in
+    a dense passage."""
+    events = sorted(events, key=lambda n: n.x)
+    clusters = []
+    for ev in events:
+        if clusters and abs(ev.x - clusters[-1][0].x) <= cluster_x_tol:
+            clusters[-1].append(ev)
+        else:
+            clusters.append([ev])
+    return clusters
+
+
+def _cluster_glyph_duration(cluster):
+    """Pick one representative (duration_code, dots) for a cluster. Members
+    usually agree (chord noteheads share one stem, so one duration); when
+    they genuinely don't (overlapping voices with different notated values
+    at the same onset), take the most common reading, breaking ties toward
+    the longer value - true polyphony isn't modeled here (one beat, one
+    duration), so when two voices genuinely disagree something is picked
+    rather than fragmenting the beat."""
+    counts = collections.Counter((ev.duration_code, ev.dotted) for ev in cluster)
+    return max(counts.items(), key=lambda kv: (kv[1], -kv[0][0]))[0]
+
+
+def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, x_tol):
+    """Build one measure's beats from glyph-decoded note/rest events on the
+    tab staff's paired standard-notation staff, matching each event to the
+    tab column at (approximately) the same x. Every rest becomes its own
+    beat with no tab column consumed; a tab column with no matching glyph
+    event within x_tol falls back to an eighth-note placeholder (counted in
+    the returned unmatched-column total rather than silently trusted - see
+    _extract's unmatched-column warning).
+
+    Returns (beats, unmatched_columns, unmatched_glyph_notes) where beats is
+    a list of (duration_code, dots, notes) triples in x order, ready for
+    _fmt_beat; unmatched_columns is how many tab columns had no glyph note
+    within x_tol; unmatched_glyph_notes is how many pitched glyph notes had
+    no tab column to match (expected to be rare - every played tab note
+    should have a fret number).
+    """
+    measure_events = [n for n in note_events if m_lo <= n.x < m_hi]
+    rest_events = [n for n in measure_events if n.is_rest]
+    pitched_clusters = _cluster_pitched_glyph_events([n for n in measure_events if not n.is_rest])
+
+    cols_sorted = sorted(m_cols, key=lambda c: c["x"])
+    used = [False] * len(cols_sorted)
+
+    tagged = []  # (x, duration_code, dots, notes)
+    unmatched_glyph_notes = 0
+
+    for ev in rest_events:
+        tagged.append((ev.x, ev.duration_code, ev.dotted, []))
+
+    for cluster in pitched_clusters:
+        cx = sum(ev.x for ev in cluster) / len(cluster)
+        code, dots = _cluster_glyph_duration(cluster)
+        best_i, best_d = None, None
+        for i, col in enumerate(cols_sorted):
+            if used[i]:
+                continue
+            d = abs(col["xc"] - cx)
+            if d <= x_tol and (best_d is None or d < best_d):
+                best_i, best_d = i, d
+        if best_i is None:
+            # a pitched glyph cluster with no matching tab digit column - can
+            # happen on decode noise; nothing to emit a fret number for, so
+            # skip rather than fabricate one.
+            unmatched_glyph_notes += len(cluster)
+            continue
+        used[best_i] = True
+        tagged.append((cx, code, dots, cols_sorted[best_i]["notes"]))
+
+    unmatched_columns = 0
+    for i, col in enumerate(cols_sorted):
+        if not used[i]:
+            unmatched_columns += 1
+            tagged.append((col["x"], 8, 0, col["notes"]))  # conservative fallback
+
+    tagged.sort(key=lambda t: t[0])
+    return [(code, dots, notes) for _, code, dots, notes in tagged], unmatched_columns, unmatched_glyph_notes
+
+
+# ---------------------------------------------------------------------------
 # alphaTex emission
 # ---------------------------------------------------------------------------
 
@@ -504,17 +620,22 @@ def _fmt_note(string, fret):
     return f"{fret}.{string}"
 
 
-def _fmt_beat(duration_code, notes):
-    # An empty notes list marks a rest bar (see _extract's rest-only-measure
-    # handling) - alphaTex spells a rest beat as the bare identifier "r".
+def _fmt_beat(duration_code, dots, notes):
+    # An empty notes list marks a rest beat - alphaTex spells one as the
+    # bare identifier "r". A dotted duration is NOT valid alphaTex as a
+    # trailing dot on the duration code (":8." / ":8.." fail to parse) - it
+    # is a beat effect appended to the note/chord body instead
+    # (":8 3.4{d}", or with a chord ":2 (3.4 5.3){d}").
     if not notes:
-        return f":{duration_code} r"
-    body = (
-        " ".join(_fmt_note(s, f) for s, f in notes)
-        if len(notes) == 1
-        else "(" + " ".join(_fmt_note(s, f) for s, f in notes) + ")"
-    )
-    return f":{duration_code} {body}"
+        body = "r"
+    else:
+        body = (
+            " ".join(_fmt_note(s, f) for s, f in notes)
+            if len(notes) == 1
+            else "(" + " ".join(_fmt_note(s, f) for s, f in notes) + ")"
+        )
+    dot_effect = "{d}" if dots == 1 else "{dd}" if dots == 2 else ""
+    return f":{duration_code} {body}{dot_effect}"
 
 
 def _escape_tex_string(s: str) -> str:
@@ -525,7 +646,7 @@ def _escape_tex_string(s: str) -> str:
 
 
 def _build_alphatex(title, tempo, tuning, ts, measures):
-    """measures: list of list of (duration_code, notes) beats."""
+    """measures: list of list of (duration_code, dots, notes) beats."""
     lines = [f'\\title "{_escape_tex_string(title)}"']
     if tempo:
         lines.append(f"\\tempo {tempo}")
@@ -542,7 +663,7 @@ def _build_alphatex(title, tempo, tuning, ts, measures):
     lines.append(".")
     body_lines = []
     for measure in measures:
-        beats = " ".join(_fmt_beat(dur, notes) for dur, notes in measure)
+        beats = " ".join(_fmt_beat(dur, dots, notes) for dur, dots, notes in measure)
         body_lines.append(beats + " |")
     lines.append("\n".join(body_lines))
     return "\n".join(lines)
@@ -666,7 +787,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     tab_count = 0
     std_count = 0
     vector_pages = 0
-    pages_with_tab = []  # (page, tab_staves) in page order
+    pages_with_tab = []  # (page, tab_staves, std_staves) in page order
 
     # Pass 1: staff census plus tempo/tuning/time-signature hints, cheapest
     # first so we know up front whether there's anything worth extracting.
@@ -690,10 +811,22 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         std_count += len(std_staves)
 
         if ts is None and std_staves:
-            detected = _detect_time_signature(page, std_staves[0])
-            if detected:
-                ts = detected
-                ts_source = "auto-detected"
+            # Try the glyph decoder first - it reads the actual printed
+            # time-signature digits and is right whenever it succeeds at
+            # all. Only fall back to the plain-text digit scan (which
+            # frequently fails outright - see module docstring) when no
+            # system on this page has decodable time-signature glyphs.
+            for s in std_staves:
+                glyph_ts, _reason = glyph.decode_time_signature(page, s.top, s.bottom, s.x0)
+                if glyph_ts is not None:
+                    ts = glyph_ts
+                    ts_source = "glyph-decoded"
+                    break
+            if ts is None:
+                detected = _detect_time_signature(page, std_staves[0])
+                if detected:
+                    ts = detected
+                    ts_source = "auto-detected"
 
         if tempo is None:
             q_match = re.search(r"=\s*(\d{2,3})", text)
@@ -705,7 +838,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             tuning = list(DROP_D_TUNING)
 
         if tab_staves:
-            pages_with_tab.append((page, tab_staves))
+            pages_with_tab.append((page, tab_staves, std_staves))
 
     if vector_pages == 0:
         return ExtractionResult(
@@ -733,25 +866,32 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             "codepoints; assumed 4/4 for bar/beat grouping, pass time_signature to override"
         )
 
-    warnings.append(
-        "note durations are inferred from horizontal spacing between columns, not decoded from "
-        "the score - treat as low confidence (no dotted notes or ties modeled)"
-    )
-
     measure_quarter_len = _measure_quarter_length(ts)
 
     # Pass 2: real extraction, now that ts/tempo/tuning are settled.
-    all_measures = []  # list of measures, each a list of (duration_code, notes) beats
+    all_measures = []  # list of measures, each a list of (duration_code, dots, notes) beats
     unmatched_total = 0
     rejected_merges_total = 0
     suspicious_frets_total = 0
-    for page, tab_staves in pages_with_tab:
+    # How many tab staves' rhythm came from the glyph decoder vs. the
+    # spacing heuristic - drives which rhythm warning/confidence gets
+    # reported below, so it reflects what was actually used, not a
+    # blanket claim either way.
+    staves_glyph_decoded = 0
+    staves_fallback = 0
+    unmatched_columns_glyph = 0
+    unmatched_glyph_notes_total = 0
+    for page, tab_staves, std_staves in pages_with_tab:
         tokens = _extract_digit_tokens(page)
         by_staff, unmatched = _assign_tokens_to_tab_staves(tokens, tab_staves)
         unmatched_total += len(unmatched)
         # Computed once per page and reused for every staff on it - see
         # _detect_barlines docstring.
         vseg = _vertical_segments(page)
+        # Glyph note events are decoded once per standard staff and reused
+        # by every tab staff paired to it (a page can have more than one
+        # tab staff per system, e.g. lead + bass).
+        glyph_notes_by_std = {}
         for si, staff in enumerate(tab_staves):
             toks = by_staff.get(si, [])
             if not toks:
@@ -773,20 +913,110 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                     measure_idx += 1
                 measures_for_staff[measure_idx].append(col)
 
+            std_staff = _pair_standard_staff(staff, std_staves)
+            note_events = None
+            if std_staff is not None:
+                if id(std_staff) not in glyph_notes_by_std:
+                    glyph_notes_by_std[id(std_staff)], _stats = glyph.decode_note_events(
+                        page, std_staff.top, std_staff.bottom, std_staff.x0, std_staff.x1, std_staff.line_ys
+                    )
+                note_events = glyph_notes_by_std[id(std_staff)]
+
+            # Glyph decoding is only actually usable when it found real
+            # events to work with - an empty list means no paired standard
+            # staff, a raster page, a CFF-embedded music font (not covered
+            # by glyph_rhythm), or a font family it doesn't have a glyph
+            # map for. Any of those fall back to the spacing heuristic.
+            glyph_ok = bool(note_events)
+            if glyph_ok:
+                staves_glyph_decoded += 1
+                # col["x"] is a fret digit's LEFT edge; glyph note events'
+                # x is the notehead bbox CENTER - comparing them directly
+                # is a systematic offset of about half a digit's width,
+                # enough to pick the wrong neighbor in a dense passage.
+                # Approximate each column's center with this staff's own
+                # measured average digit width.
+                avg_digit_w = (sum(t.width for t in toks) / len(toks)) if toks else 5.0
+                for col in columns:
+                    col["xc"] = col["x"] + avg_digit_w / 2
+                # Two staff-line-spacings is comfortably wider than normal
+                # engraving jitter between a notehead and its tab digit,
+                # but tight enough to actually reject a mismatch in a
+                # dense passage.
+                x_tol = staff.spacing * 2.5
+            else:
+                staves_fallback += 1
+
             for i, m_cols in enumerate(measures_for_staff):
-                bar_end_x = bounds[i + 1]
+                m_lo, m_hi = bounds[i], bounds[i + 1]
+                if glyph_ok:
+                    beats, unmatched_cols, unmatched_notes = _build_measure_beats_glyph(
+                        m_cols, m_lo, m_hi, note_events, x_tol
+                    )
+                    unmatched_columns_glyph += unmatched_cols
+                    unmatched_glyph_notes_total += unmatched_notes
+                    if not beats:
+                        # Nothing decoded and no tab columns either - still
+                        # emit an explicit rest bar rather than dropping the
+                        # measure (see the non-glyph branch below for why).
+                        beats = [(_snap_duration(measure_quarter_len), 0, [])]
+                    all_measures.append(beats)
+                    continue
                 if not m_cols:
                     # No digit columns landed in this bar - emit an explicit
                     # rest bar instead of dropping it. Skipping it entirely
                     # would omit its "|" separator and shift every later
                     # bar's number one position earlier than the PDF, which
                     # breaks side-by-side comparison against the original.
-                    all_measures.append([(_snap_duration(measure_quarter_len), [])])
+                    all_measures.append([(_snap_duration(measure_quarter_len), 0, [])])
                     continue
-                durations_q = _infer_measure_rhythm(m_cols, measure_quarter_len, bar_end_x)
-                beats = [(_snap_duration(dq), col["notes"]) for col, dq in zip(m_cols, durations_q)]
+                durations_q = _infer_measure_rhythm(m_cols, measure_quarter_len, m_hi)
+                beats = [(_snap_duration(dq), 0, col["notes"]) for col, dq in zip(m_cols, durations_q)]
                 all_measures.append(beats)
 
+    # Rhythm warning/confidence reflects what was actually used across the
+    # document, not a blanket claim either way - see the counts above.
+    if staves_glyph_decoded and not staves_fallback:
+        warnings.append(
+            "tuplets (triplets and similar) are not detected - a note written inside a tuplet "
+            "will show its plain written duration rather than the shortened tuplet duration"
+        )
+        warnings.append(
+            "tie detection is low confidence - some tied notes may show up as separately "
+            "re-struck notes instead of one held note"
+        )
+    elif staves_glyph_decoded and staves_fallback:
+        warnings.append(
+            f"durations were read from the engraved notation for {staves_glyph_decoded} staff "
+            f"system(s); {staves_fallback} staff system(s) had no matching notation staff to read "
+            "and use a rougher estimate from note spacing instead - treat those sections as low "
+            "confidence"
+        )
+        warnings.append(
+            "tuplets (triplets and similar) are not detected in the sections read from notation - "
+            "a note written inside a tuplet will show its plain written duration"
+        )
+        warnings.append(
+            "tie detection is low confidence in the sections read from notation - some tied notes "
+            "may show up as separately re-struck notes instead of one held note"
+        )
+    else:
+        warnings.append(
+            "note durations are inferred from horizontal spacing between columns, not decoded from "
+            "the score - treat as low confidence (no dotted notes or ties modeled)"
+        )
+
+    if unmatched_columns_glyph:
+        warnings.append(
+            f"{unmatched_columns_glyph} fret number(s) could not be matched to a note in the "
+            "engraved notation and got an estimated duration instead - treat those specific notes "
+            "as low confidence"
+        )
+    if unmatched_glyph_notes_total:
+        warnings.append(
+            f"{unmatched_glyph_notes_total} note(s) read from the engraved notation had no "
+            "matching fret number and were dropped from the tab"
+        )
     if unmatched_total:
         warnings.append(
             f"{unmatched_total} digit token(s) near a tab staff could not be assigned to a string"
@@ -820,13 +1050,27 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     title = Path(pdf_path).stem
     alphatex = _build_alphatex(title, tempo, tuning, ts, all_measures)
     beats_total = sum(len(m) for m in all_measures)
-    notes_total = sum(len(notes) for m in all_measures for _, notes in m)
+    notes_total = sum(len(notes) for m in all_measures for _, _, notes in m)
+
+    if staves_glyph_decoded and not staves_fallback:
+        rhythm_confidence = (
+            "high - decoded directly from the notehead/stem/flag/beam/dot glyphs in the score's "
+            "own engraving"
+        )
+    elif staves_glyph_decoded and staves_fallback:
+        rhythm_confidence = (
+            "mixed - decoded from the score's engraving where a standard-notation staff was "
+            "paired with the tab staff; a low-confidence spacing estimate elsewhere"
+        )
+    else:
+        rhythm_confidence = "low - inferred from note spacing only, no dotted notes or ties modeled"
 
     confidence = {
         "frets": "high - read directly from vector text spans positioned against detected tab staff lines",
-        "rhythm": "low - inferred from note spacing only, no dotted notes or ties modeled",
+        "rhythm": rhythm_confidence,
         "time_signature": {
             "manual override": "n/a - caller supplied",
+            "glyph-decoded": "high - read directly from the time-signature digit glyphs printed on the score",
             "auto-detected": "medium - read from page text",
         }.get(ts_source, "low - not detected, assumed 4/4"),
     }
