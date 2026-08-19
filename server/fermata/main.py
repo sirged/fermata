@@ -25,8 +25,6 @@ app.include_router(router)
 if WEB_DIST and Path(WEB_DIST).is_dir():
     dist = Path(WEB_DIST)
     app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
-    if (dist / "alphatab").is_dir():
-        app.mount("/alphatab", StaticFiles(directory=dist / "alphatab"), name="alphatab")
 
     @app.get("/{full_path:path}")
     @app.head("/{full_path:path}")

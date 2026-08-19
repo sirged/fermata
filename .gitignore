@@ -14,7 +14,8 @@ dist/
 # node / frontend
 node_modules/
 web/dist/
-web/public/alphatab/
+web/public/font/
+web/public/soundfont/
 
 # editors / os
 .DS_Store
