@@ -40,4 +40,18 @@ export const api = {
   },
   fileUrl: (id) => `/api/scores/${id}/file`,
   thumbUrl: (id) => `/api/scores/${id}/thumb`,
+  transcription: (id) => fetch(`/api/scores/${id}/transcription`).then(j),
+  transcribe: (id, body) =>
+    fetch(`/api/scores/${id}/transcribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    }).then(j),
+  saveTranscription: (id, content) =>
+    fetch(`/api/scores/${id}/transcription`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    }).then(j),
+  transcriptionAnalysis: (id) => fetch(`/api/scores/${id}/transcription/analysis`).then(j),
 };
