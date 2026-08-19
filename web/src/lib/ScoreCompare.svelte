@@ -259,13 +259,14 @@
           <h3>No staff transcription yet</h3>
           <p>
             Fermata can pull the guitar tab out of this PDF and render it as a playable,
-            editable staff. Fret and string extraction is accurate, but the rhythm and time
-            signature are guessed from spacing on the page — treat the staff as a draft to
-            check against the PDF, not a verified score.
+            editable staff. Fret and string extraction is accurate; how much of the rhythm
+            can be recovered depends on how the PDF was engraved, and anything left
+            uncertain is listed alongside the finished staff. Check it against the PDF
+            before trusting it.
           </p>
           <div class="ts-input">
             <label>
-              Time signature <span class="opt">(optional — helps the rhythm guess)</span>
+              Time signature <span class="opt">(optional — used only if it can't be read from the score)</span>
               <span class="ts-fields">
                 <input type="number" min="1" max="32" placeholder="4" bind:value={tsNum} />
                 <span class="slash">/</span>
