@@ -904,7 +904,38 @@ _TIE_WARNING = (
 )
 
 
-def _rhythm_report(counts, details):
+_DOT_FACTORS = (1.0, 1.5, 1.75)
+
+
+def _bar_quarters(beats) -> float:
+    total = 0.0
+    for code, dots, _notes in beats:
+        if not code:
+            continue
+        total += (4.0 / code) * _DOT_FACTORS[min(dots, len(_DOT_FACTORS) - 1)]
+    return total
+
+
+def _overfull_bars(measures) -> tuple[int, int]:
+    """Count bars holding more than their time signature allows.
+
+    Polyphony flattened into one voice lands here: each note's own duration
+    can be decoded correctly while the bar sums to roughly the total of its
+    voices. Every individual reading is right and the bar is still wrong, so
+    this is measured separately from how the durations were obtained.
+    """
+    overfull = 0
+    counted = 0
+    for beats, ts in measures:
+        if not ts:
+            continue
+        counted += 1
+        if _bar_quarters(beats) > _measure_quarter_length(ts) + 1e-6:
+            overfull += 1
+    return overfull, counted
+
+
+def _rhythm_report(counts, details, overfull=0, bars=0):
     """Derive the document's rhythm warnings and confidence string from the
     collected per-staff provenances - the single place that decides both, so
     they cannot drift out of step with each other or with the measure loop.
@@ -953,6 +984,24 @@ def _rhythm_report(counts, details):
             confidence = (
                 "high - decoded directly from the notehead/stem/flag/beam/dot glyphs in the score's "
                 "own engraving"
+            )
+
+    # Bars that don't add up outrank how the durations were obtained: a
+    # confident reading of every notehead still produces a wrong bar when two
+    # voices were merged into one, and playback follows the bar.
+    if bars and overfull:
+        share = overfull / bars
+        warnings.append(
+            f"{overfull} of {bars} bar(s) hold more than their time signature allows, usually "
+            "because music written in two voices (a melody over a separate bass line) is "
+            "flattened into a single voice - the notes and their individual durations can still "
+            "be right while the bar as a whole is not, so playback timing will drift in those bars"
+        )
+        if share >= 0.25:
+            confidence = (
+                "low overall - individual durations were read from the score's own engraving, but "
+                f"{overfull} of {bars} bar(s) do not add up to their time signature because "
+                "separate voices are merged into one"
             )
 
     # Surface the concrete per-staff reasons behind any downgrade, capped so
@@ -1412,7 +1461,10 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
 
     # Rhythm warnings and confidence: derived once, from what the staves
     # actually resolved to.
-    rhythm_warnings, rhythm_confidence = _rhythm_report(prov_counts, prov_details)
+    overfull_bars, counted_bars = _overfull_bars(all_measures)
+    rhythm_warnings, rhythm_confidence = _rhythm_report(
+        prov_counts, prov_details, overfull_bars, counted_bars
+    )
     warnings.extend(rhythm_warnings)
     # Font-level problems that weren't already the reason a staff degraded
     # (those are reported by _rhythm_report as "rhythm source: ..."): a page

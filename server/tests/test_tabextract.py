@@ -109,7 +109,11 @@ def test_finale_tab_pdf_extracts_notes_and_bars(zanarkand_pdf):
     # unconditional "inferred from spacing... low confidence" claim would
     # now be false and must not be present.
     assert not any("inferred from horizontal spacing" in w for w in result.warnings)
-    assert result.confidence["rhythm"].startswith("high")
+    # Assert where the durations came from, not the adjective in front of it:
+    # this file's bars don't add up (merged voices), which legitimately caps
+    # the overall claim even though every duration was glyph-decoded.
+    assert result.rhythm_provenance == {tabextract.PROV_GLYPHS: 10}
+    assert "own engraving" in result.confidence["rhythm"]
 
 
 def test_finale_tab_pdf_analyze(zanarkand_pdf):
@@ -592,6 +596,33 @@ def test_rhythm_report_downgrades_on_degraded_staves():
     assert any("not been calibrated" in w for w in warnings)
 
 
+def test_overfull_bars_are_reported_and_cap_the_confidence():
+    """Every duration can be glyph-decoded correctly and the bar still be
+    wrong, because merged voices overfill it. That must not read as high
+    confidence, and the count must reach the user."""
+    all_glyph = collections.Counter({tabextract.PROV_GLYPHS: 5})
+    w, c = tabextract._rhythm_report(all_glyph, {}, overfull=37, bars=50)
+    assert any("37 of 50 bar(s) hold more than their time signature" in x for x in w)
+    assert any("two voices" in x for x in w)
+    assert not c.startswith("high")
+    assert "37 of 50" in c
+
+    # A stray overfull bar is worth reporting but shouldn't condemn the score.
+    w2, c2 = tabextract._rhythm_report(all_glyph, {}, overfull=1, bars=50)
+    assert any("1 of 50 bar(s) hold more" in x for x in w2)
+    assert c2.startswith("high")
+
+
+def test_bar_quarters_accounts_for_dots():
+    # 4 = quarter; one dot is 1.5 quarters, two dots 1.75.
+    assert tabextract._bar_quarters([(4, 0, [])]) == 1.0
+    assert tabextract._bar_quarters([(4, 1, [])]) == 1.5
+    assert tabextract._bar_quarters([(4, 2, [])]) == 1.75
+    # A 3/4 bar filled by three quarters is not overfull; four quarters is.
+    assert tabextract._overfull_bars([([(4, 0, [])] * 3, (3, 4))]) == (0, 1)
+    assert tabextract._overfull_bars([([(4, 0, [])] * 4, (3, 4))]) == (1, 1)
+
+
 def test_rhythm_report_is_the_single_source_of_warnings_and_confidence():
     """All-glyph, mixed and all-spacing must each produce a confidence string
     that agrees with the warnings beside it - they are derived together."""
@@ -714,6 +745,6 @@ def test_calibrated_maestro_still_decodes(zanarkand_pdf):
     glyph_rhythm.clear_caches()
     result = tabextract.extract(zanarkand_pdf)
     assert result.rhythm_provenance == {tabextract.PROV_GLYPHS: 10}
-    assert result.confidence["rhythm"].startswith("high")
+    assert "own engraving" in result.confidence["rhythm"]
     assert result.time_signature_source == "glyph-decoded"
     assert not any("NOT the calibrated Maestro subset" in w for w in result.warnings)
