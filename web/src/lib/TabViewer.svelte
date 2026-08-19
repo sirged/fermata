@@ -3,7 +3,14 @@
   import * as alphaTab from "@coderline/alphatab";
   import { api } from "./api.js";
 
-  let { score = null, demo = false, gigMode = false, onToggleGig = () => {} } = $props();
+  let {
+    score = null,
+    demo = false,
+    gigMode = false,
+    onToggleGig = () => {},
+    practiceLabel = null,
+    onStopPractice = () => {},
+  } = $props();
 
   let host;
   let scroller;
@@ -178,6 +185,11 @@
         {playing ? "❚❚ Pause" : "▶ Play"}
       </button>
       <button disabled={!playerReady} onclick={() => atApi?.stop()}>■</button>
+      {#if practiceLabel}
+        <button class="practice-indicator" onclick={onStopPractice} title="Stop practice timer">
+          ● {practiceLabel}
+        </button>
+      {/if}
       <button onclick={onToggleGig} title="Exit gig mode (Esc)">⤢</button>
     </div>
   {:else}
@@ -290,6 +302,13 @@
 
   .gig-hud button {
     font-size: 16px;
+  }
+
+  .practice-indicator {
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--brass-bright);
+    white-space: nowrap;
   }
 
   .seg {

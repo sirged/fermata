@@ -7,7 +7,13 @@
     import.meta.url,
   ).toString();
 
-  let { score, gigMode = false, onToggleGig = () => {} } = $props();
+  let {
+    score,
+    gigMode = false,
+    onToggleGig = () => {},
+    practiceLabel = null,
+    onStopPractice = () => {},
+  } = $props();
 
   let container;
   let darkMode = $state(true);
@@ -242,6 +248,11 @@
       ◐
     </button>
     {#if gigMode}
+      {#if practiceLabel}
+        <button class="practice-indicator" onclick={onStopPractice} title="Stop practice timer">
+          ● {practiceLabel}
+        </button>
+      {/if}
       <button class:on={halfPage} onclick={() => (halfPage = !halfPage)} title="Half-page turns">½</button>
       <button onclick={onToggleGig} title="Exit gig mode (Esc)">⤢</button>
     {/if}
@@ -309,5 +320,12 @@
 
   .hud button.on {
     color: var(--brass-bright);
+  }
+
+  .practice-indicator {
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--brass-bright);
+    white-space: nowrap;
   }
 </style>

@@ -38,6 +38,15 @@ CREATE TABLE IF NOT EXISTS score_tags (
     tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     PRIMARY KEY (score_id, tag_id)
 );
+
+CREATE TABLE IF NOT EXISTS practice_sessions (
+    id INTEGER PRIMARY KEY,
+    score_id INTEGER NOT NULL REFERENCES scores(id) ON DELETE CASCADE,
+    started_at TEXT NOT NULL,
+    seconds INTEGER NOT NULL,
+    note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_practice_score ON practice_sessions(score_id);
 """
 
 

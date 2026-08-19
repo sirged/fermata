@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import scanner
 from .config import FILE_TYPES, LIBRARY_DIR
@@ -14,6 +14,7 @@ from .thumbs import thumb_path
 router = APIRouter(prefix="/api")
 
 VALID_KINDS = {"notation", "tab", "both", "unknown"}
+VALID_PRACTICED = {"recent", "neglected"}
 
 
 def _score_row(conn, score_id: int):
@@ -26,6 +27,7 @@ def _score_row(conn, score_id: int):
 def _with_tags(conn, rows):
     ids = [r["id"] for r in rows]
     tag_map: dict[int, list[str]] = {i: [] for i in ids}
+    practice_map: dict[int, dict] = {}
     if ids:
         placeholders = ",".join("?" * len(ids))
         for r in conn.execute(
@@ -35,11 +37,21 @@ def _with_tags(conn, rows):
             ids,
         ):
             tag_map[r["score_id"]].append(r["name"])
+        for r in conn.execute(
+            f"""SELECT score_id, SUM(seconds) AS practice_seconds, MAX(started_at) AS last_practiced
+                FROM practice_sessions WHERE score_id IN ({placeholders}) GROUP BY score_id""",
+            ids,
+        ):
+            practice_map[r["score_id"]] = {
+                "practice_seconds": r["practice_seconds"],
+                "last_practiced": r["last_practiced"],
+            }
     out = []
     for r in rows:
         d = dict(r)
         d["favorite"] = bool(d["favorite"])
         d["tags"] = tag_map.get(r["id"], [])
+        d.update(practice_map.get(r["id"], {"practice_seconds": 0, "last_practiced": None}))
         out.append(d)
     return out
 
@@ -56,7 +68,10 @@ def list_scores(
     kind: str = "",
     tag: str = "",
     favorite: bool = False,
+    practiced: str = "",
 ):
+    if practiced and practiced not in VALID_PRACTICED:
+        raise HTTPException(422, f"practiced must be one of {sorted(VALID_PRACTICED)}")
     conn = connect()
     sql = "SELECT DISTINCT s.* FROM scores s"
     where, params = [], []
@@ -75,6 +90,17 @@ def list_scores(
         params.append(kind)
     if favorite:
         where.append("s.favorite = 1")
+    if practiced == "recent":
+        where.append(
+            """s.id IN (SELECT score_id FROM practice_sessions
+                        GROUP BY score_id HAVING MAX(started_at) >= datetime('now', '-14 days'))"""
+        )
+    elif practiced == "neglected":
+        where.append(
+            """(s.id NOT IN (SELECT score_id FROM practice_sessions)
+                OR s.id IN (SELECT score_id FROM practice_sessions
+                            GROUP BY score_id HAVING MAX(started_at) < datetime('now', '-30 days')))"""
+        )
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY s.title COLLATE NOCASE"
@@ -165,6 +191,65 @@ def patch_score(score_id: int, patch: ScorePatch):
                 )
     conn = connect()
     return _with_tags(conn, [_score_row(conn, score_id)])[0]
+
+
+class PracticeIn(BaseModel):
+    seconds: int
+    note: str | None = Field(default=None, max_length=2000)
+
+
+def _practice_totals(conn, score_id: int):
+    row = conn.execute(
+        """SELECT COUNT(*) AS session_count, COALESCE(SUM(seconds), 0) AS practice_seconds,
+                  MAX(started_at) AS last_practiced
+           FROM practice_sessions WHERE score_id = ?""",
+        (score_id,),
+    ).fetchone()
+    return dict(row)
+
+
+@router.post("/scores/{score_id}/practice")
+def log_practice(score_id: int, body: PracticeIn):
+    if not 0 < body.seconds <= 86400:
+        raise HTTPException(422, "seconds must be between 1 and 86400")
+    with tx() as conn:
+        _score_row(conn, score_id)
+        conn.execute(
+            "INSERT INTO practice_sessions(score_id, started_at, seconds, note) VALUES (?, datetime('now'), ?, ?)",
+            (score_id, body.seconds, body.note),
+        )
+    return get_practice(score_id)
+
+
+@router.get("/scores/{score_id}/practice")
+def get_practice(score_id: int):
+    conn = connect()
+    _score_row(conn, score_id)
+    sessions = conn.execute(
+        "SELECT * FROM practice_sessions WHERE score_id = ? ORDER BY started_at DESC, id DESC LIMIT 50",
+        (score_id,),
+    ).fetchall()
+    return {"sessions": [dict(r) for r in sessions], **_practice_totals(conn, score_id)}
+
+
+@router.get("/practice/summary")
+def practice_summary():
+    conn = connect()
+    week = conn.execute(
+        """SELECT COALESCE(SUM(seconds), 0) AS total_seconds, COUNT(*) AS session_count
+           FROM practice_sessions WHERE started_at >= datetime('now', '-7 days')"""
+    ).fetchone()
+    top = conn.execute(
+        """SELECT s.id, s.title, SUM(p.seconds) AS practice_seconds
+           FROM practice_sessions p JOIN scores s ON s.id = p.score_id
+           WHERE p.started_at >= datetime('now', '-7 days')
+           GROUP BY p.score_id ORDER BY practice_seconds DESC LIMIT 5"""
+    ).fetchall()
+    return {
+        "week_seconds": week["total_seconds"],
+        "week_sessions": week["session_count"],
+        "top_scores": [dict(r) for r in top],
+    }
 
 
 @router.get("/scores/{score_id}/file")

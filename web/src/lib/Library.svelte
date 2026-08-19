@@ -9,6 +9,7 @@
   let kind = $state("");
   let tag = $state("");
   let favorite = $state(false);
+  let practiced = $state("");
   let scan = $state(null);
   let loading = $state(true);
   let uploadInput;
@@ -27,7 +28,7 @@
     loading = true;
     try {
       [scores, collections, tags] = await Promise.all([
-        api.scores({ search, collection, kind, tag, favorite }),
+        api.scores({ search, collection, kind, tag, favorite, practiced }),
         api.collections(),
         api.tags(),
       ]);
@@ -38,7 +39,7 @@
 
   $effect(() => {
     // re-query whenever a filter changes
-    void search, collection, kind, tag, favorite;
+    void search, collection, kind, tag, favorite, practiced;
     const t = setTimeout(refresh, 150);
     return () => clearTimeout(t);
   });
@@ -91,6 +92,20 @@
   }
 
   const kindLabel = { notation: "notation", tab: "tab", both: "notation + tab", unknown: "" };
+
+  function practicedAgo(lastPracticed) {
+    if (!lastPracticed) return "";
+    const iso = lastPracticed.replace(" ", "T") + "Z";
+    const then = new Date(iso);
+    if (!Number.isFinite(then.getTime())) return "";
+    // Compare calendar dates (in local time), not raw elapsed milliseconds,
+    // so e.g. 23:00 yesterday reads as 1 day ago rather than "today".
+    const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const days = Math.round((startOfDay(new Date()) - startOfDay(then)) / 86400000);
+    if (days <= 0) return "practiced <24h ago";
+    if (days === 1) return "practiced 1d ago";
+    return `practiced ${days}d ago`;
+  }
 </script>
 
 <div class="layout">
@@ -104,11 +119,17 @@
     </div>
 
     <nav>
-      <button class="side-item" class:active={!collection && !favorite && !showDuplicates} onclick={() => { collection = ""; favorite = false; showDuplicates = false; }}>
+      <button class="side-item" class:active={!collection && !favorite && !practiced && !showDuplicates} onclick={() => { collection = ""; favorite = false; practiced = ""; showDuplicates = false; }}>
         All scores
       </button>
       <button class="side-item" class:active={favorite} onclick={() => { favorite = !favorite; showDuplicates = false; }}>
         ★ Favorites
+      </button>
+      <button class="side-item" class:active={practiced === "recent"} onclick={() => { practiced = practiced === "recent" ? "" : "recent"; showDuplicates = false; }}>
+        ◷ Recently practiced
+      </button>
+      <button class="side-item" class:active={practiced === "neglected"} onclick={() => { practiced = practiced === "neglected" ? "" : "neglected"; showDuplicates = false; }}>
+        ⌛ Needs attention
       </button>
       <button class="side-item" class:active={showDuplicates} onclick={() => (showDuplicates = !showDuplicates)}>
         ⧉ Duplicates
@@ -212,6 +233,9 @@
               <div class="meta">
                 <div class="title">{score.title}</div>
                 <div class="sub">{score.source ?? score.composer ?? score.collection ?? ""}</div>
+                {#if score.last_practiced}
+                  <div class="practiced">{practicedAgo(score.last_practiced)}</div>
+                {/if}
               </div>
             </a>
           {/each}
@@ -488,5 +512,12 @@
     font-size: 12.5px;
     color: var(--ink-dim);
     margin-top: 2px;
+  }
+
+  .practiced {
+    font-size: 11px;
+    color: var(--ink-dim);
+    opacity: 0.7;
+    margin-top: 3px;
   }
 </style>

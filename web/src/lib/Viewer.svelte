@@ -133,6 +133,59 @@
       .catch((e) => (error = String(e)));
   });
 
+  const PRACTICE_MIN_SECONDS = 10;
+
+  let practiceStart = $state(null);
+  let practiceElapsed = $state(0);
+  let practiceInterval;
+  let practiceScoreId = null;
+
+  function formatElapsed(sec) {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
+  function startPractice() {
+    if (!score) return;
+    practiceScoreId = score.id;
+    practiceStart = Date.now();
+    practiceElapsed = 0;
+    practiceInterval = setInterval(() => {
+      practiceElapsed = Math.floor((Date.now() - practiceStart) / 1000);
+    }, 1000);
+  }
+
+  // gig mode hides the header (and the timer button in it), but a running
+  // session must stay visible and reachable rather than silently ticking
+  // away off-screen - the gig HUDs in both viewers surface this
+  let practiceLabel = $derived(practiceStart != null ? formatElapsed(practiceElapsed) : null);
+
+  function flushPractice() {
+    if (practiceStart == null) return;
+    const seconds = Math.floor((Date.now() - practiceStart) / 1000);
+    const scoreId = practiceScoreId;
+    clearInterval(practiceInterval);
+    practiceStart = null;
+    practiceElapsed = 0;
+    practiceScoreId = null;
+    if (seconds >= PRACTICE_MIN_SECONDS && scoreId != null) {
+      api.logPractice(scoreId, { seconds }).catch(() => {});
+    }
+  }
+
+  // Flushes on switching to a different score too: the route swaps `id` on
+  // this same component instance rather than remounting it.
+  $effect(() => {
+    void id;
+    return () => flushPractice();
+  });
+
+  $effect(() => {
+    window.addEventListener("beforeunload", flushPractice);
+    return () => window.removeEventListener("beforeunload", flushPractice);
+  });
+
   async function setKind(ev) {
     score = await api.patch(score.id, { content_kind: ev.target.value });
   }
@@ -192,6 +245,14 @@
             <option value="tab">tab</option>
             <option value="both">notation + tab</option>
           </select>
+          <button
+            class="ghost timer"
+            class:on={practiceStart != null}
+            onclick={practiceStart != null ? flushPractice : startPractice}
+            title={practiceStart != null ? "Stop practice timer" : "Start practice timer"}
+          >
+            {practiceStart != null ? `■ ${formatElapsed(practiceElapsed)}` : "▶ Practice"}
+          </button>
           <button class="ghost fav" class:on={score.favorite} onclick={toggleFavorite}>★</button>
           <button class="ghost" onclick={enterGigMode} title="Distraction-free performance view (F)">
             ⛶ Gig mode
@@ -207,9 +268,9 @@
     <TabViewer demo={true} />
   {:else if score}
     {#if score.file_type === "pdf"}
-      <PdfViewer {score} {gigMode} onToggleGig={toggleGigMode} />
+      <PdfViewer {score} {gigMode} onToggleGig={toggleGigMode} {practiceLabel} onStopPractice={flushPractice} />
     {:else}
-      <TabViewer {score} {gigMode} onToggleGig={toggleGigMode} />
+      <TabViewer {score} {gigMode} onToggleGig={toggleGigMode} {practiceLabel} onStopPractice={flushPractice} />
     {/if}
   {/if}
 </div>
@@ -280,6 +341,16 @@
 
   .fav.on {
     color: var(--brass-bright);
+  }
+
+  .timer {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .timer.on {
+    color: var(--brass-bright);
+    border-color: var(--brass);
   }
 
   .tags-input {
