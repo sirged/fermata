@@ -13,18 +13,35 @@
   let viewerEl;
   let gigMode = $state(false);
   let wakeLock = null;
+  // gig mode can end (Escape, tap exit) before an in-flight wakeLock.request
+  // resolves; wantWakeLock says whether a lock should be held right now, so
+  // the resolved request can release itself instead of pinning the screen on
+  let wantWakeLock = false;
 
   async function acquireWakeLock() {
+    if (wakeLock) return; // already held - don't overwrite the live sentinel
     if (!("wakeLock" in navigator)) return;
+    wantWakeLock = true;
+    let lock;
     try {
-      wakeLock = await navigator.wakeLock.request("screen");
-      wakeLock.addEventListener("release", () => (wakeLock = null));
+      lock = await navigator.wakeLock.request("screen");
     } catch {
-      wakeLock = null;
+      return;
     }
+    if (!wantWakeLock) {
+      // gig mode ended while the request was in flight
+      lock.release().catch(() => {});
+      return;
+    }
+    wakeLock = lock;
+    wakeLock.addEventListener("release", () => {
+      // a stale release from a since-replaced lock must not clobber a newer one
+      if (wakeLock === lock) wakeLock = null;
+    });
   }
 
   async function releaseWakeLock() {
+    wantWakeLock = false;
     try {
       await wakeLock?.release();
     } catch {
@@ -33,17 +50,33 @@
     wakeLock = null;
   }
 
+  // guards against a stale enter/exit continuation applying its effects
+  // after a later call already changed gig mode (e.g. F then Escape fired
+  // in quick succession while requestFullscreen was still pending)
+  let gigOp = 0;
+
   async function enterGigMode() {
+    const op = ++gigOp;
     gigMode = true;
     try {
       await viewerEl?.requestFullscreen?.();
     } catch {
       // fullscreen denied or unavailable; gig mode still works windowed
     }
+    if (op !== gigOp) {
+      // superseded by a later call while fullscreen was still engaging - only
+      // undo it if gig mode actually ended up off; a newer enter may have
+      // already taken over and must not be clobbered by this stale one
+      if (!gigMode && document.fullscreenElement === viewerEl) {
+        document.exitFullscreen().catch(() => {});
+      }
+      return;
+    }
     acquireWakeLock();
   }
 
   async function exitGigMode() {
+    ++gigOp;
     gigMode = false;
     if (document.fullscreenElement === viewerEl) {
       try {
@@ -77,6 +110,8 @@
   function onKey(e) {
     const tag = e.target?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return; // don't hijack Ctrl+F / Cmd+F
+    if (e.repeat) return; // OS key auto-repeat must not spam toggleGigMode
     if (e.key === "f" || e.key === "F") {
       e.preventDefault();
       toggleGigMode();
@@ -174,7 +209,7 @@
     {#if score.file_type === "pdf"}
       <PdfViewer {score} {gigMode} onToggleGig={toggleGigMode} />
     {:else}
-      <TabViewer {score} />
+      <TabViewer {score} {gigMode} onToggleGig={toggleGigMode} />
     {/if}
   {/if}
 </div>

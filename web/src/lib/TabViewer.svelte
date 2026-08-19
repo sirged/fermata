@@ -3,7 +3,7 @@
   import * as alphaTab from "@coderline/alphatab";
   import { api } from "./api.js";
 
-  let { score = null, demo = false } = $props();
+  let { score = null, demo = false, gigMode = false, onToggleGig = () => {} } = $props();
 
   let host;
   let scroller;
@@ -170,67 +170,79 @@
 </script>
 
 <div class="wrap">
-  <div class="toolbar">
-    <div class="seg">
-      {#each PROFILES as [value, label]}
-        <button class:on={profile === value} onclick={() => setProfile(value)}>{label}</button>
-      {/each}
-    </div>
-    <div class="player">
+  {#if gigMode}
+    <!-- gig mode: hide the practice toolbar chrome, but playback and the way
+    back out must stay reachable even with no keyboard (touch/tablet) -->
+    <div class="gig-hud">
       <button class="primary" disabled={!playerReady} onclick={() => atApi?.playPause()}>
         {playing ? "❚❚ Pause" : "▶ Play"}
       </button>
       <button disabled={!playerReady} onclick={() => atApi?.stop()}>■</button>
-      <select value={speed} onchange={setSpeed} title="Playback speed">
-        {#if !SPEEDS.includes(speed)}
-          <!-- the ladder steps to speeds between the presets -->
-          <option value={speed}>{Math.round(speed * 100)}%</option>
-        {/if}
-        {#each SPEEDS as s}
-          <option value={s}>{s}×</option>
+      <button onclick={onToggleGig} title="Exit gig mode (Esc)">⤢</button>
+    </div>
+  {:else}
+    <div class="toolbar">
+      <div class="seg">
+        {#each PROFILES as [value, label]}
+          <button class:on={profile === value} onclick={() => setProfile(value)}>{label}</button>
         {/each}
-      </select>
-      <div class="practice">
-        <button
-          class:on={looping}
-          onclick={toggleLoop}
-          title="Loop playback — drag across bars on the score to loop a section"
-        >
-          Loop
+      </div>
+      <div class="player">
+        <button class="primary" disabled={!playerReady} onclick={() => atApi?.playPause()}>
+          {playing ? "❚❚ Pause" : "▶ Play"}
         </button>
-        <button class:on={metronome} onclick={toggleMetronome} title="Metronome click during playback">
-          Metronome
-        </button>
-        <button class:on={countIn} onclick={toggleCountIn} title="Count-in before playback starts">
-          Count-in
-        </button>
-        <button
-          class:on={ladder}
-          onclick={toggleLadder}
-          title="Tempo ladder — loop a passage and step the speed up automatically"
-        >
-          Ladder
-        </button>
-        {#if ladder}
-          <div class="ladder-controls">
-            <label>
-              Start
-              <input type="number" min="13" max="100" step="1" value={ladderStart} onchange={setLadderStart} />
-            </label>
-            <label>
-              Step
-              <input type="number" min="1" max="25" step="1" value={ladderStep} onchange={setLadderStep} />
-            </label>
-            <label>
-              Target
-              <input type="number" min="10" max="200" step="1" value={ladderTarget} onchange={setLadderTarget} />
-            </label>
-            <span class="ladder-readout">{Math.round(speed * 100)}%</span>
-          </div>
-        {/if}
+        <button disabled={!playerReady} onclick={() => atApi?.stop()}>■</button>
+        <select value={speed} onchange={setSpeed} title="Playback speed">
+          {#if !SPEEDS.includes(speed)}
+            <!-- the ladder steps to speeds between the presets -->
+            <option value={speed}>{Math.round(speed * 100)}%</option>
+          {/if}
+          {#each SPEEDS as s}
+            <option value={s}>{s}×</option>
+          {/each}
+        </select>
+        <div class="practice">
+          <button
+            class:on={looping}
+            onclick={toggleLoop}
+            title="Loop playback — drag across bars on the score to loop a section"
+          >
+            Loop
+          </button>
+          <button class:on={metronome} onclick={toggleMetronome} title="Metronome click during playback">
+            Metronome
+          </button>
+          <button class:on={countIn} onclick={toggleCountIn} title="Count-in before playback starts">
+            Count-in
+          </button>
+          <button
+            class:on={ladder}
+            onclick={toggleLadder}
+            title="Tempo ladder — loop a passage and step the speed up automatically"
+          >
+            Ladder
+          </button>
+          {#if ladder}
+            <div class="ladder-controls">
+              <label>
+                Start
+                <input type="number" min="13" max="100" step="1" value={ladderStart} onchange={setLadderStart} />
+              </label>
+              <label>
+                Step
+                <input type="number" min="1" max="25" step="1" value={ladderStep} onchange={setLadderStep} />
+              </label>
+              <label>
+                Target
+                <input type="number" min="10" max="200" step="1" value={ladderTarget} onchange={setLadderTarget} />
+              </label>
+              <span class="ladder-readout">{Math.round(speed * 100)}%</span>
+            </div>
+          {/if}
+        </div>
       </div>
     </div>
-  </div>
+  {/if}
 
   {#if loadError}
     <p class="error">{loadError}</p>
@@ -243,6 +255,7 @@
 
 <style>
   .wrap {
+    position: relative;
     flex: 1;
     min-height: 0;
     display: flex;
@@ -257,6 +270,26 @@
     padding: 10px 16px;
     border-bottom: 1px solid var(--line);
     background: var(--bg-raised);
+  }
+
+  .gig-hud {
+    position: absolute;
+    z-index: 2;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(32, 27, 19, 0.92);
+    border: 1px solid var(--line);
+    border-radius: 99px;
+    padding: 6px 12px;
+    backdrop-filter: blur(6px);
+  }
+
+  .gig-hud button {
+    font-size: 16px;
   }
 
   .seg {
