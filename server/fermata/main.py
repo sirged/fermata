@@ -29,6 +29,7 @@ if WEB_DIST and Path(WEB_DIST).is_dir():
         app.mount("/alphatab", StaticFiles(directory=dist / "alphatab"), name="alphatab")
 
     @app.get("/{full_path:path}")
+    @app.head("/{full_path:path}")
     def spa(full_path: str):
         candidate = dist / full_path
         if full_path and candidate.is_file() and candidate.resolve().is_relative_to(dist.resolve()):

@@ -1,4 +1,11 @@
-# Fermata 𝄐
+<p align="center">
+  <img src="assets/banner.png" alt="" width="100%" />
+</p>
+
+<h1 align="center">
+  <img src="assets/logo.png" alt="" width="72" align="center" />
+  Fermata
+</h1>
 
 **A self-hosted sheet music server.** Point it at a folder of sheet music, and
 get a fast, beautiful library you can browse, search, tag, and practice from —
