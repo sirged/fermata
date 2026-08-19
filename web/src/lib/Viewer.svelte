@@ -10,6 +10,86 @@
   let editingTags = $state(false);
   let tagsDraft = $state("");
 
+  let viewerEl;
+  let gigMode = $state(false);
+  let wakeLock = null;
+
+  async function acquireWakeLock() {
+    if (!("wakeLock" in navigator)) return;
+    try {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => (wakeLock = null));
+    } catch {
+      wakeLock = null;
+    }
+  }
+
+  async function releaseWakeLock() {
+    try {
+      await wakeLock?.release();
+    } catch {
+      // already released
+    }
+    wakeLock = null;
+  }
+
+  async function enterGigMode() {
+    gigMode = true;
+    try {
+      await viewerEl?.requestFullscreen?.();
+    } catch {
+      // fullscreen denied or unavailable; gig mode still works windowed
+    }
+    acquireWakeLock();
+  }
+
+  async function exitGigMode() {
+    gigMode = false;
+    if (document.fullscreenElement === viewerEl) {
+      try {
+        await document.exitFullscreen();
+      } catch {
+        // ignore
+      }
+    }
+    releaseWakeLock();
+  }
+
+  function toggleGigMode() {
+    if (gigMode) exitGigMode();
+    else enterGigMode();
+  }
+
+  function onFullscreenChange() {
+    // the browser may drop fullscreen without going through exitGigMode
+    // (Escape, OS gesture, etc) - keep gig mode in sync so the header
+    // doesn't stay hidden with no way back to it
+    if (gigMode && document.fullscreenElement !== viewerEl) {
+      gigMode = false;
+      releaseWakeLock();
+    }
+  }
+
+  function onVisibilityChange() {
+    if (gigMode && document.visibilityState === "visible") acquireWakeLock();
+  }
+
+  function onKey(e) {
+    const tag = e.target?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (e.key === "f" || e.key === "F") {
+      e.preventDefault();
+      toggleGigMode();
+    } else if (e.key === "Escape" && gigMode) {
+      e.preventDefault();
+      exitGigMode();
+    }
+  }
+
+  $effect(() => {
+    return () => releaseWakeLock();
+  });
+
   $effect(() => {
     if (demo || id == null) return;
     api
@@ -39,45 +119,52 @@
   }
 </script>
 
-<div class="viewer">
-  <header>
-    <a class="back" href="#/">← Library</a>
-    {#if demo}
-      <div class="titles">
-        <span class="title">Notation & Tab Demo</span>
-        <span class="sub">bundled sample</span>
-      </div>
-    {:else if score}
-      <div class="titles">
-        <span class="title">{score.title}</span>
-        <span class="sub">
-          {[score.composer, score.source].filter(Boolean).join(" · ")}
-        </span>
-      </div>
-      <div class="controls">
-        {#if editingTags}
-          <input
-            class="tags-input"
-            bind:value={tagsDraft}
-            placeholder="tag, another tag"
-            onkeydown={(e) => e.key === "Enter" && saveTags()}
-          />
-          <button onclick={saveTags}>Save</button>
-        {:else}
-          <button class="ghost" onclick={startTagEdit}>
-            {score.tags.length ? score.tags.join(" · ") : "+ tags"}
+<svelte:window onkeydown={onKey} onfullscreenchange={onFullscreenChange} onvisibilitychange={onVisibilityChange} />
+
+<div class="viewer" bind:this={viewerEl}>
+  {#if !gigMode}
+    <header>
+      <a class="back" href="#/">← Library</a>
+      {#if demo}
+        <div class="titles">
+          <span class="title">Notation & Tab Demo</span>
+          <span class="sub">bundled sample</span>
+        </div>
+      {:else if score}
+        <div class="titles">
+          <span class="title">{score.title}</span>
+          <span class="sub">
+            {[score.composer, score.source].filter(Boolean).join(" · ")}
+          </span>
+        </div>
+        <div class="controls">
+          {#if editingTags}
+            <input
+              class="tags-input"
+              bind:value={tagsDraft}
+              placeholder="tag, another tag"
+              onkeydown={(e) => e.key === "Enter" && saveTags()}
+            />
+            <button onclick={saveTags}>Save</button>
+          {:else}
+            <button class="ghost" onclick={startTagEdit}>
+              {score.tags.length ? score.tags.join(" · ") : "+ tags"}
+            </button>
+          {/if}
+          <select value={score.content_kind} onchange={setKind} title="Content type">
+            <option value="unknown">unsorted</option>
+            <option value="notation">notation</option>
+            <option value="tab">tab</option>
+            <option value="both">notation + tab</option>
+          </select>
+          <button class="ghost fav" class:on={score.favorite} onclick={toggleFavorite}>★</button>
+          <button class="ghost" onclick={enterGigMode} title="Distraction-free performance view (F)">
+            ⛶ Gig mode
           </button>
-        {/if}
-        <select value={score.content_kind} onchange={setKind} title="Content type">
-          <option value="unknown">unsorted</option>
-          <option value="notation">notation</option>
-          <option value="tab">tab</option>
-          <option value="both">notation + tab</option>
-        </select>
-        <button class="ghost fav" class:on={score.favorite} onclick={toggleFavorite}>★</button>
-      </div>
-    {/if}
-  </header>
+        </div>
+      {/if}
+    </header>
+  {/if}
 
   {#if error}
     <p class="error">{error}</p>
@@ -85,7 +172,7 @@
     <TabViewer demo={true} />
   {:else if score}
     {#if score.file_type === "pdf"}
-      <PdfViewer {score} />
+      <PdfViewer {score} {gigMode} onToggleGig={toggleGigMode} />
     {:else}
       <TabViewer {score} />
     {/if}

@@ -7,13 +7,22 @@
     import.meta.url,
   ).toString();
 
-  let { score } = $props();
+  let { score, gigMode = false, onToggleGig = () => {} } = $props();
 
   let container;
   let darkMode = $state(true);
   let pageCount = $state(0);
   let currentPage = $state(1);
+  let halfPage = $state(false);
   let saveTimer;
+
+  // half-page advance defaults on each time gig mode is entered, but the
+  // performer can still turn it off without it snapping back mid-set
+  let wasGig = false;
+  $effect(() => {
+    if (gigMode && !wasGig) halfPage = true;
+    wasGig = gigMode;
+  });
 
   $effect(() => {
     let cancelled = false;
@@ -81,13 +90,21 @@
       ?.scrollIntoView({ block: "start", behavior: "smooth" });
   }
 
+  function turn(dir) {
+    if (gigMode && halfPage) {
+      container.scrollBy({ top: dir * container.clientHeight * 0.5, behavior: "smooth" });
+    } else {
+      goto(currentPage + dir);
+    }
+  }
+
   function onKey(e) {
     if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
       e.preventDefault();
-      goto(currentPage + 1);
+      turn(1);
     } else if (e.key === "ArrowLeft" || e.key === "PageUp") {
       e.preventDefault();
-      goto(currentPage - 1);
+      turn(-1);
     }
   }
 </script>
@@ -96,13 +113,21 @@
 
 <div class="wrap">
   <div class="pages" class:dark={darkMode} bind:this={container}></div>
+  {#if gigMode}
+    <button class="tap-zone left" onclick={() => turn(-1)} aria-label="Previous page"></button>
+    <button class="tap-zone right" onclick={() => turn(1)} aria-label="Next page"></button>
+  {/if}
   <div class="hud">
-    <button onclick={() => goto(currentPage - 1)} title="Previous page">‹</button>
+    <button onclick={() => turn(-1)} title="Previous page">‹</button>
     <span>{currentPage} / {pageCount || "…"}</span>
-    <button onclick={() => goto(currentPage + 1)} title="Next page">›</button>
+    <button onclick={() => turn(1)} title="Next page">›</button>
     <button class:on={darkMode} onclick={() => (darkMode = !darkMode)} title="Invert for practice in the dark">
       ◐
     </button>
+    {#if gigMode}
+      <button class:on={halfPage} onclick={() => (halfPage = !halfPage)} title="Half-page turns">½</button>
+      <button onclick={onToggleGig} title="Exit gig mode (Esc)">⤢</button>
+    {/if}
   </div>
 </div>
 
@@ -135,8 +160,37 @@
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.8);
   }
 
+  .tap-zone {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 33%;
+    border: none;
+    padding: 0;
+    background: transparent;
+    z-index: 1;
+    transition: background 0.15s;
+  }
+
+  .tap-zone.left {
+    left: 0;
+  }
+
+  .tap-zone.right {
+    right: 0;
+  }
+
+  .tap-zone:hover {
+    background: rgba(230, 195, 119, 0.06);
+  }
+
+  .tap-zone:active {
+    background: rgba(230, 195, 119, 0.14);
+  }
+
   .hud {
     position: absolute;
+    z-index: 2;
     bottom: 18px;
     left: 50%;
     transform: translateX(-50%);
