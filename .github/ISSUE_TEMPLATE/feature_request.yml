@@ -1,0 +1,26 @@
+name: Feature idea
+description: Suggest something Fermata should do
+labels: []
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: >
+        Describe the situation rather than the solution. Knowing what you're
+        practising, performing, or organising usually suggests a better answer
+        than a feature described in the abstract.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you had in mind
+      description: Optional. If you already have a shape in mind, describe it.
+  - type: input
+    id: instrument
+    attributes:
+      label: Instrument
+      description: >
+        Fermata aims to be instrument-agnostic with particularly good guitar
+        support, so it helps to know what you play.

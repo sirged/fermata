@@ -28,8 +28,22 @@ them.
   both staves at once, with audio playback, adjustable speed, and a moving
   cursor. The built-in synthesizer also drives practice tools: drag-select a
   passage on the score to loop it, plus metronome and count-in toggles.
+- **Tab out of a PDF** — engraved guitar PDFs carry their tab as real text and
+  their rhythm in the music font's own glyphs, so Fermata reads both directly
+  instead of guessing at pixels, and renders the result as a playable,
+  editable staff beside the original page. Fret numbers, strings and chords
+  come out reliably; how much of the rhythm survives depends on the engraving,
+  and whatever stayed uncertain is listed with the staff rather than hidden.
+  Music written in two voices is still flattened into one, so bars in
+  polyphonic pieces frequently do not add up yet — the count is reported.
+  Scanned PDFs have nothing to read and are not transcribed.
+- **Practice tracking** — a session timer per piece, with recently-practised
+  and neglected views so the library reflects what you are actually working on.
+- **Gig mode** — fullscreen, screen kept awake, oversized tap targets and
+  half-page turns for a tablet on a music stand.
 - **Organize** — collections (from your folder layout), free-form tags,
-  favorites, content-type labels (notation / tab / both), full-text search.
+  favorites, content-type labels (notation / tab / both), full-text search,
+  and duplicate detection by file contents.
 - **Upload** — drag files in through the browser; they land in your library
   folder and are indexed immediately.
 - **Single container** — SQLite inside, two volume mounts, no external
@@ -75,28 +89,36 @@ npm run dev
 
 ## Formats
 
-| Format                          | Viewer                                     |
-| ------------------------------- | ------------------------------------------ |
-| PDF                             | Practice reader (fixed layout)             |
-| MusicXML (`.musicxml`, `.mxl`)  | Interactive: notation / tab / both, audio  |
+| Format | How it reads |
+| --- | --- |
+| PDF, engraved with a tab staff | Practice reader, plus transcription to a playable staff you can view beside the page |
+| PDF, engraved without tab | Practice reader; nothing to transcribe from |
+| PDF, scanned | Practice reader only — a scan holds no text or glyphs to read |
+| MusicXML (`.musicxml`, `.mxl`) | Interactive: notation / tab / both, audio, full fidelity |
 | Guitar Pro (`.gp3`–`.gp5`, `.gpx`, `.gp`) | Interactive: notation / tab / both, audio |
 
-PDFs are fixed renderings, so the notation/tab toggle applies to the semantic
-formats. There's a bundled demo (sidebar → *Notation/tab demo*) if your
-library is PDF-only so far.
+A PDF is a fixed rendering, so the notation/tab toggle belongs to the
+structured formats — and to a transcription made from a PDF, which is what the
+side-by-side view is for. There's a bundled demo (sidebar → *Notation/tab
+demo*) if your library is PDF-only so far.
 
 ## Roadmap
 
+- **Separating voices when transcribing** — the largest gap between a
+  transcription and a score you could practise from, and the reason bars in
+  polyphonic pieces overfill today
 - **Score creation and editing** — build a staff from scratch in the browser,
   instrument-agnostic with first-class guitar tablature support
-- **Optical music recognition** — convert engraved PDFs into editable,
-  playable scores
-- **Richer import metadata** — author/title extraction across more formats
+- **More import formats** — MIDI and plain-text tab in particular, since those
+  accompany most freely-licensed sheet music you can download
+- **A fretboard trainer** — note finding, chord flash cards and reach drills,
+  scoped to the strings and frets you are working on
 - Setlists and practice sessions with per-piece progress
 - Annotations on PDFs (fingerings, markings)
+- Reverse proxy authentication, then multi-user accounts
 - Splitting compilation books into individual pieces
-- Multi-user accounts
 - Tablet-first PWA mode with pedal-friendly full-screen
+- Recognition for scanned PDFs, which carry no readable text or glyphs
 
 ## License
 

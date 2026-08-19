@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    name: Server tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        working-directory: server
+        run: pip install -e ".[dev]"
+      # Tests that need a sheet music library read it from FERMATA_TEST_LIBRARY
+      # and skip when it is unset, so this runs the rest without one.
+      - name: Test
+        working-directory: server
+        run: python -m pytest -q
+
+  web:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        working-directory: web
+        run: npm ci
+      # The build also asserts the renderer's font and soundfont were copied,
+      # which a plain compile would not catch.
+      - name: Build
+        working-directory: web
+        run: npm run build
+
+  image:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t fermata:ci .
