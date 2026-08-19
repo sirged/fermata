@@ -1,0 +1,52 @@
+name: Bug report
+description: Something isn't working
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please don't attach copyrighted sheet music. Describe the file instead —
+        how it was produced matters far more than the music in it.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, and what happened instead of what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: file
+    attributes:
+      label: The file involved, if any
+      description: >
+        For import or display problems: is it a PDF, MusicXML, Guitar Pro?
+        A scan or vector output? Which program exported it (Finale, Sibelius,
+        MuseScore, something else)? Does it have a tab staff, standard
+        notation, or both?
+  - type: textarea
+    id: warnings
+    attributes:
+      label: Reported warnings
+      description: >
+        For a transcription problem, paste the warnings shown with the staff.
+        They usually say exactly which part was uncertain.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: A release, or the commit you're running.
+  - type: dropdown
+    id: how-run
+    attributes:
+      label: How are you running it
+      options:
+        - Docker Compose
+        - Docker directly
+        - From source
+        - Other
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant container or browser console output.
+      render: shell
