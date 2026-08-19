@@ -13,14 +13,14 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pymupdf>=1.24",
     "python-multipart>=0.0.9",
+    "fonttools>=4.50",
 ]
 
-# Offline analysis tools under tools/ (e.g. tools/tab_extract) are not part
-# of the server runtime and aren't needed to run it - their extra
-# dependencies live here instead of in `dependencies` above. Install with
-# `pip install -e ".[tools]"` from this directory.
 [project.optional-dependencies]
-tools = ["fonttools>=4.50"]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["fermata"]

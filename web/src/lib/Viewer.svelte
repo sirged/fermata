@@ -2,6 +2,7 @@
   import { api } from "./api.js";
   import PdfViewer from "./PdfViewer.svelte";
   import TabViewer from "./TabViewer.svelte";
+  import ScoreCompare from "./ScoreCompare.svelte";
 
   let { id = null, demo = false } = $props();
 
@@ -268,7 +269,7 @@
     <TabViewer demo={true} />
   {:else if score}
     {#if score.file_type === "pdf"}
-      <PdfViewer {score} {gigMode} onToggleGig={toggleGigMode} {practiceLabel} onStopPractice={flushPractice} />
+      <ScoreCompare {score} {gigMode} onToggleGig={toggleGigMode} {practiceLabel} onStopPractice={flushPractice} />
     {:else}
       <TabViewer {score} {gigMode} onToggleGig={toggleGigMode} {practiceLabel} onStopPractice={flushPractice} />
     {/if}
