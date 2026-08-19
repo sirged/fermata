@@ -1,4 +1,6 @@
+import collections
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -7,6 +9,7 @@ from pathlib import Path
 import fitz
 import pytest
 
+from fermata import glyph_rhythm
 from fermata import tabextract
 
 
@@ -372,3 +375,345 @@ def test_tab_staff_found_but_no_digits_is_not_extractable(tmp_path):
     assert result.bars == 0
     assert result.notes == 0
     assert "no fret-number digits" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# Rhythm-source resolution: staff pairing, provenance, and honest fallback
+# ---------------------------------------------------------------------------
+
+
+def _staff(kind, top, spacing=5.125, x0=50.0, x1=550.0):
+    n = 6 if kind == "tab" else 5
+    return tabextract._Staff(kind, [top + i * spacing for i in range(n)], x0, x1)
+
+
+def test_tab_staff_pairs_with_the_notation_staff_in_its_own_system():
+    """The ordinary score+tab layout: notation above, its tab below."""
+    std = _staff("standard", 100.0)
+    tab = _staff("tab", 100.0 + 4 * 5.125 + 27.0)
+    pairs, reasons = tabextract._pair_standard_staves([std, tab])
+    assert pairs[id(tab)] is std
+    assert id(tab) not in reasons
+
+
+def test_tab_staff_does_not_pair_across_systems():
+    """A tab-only system below a notation-only system must NOT read that
+    system's rhythm. Pairing on "nearest standard staff above, at any
+    distance" x-matched a different line's notes onto this staff's fret
+    columns - phantom rests and all - and reported high confidence."""
+    std = _staff("standard", 100.0)          # notation-only system
+    tab = _staff("tab", 400.0)               # tab-only system, far below
+    pairs, reasons = tabextract._pair_standard_staves([std, tab])
+    assert id(tab) not in pairs
+    assert "own system" in reasons[id(tab)]
+
+
+def test_tab_staff_does_not_pair_with_a_different_instruments_column():
+    """A multi-instrument layout puts staves side by side; a notation staff
+    that doesn't span the same horizontal extent isn't this staff's."""
+    std = _staff("standard", 100.0, x0=50.0, x1=250.0)
+    tab = _staff("tab", 100.0 + 4 * 5.125 + 27.0, x0=350.0, x1=550.0)
+    pairs, reasons = tabextract._pair_standard_staves([std, tab])
+    assert id(tab) not in pairs
+    assert id(tab) in reasons
+
+
+def test_one_notation_staff_is_read_by_only_one_tab_staff():
+    """The lead+bass case. Letting two tab staves share one notation staff
+    meant each rebuilt its measures from a fresh view of the same events, so
+    every rest was emitted twice and each staff's pitched clusters went
+    hunting through the other staff's fret columns - tagging bass columns
+    with treble durations."""
+    std = _staff("standard", 100.0)
+    tab_a = _staff("tab", 100.0 + 4 * 5.125 + 27.0)
+    tab_b = _staff("tab", 100.0 + 4 * 5.125 + 27.0 + 5 * 5.125 + 12.0)
+    pairs, reasons = tabextract._pair_standard_staves([std, tab_a, tab_b])
+    claimed = [t for t in (tab_a, tab_b) if id(t) in pairs]
+    assert len(claimed) == 1, "a notation staff must not be read twice"
+    assert claimed[0] is tab_a, "the nearer tab staff gets the notation staff"
+    assert id(tab_b) in reasons
+    assert "already read" in reasons[id(tab_b)] or "own system" in reasons[id(tab_b)]
+
+
+def test_ambiguous_pairing_returns_no_notation_staff():
+    """Two notation staves equally plausible above one tab staff is a guess,
+    and a guess must degrade to the spacing heuristic rather than read a
+    possibly-wrong line at high confidence."""
+    gap = 27.0
+    tab_top = 200.0
+    std_a = _staff("standard", tab_top - 4 * 5.125 - gap)
+    std_b = _staff("standard", tab_top - 4 * 5.125 - gap - 6.0)
+    tab = _staff("tab", tab_top)
+    pairs, reasons = tabextract._pair_standard_staves([std_a, std_b, tab])
+    assert id(tab) not in pairs
+    assert "guess" in reasons[id(tab)]
+
+
+# ---------------------------------------------------------------------------
+# Rest handling in a decoded measure (B1)
+# ---------------------------------------------------------------------------
+
+
+def _note_event(x, code, dots=0, rest=False, y=100.0):
+    base = {1: 4.0, 2: 2.0, 4: 1.0, 8: 0.5, 16: 0.25}[code]
+    return glyph_rhythm.NoteEvent(x, y, base, 0, dots, rest,
+                                  "rest_quarter" if rest else "notehead_filled")
+
+
+def _cols(*xs):
+    return [{"x": x, "xc": x + 2.0, "notes": [(1, "3")]} for x in xs]
+
+
+def test_second_voice_rest_under_a_note_is_not_an_extra_beat():
+    """Standard two-voice fingerstyle engraving - the library's core content.
+    A voice-2 quarter rest engraved under a voice-1 note is the same beat,
+    not an extra one: emitting both made a 3/4 bar hold four beats' worth and
+    shifted the whole bar's playback while still reporting high confidence."""
+    cols = _cols(100.0, 120.0, 140.0)
+    events = [
+        _note_event(102.0, 4), _note_event(122.0, 4), _note_event(142.0, 4),
+        _note_event(102.3, 4, rest=True, y=118.0),  # voice 2 rest, same onset
+    ]
+    events.sort(key=lambda n: n.x)
+    beats, unmatched_cols, unmatched_notes = tabextract._build_measure_beats_glyph(
+        cols, 90.0, 160.0, events, [n.x for n in events], x_tol=12.0, spacing=5.125)
+    assert len(beats) == 3, beats
+    assert all(notes for _, _, notes in beats), "no phantom rest beat"
+
+
+def test_simultaneous_rests_in_two_voices_collapse_to_one_beat():
+    cols = _cols(140.0)
+    events = [
+        _note_event(100.0, 4, rest=True, y=100.0),
+        _note_event(100.4, 4, rest=True, y=118.0),
+        _note_event(142.0, 4),
+    ]
+    events.sort(key=lambda n: n.x)
+    beats, _, _ = tabextract._build_measure_beats_glyph(
+        cols, 90.0, 160.0, events, [n.x for n in events], x_tol=12.0, spacing=5.125)
+    rests = [b for b in beats if not b[2]]
+    assert len(rests) == 1, beats
+
+
+def test_a_genuinely_separate_rest_is_still_its_own_beat():
+    """The dedupe must not swallow a real rest that sits on its own onset."""
+    cols = _cols(100.0)
+    events = [_note_event(102.0, 4), _note_event(140.0, 4, rest=True)]
+    events.sort(key=lambda n: n.x)
+    beats, _, _ = tabextract._build_measure_beats_glyph(
+        cols, 90.0, 160.0, events, [n.x for n in events], x_tol=12.0, spacing=5.125)
+    assert len(beats) == 2
+    assert [bool(n) for _, _, n in beats] == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# Decoder honesty stats drive confidence (finding 3)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_with_stats(monkeypatch, stats, notes=None):
+    """Run the rhythm-source resolver against a stubbed decoder result."""
+    if notes is None:
+        notes = [_note_event(100.0, 8), _note_event(120.0, 8)]
+    monkeypatch.setattr(
+        tabextract.glyph, "decode_note_events",
+        lambda *a, **k: (notes, stats),
+    )
+    return tabextract._resolve_rhythm_source(
+        object(), _staff("standard", 100.0), None, {})
+
+
+def _stats(**over):
+    base = {
+        "unknown_glyphs": 0, "unknown_ratio": 0.0, "unknown_at_flag_position": 0,
+        "unknown_gid_or_name_sample": [], "band_glyphs": 40, "note_events": 2,
+        "font_warnings": [],
+    }
+    base.update(over)
+    return base
+
+
+def test_clean_decode_is_reported_as_glyph_sourced(monkeypatch):
+    src = _resolve_with_stats(monkeypatch, _stats())
+    assert src.provenance == tabextract.PROV_GLYPHS
+    assert src.uses_glyphs
+
+
+def test_unknown_glyphs_at_flag_positions_downgrade_confidence(monkeypatch):
+    """The decoder tracks glyphs outside its calibrated vocabulary precisely
+    because an unmapped flag decodes as a systematically wrong duration while
+    every other signal still looks healthy. The caller must ACT on that
+    instead of binding it to a throwaway variable: a piece using 32nd flags
+    or grace notes decoded with wrong durations while reporting "high"."""
+    src = _resolve_with_stats(monkeypatch, _stats(
+        unknown_glyphs=2, unknown_ratio=0.05, unknown_at_flag_position=2,
+        unknown_gid_or_name_sample=[("Maestro", 222)]))
+    assert src.provenance == tabextract.PROV_GLYPHS_DEGRADED
+    assert src.uses_glyphs, "still usable, just not high confidence"
+    assert "flag attaches" in src.detail
+    # the unrecognised glyphs are named so they can be calibrated later
+    assert "222" in src.detail
+
+
+def test_mostly_unrecognised_vocabulary_falls_back_entirely(monkeypatch):
+    src = _resolve_with_stats(monkeypatch, _stats(
+        unknown_glyphs=30, unknown_ratio=0.75, band_glyphs=40,
+        unknown_gid_or_name_sample=[("Maestro", 222)]))
+    assert src.provenance == tabextract.PROV_SPACING
+    assert not src.uses_glyphs
+    assert "cannot be trusted" in src.detail
+
+
+def test_high_unknown_ratio_alone_downgrades(monkeypatch):
+    src = _resolve_with_stats(monkeypatch, _stats(
+        unknown_glyphs=8, unknown_ratio=0.20, band_glyphs=40))
+    assert src.provenance == tabextract.PROV_GLYPHS_DEGRADED
+
+
+def test_no_decoded_events_falls_back_with_the_font_reason(monkeypatch):
+    src = _resolve_with_stats(
+        monkeypatch, _stats(font_warnings=["Opus is embedded with 'cff' outlines"]), notes=[])
+    assert src.provenance == tabextract.PROV_SPACING
+    assert "cff" in src.detail
+
+
+def test_unpaired_tab_staff_falls_back_without_decoding():
+    src = tabextract._resolve_rhythm_source(
+        object(), None, "no notation staff in this tab staff's own system", {})
+    assert src.provenance == tabextract.PROV_SPACING
+    assert "own system" in src.detail
+
+
+def test_rhythm_report_downgrades_on_degraded_staves():
+    counts = collections.Counter({tabextract.PROV_GLYPHS: 4,
+                                  tabextract.PROV_GLYPHS_DEGRADED: 2})
+    warnings, confidence = tabextract._rhythm_report(counts, {})
+    assert confidence.startswith("medium")
+    assert any("not been calibrated" in w for w in warnings)
+
+
+def test_rhythm_report_is_the_single_source_of_warnings_and_confidence():
+    """All-glyph, mixed and all-spacing must each produce a confidence string
+    that agrees with the warnings beside it - they are derived together."""
+    all_glyph = collections.Counter({tabextract.PROV_GLYPHS: 5})
+    w, c = tabextract._rhythm_report(all_glyph, {})
+    assert c.startswith("high")
+    assert not any("inferred from horizontal spacing" in x for x in w)
+
+    mixed = collections.Counter({tabextract.PROV_GLYPHS: 3, tabextract.PROV_SPACING: 2})
+    w, c = tabextract._rhythm_report(mixed, {})
+    assert c.startswith("mixed")
+    assert any("rougher estimate from note spacing" in x for x in w)
+
+    none = collections.Counter({tabextract.PROV_SPACING: 4})
+    w, c = tabextract._rhythm_report(none, {})
+    assert c.startswith("low")
+    assert any("inferred from horizontal spacing" in x for x in w)
+
+
+# ---------------------------------------------------------------------------
+# Time signature: validation and the per-measure timeline (A1, finding 4)
+# ---------------------------------------------------------------------------
+
+
+def test_emitted_time_signature_is_always_usable(zanarkand_pdf):
+    """A glyph-decoded signature is written into \\ts and STORED, and alphaTab
+    throws outright on something like `\\ts 3 12`, so an unvalidated decode
+    produces a saved transcription that can never be rendered again."""
+    result = tabextract.extract(zanarkand_pdf)
+    assert glyph_rhythm.time_signature_is_valid(result.time_signature)
+    for line in result.alphatex.splitlines():
+        m = re.search(r"\\ts\s+(\d+)\s+(\d+)", line)
+        if m:
+            assert glyph_rhythm.time_signature_is_valid((int(m.group(1)), int(m.group(2)))), line
+
+
+def test_unusable_manual_override_is_ignored_not_emitted(zanarkand_pdf):
+    result = tabextract.extract(zanarkand_pdf, time_signature=(3, 12))
+    assert result.extractable
+    assert glyph_rhythm.time_signature_is_valid(result.time_signature)
+    assert result.time_signature_source != "manual override"
+    assert any("not a usable meter" in w for w in result.warnings)
+
+
+def test_zero_denominator_signature_never_reaches_the_measure_budget():
+    """A denominator of 0 out of the plain-text digit scan used to reach
+    _measure_quarter_length and raise ZeroDivisionError, which extract()'s
+    blanket handler turned into `extractable: false` for a PDF whose fret
+    digits were perfectly readable."""
+    assert not glyph_rhythm.time_signature_is_valid((4, 0))
+    # and the budget helper is only ever reached with a validated signature
+    assert tabextract._measure_quarter_length((4, 4)) == 4.0
+
+
+def test_mid_score_meter_change_is_carried_into_the_transcription():
+    """Bar-level meter is taken from a timeline, so a change part-way through
+    is emitted where it happens instead of every later bar being measured
+    against the opening meter."""
+    measures = [
+        ([(4, 0, [(1, "3")])], (4, 4)),
+        ([(4, 0, [(1, "3")])], (4, 4)),
+        ([(4, 0, [(1, "3")])], (7, 8)),
+        ([(4, 0, [(1, "3")])], (7, 8)),
+        ([(4, 0, [(1, "3")])], (4, 4)),
+    ]
+    tex = tabextract._build_alphatex("T", None, [], (4, 4), measures)
+    body = tex.split("\n.\n", 1)[1].strip().splitlines()
+    assert len(body) == 5
+    assert not body[0].startswith("\\ts")   # already in effect from the header
+    assert not body[1].startswith("\\ts")
+    assert body[2].startswith("\\ts 7 8")   # change emitted exactly here
+    assert not body[3].startswith("\\ts")   # ...and not repeated
+    assert body[4].startswith("\\ts 4 4")   # change back
+
+
+def test_ts_timeline_lookup_uses_the_last_meter_printed_before_a_position():
+    timeline = [(0, 100.0, (4, 4)), (1, 200.0, (7, 8)), (3, 50.0, (4, 4))]
+    assert tabextract._ts_at(timeline, 0, 150.0) == (4, 4)
+    assert tabextract._ts_at(timeline, 1, 100.0) == (4, 4)   # before the change
+    assert tabextract._ts_at(timeline, 1, 250.0) == (7, 8)
+    assert tabextract._ts_at(timeline, 2, 999.0) == (7, 8)   # carried forward
+    assert tabextract._ts_at(timeline, 3, 60.0) == (4, 4)
+    assert tabextract._ts_at(timeline, 0, 10.0) is None      # before anything
+
+
+# ---------------------------------------------------------------------------
+# Fingerprint rejection, end to end (finding 1)
+# ---------------------------------------------------------------------------
+
+
+def test_unrecognised_maestro_falls_back_honestly(zanarkand_pdf, monkeypatch):
+    """An honest fallback with a warning beats confidently-wrong output. A
+    font that keeps the name "Maestro" but not the calibrated outlines must
+    take the whole document to the spacing heuristic AND say why - and must
+    NOT emit a time signature read from digit GIDs it can no longer trust."""
+    monkeypatch.setattr(
+        glyph_rhythm, "MAESTRO_GLYF_DIGESTS",
+        {gid: "0" * 32 for gid in glyph_rhythm.MAESTRO_GID_MAP},
+    )
+    glyph_rhythm.clear_caches()
+    try:
+        result = tabextract.extract(zanarkand_pdf)
+    finally:
+        glyph_rhythm.clear_caches()
+
+    # fret extraction is untouched - it never needed the music font
+    assert result.extractable
+    assert result.notes > 300
+    # ...but rhythm is honest about being an estimate
+    assert result.rhythm_provenance == {tabextract.PROV_SPACING: 10}
+    assert result.confidence["rhythm"].startswith("low")
+    assert any("NOT the calibrated Maestro subset" in w for w in result.warnings)
+    # and no confidently-wrong time signature from untrusted digit GIDs
+    assert result.time_signature_source != "glyph-decoded"
+
+
+def test_calibrated_maestro_still_decodes(zanarkand_pdf):
+    """The other direction: the library's own files must keep decoding, or
+    the fingerprint is just an outage."""
+    glyph_rhythm.clear_caches()
+    result = tabextract.extract(zanarkand_pdf)
+    assert result.rhythm_provenance == {tabextract.PROV_GLYPHS: 10}
+    assert result.confidence["rhythm"].startswith("high")
+    assert result.time_signature_source == "glyph-decoded"
+    assert not any("NOT the calibrated Maestro subset" in w for w in result.warnings)

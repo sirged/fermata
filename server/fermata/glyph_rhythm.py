@@ -5,21 +5,35 @@ dots and time-signature digits - instead of guessing from x-spacing.
 
 Used by tabextract.extract() as the primary rhythm/time-signature source
 when a tab staff is paired with a standard-notation staff drawn in a
-recognised, TrueType/OpenType-embedded music font; tabextract falls back to
-its own spacing heuristic when that isn't the case (raster pages, CFF-flavor
-font embeddings, or a font family this module doesn't have a glyph map for).
+recognised, TrueType-embedded music font; tabextract falls back to its own
+spacing heuristic when that isn't the case (raster pages, CFF-flavor font
+embeddings, an unrecognised font family, or a recognised family whose glyph
+outlines don't match the calibrated fingerprint - see MAESTRO_GLYF_DIGESTS).
 
 How this works (full validation detail):
 
   Finale exports embed a font called "Maestro" as a TrueType subset. The
   glyph *names* are stripped (post table format 3, "glyph00001" etc.) so
   they can't be read directly. BUT: across every Finale/Maestro PDF checked
-  (multiple files under library/Patreon/John Oeth/), the embedded subset is
-  always the SAME reduced ~204-glyph Maestro subset, and a given glyph ID's
-  outline coordinates are byte-for-byte identical file to file whenever that
-  glyph is used. So glyph ID (GID) *is* a stable key for Maestro, even
-  though the name table is gone - confirmed by direct coordinate diffing,
-  not assumed.
+  (548 distinct embedded Maestro font resources across 274 library files),
+  the embedded subset is always the SAME reduced 204-slot Maestro subset,
+  and a given glyph ID's outline coordinates are byte-for-byte identical
+  file to file whenever that glyph is used - measured, not assumed: hashing
+  the raw `glyf` bytes of every mapped GID across all 548 resources found
+  36 distinct GIDs in use and ZERO GIDs with more than one distinct outline.
+  So glyph ID (GID) *is* a stable key for Maestro even though the name
+  table is gone.
+
+  That measurement is also the safety check. A "Maestro" from a different
+  Finale version, a different subsetting path, or another tool embedding the
+  same family would keep the family NAME but need not keep the same GID
+  order - and since GIDs 16-24 are the time-signature digits, a wrong GID
+  order silently mis-decodes every notehead, rest, flag and digit AND can
+  emit a confidently-wrong time signature. Gating on the family name alone
+  cannot tell the two apart, so every Maestro resource is fingerprinted
+  against MAESTRO_GLYF_DIGESTS at load time and rejected on mismatch (see
+  maestro_fingerprint_ok); a rejected font is treated as unrecognised so
+  tabextract's honest spacing fallback engages and says so.
 
   Sibelius exports embed "Opus"/"OpusSpecial"/"OpusText" as TrueType
   subsets whose post table format DOES retain names, but as PUA codepoint
@@ -39,7 +53,9 @@ How this works (full validation detail):
   confirmed on Easy-Christmas-Songs-for-Guitar-Vol1-4.pdf, which has two
   differently-tagged OpusSpecial resources on a single page. Font
   resources are therefore tracked per xref, not collapsed to one per
-  family name (see MusicFont / load_music_fonts).
+  family name (see MusicFont / load_music_fonts). Because the Opus maps are
+  keyed on a name that travels WITH the outline, they don't need Maestro's
+  GID fingerprint - a remapped subset changes the GID, not the name.
 
   Every glyph->meaning mapping below was established by: (1) collecting the
   set of distinct GIDs/names actually used across a sample of library PDFs,
@@ -57,14 +73,45 @@ How this works (full validation detail):
   + presence of a stem (vector) + flag glyph count at the stem's free end
   + stacked beam-rectangle count at the stem's x position + trailing
   augmentation-dot glyphs.
+
+  Every geometric tolerance in this module is expressed in STAFF SPACES
+  (the distance between two adjacent staff lines) and scaled by the staff
+  actually being decoded - see _Tol. The absolute point values these
+  constants replace were all calibrated against one staff size (the
+  sampled library engraves its notation staves at a 5.125pt line spacing,
+  measured across 254 staves), so a condensed multi-system score or a
+  large-print edition silently dropped stems and beams and degraded every
+  eighth and sixteenth to a quarter while still reporting high confidence.
 """
+import bisect
+import collections
+import hashlib
 import io
 import math
-import collections
 import weakref
 
-import fitz  # pymupdf
-from fontTools.ttLib import TTFont  # required runtime dependency - see pyproject.toml
+
+# fontTools is only needed to read an embedded music font's glyph order and
+# outlines. It is imported LAZILY and behind a guard on purpose: this module
+# is reachable from fermata.main -> api -> tabextract, so a top-level import
+# turned a missing/broken fonttools install into a crash of the whole server
+# at startup - taking down /api/health and plain PDF viewing, neither of
+# which ever touches glyph decoding. Without it we simply report no music
+# fonts, and tabextract degrades to its spacing heuristic and says so.
+_TTFONT = None
+_TTFONT_STATE = "unloaded"  # "unloaded" | "ok" | "missing"
+
+
+def _ttfont_class():
+    global _TTFONT, _TTFONT_STATE
+    if _TTFONT_STATE == "unloaded":
+        try:
+            from fontTools.ttLib import TTFont
+        except Exception:
+            _TTFONT, _TTFONT_STATE = None, "missing"
+        else:
+            _TTFONT, _TTFONT_STATE = TTFont, "ok"
+    return _TTFONT
 
 
 # ---------------------------------------------------------------------------
@@ -73,8 +120,8 @@ from fontTools.ttLib import TTFont  # required runtime dependency - see pyprojec
 # ---------------------------------------------------------------------------
 
 # Finale "Maestro": keyed by glyph ID (GID), stable across files that use the
-# same reduced-subset export pipeline (confirmed on Zanarkand / 1 AM / Hinata
-# vs Neji and 40 further sampled John Oeth PDFs).
+# same reduced-subset export pipeline - and verified per file at load time
+# against MAESTRO_GLYF_DIGESTS rather than trusted on the family name alone.
 MAESTRO_GID_MAP = {
     2: "sharp", 4: "simile", 13: "dot", 16: "digit1", 17: "digit2", 32: "flat_paren",
     18: "digit3", 19: "digit4", 20: "digit5", 21: "digit6", 22: "digit7",
@@ -98,6 +145,76 @@ MAESTRO_GID_MAP = {
     # need digit0 correctly falls through to "not detected" (see
     # decode_time_signature) rather than silently emitting a wrong value.
 }
+
+# Fingerprint for the calibrated Maestro subset: GID -> sha256 of that
+# glyph's raw `glyf` table bytes, truncated to 32 hex chars.
+#
+# HOW THIS WAS DERIVED: every embedded font resource named "Maestro" in the
+# library (548 resources across 274 PDFs) was extracted, its `glyf` table
+# sliced per GID using the `loca` offsets, and each mapped GID's bytes
+# hashed. 36 of the mapped GIDs were observed in use; NONE of them had more
+# than one distinct outline across all 548 resources, which is what makes
+# GID a legitimate key for this family at all. The digest below is that one
+# observed outline per GID.
+#
+# HOW TO RECALIBRATE (after a Finale upgrade, or to admit a second export
+# pipeline): run
+#     python server/tools/tab_extract/maestro_fingerprint.py <library-root>
+# which re-derives this table the same way and prints it ready to paste,
+# along with any GID that disagreed across files. A GID that starts
+# disagreeing means the subset is no longer stable and that GID must be
+# dropped from MAESTRO_GID_MAP - not that the digest should be "updated" to
+# whichever file was checked last.
+#
+# Note the subset keeps all 204 glyph slots but only fills the glyphs a
+# given page actually uses (6-22 of the mapped GIDs per resource, median
+# 14), so absent/empty glyphs are simply not evidence either way - see
+# maestro_fingerprint_ok.
+MAESTRO_GLYF_DIGESTS = {
+    2: "b1a6a7f41a95299ae7e202f516bf4bc7",    # sharp
+    4: "2059d6889199a9f0571c6e40fee0c290",    # simile
+    13: "40ef7e3b3885505e494c4f0dec79658c",   # dot
+    16: "152d31c9b5e40ab0539d160169275898",   # digit1
+    17: "f9ca473a695b291e40c5bac5b7f3cfe6",   # digit2
+    18: "cbced50db620d753006c042f084b5546",   # digit3
+    19: "8c5ace11fbfc52c77dd81e54b38b06bb",   # digit4
+    20: "72b2de92c1c416d4239d353296d9bfaa",   # digit5
+    21: "ef7fec6580fcca8154d2f362144388d3",   # digit6
+    22: "67600f18ae76e04fe717da268c261601",   # digit7
+    23: "73b2bd7ce294af1c77aeb386a60f962a",   # digit8
+    24: "6367756e6ac0cd6892dc4b6fd721fb01",   # digit9
+    29: "7151fc1ceeb1aeed288e983dd5888747",   # accent
+    31: "629849f3f098ce089d6650e3c60ce9ed",   # tremolo
+    32: "15f7413bc8625899d004d718ad4b6f68",   # flat_paren
+    40: "70dc78474f57a292667d3592396e2bfc",   # flag8
+    44: "74c25bac50f95abc6209e8d41a842322",   # natural_paren
+    48: "6a309bf9f214ccf8f422100d2b7ff895",   # flag16
+    51: "adbf149070ffc18e23ba4fb6717e5c27",   # fermata
+    52: "1fa841a0b3eb8a6673fc13d366e37df1",   # clef
+    63: "bac9dfd483f772988b7e5358e6a71be4",   # sharp_paren
+    64: "b00221382cd74b15334900b26553eecb",   # flat
+    68: "b715d3151adf935bc682e468678fa03d",   # trill
+    71: "10bb28c200130375856c77df9eb121f3",   # flag8
+    75: "0673bb60e4da121a63dfa85729eb6c19",   # natural
+    79: "c4359488ce017b1ad641b490da02de01",   # flag16
+    84: "368cd201d95c7e04087f6149041599ad",   # notehead_whole
+    144: "7fbeef923265d262e5bf99ad0bafbe2f",  # notehead_x
+    149: "cf000d46da83213c7b63839dc833f1d3",  # rest8
+    156: "d94168738746833369f25895b7b07c74",  # rest_quarter
+    157: "edcabbe42ef4b5de459c509dc3369ad0",  # notehead_filled
+    171: "d11286002e1745d8022cea364a72a9cd",  # coda
+    174: "a067ef7952bb79db83022d7ad10340d7",  # notehead_diamond
+    177: "ddb719cb7993fc9b6a8fcfbc24a647a4",  # rest8
+    187: "9481ae81a0d54cdd4928b53fb2f5530c",  # rest_half_whole
+    199: "981e44ec5ae96637cbb5d4449a3ea8b7",  # notehead_half
+}
+
+# How many mapped-and-present GIDs a Maestro resource must supply before its
+# fingerprint counts as evidence at all. The library's thinnest real subset
+# fills 6 of them (median 14), so 4 clears every genuine resource with
+# margin while still refusing to bless a font that has almost nothing in
+# common with the calibrated subset.
+MAESTRO_FINGERPRINT_MIN_GLYPHS = 4
 
 # Sibelius "Opus" / "OpusSpecial" / "OpusText": keyed by glyph NAME (the PUA
 # label), stable across files even though GIDs are not (Opus subsets are
@@ -127,26 +244,201 @@ OPUS_SPECIAL_NAME_MAP = {
 DIGIT_CATS = {f"digit{d}": d for d in range(10)}
 
 NOTEHEAD_CATS = {"notehead_filled", "notehead_half", "notehead_whole", "notehead_x", "notehead_diamond"}
-FLAG_CATS = {"flag8", "flag16"}
+# How many duration halvings each flag glyph contributes. Opus draws an
+# unbeamed eighth's hook with the same glyph it uses for a quarter rest
+# (uniF0CE), so that category has to be countable as a flag too: the rest
+# branch of decode_note_events skips it as "already counted via the
+# notehead's stem" whenever a stem is next to it, and if it were not in
+# here nothing would ever actually count it - every unbeamed Sibelius eighth
+# would decode as a quarter. Its presence here is safe because
+# _flag_count_near only counts a glyph sitting at a stem's FREE end.
+FLAG_HOOKS = {"flag8": 1, "flag16": 2, "flag8_or_rest_quarter": 1}
+FLAG_CATS = set(FLAG_HOOKS)
 REST_CATS = {"rest8", "rest_quarter", "rest_half_whole", "flag8_or_rest_quarter"}
 DOT_CATS = {"dot"}
+
+
+# ---------------------------------------------------------------------------
+# Geometry tolerances, in STAFF SPACES (see module docstring)
+# ---------------------------------------------------------------------------
+
+# The point values these replace were calibrated on a 5.125pt staff line
+# spacing (the sampled library's notation staves, measured across 254
+# staves); each constant below is the old absolute value converted at that
+# reference spacing, so behaviour on the sampled library is unchanged while
+# a condensed or large-print score now scales with its own staff.
+REFERENCE_STAFF_SPACING = 5.125
+
+_SP = {
+    # stems / barlines
+    "stem_min_height": 0.78,      # was 4.0pt
+    "stem_max_height": 8.78,      # was 45.0pt
+    "stem_line_max_dx": 0.03,     # was 0.15pt
+    "stem_rect_max_width": 0.20,  # was 1.0pt
+    # How exactly a vertical's ends must coincide with the staff's outer
+    # lines to be a barline rather than a stem. Measured: real barlines land
+    # within 0.03pt of both outer lines (they are drawn to the same
+    # coordinates as the staff lines, so the only offset is the stroke's own
+    # half-width), while the closest real stem - a down-stem from a note
+    # above the staff to a beam just below it, which spans almost exactly
+    # the same range - sits 0.88pt and 1.30pt out. 0.1 staff spaces
+    # (~0.51pt) splits those two populations with an order of magnitude of
+    # margin on the barline side.
+    "barline_tol": 0.10,
+    # beams
+    "beam_min_width": 0.39,       # was 2.0pt
+    "beam_min_thickness": 0.16,   # was 0.8pt
+    "beam_max_thickness": 1.56,   # was 8.0pt
+    "beam_rect_max_height": 1.56, # was 8.0pt
+    "beam_level_gap": 0.39,       # was 2.0pt
+    "beam_x_tol": 0.59,           # was 3.0pt
+    "beam_y_tol": 1.17,           # was 6.0pt
+    # notehead <-> stem attachment
+    "stem_x_tol": 0.68,           # was 3.5pt
+    "stem_y_tol": 1.17,           # was 6.0pt
+    # flags
+    "flag_x_tol": 0.98,           # was 5.0pt
+    "flag_y_tol": 1.76,           # was 9.0pt
+    # augmentation dots
+    "dot_x_tol": 1.17,            # was 6.0pt
+    "dot_x_back": 0.20,           # was 1.0pt
+    "dot_y_tol": 0.78,            # was 4.0pt
+    # ties
+    "tie_gap_max": 7.80,          # was 40.0pt
+    "tie_height_max": 1.56,       # was 8.0pt
+    "tie_y_tol": 0.10,            # was 0.5pt
+    # search bands
+    "drawing_band_pad": 7.80,     # was 40.0pt
+    "drawing_x_pad": 0.98,        # was 5.0pt
+    "glyph_x_pad": 0.59,          # was 3.0pt
+    # rest disambiguation (wider window - see decode_note_events)
+    "rest_stem_x_tol": 1.17,      # was 6.0pt
+    "rest_stem_y_tol": 2.34,      # was 12.0pt
+    "rest_stem_pad": 0.59,        # was 3.0pt
+}
+
+# A beam never spans a large fraction of a whole system; a staff LINE does.
+# tabextract._long_horizontal_segments documents that real exporters draw
+# staff lines as thin filled rectangles, and such a rectangle otherwise
+# sails through the "dark, thin, wide" beam test and becomes a Beam across
+# the entire staff. Stems conventionally end near the middle line, so a
+# staff-line-shaped beam would hand every quarter in the system one or two
+# phantom beam levels and emit it as an eighth or sixteenth.
+BEAM_MAX_STAFF_WIDTH_FRACTION = 0.5
+
+
+class _Tol:
+    """Every geometric tolerance for one staff, resolved from staff spaces
+    into points using that staff's own line spacing."""
+
+    __slots__ = ("spacing", "staff_height", "staff_width") + tuple(_SP)
+
+    def __init__(self, spacing, staff_height=0.0, staff_width=0.0):
+        spacing = float(spacing) if spacing and spacing > 0 else REFERENCE_STAFF_SPACING
+        self.spacing = spacing
+        self.staff_height = staff_height
+        self.staff_width = staff_width
+        for name, sp in _SP.items():
+            setattr(self, name, sp * spacing)
+
+    @property
+    def beam_max_width(self):
+        if self.staff_width > 0:
+            return self.staff_width * BEAM_MAX_STAFF_WIDTH_FRACTION
+        return float("inf")
+
+
+def _spacing_from_lines(line_ys):
+    if line_ys and len(line_ys) > 1:
+        return (line_ys[-1] - line_ys[0]) / (len(line_ys) - 1)
+    return REFERENCE_STAFF_SPACING
 
 
 # ---------------------------------------------------------------------------
 # Font handling
 # ---------------------------------------------------------------------------
 
+
+def _glyf_digests(tt, gids):
+    """sha256 (32 hex chars) of each requested GID's RAW `glyf` bytes, for
+    the GIDs this font actually fills. Raw bytes straight out of the table
+    via the `loca` offsets - not a re-serialisation - so the digest is
+    exactly the "byte-for-byte identical outline" property the Maestro GID
+    map rests on."""
+    out = {}
+    glyf_raw = tt.getTableData("glyf")
+    loca = tt["loca"]
+    for gid in gids:
+        if gid + 1 >= len(loca):
+            continue
+        seg = glyf_raw[loca[gid]:loca[gid + 1]]
+        if not seg:
+            continue  # slot present but unused by this subset - no evidence
+        out[gid] = hashlib.sha256(seg).hexdigest()[:32]
+    return out
+
+
+def maestro_fingerprint_ok(tt, digests=None, min_glyphs=None):
+    """Is this "Maestro" really the calibrated subset MAESTRO_GID_MAP was
+    built against?
+
+    Returns (ok, detail). The family name alone cannot answer this - a
+    different Finale version or a different subsetting path keeps the name
+    and changes the GID order, which silently mis-decodes every notehead,
+    rest, flag and time-signature digit at "high confidence". So compare
+    the actual outlines: every mapped GID this font FILLS must hash to the
+    calibrated digest for that GID, and enough of them must be filled to be
+    evidence at all (see MAESTRO_FINGERPRINT_MIN_GLYPHS). Absent/empty
+    slots are not evidence either way - the subset keeps all 204 slots but
+    only fills what a page uses.
+    """
+    expected = MAESTRO_GLYF_DIGESTS if digests is None else digests
+    floor = MAESTRO_FINGERPRINT_MIN_GLYPHS if min_glyphs is None else min_glyphs
+    try:
+        found = _glyf_digests(tt, sorted(MAESTRO_GID_MAP))
+    except Exception as exc:
+        return False, f"could not read glyph outlines ({type(exc).__name__})"
+    if not found:
+        return False, "no mapped glyph outlines present"
+    matched = []
+    mismatched = []
+    for gid, digest in sorted(found.items()):
+        want = expected.get(gid)
+        if want is None:
+            # A mapped GID with no calibrated digest is an outline we have
+            # never seen filled. It cannot confirm the subset, and it must
+            # not silently condemn it either - record it and move on.
+            continue
+        if digest == want:
+            matched.append(gid)
+        else:
+            mismatched.append(gid)
+    if mismatched:
+        return False, (
+            f"{len(mismatched)} glyph outline(s) differ from the calibrated Maestro subset "
+            f"(GIDs {mismatched[:6]})"
+        )
+    if len(matched) < floor:
+        return False, (
+            f"only {len(matched)} calibrated glyph outline(s) present, need {floor} to "
+            "recognise the subset"
+        )
+    return True, f"{len(matched)} glyph outlines match the calibrated Maestro subset"
+
+
 class MusicFont:
     """One embedded music-symbol font RESOURCE (one xref) on a page, with
     its glyph order resolved so GIDs (Maestro) or names (Opus family) can be
     mapped to a semantic category. Kept per-xref, not per-family: Opus
-    subsets are minted fresh per resource (unlike Maestro's fixed ~204-glyph
+    subsets are minted fresh per resource (unlike Maestro's fixed 204-slot
     subset, which really is stable file to file), so two different Opus
     resources on the same page can have completely different glyph orders
     even though both are named "Opus"."""
 
+    __slots__ = ("family", "xref", "tt", "glyph_order")
+
     def __init__(self, family, xref, tt):
-        self.family = family  # "Maestro" | "Opus" | "OpusSpecial" | "OpusText"
+        self.family = family  # "Maestro" | "Opus" | "OpusSpecial"
         self.xref = xref
         self.tt = tt
         self.glyph_order = tt.getGlyphOrder() if tt else []
@@ -154,7 +446,7 @@ class MusicFont:
     def category(self, gid):
         if self.family == "Maestro":
             return MAESTRO_GID_MAP.get(gid)
-        gname = self.glyph_order[gid] if tt_has(self, gid) else None
+        gname = self.glyph_order[gid] if 0 <= gid < len(self.glyph_order) else None
         if gname is None:
             return None
         if self.family == "Opus":
@@ -162,10 +454,6 @@ class MusicFont:
         if self.family == "OpusSpecial":
             return OPUS_SPECIAL_NAME_MAP.get(gname)
         return None
-
-
-def tt_has(mf, gid):
-    return 0 <= gid < len(mf.glyph_order)
 
 
 # Sibelius exports also embed "OpusText" for fingering/annotation numerals
@@ -177,38 +465,116 @@ def tt_has(mf, gid):
 # metric with irrelevant text characters that were never a real decode gap.
 MUSIC_FONT_FAMILIES = ("Maestro", "Opus", "OpusSpecial")
 
+# pymupdf's own extension marker for an embedded font's outline flavour.
+# Only TrueType (`glyf`) outlines are covered: the Maestro GID map and the
+# Opus name maps were both calibrated on TrueType subsets. The loaded font's
+# real table set is checked too (see _load_one_font) rather than trusting
+# this marker alone.
+_TRUETYPE_EXTS = ("ttf",)
+
+
+# Embedded font resources are a DOCUMENT-level object, not a page-level one:
+# the same xref is referenced by every page that draws with it. Re-extracting
+# and re-parsing it with fontTools once per page meant a 30-page score paid
+# 30 identical TTFont parses. Cached per document, keyed on xref.
+#
+# The cache is stored ON the document rather than in a module-level map
+# keyed by it: pymupdf's Document cannot be weak-referenced, so a
+# WeakKeyDictionary is not available, and a module-level dict keyed on
+# id(doc) would hand a later document the previous one's fonts as soon as
+# CPython reused the address. Hanging it off the object ties its lifetime to
+# exactly the right thing and needs no invalidation.
+_FONT_CACHE_ATTR = "_fermata_music_font_cache"
+
+
+def _font_cache(doc):
+    cache = getattr(doc, _FONT_CACHE_ATTR, None)
+    if cache is None:
+        cache = {}
+        try:
+            setattr(doc, _FONT_CACHE_ATTR, cache)
+        except Exception:
+            pass  # uncacheable document: still correct, just not memoised
+    return cache
+
+
+def _load_one_font(doc, xref, base, ext):
+    """Extract, parse and validate one embedded music font resource.
+    Returns (MusicFont | None, warning | None) and never raises: a truncated
+    or otherwise unreadable embedded font must degrade this page to the
+    spacing fallback, not fail the whole extraction. TTFont parses lazily,
+    so glyph-order and outline access have to happen inside the guard too."""
+    if ext not in _TRUETYPE_EXTS:
+        # CFF-flavour embeds are reported by pymupdf as "cff" and are not
+        # covered by either calibrated map.
+        return None, f"{base} is embedded with {ext!r} outlines, which this decoder is not calibrated for"
+    ttfont_cls = _ttfont_class()
+    if ttfont_cls is None:
+        return None, "fontTools is not installed - cannot read embedded music fonts"
+    try:
+        content = doc.extract_font(xref)
+        if isinstance(content, tuple):
+            content = content[-1]
+        if not content:
+            return None, f"{base} font resource is empty"
+        tt = ttfont_cls(io.BytesIO(content), fontNumber=0)
+        if "glyf" not in tt:
+            return None, (
+                f"{base} is embedded without TrueType `glyf` outlines, which this decoder "
+                "is not calibrated for"
+            )
+        if base == "Maestro":
+            ok, detail = maestro_fingerprint_ok(tt)
+            if not ok:
+                return None, (
+                    f"a font named Maestro on this page is NOT the calibrated Maestro subset "
+                    f"({detail}) - its glyph IDs cannot be trusted to mean what this decoder "
+                    "thinks they mean, so rhythm falls back to note spacing for it"
+                )
+        mf = MusicFont(base, xref, tt)
+        if not mf.glyph_order:
+            return None, f"{base} font resource has no readable glyph order"
+    except Exception as exc:
+        return None, f"{base} font resource could not be read ({type(exc).__name__}) - ignored"
+    return mf, None
+
 
 def load_music_fonts(doc, page):
-    """Return {family_name: [MusicFont, ...]} - one entry per distinct font
-    RESOURCE (xref) using that family name on this page. Most pages have
-    exactly one resource per family; when a page genuinely has more than one
-    (see MusicFont's docstring), keeping all of them - rather than silently
-    keeping only the first-seen xref and resolving every span's GIDs against
-    it regardless of which resource actually drew them - lets
-    extract_glyph_events try each candidate resource per glyph instead of
-    committing to a possibly-wrong one."""
+    """Return ({family_name: [MusicFont, ...]}, warnings) - one entry per
+    distinct font RESOURCE (xref) using that family name on this page. Most
+    pages have exactly one resource per family; when a page genuinely has
+    more than one (see MusicFont's docstring), keeping all of them - rather
+    than silently keeping only the first-seen xref and resolving every
+    span's GIDs against it regardless of which resource actually drew them -
+    lets extract_glyph_events try each candidate resource per glyph instead
+    of committing to a possibly-wrong one.
+
+    A resource that is rejected (wrong outline flavour, unreadable, or a
+    "Maestro" that fails its fingerprint) is left out AND reported, so the
+    caller can degrade honestly instead of decoding with a font whose glyph
+    IDs mean something else."""
+    cache = _font_cache(doc)
     by_family = collections.defaultdict(list)
+    warnings = []
     seen_xrefs = set()
-    for f in page.get_fonts(full=True):
-        xref, ext, ftype, basefont = f[0], f[1], f[2], f[3]
+    try:
+        fonts = page.get_fonts(full=True)
+    except Exception:
+        return {}, ["page font list could not be read"]
+    for f in fonts:
+        xref, ext, _ftype, basefont = f[0], f[1], f[2], f[3]
         base = basefont.split("+")[-1]
-        if base not in MUSIC_FONT_FAMILIES:
-            continue
-        if xref in seen_xrefs:
+        if base not in MUSIC_FONT_FAMILIES or xref in seen_xrefs:
             continue
         seen_xrefs.add(xref)
-        if ext not in ("ttf", "otf"):
-            continue  # CFF-embedded variants not covered by this decoder yet
-        try:
-            content = doc.extract_font(xref)
-            if isinstance(content, tuple):
-                content = content[-1]
-            tt = TTFont(io.BytesIO(content), fontNumber=0) if content else None
-        except Exception:
-            tt = None
-        if tt is not None:
-            by_family[base].append(MusicFont(base, xref, tt))
-    return dict(by_family)
+        if xref not in cache:
+            cache[xref] = _load_one_font(doc, xref, base, ext)
+        mf, warn = cache[xref]
+        if warn:
+            warnings.append(warn)
+        if mf is not None:
+            by_family[base].append(mf)
+    return dict(by_family), warnings
 
 
 # ---------------------------------------------------------------------------
@@ -245,34 +611,84 @@ class GlyphEvent:
         return f"<{self.category or '?'} g{self.gid} @({self.x0:.1f},{self.y0:.1f})>"
 
 
-# Per-page cache: decode_note_events and decode_time_signature each call
-# this once per standard staff, and a page can have several systems, so
-# without caching the same page's embedded fonts get re-parsed with
-# fontTools and the same page.get_texttrace() gets re-walked several times
-# over. Keyed by the Page object itself via a WeakKeyDictionary so entries
-# are dropped automatically once a caller is done with a page (no manual
-# invalidation needed, and no risk of a stale hit if a page object's id()
-# were ever reused).
+class PageGlyphs:
+    """Everything decode_* needs from one page's music-font text, decoded
+    once. `warnings` carries font-level problems (an unreadable embed, a
+    "Maestro" that failed its fingerprint) so a caller can degrade honestly
+    instead of quietly finding no glyphs."""
+
+    __slots__ = ("events", "fonts", "unknown", "warnings")
+
+    def __init__(self, events, fonts, unknown, warnings):
+        self.events = events
+        self.fonts = fonts
+        self.unknown = unknown
+        self.warnings = warnings
+
+    def __iter__(self):
+        # kept tuple-unpackable: (events, fonts, unknown)
+        return iter((self.events, self.fonts, self.unknown))
+
+
+# Per-page caches. decode_note_events and decode_time_signature each run
+# once per standard staff, and a page can have several systems, so without
+# caching the same page's embedded fonts get re-parsed, the same
+# page.get_texttrace() re-walked, and the same page.get_drawings() content
+# stream re-parsed several times over. Keyed by the Page object itself via a
+# WeakKeyDictionary so entries are dropped automatically once a caller is
+# done with a page (no manual invalidation needed, and no risk of a stale
+# hit if a page object's id() were ever reused).
 _GLYPH_EVENTS_CACHE = weakref.WeakKeyDictionary()
+_DRAWINGS_CACHE = weakref.WeakKeyDictionary()
+
+
+def clear_caches():
+    """Drop the per-page caches. Only needed by tests that mutate the
+    calibration tables between runs; the per-document font cache lives on
+    the document itself, so re-opening the file is enough to reset it."""
+    _GLYPH_EVENTS_CACHE.clear()
+    _DRAWINGS_CACHE.clear()
+
+
+def page_drawings(page):
+    """page.get_drawings(), memoised per page. get_drawings() re-parses the
+    page's entire content stream, and this page's drawings are wanted once
+    per standard staff by the stem/beam pass plus once each by tabextract's
+    horizontal and vertical segment scans - a ~7-staves-per-page file
+    re-parsed the same content stream ~9 times inside one synchronous
+    request."""
+    cached = _DRAWINGS_CACHE.get(page)
+    if cached is None:
+        try:
+            cached = page.get_drawings()
+        except Exception:
+            cached = []
+        _DRAWINGS_CACHE[page] = cached
+    return cached
 
 
 def extract_glyph_events(page):
     """Walk page.get_texttrace() and classify every char drawn in a known
     music font into a semantic category (category is None if the glyph
-    wasn't in our calibrated table - reported, not silently dropped)."""
+    wasn't in our calibrated table - reported, not silently dropped).
+    Returns a PageGlyphs."""
     cached = _GLYPH_EVENTS_CACHE.get(page)
     if cached is not None:
         return cached
 
-    fonts = load_music_fonts(page.parent, page)
+    fonts, warnings = load_music_fonts(page.parent, page)
     if not fonts:
-        result = ([], fonts, [])
+        result = PageGlyphs([], fonts, [], warnings)
         _GLYPH_EVENTS_CACHE[page] = result
         return result
 
     events = []
     unknown = []
-    trace = page.get_texttrace()
+    try:
+        trace = page.get_texttrace()
+    except Exception:
+        trace = []
+        warnings = warnings + ["page text trace could not be read"]
     for span in trace:
         # get_texttrace()'s "font" is normally already subset-tag-stripped,
         # but strip defensively - a raw "ABCDEF+Family" would otherwise
@@ -299,7 +715,7 @@ def extract_glyph_events(page):
             events.append(ev)
             if cat is None:
                 unknown.append(ev)
-    result = (events, fonts, unknown)
+    result = PageGlyphs(events, fonts, unknown, warnings)
     _GLYPH_EVENTS_CACHE[page] = result
     return result
 
@@ -309,8 +725,24 @@ def extract_glyph_events(page):
 # ---------------------------------------------------------------------------
 
 Stem = collections.namedtuple("Stem", "x y0 y1")
-Beam = collections.namedtuple("Beam", "x0 x1 yc")
+# A beam carries its CENTRELINE endpoints, not just a bbox centre: a steeply
+# slanted beam's centre y is nowhere near its actual y at either end (an
+# 85pt run with a 16.7pt-tall bbox is off by ~8.3pt at the ends, more than
+# any sane attachment tolerance), so matching a stem tip against the centre
+# rejected the first and last note of exactly the slanted groups this
+# decoder went out of its way to detect. See beam_y_at.
+Beam = collections.namedtuple("Beam", "x0 x1 y_at_x0 y_at_x1")
 Curve = collections.namedtuple("Curve", "pts x0 x1 y0 y1")
+
+
+def beam_y_at(beam, x):
+    """The beam's centreline y where the stem at `x` meets it."""
+    span = beam.x1 - beam.x0
+    if span <= 0:
+        return (beam.y_at_x0 + beam.y_at_x1) / 2
+    t = (x - beam.x0) / span
+    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+    return beam.y_at_x0 + (beam.y_at_x1 - beam.y_at_x0) * t
 
 
 def _iter_line_contours(items):
@@ -353,7 +785,16 @@ def _polygon_area(pts):
     return abs(area) / 2.0
 
 
-def _beam_from_contour(pts, min_width=2.0, min_thickness=0.8, max_thickness=8.0):
+# A beam stroke is one filled quadrilateral, so its contour is 4 points (5
+# if explicitly closed). Every one of the 956 accepted beam contours in a
+# sample of library pages had exactly 4. Contours with more points than a
+# quad can have are not beams, and short-circuiting them keeps the exact
+# all-pairs long-axis measurement below O(1) in practice - a 200-point
+# decorative contour used to cost ~20k hypot calls just to be rejected.
+_BEAM_MAX_CONTOUR_POINTS = 8
+
+
+def _beam_from_contour(pts, tol):
     """A beam stroke is a thin, wide (and sometimes steeply slanted) filled
     quadrilateral. Measuring its y-bbox height as "thickness" only works
     when it's near-horizontal: a steeply-slanted beam spanning a wide
@@ -365,41 +806,79 @@ def _beam_from_contour(pts, min_width=2.0, min_thickness=0.8, max_thickness=8.0)
     rejected cases (e.g. Classical-Guitar-Method-Vol1-2020.pdf p92, a
     single beam with a 16.7pt-tall bbox over an 85pt run that a flat
     height<=14 gate always discarded)."""
-    if len(pts) < 3:
+    n = len(pts)
+    if n < 3 or n > _BEAM_MAX_CONTOUR_POINTS:
         return None
     xs = [p.x for p in pts]
     ys = [p.y for p in pts]
     x0, x1 = min(xs), max(xs)
-    y0, y1 = min(ys), max(ys)
-    if x1 - x0 < min_width:
+    width = x1 - x0
+    if width < tol.beam_min_width or width > tol.beam_max_width:
         return None
     long_axis = 0.0
-    for i in range(len(pts)):
-        for j in range(i + 1, len(pts)):
+    for i in range(n):
+        for j in range(i + 1, n):
             d = math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y)
             if d > long_axis:
                 long_axis = d
     if long_axis <= 0:
         return None
     thickness = _polygon_area(pts) / long_axis
-    if not (min_thickness <= thickness <= max_thickness):
+    if not (tol.beam_min_thickness <= thickness <= tol.beam_max_thickness):
         return None
-    return Beam(x0, x1, (y0 + y1) / 2)
+    # Centreline y at each end: average the corner ys clustered at that end.
+    edge = width * 0.25
+    left = [p.y for p in pts if p.x <= x0 + edge]
+    right = [p.y for p in pts if p.x >= x1 - edge]
+    y_at_x0 = sum(left) / len(left) if left else (min(ys) + max(ys)) / 2
+    y_at_x1 = sum(right) / len(right) if right else (min(ys) + max(ys)) / 2
+    return Beam(x0, x1, y_at_x0, y_at_x1)
 
 
-def extract_stems_beams_curves(page, y_lo, y_hi, x_lo, x_hi):
+def _is_barline(y0, y1, staff_top, staff_bottom, tol):
+    """A barline is a vertical whose two ends coincide with the staff's own
+    outer lines; a stem starts at a notehead and runs about an octave, so it
+    lands somewhere else at at least one end.
+
+    Barlines are 13% of everything the stem gate accepts on the sampled
+    library (2089 of 16052), and letting them through has two teeth: a rest
+    within a flag's reach of one is misread as a flag and silently dropped,
+    and a notehead beside one can pick it as its nearest stem and take its
+    (absent) flag count.
+
+    The test is deliberately tight at BOTH ends - see the barline_tol note.
+    A merely "spans most of the staff" test also swallows the real down-stem
+    of a note sitting above the staff whose beam sits just below it, which
+    turns a beamed eighth into a quarter.
+    """
+    slack = tol.barline_tol
+    return abs(y0 - staff_top) <= slack and abs(y1 - staff_bottom) <= slack
+
+
+def extract_stems_beams_curves(page, y_lo, y_hi, x_lo, x_hi, tol=None):
+    if tol is None:
+        tol = _Tol(REFERENCE_STAFF_SPACING, y_hi - y_lo, x_hi - x_lo)
     stems, beams, curves = [], [], []
-    for d in page.get_drawings():
-        items = d.get("items", [])
-        fill = d.get("fill")
+    band_lo = y_lo - tol.drawing_band_pad
+    band_hi = y_hi + tol.drawing_band_pad
+    x_pad_lo = x_lo - tol.drawing_x_pad
+    x_pad_hi = x_hi + tol.drawing_x_pad
+
+    def add_stem(x, y0, y1):
+        if _is_barline(y0, y1, y_lo, y_hi, tol):
+            return
+        stems.append(Stem(x, y0, y1))
+
+    for d in page_drawings(page):
         rect = d.get("rect")
         if rect is None:
             continue
-        if not (x_lo - 5 <= rect.x0 and rect.x1 <= x_hi + 5):
+        if not (x_pad_lo <= rect.x0 and rect.x1 <= x_pad_hi):
             continue
-        if not (y_lo - 40 <= rect.y0 and rect.y1 <= y_hi + 40):
+        if not (band_lo <= rect.y0 and rect.y1 <= band_hi):
             continue
-
+        items = d.get("items", [])
+        fill = d.get("fill")
         is_dark_fill = bool(fill) and any(c is not None and c < 0.3 for c in fill)
 
         # 'l' items: group into contours so a path drawing MULTIPLE shapes
@@ -415,26 +894,34 @@ def extract_stems_beams_curves(page, y_lo, y_hi, x_lo, x_hi):
         # this whenever the leading beam-shape test matched, or even just
         # partially matched and then failed its own size gate).
         for contour in _iter_line_contours(items):
-            beam = _beam_from_contour(contour) if is_dark_fill and len(contour) >= 3 else None
+            beam = _beam_from_contour(contour, tol) if is_dark_fill else None
             if beam is not None:
                 beams.append(beam)
                 continue
             p1, p2 = contour[0], contour[-1]
-            if abs(p1.x - p2.x) < 0.15 and 4.0 <= abs(p1.y - p2.y) <= 45.0:
-                stems.append(Stem((p1.x + p2.x) / 2, min(p1.y, p2.y), max(p1.y, p2.y)))
+            dy = abs(p1.y - p2.y)
+            if abs(p1.x - p2.x) < tol.stem_line_max_dx and tol.stem_min_height <= dy <= tol.stem_max_height:
+                add_stem((p1.x + p2.x) / 2, min(p1.y, p2.y), max(p1.y, p2.y))
 
         for item in items:
             if item[0] == "re":
                 r = item[1]
-                if r.width < 1.0 and 4.0 <= r.height <= 45.0:
-                    stems.append(Stem((r.x0 + r.x1) / 2, r.y0, r.y1))
-                elif is_dark_fill and r.height < 8.0 and r.width >= 2.0:
-                    beams.append(Beam(r.x0, r.x1, (r.y0 + r.y1) / 2))
+                if r.width < tol.stem_rect_max_width and tol.stem_min_height <= r.height <= tol.stem_max_height:
+                    add_stem((r.x0 + r.x1) / 2, r.y0, r.y1)
+                elif (
+                    is_dark_fill
+                    and tol.beam_min_thickness <= r.height <= tol.beam_rect_max_height
+                    and tol.beam_min_width <= r.width <= tol.beam_max_width
+                ):
+                    yc = (r.y0 + r.y1) / 2
+                    beams.append(Beam(r.x0, r.x1, yc, yc))
             elif item[0] == "c":
                 p0, p1, p2, p3 = item[1], item[2], item[3], item[4]
                 xs = [p0.x, p1.x, p2.x, p3.x]
                 ys = [p0.y, p1.y, p2.y, p3.y]
                 curves.append(Curve((p0, p1, p2, p3), min(xs), max(xs), min(ys), max(ys)))
+    stems.sort(key=lambda s: s.x)
+    beams.sort(key=lambda b: b.x0)
     return stems, beams, curves
 
 
@@ -446,6 +933,9 @@ DURATION_CODE = {4.0: 1, 2.0: 2, 1.0: 4, 0.5: 8, 0.25: 16, 0.125: 32}
 
 
 class NoteEvent:
+    __slots__ = ("x", "y", "base_units", "flags", "dotted", "is_rest",
+                 "category", "notehead_kind", "tied_next")
+
     def __init__(self, x, y, base_units, flags, dotted, is_rest, category, notehead_kind=None):
         self.x = x
         self.y = y
@@ -478,71 +968,104 @@ class NoteEvent:
         return f"<{kind} 1/{self.duration_code}{d} @x={self.x:.1f}>"
 
 
-def _candidate_stems(stems, x0, x1, yc, x_tol=3.5, y_tol=6.0):
-    """Stems attach at one SIDE of a notehead (left edge for a down-stem,
-    right edge for an up-stem) at roughly the notehead's vertical center -
-    not at its bbox center-x or top/bottom edge. In dense/chordal writing
-    more than one stem can plausibly sit near a given notehead, so this
-    returns every plausible candidate rather than committing to one; the
-    caller resolves ambiguity by checking which candidate actually leads to
-    a real beam/flag (see decode_note_events)."""
-    out = []
-    for s in stems:
-        if not (abs(s.x - x0) <= x_tol or abs(s.x - x1) <= x_tol):
+def _bounds(sorted_keys, lo, hi):
+    """Index range of sorted_keys entries within [lo, hi]."""
+    return bisect.bisect_left(sorted_keys, lo), bisect.bisect_right(sorted_keys, hi)
+
+
+def _best_stem(stems, stem_xs, x0, x1, yc, tol, x_tol=None, y_tol=None):
+    """The stem this notehead actually hangs off.
+
+    Stems attach at one SIDE of a notehead (left edge for a down-stem,
+    right edge for an up-stem) at roughly the notehead's vertical centre -
+    not at its bbox centre-x or top/bottom edge. In dense/chordal writing
+    more than one stem can plausibly sit near a given notehead, so pick the
+    single closest one: nearest in x to either notehead edge, then nearest
+    in y to the notehead's centre.
+
+    Selecting on "which candidate has the highest flag/beam count" instead
+    is what silently upgraded genuine quarters to eighths and sixteenths -
+    a note's OWN plain stem scores zero and was skipped outright, handing
+    the note to whichever neighbouring voice's beamed stem happened to fall
+    inside the tolerance.
+    """
+    xt = tol.stem_x_tol if x_tol is None else x_tol
+    yt = tol.stem_y_tol if y_tol is None else y_tol
+    lo, hi = _bounds(stem_xs, min(x0, x1) - xt, max(x0, x1) + xt)
+    best = None
+    best_key = None
+    for i in range(lo, hi):
+        s = stems[i]
+        if not (abs(s.x - x0) <= xt or abs(s.x - x1) <= xt):
             continue
         near_end = s.y0 if abs(s.y0 - yc) < abs(s.y1 - yc) else s.y1
-        if abs(near_end - yc) > y_tol:
+        dy = abs(near_end - yc)
+        if dy > yt:
             continue
-        out.append(s)
-    return out
+        dx = min(abs(s.x - x0), abs(s.x - x1))
+        key = (round(dx, 3), round(dy, 3))
+        if best_key is None or key < best_key:
+            best, best_key = s, key
+    return best
 
 
-def _flag_count_near(events, stem, notehead_yc, x_tol=5.0, y_tol=9.0):
+def _has_stem_near(stems, stem_xs, x0, x1, yc, tol):
+    return _best_stem(stems, stem_xs, x0, x1, yc, tol,
+                      x_tol=tol.rest_stem_x_tol, y_tol=tol.rest_stem_y_tol) is not None
+
+
+def _flag_count_near(flag_events, flag_xs, stem, notehead_yc, tol):
     """Count flag hooks attached at the free end of a stem (the end further
     from the notehead)."""
     free_y = stem.y1 if abs(stem.y1 - notehead_yc) > abs(stem.y0 - notehead_yc) else stem.y0
+    lo, hi = _bounds(flag_xs, stem.x - tol.flag_x_tol, stem.x + tol.flag_x_tol)
     hooks = 0
-    for ev in events:
-        if ev.category not in FLAG_CATS:
+    for i in range(lo, hi):
+        ev = flag_events[i]
+        if abs(ev.yc - free_y) > tol.flag_y_tol:
             continue
-        if abs(ev.xc - stem.x) > x_tol:
-            continue
-        if abs(ev.yc - free_y) > y_tol:
-            continue
-        hooks += 1 if ev.category == "flag8" else 2  # flag16 glyph = 2 hooks in one glyph
+        hooks += FLAG_HOOKS.get(ev.category, 1)
     return hooks
 
 
-def _beam_count_near(beams, stem, notehead_yc, x_tol=3.0, y_tol=6.0):
+def _beam_count_near(beams, stem, notehead_yc, tol):
     """Count distinct stacked beam strokes whose x-span covers this stem AND
-    whose y sits near the stem's free (non-notehead) end - a beam attaches
-    at the tip of a stem, not just anywhere along its x position, so the y
-    check matters to avoid grabbing a neighboring voice's beam that happens
-    to pass over this stem's x. Restricted to the free end (matching
-    _flag_count_near's own free-end logic) rather than the whole stem span:
-    accepting a beam anywhere along the full stem meant a second voice's
-    beam crossing this stem anywhere - not just at its tip - could register,
-    which in 2-voice guitar writing turned a real quarter note into a false
-    16th."""
+    whose y AT THIS STEM'S X sits near the stem's free (non-notehead) end.
+
+    A beam attaches at the tip of a stem, not just anywhere along its x
+    position, so the y check matters to avoid grabbing a neighboring voice's
+    beam that happens to pass over this stem's x. Restricted to the free end
+    (matching _flag_count_near's own free-end logic) rather than the whole
+    stem span: accepting a beam anywhere along the full stem meant a second
+    voice's beam crossing this stem anywhere - not just at its tip - could
+    register, which in 2-voice guitar writing turned a real quarter note
+    into a false 16th.
+
+    The y is interpolated along the beam rather than taken from its bbox
+    centre - see the Beam docstring.
+    """
     free_y = stem.y1 if abs(stem.y1 - notehead_yc) > abs(stem.y0 - notehead_yc) else stem.y0
     levels = []
     for b in beams:
-        if not (b.x0 - x_tol <= stem.x <= b.x1 + x_tol):
+        if b.x0 - tol.beam_x_tol > stem.x:
+            break  # beams are x0-sorted: nothing further right can cover this stem
+        if stem.x > b.x1 + tol.beam_x_tol:
             continue
-        if abs(b.yc - free_y) > y_tol:
+        y_here = beam_y_at(b, stem.x)
+        if abs(y_here - free_y) > tol.beam_y_tol:
             continue
-        levels.append(round(b.yc, 1))
+        levels.append(round(y_here, 1))
     if not levels:
         return 0
     levels.sort()
     clusters = [levels[0]]
     for y in levels[1:]:
-        if y - clusters[-1] > 2.0:
+        if y - clusters[-1] > tol.beam_level_gap:
             clusters.append(y)
     return len(clusters)
 
 
-def _mark_ties(notes, curves, gap_max=40.0, y_tol=0.5, height_max=8.0):
+def _mark_ties(notes, curves, tol):
     """Best-effort tie detection: flag notes[i].tied_next when a shallow
     curve bridges notes[i] and notes[i+1] and both sit at the same pitch
     (same y - ties join equal pitches, unlike slurs which usually don't).
@@ -553,15 +1076,15 @@ def _mark_ties(notes, curves, gap_max=40.0, y_tol=0.5, height_max=8.0):
     """
     pitched = [n for n in notes if not n.is_rest]
     for a, b in zip(pitched, pitched[1:]):
-        if abs(a.y - b.y) > y_tol:
+        if abs(a.y - b.y) > tol.tie_y_tol:
             continue
         gap = b.x - a.x
-        if not (0 < gap <= gap_max):
+        if not (0 < gap <= tol.tie_gap_max):
             continue
         for c in curves:
             span = c.x1 - c.x0
             height = c.y1 - c.y0
-            if height > height_max:
+            if height > tol.tie_height_max:
                 continue
             if span < gap * 0.25 or span > gap * 1.3:
                 continue
@@ -571,25 +1094,98 @@ def _mark_ties(notes, curves, gap_max=40.0, y_tol=0.5, height_max=8.0):
                 break
 
 
-def _dot_count_after(events, x1, yc, x_tol=6.0, y_tol=4.0):
-    dots = [ev for ev in events if ev.category in DOT_CATS
-            and x1 - 1.0 <= ev.xc <= x1 + x_tol and abs(ev.yc - yc) <= y_tol]
-    return min(len(dots), 2)
+def _assign_dots(owners, dot_events, tol):
+    """Assign each augmentation-dot glyph to exactly ONE owner (notehead or
+    rest) and return {id(owner): dot_count}.
+
+    Counting "every dot glyph in a window to my right" per notehead instead
+    lets one dot be claimed by several noteheads and lets a neighbouring
+    voice's dot be claimed here: an augmentation dot is nudged half a staff
+    space off the line it belongs to, so the y window has to be about that
+    wide and cannot itself separate two voices a staff step apart. That is
+    how a 3/4 bar came to hold a `:2 ...{dd}` - 3.5 quarters, more than the
+    bar can physically contain. One dot, one owner fixes it.
+    """
+    counts = collections.Counter()
+    if not owners or not dot_events:
+        return counts
+    owners = sorted(owners, key=lambda e: e.x1)
+    owner_x1s = [e.x1 for e in owners]
+    for dot in dot_events:
+        lo, hi = _bounds(owner_x1s, dot.xc - tol.dot_x_tol, dot.xc + tol.dot_x_back)
+        best = None
+        best_key = None
+        for i in range(lo, hi):
+            ev = owners[i]
+            dy = abs(ev.yc - dot.yc)
+            if dy > tol.dot_y_tol:
+                continue
+            key = (round(dy, 3), round(abs(dot.xc - ev.x1), 3))
+            if best_key is None or key < best_key:
+                best, best_key = ev, key
+        if best is not None:
+            counts[id(best)] += 1
+    return counts
 
 
-def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_ys):
-    """Core decode for one standard-notation staff: returns sorted NoteEvent
-    list. line_ys: sorted list of the 5 staff line y-coordinates (for
-    half/whole rest disambiguation)."""
-    events, fonts, unknown = extract_glyph_events(page)
-    if not events:
-        return [], {"unknown_glyphs": 0, "note_events": 0}
+def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_ys,
+                       spacing=None):
+    """Core decode for one standard-notation staff: returns (NoteEvent list
+    sorted by x, stats).
+
+    line_ys: sorted list of the 5 staff line y-coordinates (for half/whole
+    rest disambiguation). spacing: that staff's line spacing, used to scale
+    every geometric tolerance (defaults to the spacing implied by line_ys).
+
+    `stats` is the decode's own honesty record and callers are expected to
+    ACT on it, not just log it: unknown_glyphs / unknown_ratio say how much
+    of this staff's music-font text fell outside the calibrated vocabulary,
+    and unknown_at_flag_position counts unrecognised glyphs sitting exactly
+    where a flag would attach - the shape of "this piece uses 32nd flags,
+    grace notes or an articulation we never calibrated", which decodes as
+    systematically wrong durations while looking perfectly healthy.
+    """
+    tol = _Tol(spacing if spacing else _spacing_from_lines(line_ys),
+               staff_bottom - staff_top, staff_x1 - staff_x0)
+    glyphs = extract_glyph_events(page)
+    stats = {
+        "unknown_glyphs": 0,
+        "unknown_ratio": 0.0,
+        "unknown_at_flag_position": 0,
+        "unknown_gid_or_name_sample": [],
+        "band_glyphs": 0,
+        "note_events": 0,
+        "stem_count": 0,
+        "beam_segment_count": 0,
+        "curve_count": 0,
+        "font_warnings": list(glyphs.warnings),
+    }
+    if not glyphs.events:
+        return [], stats
 
     pad = (staff_bottom - staff_top) * 1.6
     band_lo, band_hi = staff_top - pad, staff_bottom + pad
-    staff_events = [e for e in events if band_lo <= e.yc <= band_hi and staff_x0 - 3 <= e.xc <= staff_x1 + 3]
+    x_pad = tol.glyph_x_pad
+    staff_events = [e for e in glyphs.events
+                    if band_lo <= e.yc <= band_hi and staff_x0 - x_pad <= e.xc <= staff_x1 + x_pad]
 
-    stems, beams, curves = extract_stems_beams_curves(page, staff_top, staff_bottom, staff_x0, staff_x1)
+    stems, beams, curves = extract_stems_beams_curves(
+        page, staff_top, staff_bottom, staff_x0, staff_x1, tol)
+    stem_xs = [s.x for s in stems]
+
+    # Partition the staff's glyphs by category ONCE, x-sorted, so each
+    # proximity query below is a bisect-bounded window instead of a full
+    # rescan. Previously every notehead rescanned all staff events for
+    # flags (once per candidate stem) and again for dots, i.e.
+    # O(noteheads * events) per staff.
+    flag_events = sorted((e for e in staff_events if e.category in FLAG_CATS), key=lambda e: e.xc)
+    flag_xs = [e.xc for e in flag_events]
+    dot_events = sorted((e for e in staff_events if e.category in DOT_CATS), key=lambda e: e.xc)
+    unknown_in_band = [e for e in staff_events if e.category is None]
+
+    # Dots first: one dot glyph belongs to exactly one note (see _assign_dots).
+    dot_owners = [e for e in staff_events if e.category in NOTEHEAD_CATS or e.category in REST_CATS]
+    dot_counts = _assign_dots(dot_owners, dot_events, tol)
 
     notes = []
     for ev in staff_events:
@@ -607,38 +1203,23 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
                 base, flags = 2.0, 0
             else:
                 base = 1.0  # filled/x/diamond head: quarter-or-shorter
-                candidates = _candidate_stems(stems, ev.x0, ev.x1, ev.yc)
-                # several stems can plausibly touch one notehead in dense
-                # writing (chords, 2-voice passages). Rather than taking
-                # max(hooks, beam_levels) across EVERY candidate - which
-                # guarantees a false positive wins whenever any candidate
-                # (e.g. a second voice's stem) happens to have a higher
-                # count - prefer the single candidate that is actually the
-                # closest match to this notehead among those that attach to
-                # something real (a real beam/flag), so an unrelated
-                # neighboring stem's beam can't upgrade this note's duration.
                 flags = 0
-                best_dist = None
-                for stem in candidates:
-                    hooks = _flag_count_near(staff_events, stem, ev.yc)
-                    beam_levels = _beam_count_near(beams, stem, ev.yc)
-                    stem_flags = max(hooks, beam_levels)
-                    if stem_flags == 0:
-                        continue
-                    x_dist = min(abs(stem.x - ev.x0), abs(stem.x - ev.x1))
-                    if best_dist is None or x_dist < best_dist:
-                        best_dist = x_dist
-                        flags = stem_flags
-            dots = _dot_count_after(staff_events, ev.x1, ev.yc)
-            notes.append(NoteEvent(ev.xc, ev.yc, base, flags, dots, False, ev.category,
-                                    notehead_kind=ev.category))
+                stem = _best_stem(stems, stem_xs, ev.x0, ev.x1, ev.yc, tol)
+                if stem is not None:
+                    hooks = _flag_count_near(flag_events, flag_xs, stem, ev.yc, tol)
+                    beam_levels = _beam_count_near(beams, stem, ev.yc, tol)
+                    flags = max(hooks, beam_levels)
+            notes.append(NoteEvent(ev.xc, ev.yc, base, flags, min(dot_counts.get(id(ev), 0), 2),
+                                   False, ev.category, notehead_kind=ev.category))
         elif ev.category in REST_CATS:
             # disambiguate flag8_or_rest_quarter by stem proximity: a real
-            # stem near it means it's actually a flag glyph, not a rest
+            # stem near it means it's actually a flag glyph, not a rest.
+            # (Barlines are excluded from `stems` - see _is_barline - or a
+            # rest engraved next to one would vanish here.)
             if ev.category == "flag8_or_rest_quarter":
-                near_stems = _candidate_stems(stems, ev.x0 - 3, ev.x1 + 3, ev.yc, x_tol=6.0, y_tol=12.0)
-                if near_stems:
-                    continue  # it's a flag, already counted via the notehead's stem
+                if _has_stem_near(stems, stem_xs, ev.x0 - tol.rest_stem_pad,
+                                  ev.x1 + tol.rest_stem_pad, ev.yc, tol):
+                    continue  # it's a flag - counted via the notehead's stem (see FLAG_HOOKS)
                 cat = "rest_quarter"
             else:
                 cat = ev.category
@@ -649,23 +1230,39 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
                 base = 4.0 if nearest_idx <= 1 else 2.0
             elif cat == "rest8":
                 base = 0.5
-            elif cat == "rest_quarter":
-                base = 1.0
             else:
                 base = 1.0
-            dots = _dot_count_after(staff_events, ev.x1, ev.yc)
-            notes.append(NoteEvent(ev.xc, ev.yc, base, 0, dots, True, cat))
+            notes.append(NoteEvent(ev.xc, ev.yc, base, 0, min(dot_counts.get(id(ev), 0), 2),
+                                   True, cat))
 
     notes.sort(key=lambda n: n.x)
-    _mark_ties(notes, curves)
-    stats = {
-        "unknown_glyphs": len(unknown),
-        "unknown_gid_or_name_sample": sorted({(u.family, u.gid) for u in unknown})[:20],
+    _mark_ties(notes, curves, tol)
+
+    # Unrecognised glyphs sitting where a flag attaches are the dangerous
+    # ones: they mean this piece's flag/hook vocabulary is wider than the
+    # calibrated table (32nd flags, grace notes), so durations are wrong in
+    # a way nothing else in the decode would notice.
+    suspect = 0
+    for u in unknown_in_band:
+        stem = _best_stem(stems, stem_xs, u.x0, u.x1, u.yc, tol,
+                          x_tol=tol.flag_x_tol, y_tol=tol.flag_y_tol)
+        if stem is None:
+            continue
+        free_y = stem.y1 if abs(stem.y1 - u.yc) > abs(stem.y0 - u.yc) else stem.y0
+        if abs(u.yc - free_y) <= tol.flag_y_tol:
+            suspect += 1
+
+    stats.update({
+        "unknown_glyphs": len(unknown_in_band),
+        "unknown_ratio": (len(unknown_in_band) / len(staff_events)) if staff_events else 0.0,
+        "unknown_at_flag_position": suspect,
+        "unknown_gid_or_name_sample": sorted({(u.family, u.gid) for u in unknown_in_band})[:20],
+        "band_glyphs": len(staff_events),
         "note_events": len(notes),
         "stem_count": len(stems),
         "beam_segment_count": len(beams),
         "curve_count": len(curves),
-    }
+    })
     return notes, stats
 
 
@@ -673,14 +1270,37 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
 # Time signature
 # ---------------------------------------------------------------------------
 
-def _group_digit_clusters(digits, gap_ratio=0.6):
-    """Group x-sorted digit glyphs into runs of horizontally-adjacent
-    digits - the multiple digits of a number like the '12' of a 12/8
-    signature - by the gap between consecutive glyphs relative to their
-    width. Without this, a numerator/denominator pairing that matches one
-    glyph to one glyph pairs the "8" of 12/8 with whichever single digit
-    happens to sit closest and returns a confidently-wrong (1, 8) or
-    (2, 8)."""
+# alphaTab accepts a \ts numerator of 1-32 and needs a denominator that is a
+# power of two to mean a note-duration unit at all - the same rule api.py
+# enforces on a caller-supplied override. A glyph-decoded signature has to
+# clear it too: it is written into the emitted \ts and STORED, and alphaTab
+# throws outright on something like `\ts 3 12`, so an unvalidated decode
+# produces a saved transcription that can never be rendered again.
+VALID_TS_DENOMINATORS = (1, 2, 4, 8, 16, 32)
+
+
+def time_signature_is_valid(ts):
+    if not ts:
+        return False
+    num, den = ts
+    return 1 <= num <= 32 and den in VALID_TS_DENOMINATORS
+
+
+def _group_digit_clusters(digits, gap_ratio=0.6, row_ratio=0.35):
+    """Group digit glyphs into runs of horizontally-adjacent digits ON THE
+    SAME ROW - the multiple digits of a number like the '12' of a 12/8
+    signature.
+
+    Adjacency needs BOTH tests. Without the x-gap test, a numerator/
+    denominator pairing that matches one glyph to one glyph pairs the "8"
+    of 12/8 with whichever single digit happens to sit closest and returns a
+    confidently-wrong (1, 8). Without the row test, two digits that are
+    stacked rather than side by side - which is what a numerator and
+    denominator are - merge into one run whenever they overlap in x, so a
+    numerator digit that lands on the wrong side of the band split turns
+    "1/16" into "116" or "3/4" into "34"; that reaches \\ts as e.g. `3 12`
+    and makes the stored transcription unrenderable.
+    """
     if not digits:
         return []
     digits = sorted(digits, key=lambda e: e.x0)
@@ -688,7 +1308,8 @@ def _group_digit_clusters(digits, gap_ratio=0.6):
     for prev, cur in zip(digits, digits[1:]):
         gap = cur.x0 - prev.x1
         width = max(prev.width, cur.width, 1.0)
-        if gap <= width * gap_ratio:
+        row = max(prev.height, cur.height, 1.0) * row_ratio
+        if gap <= width * gap_ratio and abs(cur.yc - prev.yc) <= row:
             clusters[-1].append(cur)
         else:
             clusters.append([cur])
@@ -704,16 +1325,8 @@ def _cluster_span(cluster):
     return min(e.x0 for e in cluster), max(e.x1 for e in cluster)
 
 
-def decode_time_signature(page, staff_top, staff_bottom, staff_x0):
-    events, fonts, _ = extract_glyph_events(page)
-    if not events:
-        return None, "no music glyphs found"
-
-    mid = (staff_top + staff_bottom) / 2
-    window = [e for e in events
-              if staff_top - 4 <= e.yc <= staff_bottom + 4
-              and staff_x0 - 5 <= e.x0 <= staff_x0 + 45]
-
+def _signature_from_window(window, mid):
+    """Resolve one x-window of glyphs into a time signature, or (None, why)."""
     for e in window:
         if e.category == "common_time":
             return (4, 4), "common_time symbol"
@@ -755,8 +1368,36 @@ def decode_time_signature(page, staff_top, staff_bottom, staff_x0):
         if overlap > best_overlap * 0.6 and (nc is not best_nc or dc is not best_dc):
             return None, "ambiguous numerator/denominator digit grouping"
 
-    return (
-        (_cluster_value(best_nc), _cluster_value(best_dc)),
-        "stacked digit glyphs (multi-digit aware)",
-    )
+    ts = (_cluster_value(best_nc), _cluster_value(best_dc))
+    if not time_signature_is_valid(ts):
+        # Reaching here means the digit runs grouped into something that
+        # isn't a time signature at all. Emitting it would poison the
+        # stored transcription (see VALID_TS_DENOMINATORS).
+        return None, (
+            f"digit glyphs grouped into {ts[0]}/{ts[1]}, which is not a usable time "
+            "signature - treated as not detected"
+        )
+    return ts, "stacked digit glyphs (multi-digit aware)"
 
+
+def decode_time_signature(page, staff_top, staff_bottom, staff_x0, spacing=None):
+    """The time signature printed at the START of this staff, or (None, why).
+
+    Only the leading window is read. A meter change engraved mid-system is
+    not picked up here: the same digit glyphs also spell tuplet numbers and
+    other numerals across a staff, and scanning the full width traded a
+    known blind spot for confidently-wrong signatures. Changes engraved at a
+    system's start - which is where the sampled library's changes land - are
+    caught, because this runs per standard staff and tabextract carries the
+    results forward as a timeline (see _time_signature_timeline).
+    """
+    tol = _Tol(spacing if spacing else (staff_bottom - staff_top) / 4.0)
+    glyphs = extract_glyph_events(page)
+    if not glyphs.events:
+        return None, "no music glyphs found"
+    lead = tol.spacing * 8.8  # was a flat 45pt at the reference staff size
+    mid = (staff_top + staff_bottom) / 2
+    window = [e for e in glyphs.events
+              if staff_top - tol.spacing <= e.yc <= staff_bottom + tol.spacing
+              and staff_x0 - tol.drawing_x_pad <= e.x0 <= staff_x0 + lead]
+    return _signature_from_window(window, mid)
