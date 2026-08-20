@@ -1131,6 +1131,22 @@ def _assign_stem_directions(notes, stems_by_key):
     a stem sticks out roughly an octave beyond the note it points away from
     and stops dead at the note it points toward. Page y grows DOWNWARD, so
     the overhang above the group is (topmost notehead y - stem y0).
+
+    The answer is then CHECKED against which side of the noteheads the stem
+    sits on, because an up-stem leaves a notehead at its right edge and a
+    down-stem at its left - a convention the library keeps on 99.7% of
+    stemmed filled noteheads and 97.7% of half notes (measured over 21700 of
+    them). A stem whose side and overhang contradict each other is not this
+    notehead's: _best_stem accepts any stem end within about a staff space,
+    which in close-spaced two-voice writing the OTHER voice's stem can
+    satisfy. Such a stem is dropped rather than believed - the notehead keeps
+    no stem at all and is placed by position instead, which can lose
+    information but cannot invert it.
+
+    This catches only the contradictory subset. A neighbouring voice's stem
+    that happens to sit where this notehead's own stem WOULD sit is
+    indistinguishable from it here, and still yields a wrong direction; see
+    the residual-risk note on the half-note branch of decode_note_events.
     """
     by_stem = collections.defaultdict(list)
     for n in notes:
@@ -1144,6 +1160,14 @@ def _assign_stem_directions(notes, stems_by_key):
         overhang_up = min(ys) - stem.y0
         overhang_down = stem.y1 - max(ys)
         direction = "up" if overhang_up > overhang_down else "down"
+        # Mean over the members, so the one notehead a second-interval chord
+        # displaces to the far side of the stem cannot outvote the rest.
+        mean_x = sum(m.x for m in members) / len(members)
+        on_right = stem.x > mean_x
+        if on_right != (direction == "up"):
+            for m in members:
+                m.stem_key = None
+            continue
         for m in members:
             m.stem_dir = direction
 
@@ -1281,13 +1305,30 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
                 # chord/2-voice passage would otherwise be a false positive).
                 base, flags = 4.0, 0
             elif ev.category == "notehead_half":
-                # half notes have a stem but categorically cannot carry a
-                # flag or beam - counting one here would only ever be a
-                # false positive from a neighboring voice's stem/beam sitting
-                # nearby (2-voice writing), so don't count either. The stem
-                # is still looked up, for its DIRECTION only: a lower voice
+                # A half note has a stem but categorically cannot carry a
+                # flag or beam, so none is ever counted for one - any that
+                # turned up would be a neighbouring voice's.
+                #
+                # Its stem IS looked up, for the stem's DIRECTION only, which
+                # is what says which voice the note belongs to: a lower voice
                 # in this repertoire is very often written in half notes, and
-                # without its stem it has no voice signal at all.
+                # without its stem it carries no voice signal at all.
+                #
+                # KNOWN RESIDUAL RISK, accepted deliberately: _best_stem
+                # accepts any stem end within about a staff space of the
+                # notehead's centre, and a real half note's own stem end is
+                # measured at up to 0.94 spacings from it (median 0.44, over
+                # 2004 of them), so the window cannot be tightened without
+                # losing real attachments - at 0.5 spacings it loses 46% of
+                # them. Where this note's own stem is missing from the vector
+                # pass entirely, a neighbouring voice's stem can therefore be
+                # picked, and if it sits in a position consistent with the
+                # engraving convention nothing here can tell. That yields a
+                # wrong voice for the note and breaks both voices' arithmetic
+                # for that bar, which shows up in the overfull-bar count.
+                # _assign_stem_directions rejects the subset where the
+                # stem's side and its overhang contradict each other; the
+                # consistent-looking case remains.
                 base, flags = 2.0, 0
                 stem = _best_stem(stems, stem_xs, ev.x0, ev.x1, ev.yc, tol)
             else:

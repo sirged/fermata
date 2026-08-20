@@ -742,6 +742,86 @@ def test_a_monophonic_score_does_not_declare_a_voice_mode():
     assert "\\voicemode" not in tex
 
 
+def test_an_onset_short_of_digits_does_not_eat_the_next_onsets_column():
+    """An onset can legitimately need two columns (engravers offset a bass tab
+    number a few points right of a treble one in the same chord), but the
+    search for the second one has to stay beside the first. Searching the full
+    notehead-to-digit window instead let an onset with more noteheads than its
+    own column had digits consume the NEXT onset's column - sounding those
+    frets a beat early and dropping the notes that column belonged to."""
+    events = [
+        _note_event(100.0, 4, y=60.0, stem="up"),
+        _note_event(100.0, 4, y=120.0, stem="down"),
+        _note_event(110.0, 4, y=122.0, stem="down"),
+    ]
+    cols = [_col(100.0, (1, "7")), _col(110.0, (5, "3"))]
+    voices, _, unmatched_notes, _ = _measure(cols, events, budget=3.0)
+    lower = [b for b in voices[1] if b[2]]
+    assert lower == [(4, 0, [(5, "3")])], voices
+    # and it is the SECOND beat of that voice, not the first
+    assert voices[1].index(lower[0]) == 1, voices[1]
+    assert unmatched_notes == 1, "the notehead with no digit is reported, not hidden"
+
+
+def test_one_stem_shared_across_two_onsets_is_not_one_chord():
+    """Sharing a stem is necessary but not sufficient to be one beat - the
+    noteheads also have to sound together. A notehead whose own stem was
+    missed can be threaded onto a neighbour's, and keying on the stem alone
+    welded two consecutive onsets into a chord positioned between them,
+    losing an onset and its duration."""
+    events = [
+        _note_event(100.0, 4, y=60.0, stem="up", stem_id="A"),
+        _note_event(106.0, 4, y=80.0, stem="up", stem_id="A"),
+        _note_event(140.0, 4, y=62.0, stem="up"),
+    ]
+    cols = [_col(100.0, (2, "5")), _col(106.0, (5, "3")), _col(140.0, (5, "7"))]
+    voices, _, _, _ = _measure(cols, events, budget=3.0)
+    assert len(voices) == 1, voices
+    assert len(voices[0]) == 3, "three onsets, three beats"
+    assert tabextract._bar_quarters(voices) == 3.0
+
+
+def test_a_rest_matching_no_onset_is_dropped_not_added_to_a_sounding_voice():
+    """A rest glyph further from every decoded onset than the merge tolerance
+    says nothing about which voice it belongs to. Adding it anyway put a beat
+    into a voice that was already sounding there, taking that voice over its
+    meter and pushing everything after it late."""
+    events = [_note_event(x, 4, y=60.0, stem="up") for x in (100.0, 140.0, 180.0, 220.0)]
+    events += [_note_event(x, 4, y=120.0, stem="down") for x in (100.0, 180.0)]
+    events += [_note_event(145.4, 4, y=62.0, rest=True)]  # 5.4pt from any onset
+    cols = [_col(100.0, (1, "7"), (5, "3")), _col(140.0, (1, "8")),
+            _col(180.0, (1, "9"), (5, "5")), _col(220.0, (1, "10"))]
+    voices, _, _, _ = _measure(cols, events, budget=4.0)
+    assert len(voices) == 2
+    assert _quarters(voices[0]) == 4.0, voices[0]
+    assert _quarters(voices[1]) == 4.0, voices[1]
+    assert [b[2] for b in voices[0]] == [[(1, "7")], [(1, "8")], [(1, "9")], [(1, "10")]]
+
+
+def test_a_voice_whose_notes_all_lost_their_digits_is_not_emitted():
+    """Padding a voice that decoded no notes at all filled a whole bar with
+    inferred silence: a phantom voice that counted as polyphony, overstated
+    how much rest was deduced from the meter, and wrote a meaningless
+    `\\voice :2 r :4 r` into the stored transcription."""
+    events = [
+        _note_event(100.0, 4, y=60.0, stem="up"),
+        _note_event(100.0, 4, y=120.0, stem="down"),
+    ]
+    cols = [_col(100.0, (1, "7"))]  # one digit for two noteheads
+    voices, _, unmatched_notes, inferred = _measure(cols, events, budget=3.0)
+    assert len(voices) == 1, voices
+    assert voices[0] == [(4, 0, [(1, "7")])]
+    assert inferred == 0.0, "no silence is inferred for a voice that never played"
+    assert unmatched_notes == 1
+
+
+def test_a_bar_of_nothing_but_rests_still_keeps_them():
+    """The phantom-voice filter must not throw away a genuinely silent bar."""
+    events = [_note_event(100.0, 4, rest=True)]
+    voices, _, _, _ = _measure([], events, budget=3.0)
+    assert voices == [[(4, 0, [])]], voices
+
+
 def test_bar_quarters_is_the_longest_voice_not_the_sum():
     """Voices sound CONCURRENTLY. Summing them is exactly the mistake that
     made a bar of two-voice writing read as double its meter."""

@@ -722,6 +722,15 @@ _REST_ONSET_MERGE_SPACINGS = 0.8
 # more than an order of magnitude and still cannot merge two real onsets.
 _ONSET_SHARE_SPACINGS = 0.6
 
+# How far from the column it already claimed one onset may reach for ANOTHER
+# column, in notation-staff line spacings. Engravers offset a bass tab number
+# a couple of points right of a treble one in the same chord, so an onset's
+# digits can arrive as two columns a fraction of a note-spacing apart - but
+# the next ONSET's column is a full note-spacing away (about 2.5 spacings for
+# eighths, 1.25 for sixteenths), so this has to stay well under that or an
+# onset short of digits eats its neighbour's column.
+_CHORD_SPLIT_SPACINGS = 0.6
+
 # Guitar fingerstyle and classical writing is two voices: a melody over an
 # accompaniment. Three genuinely independent voices on one guitar staff are
 # rare enough that a third simultaneous stem is far more likely to be a chord
@@ -785,6 +794,15 @@ def _stem_groups(events, onset_tol):
       - two groups sounding together whose stems point the SAME way. That is
         not three-voice writing; it is one chord whose stem came through as
         two separate strokes.
+
+    Sharing a stem is necessary but NOT sufficient to be one beat: the
+    noteheads also have to sound together. A notehead whose own stem the
+    vector pass missed can end up threaded onto a neighbouring note's stem
+    (see glyph_rhythm._stem_through_notehead, which deliberately drops the
+    tight end-window), and keying on the stem alone then welded two
+    consecutive onsets into a single chord positioned between them - losing
+    an onset and its duration outright. So a stem's noteheads are additionally
+    split into runs that actually share an onset.
     """
     by_stem = {}
     member_lists = []
@@ -792,12 +810,17 @@ def _stem_groups(events, onset_tol):
         if ev.stem_key is None:
             member_lists.append([ev])
             continue
-        members = by_stem.get(ev.stem_key)
-        if members is None:
-            members = []
-            by_stem[ev.stem_key] = members
-            member_lists.append(members)
-        members.append(ev)
+        runs = by_stem.setdefault(ev.stem_key, [])
+        target = None
+        for run in runs:
+            if abs(ev.x - run[0].x) <= onset_tol:
+                target = run
+                break
+        if target is None:
+            target = []
+            runs.append(target)
+            member_lists.append(target)
+        target.append(ev)
     pending = [_StemGroup(m) for m in member_lists]
 
     # Stem-bearing groups settle first, so a notehead with no stem has
@@ -923,7 +946,7 @@ def _assign_group_voices(groups, onset_tol):
     return voices or [groups]
 
 
-def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol):
+def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol, split_tol):
     """Hand the tab digits sounding at one onset out to the groups there.
 
     A chord and two simultaneous voices are the same shape in the tab - a
@@ -934,6 +957,17 @@ def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol):
     puts each voice's note on the string the engraver actually wrote it on,
     and does so whether the onset is one chord or two voices.
 
+    An onset can need MORE than one column, because engravers offset a bass
+    tab number a couple of points right of a treble one in the same chord to
+    keep both legible and _group_into_columns does not always merge the two
+    back. But the search for those extra columns has to stay inside this
+    onset's own neighbourhood (`split_tol`), not the full notehead-to-digit
+    window (`x_tol`, which is wider than the gap between consecutive
+    columns): searching that far let an onset whose own column held fewer
+    digits than it had noteheads consume the NEXT onset's column instead,
+    sounding those frets a beat early and dropping the notes that column
+    belonged to.
+
     Returns ({id(group): [(string, fret), ...]}, noteheads_with_no_digit).
     """
     heads = sorted(((m, g) for g in onset_groups for m in g.members),
@@ -942,19 +976,25 @@ def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol):
     ox = sum(m.x for m, _ in heads) / needed
 
     digits = []
+    anchor = None
     while len(digits) < needed:
-        lo = bisect.bisect_left(col_xcs, ox - x_tol)
-        hi = bisect.bisect_right(col_xcs, ox + x_tol)
+        # The first column is found from the notehead x; any further one has
+        # to sit beside THAT column, not merely somewhere in the window.
+        centre, reach = (ox, x_tol) if anchor is None else (anchor, split_tol)
+        lo = bisect.bisect_left(col_xcs, centre - reach)
+        hi = bisect.bisect_right(col_xcs, centre + reach)
         best_i, best_d = None, None
         for i in range(lo, hi):
             if used[i]:
                 continue
-            d = abs(col_xcs[i] - ox)
+            d = abs(col_xcs[i] - centre)
             if best_d is None or d < best_d:
                 best_i, best_d = i, d
         if best_i is None:
             break
         used[best_i] = True
+        if anchor is None:
+            anchor = col_xcs[best_i]
         digits.extend(cols_sorted[best_i]["notes"])
 
     digits.sort(key=lambda n: n[0])  # by string: 1 is the highest-pitched
@@ -1063,6 +1103,7 @@ def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
     measure_events = note_events[lo_i:hi_i]
     onset_tol = notation_spacing * _ONSET_SHARE_SPACINGS
     merge_tol = notation_spacing * _REST_ONSET_MERGE_SPACINGS
+    split_tol = notation_spacing * _CHORD_SPLIT_SPACINGS
     groups = _stem_groups([n for n in measure_events if not n.is_rest], onset_tol)
     rest_clusters = _cluster_pitched_glyph_events([n for n in measure_events if n.is_rest])
 
@@ -1079,7 +1120,7 @@ def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
     onsets = _onsets(groups, onset_tol)
     for onset in onsets:
         per_group, missing = _match_onset_columns(
-            onset, cols_sorted, col_xcs, used, x_tol)
+            onset, cols_sorted, col_xcs, used, x_tol, split_tol)
         unmatched_glyph_notes += missing
         for g in onset:
             notes = per_group[id(g)]
@@ -1106,15 +1147,24 @@ def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
     for t in tagged:
         t.sort(key=lambda b: b[0])
 
+    # A voice only exists if something in it actually plays. One whose every
+    # group lost its fret number holds no notes at all, and padding it filled
+    # a whole bar with inferred silence - a phantom voice that counted as
+    # polyphony, overstated how much rest was deduced from the meter, and
+    # wrote a meaningless `\voice :2 r :4 r` into the stored transcription.
+    # A bar of nothing but decoded rests keeps them, though - that is a real
+    # silent bar, not a phantom beside a voice that plays.
+    noted = [t for t in tagged if any(notes for _x, _c, _d, notes in t)]
+    live = noted if noted else [t for t in tagged if t]
+
     inferred = 0.0
-    if polyphonic and budget:
-        first_x = min((t[0][0] for t in tagged if t), default=0.0)
-        for t in tagged:
+    if len(live) > 1 and budget:
+        first_x = min(t[0][0] for t in live)
+        for t in live:
             inferred += _pad_voice_to_budget(t, budget, first_x, onset_tol)
 
-    voices = [[(code, dots, notes) for _x, code, dots, notes in t] for t in tagged]
-    voices = [v for v in voices if v]
-    return voices, unmatched_columns, unmatched_glyph_notes, inferred
+    return ([[(code, dots, notes) for _x, code, dots, notes in t] for t in live],
+            unmatched_columns, unmatched_glyph_notes, inferred)
 
 
 def _voice_mean_y(groups):
@@ -1161,6 +1211,14 @@ def _place_rest_clusters(rest_clusters, onsets, voice_groups, voice_of, tagged,
     says which voice is silent at that onset. So it is assigned to a voice
     that has nothing sounding there rather than dropped, and two rests at one
     onset become one beat in each voice.
+
+    That only holds for a rest that IS at a known onset. A rest glyph engraved
+    further than merge_tol from every decoded onset says nothing about which
+    voice it belongs to or where in the bar it falls, and adding it anyway
+    made a voice hold a beat more than its meter and pushed everything after
+    it late - the same phantom-rest fault the monophonic branch exists to
+    prevent. Those are dropped here too, and the silence they stood for is
+    recovered by _pad_voice_to_budget from the meter instead.
     """
     onset_xs = [sum(g.x for g in o) / len(o) for o in onsets]
     voice_y = {vi: _voice_mean_y(gs) for vi, gs in enumerate(voice_groups)}
@@ -1183,9 +1241,14 @@ def _place_rest_clusters(rest_clusters, onsets, voice_groups, voice_of, tagged,
             tagged[0].append((rx, rep.duration_code, rep.dotted, []))
             continue
 
-        free = set(voice_y)
-        if hit is not None:
-            free -= {voice_of[id(g)] for g in hit}
+        if hit is None:
+            continue  # no onset to pin it to - see the docstring
+        # Voices sounding at this onset, plus any voice that already holds a
+        # beat here at all: a rest cannot share an onset with the voice's own
+        # note, and two rests must not stack in one voice either.
+        free = set(voice_y) - {voice_of[id(g)] for g in hit}
+        free = {v for v in free
+                if not any(abs(bx - rx) <= merge_tol for bx, _c, _d, _n in tagged[v])}
         if not free:
             continue  # every voice is already sounding here
         for ev in sorted(cluster, key=lambda e: e.y):

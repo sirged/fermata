@@ -442,8 +442,10 @@ def _note(x, y, key):
 def test_stem_direction_comes_from_which_end_overhangs_the_notehead():
     """Page y grows DOWNWARD. An up-stem runs about an octave ABOVE its
     notehead and stops dead at it, so the overhang is on the small-y side."""
-    up = G.Stem(x=50.0, y0=60.0, y1=100.0)      # tip above a notehead at y=100
-    down = G.Stem(x=80.0, y0=100.0, y1=140.0)   # tip below a notehead at y=100
+    # Stems attach at a notehead's EDGE, never its centre: an up-stem on the
+    # right, a down-stem on the left (see _assign_stem_directions).
+    up = G.Stem(x=54.0, y0=60.0, y1=100.0)      # tip above a notehead at y=100
+    down = G.Stem(x=76.0, y0=100.0, y1=140.0)   # tip below a notehead at y=100
     notes = [_note(50.0, 100.0, "u"), _note(80.0, 100.0, "d")]
     G._assign_stem_directions(notes, {"u": up, "d": down})
     assert [n.stem_dir for n in notes] == ["up", "down"]
@@ -454,15 +456,15 @@ def test_a_chords_direction_is_not_read_off_one_of_its_noteheads():
     end further from any given member is on the wrong side for every member
     but the outermost - reading "the free end is below me, therefore stem
     down" off the top note of an up-stemmed chord inverts it."""
-    # up-stem chord: noteheads at y=100/110/120, stem from its tip at y=60
-    # down to the lowest notehead at y=120.
-    stem = G.Stem(x=50.0, y0=60.0, y1=120.0)
+    # up-stem chord: noteheads at y=100/110/120, stem on their RIGHT running
+    # from its tip at y=60 down to the lowest notehead at y=120.
+    stem = G.Stem(x=54.0, y0=60.0, y1=120.0)
     notes = [_note(50.0, y, "c") for y in (100.0, 110.0, 120.0)]
     G._assign_stem_directions(notes, {"c": stem})
     assert [n.stem_dir for n in notes] == ["up", "up", "up"]
 
-    # and the mirror image
-    stem_d = G.Stem(x=50.0, y0=100.0, y1=160.0)
+    # and the mirror image: down-stem on their LEFT
+    stem_d = G.Stem(x=46.0, y0=100.0, y1=160.0)
     notes_d = [_note(50.0, y, "c") for y in (100.0, 110.0, 120.0)]
     G._assign_stem_directions(notes_d, {"c": stem_d})
     assert [n.stem_dir for n in notes_d] == ["down", "down", "down"]
@@ -480,3 +482,40 @@ def test_a_notehead_partway_along_a_chord_stem_still_finds_it():
     assert G._stem_through_notehead(stems, stem_xs, 44.0, 50.0, 100.0, tol) is stem
     # ...but a notehead the stem does not span is not on it
     assert G._stem_through_notehead(stems, stem_xs, 44.0, 50.0, 200.0, tol) is None
+
+
+def test_a_stem_whose_side_contradicts_its_overhang_is_not_believed():
+    """An up-stem leaves a notehead at its RIGHT edge and a down-stem at its
+    left. _best_stem accepts any stem end within about a staff space, which a
+    neighbouring voice's stem can satisfy in close-spaced two-voice writing,
+    so a stem on the wrong side for the direction it implies is not this
+    notehead's - and believing it would file the note in the wrong voice.
+    Dropping it loses information; believing it inverts it."""
+    contradictory = G.Stem(x=44.0, y0=65.0, y1=100.0)  # left of the head, points up
+    n = _note(48.0, 100.0, "c")
+    G._assign_stem_directions([n], {"c": contradictory})
+    assert n.stem_dir is None
+    assert n.stem_key is None, "and it must not group with that stem either"
+
+    # a genuine right-edge up-stem is still believed
+    own = G.Stem(x=52.0, y0=65.0, y1=100.0)
+    m = _note(48.0, 100.0, "own")
+    G._assign_stem_directions([m], {"own": own})
+    assert m.stem_dir == "up"
+
+    # ...as is a genuine left-edge down-stem
+    down = G.Stem(x=44.0, y0=100.0, y1=135.0)
+    d = _note(48.0, 100.0, "d")
+    G._assign_stem_directions([d], {"d": down})
+    assert d.stem_dir == "down"
+
+
+def test_a_seconds_chord_keeps_its_stem_despite_one_displaced_notehead():
+    """A chord containing a second displaces one notehead to the far side of
+    the shared stem, so the side test has to be taken over the group's mean -
+    per notehead it would throw the whole chord's stem away."""
+    stem = G.Stem(x=52.0, y0=60.0, y1=110.0)
+    members = [_note(48.0, 110.0, "c"), _note(48.0, 105.0, "c"),
+               _note(57.0, 100.0, "c")]  # the displaced one, right of the stem
+    G._assign_stem_directions(members, {"c": stem})
+    assert [m.stem_dir for m in members] == ["up", "up", "up"]
