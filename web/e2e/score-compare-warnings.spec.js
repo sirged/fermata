@@ -34,7 +34,15 @@ import {
   STANDING_LIMITS_ONLY_WARNINGS,
   transcriptionResponse,
   stubScoreApi,
+  editedTranscriptionResponse,
 } from "./fixtures/transcription-warnings.js";
+
+// This bug and its fix were verified for real against fix/persist-bar-
+// conformance (commit 81532ec) and the real "To Zanarkand" PDF: transcribe
+// (headline shows real figures) -> hand-edit and save through the UI
+// (panel goes to nothing, not the pre-edit figures) -> revert to extracted
+// (real figures return, identical to the first transcribe). The scenario
+// below is the mocked version of that same three-state check.
 
 test.describe("ScoreCompare warnings summary", () => {
   test("states the bar count and capped confidence without interaction, keeps the staff in view, and its detail toggles", async ({
@@ -125,6 +133,36 @@ test.describe("ScoreCompare warnings summary", () => {
     await page.goto("/#/score/1");
     await page.waitForSelector(".warnings-summary");
     await expect(page.locator(".warn-text")).toContainText("7 of 40 bars don't add up");
+  });
+
+  test("saving a hand edit clears the stale bar figures and warnings instead of preserving them, and reverting restores the real ones", async ({
+    page,
+  }) => {
+    const extracted = transcriptionResponse({
+      warnings: NINE_WARNINGS,
+      confidence: CAPPED_CONFIDENCE,
+      bars: { defective: 3, measured: 50, overfull: 3, short: 0 },
+    });
+    await stubScoreApi(page, extracted, { editRevert: true });
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".warnings-summary");
+    await expect(page.locator(".warn-text")).toHaveText(NINE_WARNINGS_EXPECTED_SUMMARY);
+
+    await page.locator('button:has-text("Edit source")').click();
+    await page.locator(".editor-input").fill("<score-partwise><!-- fixed the bars --></score-partwise>");
+    await page.locator('button:has-text("Save & render")').click();
+    await expect(page.locator(".editor-input")).toHaveCount(0);
+
+    // the panel must go to NOTHING - not the pre-edit "3 of 50", which an
+    // endpoint that omits rather than states its empty keys would silently
+    // preserve through the { ...transcription, ...res } merge in saveEdit()
+    await expect(page.locator(".warnings")).toHaveCount(0);
+    await expect(page.locator(".standing-footnote")).toHaveCount(0);
+    await expect(page.locator(".source-badge.edited")).toBeVisible();
+
+    await page.locator('button:has-text("Revert to extracted")').click();
+    await page.waitForSelector(".warnings-summary");
+    await expect(page.locator(".warn-text")).toHaveText(NINE_WARNINGS_EXPECTED_SUMMARY);
   });
 
   test("still surfaces warnings nested under confidence.warnings, the shape GET /transcription can return", async ({

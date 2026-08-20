@@ -150,12 +150,47 @@ export function transcriptionResponse({ warnings, confidence, bars, nestWarnings
 }
 
 /**
+ * A saved hand edit's response shape, mirroring server/fermata/api.py's
+ * _transcription_dict exactly for a row whose `confidence` column is NULL
+ * (every edited row): `warnings` is stated as `[]` and all four bar keys as
+ * `null` - NEVER omitted - specifically because an earlier version of the
+ * backend omitted them, and a client that spread such a response over the
+ * transcription it already held kept the PRE-EDIT figures. A user opened a
+ * score reading "4 of 50 bars don't add up", fixed exactly those bars,
+ * saved, and the panel still said "4 of 50 bars don't add up" and still
+ * listed warnings about notes that no longer existed - the confidently
+ * wrong state this whole feature exists to prevent. `null` (not `0`) is the
+ * deliberate way of saying "nothing has measured this content"; `0` would
+ * claim every bar was measured and every one of them added up.
+ */
+export function editedTranscriptionResponse() {
+  return {
+    id: 1,
+    score_id: 1,
+    format: "musicxml",
+    content: "<score-partwise><!-- hand-edited --></score-partwise>",
+    source: "edited",
+    confidence: null,
+    warnings: [],
+    bars_overfull: null,
+    bars_short: null,
+    bars_defective: null,
+    bars_measured: null,
+  };
+}
+
+/**
  * Stubs every /api route ScoreCompare.svelte/PdfViewer/TabViewer touch for
  * score id 1. `transcription` is either a transcriptionResponse() object, or
  * `null` for "no transcription yet" (GET returns 404, matching a fresh
  * score).
+ *
+ * `editRevert`, if given, wires PUT (save) to always answer with
+ * `editedTranscriptionResponse()` and DELETE (revert) to always answer with
+ * `transcription` again - modeling "hand-edit this extracted row, then
+ * revert" regardless of what the test actually types into the editor.
  */
-export async function stubScoreApi(page, transcription) {
+export async function stubScoreApi(page, transcription, { editRevert = false } = {}) {
   await page.route("**/api/scores/1", (route) => route.fulfill({ json: SCORE }));
   await page.route("**/api/scores/1/file", (route) =>
     route.fulfill({ body: MIN_PDF, contentType: "application/pdf" }),
@@ -166,6 +201,15 @@ export async function stubScoreApi(page, transcription) {
   await page.route("**/api/scores/1/transcription/analysis", (route) =>
     route.fulfill({ json: { extractable: true } }),
   );
+  if (editRevert) {
+    await page.route("**/api/scores/1/transcription", (route) => {
+      const method = route.request().method();
+      if (method === "PUT") return route.fulfill({ json: editedTranscriptionResponse() });
+      if (method === "DELETE") return route.fulfill({ json: transcription });
+      return route.fulfill({ json: transcription });
+    });
+    return;
+  }
   await page.route("**/api/scores/1/transcription", (route) => {
     if (route.request().method() !== "GET") return route.continue();
     if (!transcription) return route.fulfill({ status: 404, json: { detail: "not found" } });

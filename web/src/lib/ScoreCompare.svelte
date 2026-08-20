@@ -361,10 +361,16 @@
       // edit itself is the source of truth for content/source either way
       // `res` carries the format the server read off the content, which is
       // what the viewer dispatches on - so let it win over the loaded row's.
+      // `res` STATES warnings ([]) and the four bars_* figures (null) on
+      // every response rather than omitting them for an edit, which has no
+      // confidence to report - an absent key would be silently kept by this
+      // spread, which is exactly how a saved edit once went on reporting the
+      // bar counts and warnings from the content it had just replaced. An
+      // explicit "not recorded" overwrites those stale values instead.
       transcription = { ...transcription, ...res, content: draft, source: "edited" };
-      // an edit is stored with no `confidence` row, so this is expected to
-      // land on "nothing to show" - going through the shared helper rather
-      // than assuming that keeps it correct if that ever stops being true
+      // expected to land on "nothing to show" now that `res` cleared the
+      // stale figures above - going through the shared helper rather than
+      // assuming that keeps it correct if this ever changes again
       refreshWarningsDisplay(score.id);
       editorOpen = false;
     } catch (e) {
