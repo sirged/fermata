@@ -17,11 +17,23 @@ import {
   MAX_MIDI,
   MIN_MIDI,
   REFERENCE_MIDI,
+  draftReference,
+  draftStrings,
   formatFrequency,
+  isPlayable,
   pitchFrequency,
   pitchMidi,
   spellMidi,
 } from "../../src/lib/pitch.js";
+
+const STANDARD = ["E2", "A2", "D3", "G3", "B3", "E4"];
+const guitar = (over = {}) => ({
+  fretted: true,
+  string_pitches: STANDARD,
+  capo: 0,
+  reference_pitch: 440,
+  ...over,
+});
 
 // Equal-temperament frequencies at A440, to two decimals - the values a tuner
 // or a reference table gives.
@@ -39,13 +51,18 @@ const AT_A440 = [
   ["G9", 127, 12543.85],
 ];
 
-test("concert A is the reference pitch, whatever the reference pitch is", () => {
-  // The single assertion REFERENCE_MIDI has to satisfy: the note it names comes
-  // out at exactly the reference, so the scale pivots in the right place.
+test("the scale pivots on concert A", () => {
+  // The first assertion in this loop is a tautology on its own: the exponent is
+  // 0/12 whatever REFERENCE_MIDI happens to be, so it passes however wrong that
+  // constant is. The two fixed notes are what actually pin it - A3 must be half
+  // the reference and A5 double it, which only holds when REFERENCE_MIDI is 69.
   for (const reference of [392, 415, 430, 440, 442, 466]) {
     expect(pitchFrequency(REFERENCE_MIDI, reference)).toBeCloseTo(reference, 9);
+    expect(pitchFrequency(57, reference)).toBeCloseTo(reference / 2, 9);
+    expect(pitchFrequency(81, reference)).toBeCloseTo(reference * 2, 9);
   }
   expect(REFERENCE_MIDI).toBe(69);
+  expect(pitchFrequency(57, 440)).toBeCloseTo(220, 9);
 });
 
 test("known frequencies at A440", () => {
@@ -121,12 +138,152 @@ test("spelling a MIDI note and reading it back is a round trip", () => {
   }
 });
 
-test("a capo's sounding pitch is the string plus the fret", () => {
-  // What the editor shows for a standard guitar with a capo at the fifth fret.
-  const capo = 5;
-  const sounding = [40, 45, 50, 55, 59, 64].map((midi) => spellMidi(midi + capo));
-  expect(sounding).toEqual(["A2", "D3", "G3", "C4", "E4", "A4"]);
-  expect(formatFrequency(pitchFrequency(40 + capo))).toBe("110.00 Hz");
+// ---------------------------------------------------------------- the capo
+//
+// draftStrings is where the capo term actually lives, so this is where it can be
+// tested rather than restated. The previous test computed `midi + capo` itself
+// and so proved only that spellMidi and pitchFrequency work - dropping or
+// inverting the real capo term left it green.
+
+test("no capo leaves the nominal and sounding pitches identical", () => {
+  for (const rows of [draftStrings(guitar()), draftStrings(guitar({ capo: null }))]) {
+    expect(rows.map((r) => r.pitch)).toEqual(STANDARD);
+    expect(rows.map((r) => r.sounding_pitch)).toEqual(STANDARD);
+    for (const r of rows) {
+      expect(r.sounding_midi).toBe(r.midi);
+      expect(r.sounding_frequency).toBe(r.frequency);
+    }
+  }
+});
+
+test("a capo raises every sounding pitch by its own number of semitones", () => {
+  for (const capo of [1, 2, 5, 7, 12, 24]) {
+    const rows = draftStrings(guitar({ capo }));
+    for (const r of rows) {
+      expect(r.sounding_midi - r.midi, `capo ${capo}, string ${r.number}`).toBe(capo);
+      // and the nominal side is untouched, whatever the capo
+      expect(r.pitch).toBe(STANDARD[STANDARD.length - r.number]);
+    }
+  }
+});
+
+test("a capo at the fifth fret is the tuning a guitarist expects", () => {
+  const rows = draftStrings(guitar({ capo: 5 }));
+  expect(rows.map((r) => `${r.pitch}->${r.sounding_pitch}`)).toEqual([
+    "E2->A2",
+    "A2->D3",
+    "D3->G3",
+    "G3->C4",
+    "B3->E4",
+    "E4->A4",
+  ]);
+  expect(rows.map((r) => formatFrequency(r.sounding_frequency))).toEqual([
+    "110.00 Hz",
+    "146.83 Hz",
+    "196.00 Hz",
+    "261.63 Hz",
+    "329.63 Hz",
+    "440.00 Hz",
+  ]);
+  // the nominal frequencies are still the open-string ones
+  expect(rows.map((r) => formatFrequency(r.frequency))).toEqual([
+    "82.41 Hz",
+    "110.00 Hz",
+    "146.83 Hz",
+    "196.00 Hz",
+    "246.94 Hz",
+    "329.63 Hz",
+  ]);
+});
+
+test("a capo at the twelfth fret doubles every frequency", () => {
+  for (const r of draftStrings(guitar({ capo: 12 }))) {
+    expect(r.sounding_frequency / r.frequency).toBeCloseTo(2, 9);
+  }
+});
+
+test("an unfretted instrument has no capo term at all", () => {
+  // A stale capo left on a draft that was switched to unfretted must move
+  // nothing - there are no frets for it to be at.
+  const rows = draftStrings({
+    fretted: false,
+    string_pitches: ["G3", "D4", "A4", "E5"],
+    capo: 5,
+    reference_pitch: 440,
+  });
+  for (const r of rows) expect(r.sounding_midi).toBe(r.midi);
+  expect(rows.map((r) => r.sounding_pitch)).toEqual(["G3", "D4", "A4", "E5"]);
+});
+
+test("the capo and the reference pitch compose", () => {
+  const rows = draftStrings(guitar({ capo: 5, reference_pitch: 415 }));
+  expect(rows[0].sounding_frequency).toBeCloseTo(103.75, 6);
+  expect(rows[0].frequency).toBeCloseTo(77.7247, 4);
+});
+
+test("a capo that pushes a string past MIDI makes it unplayable", () => {
+  const rows = draftStrings({
+    fretted: true,
+    string_pitches: ["G9"],
+    capo: 24,
+    reference_pitch: 440,
+  });
+  expect(rows[0].midi).toBe(127);
+  expect(rows[0].sounding_midi).toBe(151);
+  expect(isPlayable(rows[0])).toBe(false);
+  // an ordinary string is playable, so the check is about the capo
+  expect(isPlayable(draftStrings(guitar())[0])).toBe(true);
+});
+
+test("string numbers run opposite to list order, reentrant or not", () => {
+  const uke = draftStrings({
+    fretted: true,
+    string_pitches: ["G4", "C4", "E4", "A4"],
+    capo: 0,
+    reference_pitch: 440,
+  });
+  expect(uke.map((r) => r.number)).toEqual([4, 3, 2, 1]);
+  // reentrant: string 4 sounds above string 3, and nothing may "correct" it
+  expect(uke[0].sounding_midi).toBeGreaterThan(uke[1].sounding_midi);
+});
+
+test("a half-typed pitch name yields no numbers rather than wrong ones", () => {
+  const rows = draftStrings(guitar({ string_pitches: ["E", "A2", "D3", "G3", "B3", "E4"] }));
+  expect(rows[0].midi).toBeNull();
+  expect(rows[0].sounding_midi).toBeNull();
+  expect(rows[0].frequency).toBeNull();
+  expect(rows[0].sounding_frequency).toBeNull();
+  expect(isPlayable(rows[0])).toBe(false);
+  expect(rows[1].midi).toBe(45);
+});
+
+// ------------------------------------------------- the reference pitch field
+
+test("an empty reference pitch means unset, not invalid", () => {
+  expect(draftReference({ reference_pitch: null })).toBe(DEFAULT_REFERENCE_HZ);
+  expect(draftReference({ reference_pitch: "" })).toBe(DEFAULT_REFERENCE_HZ);
+  expect(draftReference({})).toBe(DEFAULT_REFERENCE_HZ);
+});
+
+test("a reference pitch outside the bounds is refused, not defaulted", () => {
+  // Quietly defaulting it showed every string at -18.73 Hz, left Save enabled,
+  // and then stored 440 - screen and database disagreeing with nothing said.
+  for (const bad of [-100, 0, 10, 299, 601, 5000, Number.NaN, Infinity]) {
+    expect(draftReference({ reference_pitch: bad }), String(bad)).toBeNull();
+  }
+  for (const good of [300, 415, 440, 600]) {
+    expect(draftReference({ reference_pitch: good }), String(good)).toBe(good);
+  }
+});
+
+test("an unusable reference pitch produces no frequencies at all", () => {
+  for (const r of draftStrings(guitar({ reference_pitch: -100 }))) {
+    // the note names still parse - it is the reference that cannot be used
+    expect(r.midi).not.toBeNull();
+    expect(r.sounding_pitch).not.toBeNull();
+    expect(r.frequency).toBeNull();
+    expect(r.sounding_frequency).toBeNull();
+  }
 });
 
 test("a frequency is written to two decimals", () => {

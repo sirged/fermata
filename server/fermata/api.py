@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from . import instruments, scanner
 from .config import FILE_TYPES, LIBRARY_DIR
-from .db import DEFAULT_OWNER, connect, tx
+from .db import DEFAULT_OWNER, connect, tx, write_tx
 from .glyph_rhythm import VALID_TS_DENOMINATORS
 from .tabextract import analyze as analyze_pdf, extract as extract_pdf
 from .thumbs import thumb_path
@@ -235,7 +235,7 @@ def list_instrument_presets():
 @router.post("/instruments")
 def create_instrument(body: InstrumentIn):
     fields = _normalise_instrument(body)
-    with tx() as conn:
+    with write_tx() as conn:
         cur = conn.execute(
             """INSERT INTO instruments(owner, kind, name, fretted, string_count, string_pitches,
                                        fret_count, capo, reference_pitch)
@@ -277,7 +277,7 @@ def update_instrument(instrument_id: RowId, body: InstrumentIn):
     valid when it was made.
     """
     fields = _normalise_instrument(body)
-    with tx() as conn:
+    with write_tx() as conn:
         _instrument_row(conn, instrument_id)
         conn.execute(
             """UPDATE instruments SET kind = ?, name = ?, fretted = ?, string_count = ?,
@@ -309,7 +309,7 @@ def delete_instrument(instrument_id: RowId):
     `scores_unlinked` is counted before the delete so a caller can say how many
     scores stopped naming an instrument, rather than doing it silently.
     """
-    with tx() as conn:
+    with write_tx() as conn:
         _instrument_row(conn, instrument_id)
         unlinked = conn.execute(
             "SELECT COUNT(*) AS n FROM scores WHERE instrument_id = ?", (instrument_id,)
@@ -429,7 +429,7 @@ class ScorePatch(BaseModel):
 def patch_score(score_id: RowId, patch: ScorePatch):
     if patch.content_kind is not None and patch.content_kind not in VALID_KINDS:
         raise HTTPException(422, f"content_kind must be one of {sorted(VALID_KINDS)}")
-    with tx() as conn:
+    with write_tx() as conn:
         _score_row(conn, score_id)
         if patch.instrument_id is not None:
             _instrument_row(conn, patch.instrument_id)

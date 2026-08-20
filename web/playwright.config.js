@@ -19,7 +19,11 @@ if (!fs.existsSync(path.join(here, "dist", "index.html"))) {
 // A throwaway library and config per run, so the suite never sees a previous
 // run's rows and never touches a real install's database.
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "fermata-browser-"));
-const port = Number(process.env.FERMATA_TEST_PORT || 8123);
+// Not 8080, and not a port anything else here uses. The suite starts its own
+// server and never adopts one (see reuseExistingServer below), so a collision
+// should fail loudly rather than quietly point these tests at whatever is
+// already listening.
+const port = Number(process.env.FERMATA_TEST_PORT || 8931);
 
 export default defineConfig({
   // Both tests/unit (pure functions, no page fixture, so no browser is
@@ -36,9 +40,15 @@ export default defineConfig({
   // are global to an install - two workers would delete each other's rows.
   workers: 1,
   forbidOnly: !!process.env.CI,
+  // Above the sum of the per-assertion budgets a single test can ask for: the
+  // unfretted test performs four sequential soundfont-dependent auditions, each
+  // allowed 30s on a cold runner. Playwright's 30s default was smaller than one
+  // test's stated needs, so a slow runner would have failed inside the product
+  // rather than in the timeout, and read as a bug in the feature.
+  timeout: 180_000,
   reporter: process.env.CI
-    ? [["list"], ["github"], ["html", { open: "never" }]]
-    : "list",
+    ? [["list"], ["github"], ["html", { open: "never" }], ["./tests/minimum-tests.js"]]
+    : [["list"], ["./tests/minimum-tests.js"]],
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     trace: "retain-on-failure",
@@ -52,7 +62,13 @@ export default defineConfig({
     command: `python -m uvicorn fermata.main:app --host 127.0.0.1 --port ${port}`,
     cwd: path.join(here, "..", "server"),
     url: `http://127.0.0.1:${port}/api/health`,
-    reuseExistingServer: !process.env.CI,
+    // NEVER reuse. The fixtures DELETE instruments, and a developer with
+    // anything already on this port would have had those deletions land on a
+    // real install - real library, real database - with no warning. Refusing to
+    // adopt a server we did not start is the only version of this that is safe
+    // to run locally; tests/browser also checks the instance looks like a
+    // throwaway before it deletes anything.
+    reuseExistingServer: false,
     timeout: 60_000,
     env: {
       FERMATA_WEB_DIST: path.join(here, "dist"),

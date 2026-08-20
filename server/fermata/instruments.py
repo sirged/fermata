@@ -33,6 +33,7 @@ than offering no audition at all. See string_details, which computes both.
 """
 
 import re
+import unicodedata
 
 from . import musicxml
 
@@ -260,12 +261,23 @@ def string_details(string_pitches, reference_hz: float, capo: int | None = 0) ->
 # later shown or logged.
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
+# Unicode's own invisible formatting characters (category Cf): zero-width
+# joiners, and the bidirectional overrides. These are not controls in the C0
+# sense and survive the regex above, but U+202E RIGHT-TO-LEFT OVERRIDE in a
+# stored name visually reorders the text AROUND it wherever the name is shown,
+# so an instrument can be made to misrepresent the interface it appears in.
+# Nothing legitimate needs one in an instrument's name.
+_FORMAT_CATEGORY = "Cf"
+
 
 def _clean_name(name) -> str:
-    """Controls removed, runs of whitespace collapsed, ends trimmed. Done before
-    the length check, so the limit applies to what is actually stored."""
-    without_controls = _CONTROL_CHARS.sub("", str(name or ""))
-    return re.sub(r"\s+", " ", without_controls).strip()
+    """Invisible characters removed, runs of whitespace collapsed, ends trimmed.
+    Done before the length check, so the limit applies to what is stored."""
+    stripped = _CONTROL_CHARS.sub("", str(name or ""))
+    stripped = "".join(
+        ch for ch in stripped if unicodedata.category(ch) != _FORMAT_CATEGORY
+    )
+    return re.sub(r"\s+", " ", stripped).strip()
 
 
 def normalise(

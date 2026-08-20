@@ -1,5 +1,6 @@
 <script>
   import {
+    DEFAULT_REFERENCE_HZ,
     MAX_FRETS,
     MAX_NAME_CHARS,
     MAX_REFERENCE_HZ,
@@ -10,11 +11,13 @@
     auditionPitch,
     definitionFrom,
     draftFrom,
+    draftReference,
     draftStrings,
     formatFrequency,
     getInstruments,
     isPlayable,
     loadInstruments,
+    playedPitch,
     removeInstrument,
     resizeStrings,
     saveInstrument,
@@ -31,7 +34,17 @@
   let draft = $state(null);
   let presetKey = $state("");
   let saving = $state(false);
-  let error = $state("");
+  // Two error slots, because they appear in two places and one of them can be
+  // absent. A save failure belongs beside the Save button; a delete failure has
+  // to render at section level, since Delete is reachable from any saved row
+  // with no editor open at all - written into the editor's slot, it was
+  // invisible, and the row just sat there unexplained.
+  let editorError = $state("");
+  let listError = $state("");
+  // Which row has a delete in flight. save() had this guard and remove() did
+  // not, so a double-click on a slow link fired a second DELETE that 404'd into
+  // the invisible slot above.
+  let removing = $state(null);
   // What was last sounded, and how many times anything has been. Published onto
   // the section (see data-audition-*) for the same reason score-render.js
   // publishes its layout: it is the only way to see from outside that a click
@@ -45,29 +58,43 @@
   // Only ever for the draft. A saved instrument's strings come from the server,
   // which has already worked out every note name and frequency - see
   // instruments.svelte.js.
+  const reference = $derived(draftReference(draft));
+  const referenceInvalid = $derived(!!draft && reference === null);
   const strings = $derived(draftStrings(draft));
   const unnamed = $derived(strings.filter((s) => s.midi == null).length);
   const unreachable = $derived(strings.filter((s) => s.midi != null && !isPlayable(s)).length);
   const draftCapo = $derived((draft?.fretted && Number(draft.capo)) || 0);
+
+  // The readout below reports the last thing SOUNDED. Any change of what is on
+  // screen makes it stale, and a stale one is actively wrong: play a string,
+  // delete that instrument, and the list says "No instruments yet" while the
+  // readout still names a string of something that no longer exists.
+  function clearAudition() {
+    auditioned = null;
+    auditionError = "";
+  }
 
   function startFromPreset(key) {
     presetKey = key;
     const preset = instruments.presets.find((p) => p.key === key);
     if (!preset) return;
     draft = draftFrom(preset);
-    error = "";
+    editorError = "";
+    clearAudition();
   }
 
   function edit(instrument) {
     draft = draftFrom(instrument);
     presetKey = "";
-    error = "";
+    editorError = "";
+    clearAudition();
   }
 
   function cancel() {
     draft = null;
     presetKey = "";
-    error = "";
+    editorError = "";
+    clearAudition();
   }
 
   function setStringCount(count) {
@@ -93,30 +120,37 @@
   async function save() {
     if (saving) return;
     saving = true;
-    error = "";
+    editorError = "";
+    listError = "";
     try {
       await saveInstrument(draft.id, definitionFrom(draft));
       draft = null;
       presetKey = "";
+      clearAudition();
     } catch (e) {
-      error = e?.message ?? "Could not save that.";
+      editorError = e?.message || "Could not save that.";
     } finally {
       saving = false;
     }
   }
 
   async function remove(instrument) {
-    error = "";
+    if (removing != null) return;
+    removing = instrument.id;
+    listError = "";
     notice = "";
     try {
       const unlinked = await removeInstrument(instrument.id);
       if (draft?.id === instrument.id) draft = null;
+      clearAudition();
       // Said out loud rather than done silently: those scores were written for
       // this instrument, and they no longer name one.
       if (unlinked === 1) notice = "1 score no longer names an instrument.";
       else if (unlinked > 1) notice = `${unlinked} scores no longer name an instrument.`;
     } catch (e) {
-      error = e?.message ?? "Could not delete that.";
+      listError = e?.message || "Could not delete that.";
+    } finally {
+      removing = null;
     }
   }
 
@@ -132,19 +166,30 @@
   // Plays the SOUNDING pitch, not the nominal one: a capo raises every string,
   // and an audition that ignored it would be teaching a reference wrong by the
   // capo's position - worse than offering none.
-  async function play(string) {
+  //
+  // What gets published afterwards is built from the note that came BACK, never
+  // from the row that was passed in. Reporting the row is a tautology - it says
+  // what should have been played - and it is what let passing the open string
+  // instead of the capo'd one go completely undetected, on screen and in the
+  // tests alike.
+  async function play(string, instrument = null) {
     if (!isPlayable(string)) return;
     auditionError = "";
     try {
       const sounded = await auditionPitch(string.sounding_midi);
-      if (!sounded) {
+      if (sounded == null) {
         auditionError = "That pitch is outside what can be played.";
         return;
       }
-      auditioned = string;
+      const hz = instrument ? instrument.reference_pitch : reference;
+      auditioned = {
+        number: string.number,
+        instrument: instrument ? instrument.name : draft?.name?.trim(),
+        ...playedPitch(sounded, hz ?? undefined),
+      };
       auditions += 1;
     } catch (e) {
-      auditionError = e?.message ?? "The synthesiser could not be loaded.";
+      auditionError = e?.message || "The synthesiser could not be loaded.";
     }
   }
 
@@ -175,13 +220,16 @@
      at, and the button to hear it. Shared between a saved instrument's strings
      (from the server) and a draft's (computed locally) because both arrive in
      the same shape, and because the capo rule must not be written twice. -->
-{#snippet soundingOf(string, capo)}
+{#snippet soundingOf(string, capo, instrument)}
   {#if capo > 0 && string.sounding_pitch}
     <span class="arrow" aria-hidden="true">→</span>
     <span class="string-sounding">{string.sounding_pitch}</span>
   {/if}
-  {#if string.sounding_frequency == null}
+  {#if string.midi == null}
     <span class="string-bad">not a pitch name</span>
+  {:else if string.sounding_frequency == null}
+    <!-- the name is fine; the reference pitch is what cannot be used -->
+    <span class="string-hz string-unknown">—</span>
   {:else}
     <span class="string-hz">{formatFrequency(string.sounding_frequency)}</span>
   {/if}
@@ -189,7 +237,7 @@
     class="play"
     disabled={!isPlayable(string)}
     aria-label={`Play string ${string.number}`}
-    onclick={() => play(string)}
+    onclick={() => play(string, instrument)}
   >
     ▶
   </button>
@@ -208,8 +256,8 @@
   data-instrument-count={instruments.list.length}
   data-instrument-draft={draft ? (draft.id ?? "new") : ""}
   data-audition-count={auditions}
-  data-audition-midi={auditioned?.sounding_midi ?? ""}
-  data-audition-pitch={auditioned?.sounding_pitch ?? ""}
+  data-audition-midi={auditioned?.midi ?? ""}
+  data-audition-pitch={auditioned?.pitch ?? ""}
 >
   <h2>Instruments</h2>
   <p class="hint">
@@ -238,9 +286,13 @@
     <p class="error audition">{auditionError}</p>
   {:else if auditioned}
     <p class="sounding">
-      Sounding string {auditioned.number} — {auditioned.sounding_pitch},
-      {formatFrequency(auditioned.sounding_frequency)}
+      Sounding{auditioned.instrument ? ` ${auditioned.instrument},` : ""} string
+      {auditioned.number} — {auditioned.pitch}, {formatFrequency(auditioned.frequency)}
     </p>
+  {/if}
+
+  {#if listError}
+    <p class="error load">{listError}</p>
   {/if}
 
   {#if notice}
@@ -258,7 +310,13 @@
             </div>
             <div class="owned-actions">
               <button onclick={() => edit(instrument)}>Tune</button>
-              <button class="danger" onclick={() => remove(instrument)}>Delete</button>
+              <button
+                class="danger"
+                disabled={removing != null}
+                onclick={() => remove(instrument)}
+              >
+                {removing === instrument.id ? "Deleting…" : "Delete"}
+              </button>
             </div>
           </div>
           {@render capoLegend(instrument.capo ?? 0)}
@@ -271,7 +329,7 @@
               >
                 <span class="string-number">{string.number}</span>
                 <span class="string-pitch-fixed">{string.pitch}</span>
-                {@render soundingOf(string, instrument.capo ?? 0)}
+                {@render soundingOf(string, instrument.capo ?? 0, instrument)}
               </li>
             {/each}
           </ul>
@@ -385,10 +443,17 @@
               oninput={(e) =>
                 (draft.string_pitches[strings.length - string.number] = e.currentTarget.value)}
             />
-            {@render soundingOf(string, draftCapo)}
+            {@render soundingOf(string, draftCapo, null)}
           </li>
         {/each}
       </ul>
+
+      {#if referenceInvalid}
+        <p class="error">
+          The reference pitch must be between {MIN_REFERENCE_HZ} and {MAX_REFERENCE_HZ} Hz.
+          Leave it empty for {DEFAULT_REFERENCE_HZ}.
+        </p>
+      {/if}
 
       {#if unreachable > 0}
         <p class="error">
@@ -397,14 +462,18 @@
         </p>
       {/if}
 
-      {#if error}
-        <p class="error">{error}</p>
+      {#if editorError}
+        <p class="error">{editorError}</p>
       {/if}
 
       <div class="actions">
         <button
           class="primary"
-          disabled={saving || !draft.name.trim() || unnamed > 0 || unreachable > 0}
+          disabled={saving ||
+            !draft.name.trim() ||
+            unnamed > 0 ||
+            unreachable > 0 ||
+            referenceInvalid}
           onclick={save}
         >
           {draft.id == null ? "Save instrument" : "Save changes"}
@@ -604,6 +673,11 @@
     color: var(--ink-dim);
     font-size: 13px;
     min-width: 92px;
+  }
+
+  .string-unknown {
+    color: var(--ink-dim);
+    opacity: 0.6;
   }
 
   .string-bad {

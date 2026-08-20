@@ -5,17 +5,11 @@
 // components read the live object rather than each fetching their own copy,
 // and writes go back through the same place.
 //
-// The pitch arithmetic lives in ./pitch.js, which has no runes and no imports
-// so it can be tested on its own.
+// All the pitch and draft arithmetic lives in ./pitch.js, which has no runes
+// and no imports so every part of it can be tested without a browser. Only the
+// server-backed state is here.
 import { api } from "./api.js";
-import {
-  DEFAULT_REFERENCE_HZ,
-  MAX_MIDI,
-  MIN_MIDI,
-  pitchFrequency,
-  pitchMidi,
-  spellMidi,
-} from "./pitch.js";
+import { DEFAULT_REFERENCE_HZ, pitchFrequency, spellMidi } from "./pitch.js";
 import { playPitch } from "./score-render.js";
 
 export {
@@ -27,44 +21,11 @@ export {
   MIN_FRETS,
   MIN_REFERENCE_HZ,
   MIN_STRINGS,
+  draftReference,
+  draftStrings,
   formatFrequency,
+  isPlayable,
 } from "./pitch.js";
-
-/** Each string of an unsaved draft, in the same shape the server sends for a
- * saved one, so one renderer displays either.
- *
- * This exists ONLY for a draft: a saved instrument's strings come from the
- * server. The capo is applied here for the same reason it is there - it raises
- * every string, so it decides what the instrument sounds, and the sounding
- * pitch is what gets played and matched by ear. `midi` is null for a name that
- * does not parse, which is the ordinary state of a half-typed one. */
-export function draftStrings(draft) {
-  const pitches = draft?.string_pitches ?? [];
-  const reference = Number(draft?.reference_pitch) || DEFAULT_REFERENCE_HZ;
-  const capo = (draft?.fretted && Number(draft.capo)) || 0;
-  return pitches.map((pitch, index) => {
-    const midi = pitchMidi(pitch);
-    const sounding = midi == null ? null : midi + capo;
-    return {
-      number: pitches.length - index,
-      pitch,
-      midi,
-      frequency: midi == null ? null : pitchFrequency(midi, reference),
-      sounding_midi: sounding,
-      sounding_pitch: sounding == null ? null : spellMidi(sounding),
-      sounding_frequency: sounding == null ? null : pitchFrequency(sounding, reference),
-    };
-  });
-}
-
-/** Whether a string can be sounded. A nominal pitch is bounded by pitchMidi,
- * but a capo can push the sounding pitch off the top of MIDI - the server
- * refuses to store that, and until it is saved the draft has to show it as
- * unplayable rather than offer a button that does nothing. */
-export function isPlayable(string) {
-  const midi = string?.sounding_midi;
-  return midi != null && midi >= MIN_MIDI && midi <= MAX_MIDI;
-}
 
 const store = $state({ list: [], presets: [], loaded: false, error: "" });
 
@@ -96,7 +57,10 @@ export function loadInstruments() {
       // from rather than an unexplained "no instruments yet".
       if (loadPromise === attempt) loadPromise = null;
       store.loaded = true;
-      store.error = e?.message ?? "Could not load your instruments.";
+      // `||`, not `??`: an Error with an empty message is common enough (an
+      // aborted fetch is one) and would otherwise render as nothing at all,
+      // which is the silent failure this whole branch exists to avoid.
+      store.error = e?.message || "Could not load your instruments.";
     });
   loadPromise = attempt;
   return attempt;
@@ -109,13 +73,13 @@ export async function saveInstrument(id, definition) {
   const saved = id == null
     ? await api.createInstrument(definition)
     : await api.saveInstrument(id, definition);
-  const at = store.list.findIndex((i) => i.id === saved.id);
-  if (at === -1) store.list = [...store.list, saved];
-  else store.list = store.list.map((i) => (i.id === saved.id ? saved : i));
-  // the server orders by name, and a rename can move a row
-  store.list = [...store.list].sort((a, b) =>
-    a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id - b.id,
-  );
+  // Re-read the list rather than splicing the row in and re-sorting it here.
+  // The order is the server's - ORDER BY name COLLATE NOCASE - and no client
+  // comparator reproduces it: localeCompare puts "Élan" next to "E", while
+  // NOCASE folds only ASCII and sorts it after "z". Getting that wrong means a
+  // row sitting in one place after a save and a different place after a
+  // reload, which reads as the list having lost track of itself.
+  store.list = await api.instruments();
   return saved;
 }
 
@@ -127,9 +91,28 @@ export async function removeInstrument(id) {
   return result?.scores_unlinked ?? 0;
 }
 
-/** Sound one string on its own, through the renderer's synthesiser. */
+/** Sound one string on its own, through the renderer's synthesiser.
+ *
+ * Resolves with the MIDI note the synthesiser was actually handed, not with a
+ * success flag - callers publish what comes back rather than what they meant to
+ * send. That is the difference between an interface that can be observed to
+ * play the right pitch and one that only reports the pitch it intended: an
+ * audition that passed the open string instead of the capo'd one used to leave
+ * every assertion passing, because they all read the row rather than the
+ * argument. Null means the number was not one the synthesiser can sound. */
 export function auditionPitch(midi) {
   return playPitch(midi);
+}
+
+/** A played MIDI note, named and measured. Built from the value that came BACK
+ * from the synthesiser, so what the interface displays and publishes is
+ * evidence of what was played rather than a restatement of the request. */
+export function playedPitch(midi, referenceHz = DEFAULT_REFERENCE_HZ) {
+  return {
+    midi,
+    pitch: spellMidi(midi),
+    frequency: pitchFrequency(midi, referenceHz),
+  };
 }
 
 /** A draft the editor can hold, from a preset or from a saved instrument.

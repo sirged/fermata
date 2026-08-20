@@ -81,3 +81,62 @@ export function pitchFrequency(midi, referenceHz = DEFAULT_REFERENCE_HZ) {
 export function formatFrequency(hz) {
   return `${hz.toFixed(2)} Hz`;
 }
+
+/** The reference pitch a draft's frequencies should be computed at, or null when
+ * the field holds something unusable.
+ *
+ * Three cases, and they are not the same: an EMPTY field is unset and takes the
+ * default (a number input reads back as null when cleared, and the server would
+ * default it too). A number inside the bounds is used. Anything else - negative,
+ * zero, out of range - is neither unset nor usable and must NOT quietly become
+ * the default: doing that showed every string at -18.73 Hz, left Save enabled,
+ * and then stored 440, so the screen and the database disagreed with nothing
+ * said. */
+export function draftReference(draft) {
+  const raw = draft?.reference_pitch;
+  if (raw == null || raw === "") return DEFAULT_REFERENCE_HZ;
+  const hz = Number(raw);
+  if (!Number.isFinite(hz)) return null;
+  return hz >= MIN_REFERENCE_HZ && hz <= MAX_REFERENCE_HZ ? hz : null;
+}
+
+/** Each string of an unsaved draft, in the same shape the server sends for a
+ * saved one, so one renderer displays either.
+ *
+ * This exists ONLY for a draft: a saved instrument's strings come from the
+ * server. The capo is applied here for the same reason it is there - it raises
+ * every string, so it decides what the instrument sounds, and the sounding pitch
+ * is what gets played and matched by ear.
+ *
+ * `midi` is null for a name that does not parse, which is the ordinary state of
+ * a half-typed one; the frequencies are null for that, and also when the
+ * reference pitch itself is unusable. */
+export function draftStrings(draft) {
+  const pitches = draft?.string_pitches ?? [];
+  const reference = draftReference(draft);
+  const capo = (draft?.fretted && Number(draft.capo)) || 0;
+  return pitches.map((pitch, index) => {
+    const midi = pitchMidi(pitch);
+    const sounding = midi == null ? null : midi + capo;
+    const measurable = reference != null;
+    return {
+      number: pitches.length - index,
+      pitch,
+      midi,
+      frequency: midi != null && measurable ? pitchFrequency(midi, reference) : null,
+      sounding_midi: sounding,
+      sounding_pitch: sounding == null ? null : spellMidi(sounding),
+      sounding_frequency:
+        sounding != null && measurable ? pitchFrequency(sounding, reference) : null,
+    };
+  });
+}
+
+/** Whether a string can be sounded. A nominal pitch is bounded by pitchMidi, but
+ * a capo can push the sounding pitch off the top of MIDI - the server refuses to
+ * store that, and until it is saved the draft has to show it as unplayable
+ * rather than offer a button that does nothing. */
+export function isPlayable(string) {
+  const midi = string?.sounding_midi;
+  return midi != null && midi >= MIN_MIDI && midi <= MAX_MIDI;
+}

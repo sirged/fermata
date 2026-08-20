@@ -215,10 +215,23 @@ def _add_missing_columns(conn) -> None:
                 # with an integrity guarantee the rest of the code assumes and
                 # the database does not provide.
                 raise RuntimeError(
-                    f"{table}.{column} exists without its foreign key to "
-                    f"{definition.split('REFERENCES')[1].strip()}. SQLite cannot add the "
-                    f"constraint to an existing column: rebuild {table} with the definition "
-                    "in db.SCHEMA plus COLUMN_ADDITIONS, or drop the column and restart."
+                    f"Fermata cannot start: the '{column}' column of the '{table}' table is "
+                    "missing the link that keeps it pointing at real rows.\n"
+                    "\n"
+                    "This cannot happen through normal use or through any upgrade - if you "
+                    "have not edited the database by hand, it is a bug in Fermata and we "
+                    "would like to hear about it. Please open an issue with the lines above "
+                    "and the version you upgraded from.\n"
+                    "\n"
+                    "Your sheet music is not affected either way; only the database in the "
+                    "config folder is. If you have a backup of that folder, restoring it is "
+                    "the safe way back - see the Backups section of docs/deployment.md.\n"
+                    "\n"
+                    f"(If you are comfortable with SQLite: rebuilding '{table}' with the "
+                    "definition in db.SCHEMA, carrying the existing rows across, repairs this "
+                    f"with nothing lost. Dropping the '{column}' column also lets Fermata "
+                    "start, but it PERMANENTLY DISCARDS which instrument each score was for, "
+                    "for every score - so take a copy of the config folder first.)"
                 )
 
 
@@ -237,6 +250,11 @@ def _check_schema_version(conn) -> None:
 
 def init_db() -> None:
     conn = connect()
+    # Before SCHEMA runs, not after. executescript() commits as it goes, so
+    # checking afterwards means a database written by a newer release has
+    # already been altered by this one - and the check exists precisely because
+    # writing blind is how a downgrade loses data. SCHEMA is written blind.
+    _check_schema_version(conn)
     conn.executescript(SCHEMA)
     conn.commit()
     # BEGIN IMMEDIATE takes the write lock before the read below rather than on
@@ -248,6 +266,8 @@ def init_db() -> None:
     # does nothing. The connection's 30s timeout is what it waits with.
     conn.execute("BEGIN IMMEDIATE")
     try:
+        # Checked again inside the lock: a newer release could have upgraded and
+        # re-stamped the database between the read above and this point.
         _check_schema_version(conn)
         _add_missing_columns(conn)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -260,6 +280,30 @@ def init_db() -> None:
 @contextmanager
 def tx():
     conn = connect()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+@contextmanager
+def write_tx():
+    """A transaction holding the write lock from the start.
+
+    tx() relies on the driver opening a transaction at the first DML statement,
+    so any SELECT made before that - an existence check, a count - reads
+    OUTSIDE the transaction and can be invalidated before the write lands. A
+    concurrent delete arriving between "does this row exist" and the update that
+    assumes it does turns an intended 404 into an unhandled IntegrityError and a
+    500, and makes a count reported alongside the write untrustworthy.
+
+    Use this for any mutation that reads before it writes. init_db() does the
+    same thing for the same reason.
+    """
+    conn = connect()
+    conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
         conn.commit()

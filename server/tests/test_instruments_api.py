@@ -417,6 +417,22 @@ def test_control_characters_do_not_survive_into_a_name(app_env, raw, stored):
     assert created["name"] == stored
 
 
+def test_unicode_format_characters_do_not_survive_into_a_name(app_env):
+    """U+202E RIGHT-TO-LEFT OVERRIDE is not a control character in the C0 sense
+    and survives a control-character filter, but stored in a name it visually
+    reorders the text AROUND it wherever the name appears - so an instrument
+    could be made to misrepresent the interface showing it."""
+    created = api.create_instrument(make(name="Guitar‮gnirts-6‬"))
+    assert "‮" not in created["name"]
+    assert "‬" not in created["name"]
+    assert created["name"] == "Guitargnirts-6"
+
+
+def test_a_zero_width_joiner_does_not_survive_into_a_name(app_env):
+    created = api.create_instrument(make(name="Gui​tar"))
+    assert created["name"] == "Guitar"
+
+
 def test_a_name_of_nothing_but_control_characters_is_rejected(app_env):
     with pytest.raises(HTTPException) as exc_info:
         api.create_instrument(make(name="\x00\n\t"))
@@ -749,7 +765,17 @@ def test_a_column_present_without_its_foreign_key_stops_startup(app_env):
     conn.commit()
     with pytest.raises(RuntimeError) as exc_info:
         db.init_db()
-    assert "foreign key" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "missing the link" in message
+    # The message is the only thing the person hitting this has to go on, and it
+    # used to offer a non-administrator three dead ends - one of which silently
+    # destroyed every score's instrument association. So the wording is part of
+    # the behaviour: it has to say this is not their fault, invite a report, and
+    # reach the backup BEFORE it mentions anything that loses data.
+    assert "cannot happen through normal use" in message
+    assert "open an issue" in message
+    assert message.index("backup") < message.index("PERMANENTLY DISCARDS")
+    assert "sheet music is not affected" in message
 
 
 def test_the_schema_version_is_stamped(app_env):
@@ -766,6 +792,26 @@ def test_a_database_from_a_newer_release_stops_startup(app_env):
     with pytest.raises(RuntimeError) as exc_info:
         db.init_db()
     assert "newer release" in str(exc_info.value)
+
+
+def test_a_database_from_a_newer_release_is_not_written_to_at_all(app_env, tmp_path, monkeypatch):
+    """The refusal has to come BEFORE the schema script, not after it.
+    executescript() commits as it goes, so a check that ran afterwards had
+    already created tables in a database this code does not understand - while
+    the guard's whole justification is that writing blind is how a downgrade
+    loses data, and SCHEMA is written blind."""
+    fresh = tmp_path / "from_the_future.db"
+    monkeypatch.setattr(db, "DB_PATH", fresh)
+    db._local.conn = None
+    conn = db.connect()
+    conn.execute(f"PRAGMA user_version = {db.SCHEMA_VERSION + 1}")
+    conn.commit()
+
+    with pytest.raises(RuntimeError):
+        db.init_db()
+
+    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master")}
+    assert tables == set(), f"the refused startup still created {sorted(tables)}"
 
 
 def test_running_init_db_again_changes_nothing(app_env):

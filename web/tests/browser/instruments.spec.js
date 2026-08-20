@@ -11,8 +11,17 @@ import { expect, test } from "@playwright/test";
 
 const section = (page) => page.locator("section[data-instrument-count]");
 const ownedRows = (page) => page.locator(".owned > li");
+const editor = (page) => page.locator(".editor");
 const editorRows = (page) => page.locator(".editor .strings li");
 const savedRows = (page) => page.locator(".owned .strings li");
+const editorLabels = (page) => page.locator(".editor label");
+const presetPicker = (page) => page.locator(".start select");
+const emptyNotice = (page) => page.locator(".empty");
+// Shared so that every "there is no error" assertion uses the SAME selector one
+// test proves can match something. A toHaveCount(0) built from an inline literal
+// is permanently true the moment the class is renamed or mistyped, and reports
+// nothing when it stops matching the thing it was written to watch.
+const errors = (page) => section(page).locator(".error");
 
 /** A string row as the interface presents it, from either the editor (where the
  * nominal pitch is an input) or a saved instrument (where it is text). */
@@ -27,7 +36,6 @@ function readRows(locator) {
       sounding: r.querySelector(".string-sounding")?.textContent.trim() ?? null,
       hz: r.querySelector(".string-hz")?.textContent.trim() ?? null,
       frequency: r.dataset.frequency,
-      soundingMidi: r.dataset.soundingMidi,
     })),
   );
 }
@@ -42,6 +50,18 @@ const STANDARD_AT_A440 = [
 ];
 
 test.beforeEach(async ({ page, request }) => {
+  // Refuses to touch anything that is not the throwaway instance this suite
+  // starts. The cleanup below DELETES instruments, and the config is built to
+  // never adopt an already-running server - but a hand-set baseURL or
+  // FERMATA_TEST_PORT could still point these at a real install, and an empty
+  // library is what a scratch instance has and a real one does not.
+  const scores = await (await request.get("/api/scores")).json();
+  expect(
+    scores,
+    "refusing to run: this backend has scores in its library, so it is not the " +
+      "throwaway instance the suite creates - and these tests delete instruments",
+  ).toEqual([]);
+
   // An install has one set of instruments, so each test starts from none -
   // otherwise these pass only in the order they were written.
   const existing = await (await request.get("/api/instruments")).json();
@@ -71,7 +91,7 @@ test.beforeEach(async ({ page, request }) => {
 
 async function choosePreset(page, key) {
   await page.selectOption(".start select", key);
-  await expect(page.locator(".editor")).toBeVisible();
+  await expect(editor(page)).toBeVisible();
 }
 
 test("every preset is offered", async ({ page }) => {
@@ -135,7 +155,7 @@ test("clicking a string reaches the synthesiser", async ({ page }) => {
   await expect(section(page)).toHaveAttribute("data-audition-midi", "40");
   await expect(section(page)).toHaveAttribute("data-audition-pitch", "E2");
   await expect(page.locator(".sounding")).toContainText("E2");
-  await expect(page.locator(".error")).toHaveCount(0);
+  await expect(errors(page)).toHaveCount(0);
 
   expect(soundfontRequests.length).toBeGreaterThan(0);
   expect(await page.evaluate(() => window.__audioContexts)).toBeGreaterThan(0);
@@ -208,8 +228,12 @@ test("a capo changes what is sounded, not what is stored", async ({ page, reques
 
 test("an unfretted instrument has no fret fields and plays every string", async ({ page }) => {
   await choosePreset(page, "violin");
-  await expect(page.locator('.editor label:has-text("Frets")')).toHaveCount(0);
-  await expect(page.locator('.editor label:has-text("Capo")')).toHaveCount(0);
+  // Anchored: the base selector is proved to match first, so these cannot pass
+  // by matching nothing at all if a class is renamed.
+  await expect(editorLabels(page)).not.toHaveCount(0);
+  await expect(editorLabels(page).filter({ hasText: "Frets" })).toHaveCount(0);
+  await expect(editorLabels(page).filter({ hasText: "Capo" })).toHaveCount(0);
+  await expect(editorLabels(page).filter({ hasText: "Strings" })).toHaveCount(1);
   await expect(page.locator(".editor .fretless")).toContainText("no tablature");
 
   const rows = await readRows(editorRows(page));
@@ -234,14 +258,80 @@ test("an unfretted instrument has no fret fields and plays every string", async 
 test("a saved instrument's strings play without opening the editor", async ({ page }) => {
   // The point of the audible reference is that it is one click away, not
   // something you have to enter an edit mode to reach.
+  //
+  // Capo'd on purpose, so this covers the same one-line boundary the capo test
+  // covers but from the other direction - a saved instrument's row rather than
+  // the editor. One test guarding it is a coverage depth of one.
+  await choosePreset(page, "guitar-standard");
+  await page.locator('.editor label:has-text("Capo") input').fill("3");
+  // choosePreset asserted the editor visible, so the same locator going to zero
+  // below is a real disappearance rather than a selector that never matched.
+  await expect(editor(page)).toBeVisible();
+  await page.locator(".actions button.primary").click();
+  await expect(section(page)).toHaveAttribute("data-instrument-count", "1");
+  await expect(editor(page)).toHaveCount(0);
+
+  // string 6 is nominally E2 (40) and sounds G2 (43) with the capo at fret 3
+  await savedRows(page).first().locator("button.play").click();
+  await expect(section(page)).toHaveAttribute("data-audition-midi", "43", { timeout: 30_000 });
+  await expect(section(page)).toHaveAttribute("data-audition-pitch", "G2");
+  await expect(page.locator(".sounding")).toContainText("G2");
+});
+
+test("the audition readout does not outlive what it describes", async ({ page }) => {
   await choosePreset(page, "violin");
   await page.locator(".actions button.primary").click();
   await expect(section(page)).toHaveAttribute("data-instrument-count", "1");
-  await expect(page.locator(".editor")).toHaveCount(0);
 
-  await savedRows(page).nth(3).locator("button.play").click();
-  await expect(section(page)).toHaveAttribute("data-audition-midi", "76", { timeout: 30_000 });
-  await expect(page.locator(".sounding")).toContainText("E5");
+  await savedRows(page).first().locator("button.play").click();
+  const readout = page.locator(".sounding");
+  await expect(readout).toContainText("G3", { timeout: 30_000 });
+  // and it names WHICH instrument sounded - the premise of the feature is
+  // owning the same guitar in two tunings
+  await expect(readout).toContainText("Violin");
+
+  await ownedRows(page).first().locator("button", { hasText: "Delete" }).click();
+  await expect(section(page)).toHaveAttribute("data-instrument-count", "0");
+  // it used to still say "Sounding Violin, string 4" beside "No instruments yet"
+  await expect(readout).toHaveCount(0);
+});
+
+test("a failed delete says so", async ({ page }) => {
+  await choosePreset(page, "ukulele");
+  await page.locator(".actions button.primary").click();
+  await expect(ownedRows(page)).toHaveCount(1);
+
+  await page.route("**/api/instruments/*", (route) =>
+    route.request().method() === "DELETE" ? route.abort("failed") : route.continue(),
+  );
+  await ownedRows(page).first().locator("button", { hasText: "Delete" }).click();
+
+  // Delete is reachable with no editor open, so an error rendered inside the
+  // editor was invisible and the row just sat there unexplained.
+  await expect(errors(page)).toHaveCount(1);
+  await expect(ownedRows(page)).toHaveCount(1);
+});
+
+test("a reference pitch outside the bounds is refused rather than silently defaulted", async ({
+  page,
+  request,
+}) => {
+  await choosePreset(page, "guitar-standard");
+  await page.locator('.editor label:has-text("Reference") input').fill("-100");
+
+  // No frequency is invented for a reference that cannot be used, and Save is
+  // not offered - it used to show every string at -18.73 Hz and then store 440.
+  await expect(errors(page)).toContainText("between 300 and 600");
+  await expect(editorRows(page).first().locator(".string-hz")).toHaveText("—");
+  await expect(page.locator(".actions button.primary")).toBeDisabled();
+
+  await page.locator('.editor label:has-text("Reference") input').fill("415");
+  await expect(errors(page)).toHaveCount(0);
+  await expect(editorRows(page).first().locator(".string-hz")).toHaveText("77.72 Hz");
+  await page.locator(".actions button.primary").click();
+
+  const [saved] = await (await request.get("/api/instruments")).json();
+  expect(saved.reference_pitch).toBe(415);
 });
 
 test("a failed load is retryable", async ({ page }) => {
@@ -255,17 +345,22 @@ test("a failed load is retryable", async ({ page }) => {
   );
   await page.reload();
 
-  const failure = page.locator(".error.load");
+  // Built from the same `.error` helper the negative assertions use, so that
+  // selector is proved to match something somewhere in this suite.
+  const failure = errors(page).filter({ has: page.locator("button") });
   await expect(failure).toBeVisible();
+  await expect(errors(page)).toHaveCount(1);
   // and it does not claim there is simply nothing here
-  await expect(page.locator(".start select")).toHaveCount(0);
-  await expect(page.locator(".empty")).toHaveCount(0);
+  // Both anchored: the picker is asserted visible further down this same test,
+  // and .empty is asserted visible in the delete test through the same helper.
+  await expect(presetPicker(page)).toHaveCount(0);
+  await expect(emptyNotice(page)).toHaveCount(0);
 
   failing = false;
   await failure.locator("button").click();
-  await expect(page.locator(".start select")).toBeVisible();
+  await expect(presetPicker(page)).toBeVisible();
   await expect(failure).toHaveCount(0);
-  await expect(page.locator(".start select option")).toHaveCount(12);
+  await expect(presetPicker(page).locator("option")).toHaveCount(12);
 });
 
 test("a definition can be deleted", async ({ page }) => {
@@ -275,5 +370,5 @@ test("a definition can be deleted", async ({ page }) => {
 
   await ownedRows(page).first().locator("button", { hasText: "Delete" }).click();
   await expect(section(page)).toHaveAttribute("data-instrument-count", "0");
-  await expect(page.locator(".empty")).toBeVisible();
+  await expect(emptyNotice(page)).toBeVisible();
 });

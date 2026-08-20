@@ -310,6 +310,9 @@ const TICKS_PER_SECOND = TICKS_PER_QUARTER / (MICROSECONDS_PER_QUARTER / 1_000_0
 
 const MIN_MIDI = 0;
 const MAX_MIDI = 127;
+// Generous - the soundfont is about a megabyte and a cold cache on a slow link
+// is not a failure - but finite, so a stalled fetch is recoverable.
+const SOUNDFONT_TIMEOUT_MS = 45_000;
 
 let auditionApi = null;
 let auditionHost = null;
@@ -378,6 +381,14 @@ function auditionPlayer() {
     } else {
       api.error.on((e) => reject(toError(e, "the synthesiser could not be loaded")));
     }
+    // A fetch that never resolves and never errors is not covered by either
+    // event, and without this the promise would be cached in a pending state
+    // for the life of the page - a hang being permanent where a failure is
+    // retryable, which is the wrong way round.
+    setTimeout(
+      () => reject(new Error("the synthesiser took too long to load")),
+      SOUNDFONT_TIMEOUT_MS,
+    );
   }).catch((e) => {
     // Guarded on identity so a failure arriving late cannot tear down a newer
     // attempt that has already succeeded.
@@ -390,23 +401,38 @@ function auditionPlayer() {
 }
 
 function toError(e, fallback) {
-  if (e instanceof Error) return e;
-  return new Error(e?.message ?? fallback);
+  // Tested on the MESSAGE, not just the type, and joined with `||` rather than
+  // `??`: an Error whose message is the empty string is common (an aborted fetch
+  // is one) and is not a usable explanation. Passing it through renders as
+  // nothing, which is a failure indistinguishable from a working click - exactly
+  // what playPitch promises not to leave behind.
+  if (e instanceof Error && e.message) return e;
+  return new Error(e?.message || fallback);
 }
 
 /**
  * Sound one pitch on its own, as a MIDI note number.
  *
- * Resolves true once the note has been handed to the synthesiser, false if the
- * number is not one the synthesiser can sound. Rejects if the synthesiser
- * itself could not be loaded, so a caller can say so rather than leaving a
- * silent click looking like a working one.
+ * Resolves with THE MIDI NOTE ACTUALLY SOUNDED - the number written into the
+ * note-on event - or null if it is not one the synthesiser can play. Returning
+ * the note rather than a success flag is deliberate: it lets a caller display
+ * and publish what crossed this boundary instead of restating what it asked
+ * for, which is the only way an interface can be observed to have played the
+ * right pitch rather than merely to have intended one.
+ *
+ * Rejects if the synthesiser could not be loaded, so a caller can say so rather
+ * than leaving a silent click looking like a working one.
+ *
+ * Note that the synthesiser is equal-tempered around A440 and takes no
+ * reference pitch, so an instrument defined at A415 has its frequencies shown
+ * at A415 but is auditioned at A440. Fine for finding a note by ear against
+ * itself; not yet a period-pitch reference.
  */
 export async function playPitch(midi) {
   const key = Math.round(Number(midi));
-  if (!Number.isFinite(key) || key < MIN_MIDI || key > MAX_MIDI) return false;
+  if (!Number.isFinite(key) || key < MIN_MIDI || key > MAX_MIDI) return null;
   const player = await auditionPlayer();
-  if (!player) return false;
+  if (!player) return null;
   const {
     MidiFile,
     TempoChangeEvent,
@@ -434,7 +460,10 @@ export async function playPitch(midi) {
   // Replaces any audition still sounding, which is what clicking down a set of
   // strings in quick succession should do.
   player.playOneTimeMidiFile(file);
-  return true;
+  // Read back off the events that were handed over rather than off the input,
+  // so what this reports is the note the synthesiser actually received.
+  const noteOn = file.events.find((e) => e instanceof NoteOnEvent);
+  return noteOn ? noteOn.noteKey : key;
 }
 
 // ---------------------------------------------------------------- the view
@@ -611,7 +640,7 @@ export function createScoreView(host, opts = {}) {
 
   api.playerReady.on(() => onReady());
   api.playerStateChanged.on((e) => onPlaying(e.state === 1));
-  api.error.on((e) => onError(e?.message ?? "failed to load score"));
+  api.error.on((e) => onError(e?.message || "failed to load score"));
   // Fires at the end of each loop pass, not only the final stop, which is
   // what makes it usable as "one clean pass done".
   api.playerFinished.on(() => onPassComplete());

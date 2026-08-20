@@ -48,6 +48,9 @@ jobs:
   browser:
     name: Browser tests
     runs-on: ubuntu-latest
+    # Well above the ~75s this takes, and below the six-hour default a hung
+    # browser would otherwise sit burning.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
