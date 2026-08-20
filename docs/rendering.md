@@ -299,6 +299,77 @@ main-thread task across the whole run is **102 ms**, with none over 250 ms —
 because the renderer chunks the work into partials and only draws the ones on
 screen. That is the trade this one constant represents, if it ever bites.
 
+### Asking the renderer what it can draw
+
+Not every score can be drawn under every profile. A score with no tablature has
+no tab staff to draw, and asking for one used to throw inside the renderer and
+leave the view dead — the staff system was built with zero staves and the code
+that adds bars to it dereferenced a staff group that was never created.
+
+The profile buttons therefore offer only what the loaded score can actually
+draw. The tempting way to decide that is to restate the renderer's rules —
+standard notation for one profile, a tuned tab staff for another — but a
+restatement is only correct until the library changes its mind, and a wrong
+answer either hides a profile that works or offers one that crashes. Neither
+failure announces itself.
+
+So the question is put to the library instead. Two static fields on
+`Environment` carry the answer:
+
+- `staveProfiles`, a `Map` from each profile to the set of staff ids it draws.
+  In 1.8.4 the default and combined profiles map to all four ids, the notation
+  profile to `score` alone, and both tab profiles to `tab` alone.
+- `defaultRenderers`, the bar-renderer factories, each exposing a `staffId` and
+  a `canCreate(track, staff)` predicate.
+
+A profile is drawable when some factory whose `staffId` the profile includes
+says it can create a renderer — which is the same test the renderer itself
+applies when it builds a staff system. Because it is the deciding code rather
+than a description of it, it cannot quietly disagree with the renderer.
+
+Three things about this are worth knowing before an upgrade.
+
+**It reaches past the public API, in the same way the branding override does.**
+Both fields are plain public statics, so they are reachable at runtime in the
+bundle the app imports, but they are tagged internal and so absent from the type
+definitions. The layer checks that both are present and shaped as expected, and
+falls back to restating the rules — with a warning — if they are not. That way a
+version that moves them degrades to a maintained approximation instead of
+returning nonsense.
+
+**One staff is not enough to decide.** The renderer only fails when *no* staff
+is created across every track and staff in the system, so the answer has to be
+OR-ed over every pair being rendered. Deciding from the first staff alone gets a
+multi-track score wrong — a score whose second track carries the tablature would
+be told it has none.
+
+**The percussion rule is already handled, and not by us.** Only the tab factory
+declines percussion staves, and `Staff.finish` clears a percussion staff's
+tuning and turns its tablature off, so the two conditions cannot coexist on a
+finished staff. Every importer calls `finish`, and so does the deserialisation
+step used when rendering in a worker. The one path that does not is handing the
+api an already-built score object on the main thread — which is the mode this
+layer runs in, so it matters here more than it would elsewhere. Nothing in
+Fermata does that today: scores arrive as alphaTex or MusicXML and go through an
+importer. Delegating to `canCreate` covers the case regardless.
+
+### The resize handler that cannot be turned off
+
+The library registers its own resize handler in its constructor, throttled at a
+hardcoded 10 ms. There is no setting to disable it, the unsubscribe function it
+returns is discarded, and the container class that owns the event is not
+exported — so a consumer running its own `ResizeObserver`, as this layer does,
+cannot switch the library's off through any public route.
+
+It is quiescent rather than absent: the handler returns immediately unless the
+container's width differs from the width the renderer last used. That is the
+only lever available, and it is why the observer here measures the scrolling
+stage and not the host element. Measuring the host let a re-layout change the
+host's width, which woke this handler, which triggered another re-layout — an
+oscillation that was not obvious from either side alone, because each half looks
+correct in isolation. Anyone changing the observer needs to know there is a
+second one they cannot see.
+
 ## Keeping it replaceable
 
 The reason this is a seam and not a scattering of settings is that VexFlow
