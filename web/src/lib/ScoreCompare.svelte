@@ -124,9 +124,18 @@
     warningsList.filter((w) => !STANDING_LIMITS.some((lim) => lim.test.test(w))),
   );
 
-  // The bar-defect count comes ONLY from confidence.confidence.bars_defective
-  // / bars_measured, the same counts ExtractionResult already carries as
-  // data (see tabextract.py). There is no honest fallback: the backend
+  // The bar-defect count comes ONLY from transcription.bars_defective /
+  // bars_measured - siblings of `confidence` at the TOP LEVEL of the
+  // transcription object (not nested inside it), the same counts
+  // ExtractionResult already carries as data (see tabextract.py).
+  // `confidence` itself is a mapping of aspect to human-readable sentence
+  // (frets/rhythm/time_signature) and deliberately stays that way, so these
+  // two numbers are lifted out to keep it uniform; _transcription_dict lifts
+  // them on both GET and POST, so this is one lookup, not a two-shape
+  // fallback like rhythmConfidence above.
+  //
+  // There is no honest fallback when they're absent (an edited row has no
+  // confidence at all, which is a normal case, not an error): the backend
   // emits the overfull and short counts as two separate sentences, and a bar
   // wrong in both directions at once (two-voice writing where one voice is
   // over its meter and the other under) is counted into BOTH - per
@@ -134,14 +143,13 @@
   // and can exceed bars_measured, while bars_defective is the one figure
   // that counts it once. That total isn't recoverable from the two
   // sentences by any arithmetic - summing guesses high, and "take the
-  // larger one" is still a guess - so when the structured field isn't
-  // there, this says nothing about bars rather than something confidently
-  // wrong. The individual sentences are still in the detail list either way.
+  // larger one" is still a guess - so this says nothing about bars rather
+  // than something confidently wrong. The individual sentences are still in
+  // the detail list either way.
   let barSummary = $derived.by(() => {
-    const structured = confidenceBlob?.confidence;
-    if (structured && typeof structured.bars_measured === "number") {
-      return structured.bars_measured
-        ? { defective: structured.bars_defective ?? 0, total: structured.bars_measured }
+    if (transcription && typeof transcription.bars_measured === "number") {
+      return transcription.bars_measured
+        ? { defective: transcription.bars_defective ?? 0, total: transcription.bars_measured }
         : null;
     }
     return null;
