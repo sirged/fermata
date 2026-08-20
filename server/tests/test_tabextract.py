@@ -155,6 +155,10 @@ def test_glyph_decoded_alphatex_parses_with_dotted_beats(zanarkand_pdf):
     assert parsed["notes"] == result.notes
     assert parsed["dottedBeats"] > 0
     assert parsed["firstNoteMidi"] == 64
+    # This piece is two-voice fingerstyle writing, so the emitted `\voice`
+    # separators must actually have landed their beats in a SECOND concurrent
+    # voice - more sounding voices than bars - rather than merely parsing.
+    assert parsed["voices"] > parsed["bars"], parsed
 
 
 def test_notation_only_pdf_has_no_tab_staves(tarrega_pdf):
@@ -458,14 +462,42 @@ def test_ambiguous_pairing_returns_no_notation_staff():
 # ---------------------------------------------------------------------------
 
 
-def _note_event(x, code, dots=0, rest=False, y=100.0):
-    base = {1: 4.0, 2: 2.0, 4: 1.0, 8: 0.5, 16: 0.25}[code]
-    return glyph_rhythm.NoteEvent(x, y, base, 0, dots, rest,
-                                  "rest_quarter" if rest else "notehead_filled")
+def _note_event(x, code, dots=0, rest=False, y=100.0, stem=None, stem_id=None,
+                kind="notehead_filled", flags=0):
+    """One decoded glyph event. `stem` is the stem direction ("up"/"down") and
+    `stem_id` the identity of the stem it hangs off - two noteheads sharing a
+    stem_id are a chord on one stem, which is what makes them one beat.
+
+    `flags` is how many flag hooks or beam levels the decoder counted at the
+    stem, which is how it actually shortens a filled notehead: base stays a
+    quarter and each flag halves it. Passing `code` alone gives an unflagged
+    notehead of that value.
+    """
+    base = {1: 4.0, 2: 2.0, 4: 1.0, 8: 0.5, 16: 0.25}[code] * (2 ** flags)
+    key = stem_id if stem_id is not None else (None if stem is None else (stem, round(x, 1)))
+    ev = glyph_rhythm.NoteEvent(
+        x, y, base, flags, dots, rest,
+        "rest_quarter" if rest else kind,
+        notehead_kind=None if rest else kind,
+        stem_key=key,
+    )
+    ev.stem_dir = stem
+    return ev
 
 
 def _cols(*xs):
     return [{"x": x, "xc": x + 2.0, "notes": [(1, "3")]} for x in xs]
+
+
+def _col(x, *notes):
+    return {"x": x, "xc": x + 2.0, "notes": list(notes)}
+
+
+def _measure(cols, events, budget=None, x_tol=12.0, spacing=5.125):
+    events = sorted(events, key=lambda n: n.x)
+    return tabextract._build_measure_beats_glyph(
+        cols, 90.0, 600.0, events, [n.x for n in events],
+        x_tol=x_tol, notation_spacing=spacing, budget=budget)
 
 
 def test_second_voice_rest_under_a_note_is_not_an_extra_beat():
@@ -478,9 +510,9 @@ def test_second_voice_rest_under_a_note_is_not_an_extra_beat():
         _note_event(102.0, 4), _note_event(122.0, 4), _note_event(142.0, 4),
         _note_event(102.3, 4, rest=True, y=118.0),  # voice 2 rest, same onset
     ]
-    events.sort(key=lambda n: n.x)
-    beats, unmatched_cols, unmatched_notes = tabextract._build_measure_beats_glyph(
-        cols, 90.0, 160.0, events, [n.x for n in events], x_tol=12.0, spacing=5.125)
+    voices, unmatched_cols, unmatched_notes, _ = _measure(cols, events)
+    assert len(voices) == 1, voices
+    beats = voices[0]
     assert len(beats) == 3, beats
     assert all(notes for _, _, notes in beats), "no phantom rest beat"
 
@@ -492,22 +524,396 @@ def test_simultaneous_rests_in_two_voices_collapse_to_one_beat():
         _note_event(100.4, 4, rest=True, y=118.0),
         _note_event(142.0, 4),
     ]
-    events.sort(key=lambda n: n.x)
-    beats, _, _ = tabextract._build_measure_beats_glyph(
-        cols, 90.0, 160.0, events, [n.x for n in events], x_tol=12.0, spacing=5.125)
-    rests = [b for b in beats if not b[2]]
-    assert len(rests) == 1, beats
+    voices, _, _, _ = _measure(cols, events)
+    assert len(voices) == 1, voices
+    rests = [b for b in voices[0] if not b[2]]
+    assert len(rests) == 1, voices
 
 
 def test_a_genuinely_separate_rest_is_still_its_own_beat():
     """The dedupe must not swallow a real rest that sits on its own onset."""
     cols = _cols(100.0)
     events = [_note_event(102.0, 4), _note_event(140.0, 4, rest=True)]
-    events.sort(key=lambda n: n.x)
-    beats, _, _ = tabextract._build_measure_beats_glyph(
-        cols, 90.0, 160.0, events, [n.x for n in events], x_tol=12.0, spacing=5.125)
-    assert len(beats) == 2
-    assert [bool(n) for _, _, n in beats] == [True, False]
+    voices, _, _, _ = _measure(cols, events)
+    assert len(voices) == 1
+    assert [bool(n) for _, _, n in voices[0]] == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# Voice separation
+# ---------------------------------------------------------------------------
+
+
+def _quarters(beats):
+    return sum(tabextract._beat_quarters(code, dots) for code, dots, _n in beats)
+
+
+def test_stem_direction_splits_a_bar_into_concurrent_voices():
+    """The library's core content: a melody in quarters, stems up, over an
+    accompaniment in eighths, stems down. Assembled into one sequence the 3/4
+    bar holds 6 quarters; as two voices each holds exactly 3."""
+    xs_mel = [100.0, 140.0, 180.0]
+    xs_bass = [100.0, 120.0, 140.0, 160.0, 180.0, 200.0]
+    events = [_note_event(x, 4, y=60.0, stem="up") for x in xs_mel]
+    events += [_note_event(x, 8, y=120.0, stem="down") for x in xs_bass]
+    cols = [_col(100.0, (1, "7"), (5, "3")), _col(120.0, (4, "5")),
+            _col(140.0, (1, "7"), (2, "3")), _col(160.0, (3, "5")),
+            _col(180.0, (1, "7"), (2, "5")), _col(200.0, (2, "7"))]
+    voices, _, unmatched_notes, inferred = _measure(cols, events, budget=3.0)
+
+    assert len(voices) == 2, voices
+    assert unmatched_notes == 0
+    assert _quarters(voices[0]) == 3.0
+    assert _quarters(voices[1]) == 3.0
+    assert inferred == 0.0, "both voices already account for the bar"
+    # The upper voice is the melody: three quarters, each one note.
+    assert [(c, d) for c, d, _n in voices[0]] == [(4, 0)] * 3
+    assert [(c, d) for c, d, _n in voices[1]] == [(8, 0)] * 6
+
+
+def test_a_shared_onset_splits_its_tab_digits_by_pitch_between_the_voices():
+    """Two simultaneous notes in different voices are two tab digits on
+    different strings - which is also exactly what a chord looks like. The
+    split cannot come from the tab, so it comes from the notation: noteheads
+    ordered by pitch against digits ordered by string."""
+    events = [
+        _note_event(100.0, 4, y=60.0, stem="up"),     # melody, high
+        _note_event(100.0, 8, y=120.0, stem="down"),  # bass, low
+    ]
+    cols = [_col(100.0, (1, "7"), (5, "3"))]
+    voices, _, _, _ = _measure(cols, events, budget=3.0)
+    assert len(voices) == 2
+    assert voices[0][0][2] == [(1, "7")], "the melody takes the high string"
+    assert voices[1][0][2] == [(5, "3")], "the bass takes the low string"
+
+
+def test_a_chord_on_one_stem_stays_one_beat_in_one_voice():
+    """Several noteheads on ONE stem is a chord: one beat, however many tab
+    digits are stacked under it. Matching each notehead separately let a
+    chord's members go hunting for their own columns."""
+    events = [
+        _note_event(100.0, 4, y=60.0, stem="down", stem_id="A"),
+        _note_event(100.0, 4, y=70.0, stem="down", stem_id="A"),
+        _note_event(100.0, 4, y=80.0, stem="down", stem_id="A"),
+    ]
+    cols = [_col(100.0, (1, "7"), (2, "8"), (3, "5"))]
+    voices, unmatched_cols, unmatched_notes, _ = _measure(cols, events, budget=3.0)
+    assert len(voices) == 1, "a chord is not two voices"
+    assert len(voices[0]) == 1, voices
+    assert voices[0][0][2] == [(1, "7"), (2, "8"), (3, "5")]
+    assert unmatched_cols == 0 and unmatched_notes == 0
+
+
+def test_a_chord_takes_the_duration_of_the_notehead_that_saw_the_stem():
+    """Only the notehead at a stem's end can see the flag or beam that
+    shortens the chord; the inner members read a plain quarter and would
+    outvote it."""
+    events = [
+        # the notehead at the stem's end: a quarter head with one beam level
+        _note_event(100.0, 8, y=60.0, stem="up", stem_id="A", flags=1),
+        _note_event(100.0, 4, y=70.0, stem="up", stem_id="A"),
+        _note_event(100.0, 4, y=80.0, stem="up", stem_id="A"),
+    ]
+    cols = [_col(100.0, (1, "7"), (2, "8"), (3, "5"))]
+    voices, _, _, _ = _measure(cols, events)
+    assert [(c, d) for c, d, _n in voices[0]] == [(8, 0)]
+
+
+def test_a_chord_with_no_stem_found_is_not_mistaken_for_two_voices():
+    """Some scores engrave chords whose stem the vector pass cannot see at
+    all. Stems are what two-voice writing is notated WITH, so an onset with
+    no stem evidence is a chord - splitting it by pitch invented a second
+    voice out of one chord and left both halves short."""
+    events = [_note_event(100.0, 4, y=y) for y in (60.0, 70.0, 80.0, 95.0)]
+    cols = [_col(100.0, (2, "5"), (3, "5"), (4, "5"), (5, "8"))]
+    voices, _, _, _ = _measure(cols, events, budget=4.0)
+    assert len(voices) == 1, voices
+    assert len(voices[0]) == 1, "one chord, one beat"
+    assert len(voices[0][0][2]) == 4
+
+
+def test_two_stems_the_same_way_up_at_one_onset_are_one_chord():
+    """Not three-voice writing - one chord whose stem came through the vector
+    pass as two separate strokes."""
+    events = [
+        _note_event(100.0, 4, y=60.0, stem="down", stem_id="A"),
+        _note_event(100.0, 4, y=75.0, stem="down", stem_id="B"),
+    ]
+    cols = [_col(100.0, (1, "7"), (3, "5"))]
+    voices, _, _, _ = _measure(cols, events, budget=3.0)
+    assert len(voices) == 1, voices
+    assert len(voices[0]) == 1
+
+
+def test_a_monophonic_bar_stays_one_voice_when_its_stems_flip():
+    """Single-voice writing flips stem direction with pitch around the middle
+    line, so direction alone would shred a melody crossing it into two
+    voices. Nothing sounds together here, so nothing is polyphonic."""
+    events = [
+        _note_event(100.0, 4, y=60.0, stem="down"),
+        _note_event(140.0, 4, y=130.0, stem="up"),
+        _note_event(180.0, 4, y=55.0, stem="down"),
+    ]
+    cols = [_col(100.0, (1, "5")), _col(140.0, (5, "3")), _col(180.0, (1, "7"))]
+    voices, _, _, inferred = _measure(cols, events, budget=3.0)
+    assert len(voices) == 1, voices
+    assert len(voices[0]) == 3
+    assert inferred == 0.0, "a monophonic bar is never padded with inferred rests"
+
+
+def test_a_whole_note_with_no_stem_joins_the_voice_below_the_melody():
+    """A whole note never takes a stem in any notation, so the only signal
+    left is where it sits relative to the voice that does have one."""
+    events = [_note_event(x, 4, y=60.0, stem="up") for x in (100.0, 140.0, 180.0, 220.0)]
+    events.append(_note_event(100.0, 1, y=130.0, kind="notehead_whole"))
+    cols = [_col(100.0, (1, "7"), (6, "3")), _col(140.0, (1, "8")),
+            _col(180.0, (1, "9")), _col(220.0, (1, "10"))]
+    voices, _, _, _ = _measure(cols, events, budget=4.0)
+    assert len(voices) == 2, voices
+    assert _quarters(voices[0]) == 4.0
+    assert _quarters(voices[1]) == 4.0
+    assert voices[1][0][2] == [(6, "3")], "the whole note is the lower voice"
+
+
+def test_a_silent_voice_is_padded_with_rests_so_it_fills_the_bar():
+    """This is what actually makes the arithmetic work: without it every
+    voice but the busiest reads as a short bar and drifts against it."""
+    events = [_note_event(100.0, 4, y=60.0, stem="up")]
+    events += [_note_event(x, 4, y=130.0, stem="down") for x in (100.0, 140.0, 180.0)]
+    cols = [_col(100.0, (1, "7"), (5, "3")), _col(140.0, (5, "5")), _col(180.0, (5, "7"))]
+    voices, _, _, inferred = _measure(cols, events, budget=3.0)
+    assert len(voices) == 2
+    assert _quarters(voices[0]) == 3.0
+    assert _quarters(voices[1]) == 3.0
+    assert inferred == 2.0, "the upper voice was silent for two of the three beats"
+    # the note sounds first, then the inferred silence - spelled as the one
+    # half rest that covers it, not two quarter rests
+    assert voices[0] == [(4, 0, [(1, "7")]), (2, 0, [])], voices[0]
+
+
+def test_a_voice_that_enters_late_is_padded_at_the_front():
+    events = [_note_event(180.0, 4, y=60.0, stem="up")]
+    events += [_note_event(x, 4, y=130.0, stem="down") for x in (100.0, 140.0, 180.0)]
+    cols = [_col(100.0, (5, "3")), _col(140.0, (5, "5")),
+            _col(180.0, (1, "7"), (5, "7"))]
+    voices, _, _, _ = _measure(cols, events, budget=3.0)
+    assert len(voices) == 2
+    assert _quarters(voices[0]) == 3.0
+    assert voices[0][0][2] == [], "silence first"
+    assert voices[0][-1][2] == [(1, "7")], "then the note it enters on"
+
+
+def test_rest_beats_for_fills_a_meter_exactly():
+    assert tabextract._rest_beats_for(3.0) == [(2, 0, []), (4, 0, [])]
+    assert tabextract._rest_beats_for(4.0) == [(1, 0, [])]
+    assert tabextract._rest_beats_for(1.5) == [(4, 0, []), (8, 0, [])]
+
+
+def test_an_empty_bar_is_filled_with_rests_that_add_up():
+    """A 3/4 bar's 3.0 quarters snap to a WHOLE rest, which is a third longer
+    than the bar - an empty bar has to be spelled with rests that sum to the
+    meter instead."""
+    tex = tabextract._build_alphatex(
+        "T", None, [], (3, 4), [(tabextract._rest_beats_for(3.0), (3, 4))])
+    body = tex.split("\n.\n", 1)[1].strip()
+    assert body == ":2 r :4 r |", body
+
+
+def test_concurrent_voices_are_emitted_with_the_voice_separator():
+    """alphaTex spells concurrent voices inside a bar with `\\voice`, which
+    only means that with `\\voicemode barwise` in the header - the default
+    reads it as "restart the staff for the next voice"."""
+    measures = [
+        ([[(4, 0, [(1, "7")])] * 3, [(8, 0, [(5, "3")])] * 6], (3, 4)),
+        ([[(4, 0, [(1, "7")])] * 3], (3, 4)),
+    ]
+    tex = tabextract._build_alphatex("T", None, [], (3, 4), measures)
+    head, body = tex.split("\n.\n", 1)
+    assert "\\voicemode barwise" in head
+    lines = body.strip().splitlines()
+    assert lines[0].count("\\voice") == 1, lines[0]
+    assert lines[1].count("\\voice") == 0, "a monophonic bar emits no second voice"
+
+
+def test_a_monophonic_score_does_not_declare_a_voice_mode():
+    """The directive only appears where it does something."""
+    tex = tabextract._build_alphatex(
+        "T", None, [], (3, 4), [([[(4, 0, [(1, "7")])] * 3], (3, 4))])
+    assert "\\voicemode" not in tex
+
+
+def test_an_onset_short_of_digits_does_not_eat_the_next_onsets_column():
+    """An onset can legitimately need two columns (engravers offset a bass tab
+    number a few points right of a treble one in the same chord), but the
+    search for the second one has to stay beside the first. Searching the full
+    notehead-to-digit window instead let an onset with more noteheads than its
+    own column had digits consume the NEXT onset's column - sounding those
+    frets a beat early and dropping the notes that column belonged to."""
+    events = [
+        _note_event(100.0, 4, y=60.0, stem="up"),
+        _note_event(100.0, 4, y=120.0, stem="down"),
+        _note_event(110.0, 4, y=122.0, stem="down"),
+    ]
+    cols = [_col(100.0, (1, "7")), _col(110.0, (5, "3"))]
+    voices, _, unmatched_notes, _ = _measure(cols, events, budget=3.0)
+    lower = [b for b in voices[1] if b[2]]
+    assert lower == [(4, 0, [(5, "3")])], voices
+    # and it is the SECOND beat of that voice, not the first
+    assert voices[1].index(lower[0]) == 1, voices[1]
+    assert unmatched_notes == 1, "the notehead with no digit is reported, not hidden"
+
+
+def test_one_stem_shared_across_two_onsets_is_not_one_chord():
+    """Sharing a stem is necessary but not sufficient to be one beat - the
+    noteheads also have to sound together. A notehead whose own stem was
+    missed can be threaded onto a neighbour's, and keying on the stem alone
+    welded two consecutive onsets into a chord positioned between them,
+    losing an onset and its duration."""
+    events = [
+        _note_event(100.0, 4, y=60.0, stem="up", stem_id="A"),
+        _note_event(106.0, 4, y=80.0, stem="up", stem_id="A"),
+        _note_event(140.0, 4, y=62.0, stem="up"),
+    ]
+    cols = [_col(100.0, (2, "5")), _col(106.0, (5, "3")), _col(140.0, (5, "7"))]
+    voices, _, _, _ = _measure(cols, events, budget=3.0)
+    assert len(voices) == 1, voices
+    assert len(voices[0]) == 3, "three onsets, three beats"
+    assert tabextract._bar_quarters(voices) == 3.0
+
+
+def test_a_rest_matching_no_onset_is_dropped_not_added_to_a_sounding_voice():
+    """A rest glyph further from every decoded onset than the merge tolerance
+    says nothing about which voice it belongs to. Adding it anyway put a beat
+    into a voice that was already sounding there, taking that voice over its
+    meter and pushing everything after it late."""
+    events = [_note_event(x, 4, y=60.0, stem="up") for x in (100.0, 140.0, 180.0, 220.0)]
+    events += [_note_event(x, 4, y=120.0, stem="down") for x in (100.0, 180.0)]
+    events += [_note_event(145.4, 4, y=62.0, rest=True)]  # 5.4pt from any onset
+    cols = [_col(100.0, (1, "7"), (5, "3")), _col(140.0, (1, "8")),
+            _col(180.0, (1, "9"), (5, "5")), _col(220.0, (1, "10"))]
+    voices, _, _, _ = _measure(cols, events, budget=4.0)
+    assert len(voices) == 2
+    assert _quarters(voices[0]) == 4.0, voices[0]
+    assert _quarters(voices[1]) == 4.0, voices[1]
+    assert [b[2] for b in voices[0]] == [[(1, "7")], [(1, "8")], [(1, "9")], [(1, "10")]]
+
+
+def test_a_voice_whose_notes_all_lost_their_digits_is_not_emitted():
+    """Padding a voice that decoded no notes at all filled a whole bar with
+    inferred silence: a phantom voice that counted as polyphony, overstated
+    how much rest was deduced from the meter, and wrote a meaningless
+    `\\voice :2 r :4 r` into the stored transcription."""
+    events = [
+        _note_event(100.0, 4, y=60.0, stem="up"),
+        _note_event(100.0, 4, y=120.0, stem="down"),
+    ]
+    cols = [_col(100.0, (1, "7"))]  # one digit for two noteheads
+    voices, _, unmatched_notes, inferred = _measure(cols, events, budget=3.0)
+    assert len(voices) == 1, voices
+    assert voices[0] == [(4, 0, [(1, "7")])]
+    assert inferred == 0.0, "no silence is inferred for a voice that never played"
+    assert unmatched_notes == 1
+
+
+def test_a_bar_of_nothing_but_rests_still_keeps_them():
+    """The phantom-voice filter must not throw away a genuinely silent bar."""
+    events = [_note_event(100.0, 4, rest=True)]
+    voices, _, _, _ = _measure([], events, budget=3.0)
+    assert voices == [[(4, 0, [])]], voices
+
+
+def test_bar_quarters_is_the_longest_voice_not_the_sum():
+    """Voices sound CONCURRENTLY. Summing them is exactly the mistake that
+    made a bar of two-voice writing read as double its meter."""
+    bar = [[(4, 0, [])] * 3, [(8, 0, [])] * 6]
+    assert tabextract._bar_quarters(bar) == 3.0
+    assert tabextract._overfull_bars([(bar, (3, 4))]) == (0, 1)
+    # a voice that really does overflow is still caught
+    over = [[(4, 0, [])] * 3, [(4, 0, [])] * 4]
+    assert tabextract._overfull_bars([(over, (3, 4))]) == (1, 1)
+
+
+# ---------------------------------------------------------------------------
+# Bar fullness on a real reference score
+# ---------------------------------------------------------------------------
+
+_DUR_TOKEN = re.compile(r"^:(\d+)$")
+
+
+def _emitted_voice_quarters(segment):
+    """Quarter notes in one emitted voice of one bar, read back out of the
+    alphaTex itself - so this measures the artifact that gets stored and
+    rendered, not an intermediate the emitter might not agree with."""
+    total = 0.0
+    dur = None
+    dots = 0
+    for tok in segment.split():
+        m = _DUR_TOKEN.match(tok)
+        if m:
+            if dur:
+                total += tabextract._beat_quarters(dur, dots)
+            dur, dots = int(m.group(1)), 0
+            continue
+        if "{dd}" in tok:
+            dots = 2
+        elif "{d}" in tok:
+            dots = 1
+    if dur:
+        total += tabextract._beat_quarters(dur, dots)
+    return total
+
+
+def _emitted_bars(alphatex):
+    """[(budget, [voice quarters, ...]), ...] for every emitted bar."""
+    header, body = alphatex.split("\n.\n", 1)
+    head = re.search(r"\\ts\s+(\d+)\s+(\d+)", header)
+    ts = (int(head.group(1)), int(head.group(2))) if head else (4, 4)
+    out = []
+    for line in body.strip().splitlines():
+        m = re.match(r"\s*\\ts\s+(\d+)\s+(\d+)\s*", line)
+        if m:
+            ts = (int(m.group(1)), int(m.group(2)))
+            line = line[m.end():]
+        bar = line.rstrip().rstrip("|").strip()
+        voices = [s.strip() for s in bar.split("\\voice")]
+        out.append((tabextract._measure_quarter_length(ts),
+                    [_emitted_voice_quarters(v) for v in voices]))
+    return out
+
+
+def test_reference_score_bars_mostly_add_up(zanarkand_pdf):
+    """To Zanarkand is two-voice fingerstyle writing throughout: a melody over
+    an independent bass line. Assembled into one voice per bar, 37 of its 50
+    bars held more than their meter (only 24% summed exactly, 72.5 quarters of
+    total error) with every individual duration decoded correctly. Separating
+    the voices is what fixes the arithmetic, so pin it: this is the metric the
+    feature exists to move.
+    """
+    result = tabextract.extract(zanarkand_pdf)
+    assert result.extractable
+    bars = _emitted_bars(result.alphatex)
+    assert len(bars) == 50, len(bars)
+
+    exact = sum(1 for budget, vs in bars
+                if all(abs(v - budget) < 1e-6 for v in vs))
+    overfull = sum(1 for budget, vs in bars if any(v > budget + 1e-6 for v in vs))
+    error = sum(abs(v - budget) for budget, vs in bars for v in vs)
+    multivoice = sum(1 for _b, vs in bars if len(vs) > 1)
+
+    assert exact >= 44, f"only {exact} of 50 bars sum exactly (was 12 before voices)"
+    assert overfull <= 6, f"{overfull} bars overfull (was 37 before voices)"
+    assert error <= 12.0, f"{error} quarters of error (was 72.5 before voices)"
+    assert multivoice >= 30, f"only {multivoice} bars came out as two voices"
+
+
+def test_reference_score_still_reports_the_bars_that_do_not_add_up(zanarkand_pdf):
+    """A much smaller number, but it must still be reported rather than
+    disappearing - the remaining bars really do play wrong."""
+    result = tabextract.extract(zanarkand_pdf)
+    fullness = [w for w in result.warnings if "hold more than their time signature" in w]
+    assert len(fullness) == 1, result.warnings
+    assert re.search(r"\b\d+ of 50 bar\(s\)", fullness[0]), fullness[0]
+    assert any("concurrent voices" in w for w in result.warnings)
 
 
 # ---------------------------------------------------------------------------

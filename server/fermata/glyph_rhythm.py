@@ -296,6 +296,12 @@ _SP = {
     # notehead <-> stem attachment
     "stem_x_tol": 0.68,           # was 3.5pt
     "stem_y_tol": 1.17,           # was 6.0pt
+    # How far outside a stem's own y-span an inner chord notehead may sit and
+    # still count as threaded onto it (see _stem_through_notehead). A third
+    # of a staff space is under half a notehead height, so it forgives the
+    # stroke ending a hair short of the outermost notehead's centre without
+    # reaching the next staff position.
+    "stem_span_slack": 0.35,
     # flags
     "flag_x_tol": 0.98,           # was 5.0pt
     "flag_y_tol": 1.76,           # was 9.0pt
@@ -934,9 +940,10 @@ DURATION_CODE = {4.0: 1, 2.0: 2, 1.0: 4, 0.5: 8, 0.25: 16, 0.125: 32}
 
 class NoteEvent:
     __slots__ = ("x", "y", "base_units", "flags", "dotted", "is_rest",
-                 "category", "notehead_kind", "tied_next")
+                 "category", "notehead_kind", "tied_next", "stem_dir", "stem_key")
 
-    def __init__(self, x, y, base_units, flags, dotted, is_rest, category, notehead_kind=None):
+    def __init__(self, x, y, base_units, flags, dotted, is_rest, category,
+                 notehead_kind=None, stem_key=None):
         self.x = x
         self.y = y
         self.base_units = base_units
@@ -946,6 +953,14 @@ class NoteEvent:
         self.category = category
         self.notehead_kind = notehead_kind
         self.tied_next = False  # best-effort: see _mark_ties()
+        # Voice signals. stem_key identifies the ONE engraved stem this
+        # notehead hangs off, so the several noteheads of a chord - which
+        # share a single stem - can be recognised as one beat rather than
+        # several. stem_dir is "up"/"down" (see _assign_stem_directions), the
+        # signal engravers use to separate an upper from a lower voice. Both
+        # are None for a notehead with no stem at all (a whole note).
+        self.stem_key = stem_key
+        self.stem_dir = None
 
     @property
     def quarter_units(self):
@@ -1009,6 +1024,38 @@ def _best_stem(stems, stem_xs, x0, x1, yc, tol, x_tol=None, y_tol=None):
     return best
 
 
+def _stem_through_notehead(stems, stem_xs, x0, x1, yc, tol):
+    """The stem this notehead is THREADED ONTO, for a notehead sitting part
+    way along a chord's shared stem rather than at its end.
+
+    _best_stem deliberately only attaches a notehead at a stem's END, which
+    is where the flag or beam that decides the duration lives, and keeping
+    that window tight is what stops a neighbouring voice's stem being read
+    for flags. But a chord is several noteheads on ONE stem, and every member
+    except the one at the stem's end sits far outside that end window - up to
+    an octave away. Those members still have to be recognised as the same
+    beat, so accept a stem whose x is beside this notehead and whose span
+    covers the notehead's centre.
+
+    This does not confuse the two voices of conventional polyphonic writing:
+    there the upper voice's stem goes UP and the lower voice's goes DOWN, so
+    each points AWAY from the other and neither spans the other's notehead.
+    """
+    lo, hi = _bounds(stem_xs, min(x0, x1) - tol.stem_x_tol, max(x0, x1) + tol.stem_x_tol)
+    slack = tol.stem_span_slack
+    best, best_dx = None, None
+    for i in range(lo, hi):
+        s = stems[i]
+        dx = min(abs(s.x - x0), abs(s.x - x1))
+        if dx > tol.stem_x_tol:
+            continue
+        if not (s.y0 - slack <= yc <= s.y1 + slack):
+            continue
+        if best_dx is None or dx < best_dx:
+            best, best_dx = s, dx
+    return best
+
+
 def _has_stem_near(stems, stem_xs, x0, x1, yc, tol):
     return _best_stem(stems, stem_xs, x0, x1, yc, tol,
                       x_tol=tol.rest_stem_x_tol, y_tol=tol.rest_stem_y_tol) is not None
@@ -1063,6 +1110,66 @@ def _beam_count_near(beams, stem, notehead_yc, tol):
         if y - clusters[-1] > tol.beam_level_gap:
             clusters.append(y)
     return len(clusters)
+
+
+def _stem_key(stem):
+    """Hashable identity for one engraved stem, so every notehead attached to
+    it can be recognised as belonging to the same beat."""
+    return (round(stem.x, 2), round(stem.y0, 2), round(stem.y1, 2))
+
+
+def _assign_stem_directions(notes, stems_by_key):
+    """Resolve each stem's direction ONCE, from every notehead hanging off it.
+
+    Direction cannot be read from a single notehead's own position on its
+    stem: a chord shares one stem that runs PAST all of its noteheads, so
+    the end further from any given notehead is on the wrong side for every
+    member but the outermost one - reading "the free end is below me,
+    therefore stem down" off the top note of an up-stemmed chord inverts it.
+
+    What identifies the direction is which end OVERHANGS the notehead group:
+    a stem sticks out roughly an octave beyond the note it points away from
+    and stops dead at the note it points toward. Page y grows DOWNWARD, so
+    the overhang above the group is (topmost notehead y - stem y0).
+
+    The answer is then CHECKED against which side of the noteheads the stem
+    sits on, because an up-stem leaves a notehead at its right edge and a
+    down-stem at its left - a convention the library keeps on 99.7% of
+    stemmed filled noteheads and 97.7% of half notes (measured over 21700 of
+    them). A stem whose side and overhang contradict each other is not this
+    notehead's: _best_stem accepts any stem end within about a staff space,
+    which in close-spaced two-voice writing the OTHER voice's stem can
+    satisfy. Such a stem is dropped rather than believed - the notehead keeps
+    no stem at all and is placed by position instead, which can lose
+    information but cannot invert it.
+
+    This catches only the contradictory subset. A neighbouring voice's stem
+    that happens to sit where this notehead's own stem WOULD sit is
+    indistinguishable from it here, and still yields a wrong direction; see
+    the residual-risk note on the half-note branch of decode_note_events.
+    """
+    by_stem = collections.defaultdict(list)
+    for n in notes:
+        if n.stem_key is not None:
+            by_stem[n.stem_key].append(n)
+    for key, members in by_stem.items():
+        stem = stems_by_key.get(key)
+        if stem is None:
+            continue
+        ys = [m.y for m in members]
+        overhang_up = min(ys) - stem.y0
+        overhang_down = stem.y1 - max(ys)
+        direction = "up" if overhang_up > overhang_down else "down"
+        # Mean over the members, so the one notehead a second-interval chord
+        # displaces to the far side of the stem cannot outvote the rest.
+        mean_x = sum(m.x for m in members) / len(members)
+        on_right = stem.x > mean_x
+        if on_right != (direction == "up"):
+            for m in members:
+                m.stem_key = None
+            continue
+        for m in members:
+            m.stem_dir = direction
 
 
 def _mark_ties(notes, curves, tol):
@@ -1188,19 +1295,42 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
     dot_counts = _assign_dots(dot_owners, dot_events, tol)
 
     notes = []
+    stems_by_key = {}
     for ev in staff_events:
         if ev.category in NOTEHEAD_CATS:
+            stem = None
             if ev.category == "notehead_whole":
                 # whole notes never take a stem, flag or beam by definition -
                 # don't even look for one (a nearby unrelated stem in a dense
                 # chord/2-voice passage would otherwise be a false positive).
                 base, flags = 4.0, 0
             elif ev.category == "notehead_half":
-                # half notes have a stem but categorically cannot carry a
-                # flag or beam - counting one here would only ever be a
-                # false positive from a neighboring voice's stem/beam sitting
-                # nearby (2-voice writing), so don't even look.
+                # A half note has a stem but categorically cannot carry a
+                # flag or beam, so none is ever counted for one - any that
+                # turned up would be a neighbouring voice's.
+                #
+                # Its stem IS looked up, for the stem's DIRECTION only, which
+                # is what says which voice the note belongs to: a lower voice
+                # in this repertoire is very often written in half notes, and
+                # without its stem it carries no voice signal at all.
+                #
+                # KNOWN RESIDUAL RISK, accepted deliberately: _best_stem
+                # accepts any stem end within about a staff space of the
+                # notehead's centre, and a real half note's own stem end is
+                # measured at up to 0.94 spacings from it (median 0.44, over
+                # 2004 of them), so the window cannot be tightened without
+                # losing real attachments - at 0.5 spacings it loses 46% of
+                # them. Where this note's own stem is missing from the vector
+                # pass entirely, a neighbouring voice's stem can therefore be
+                # picked, and if it sits in a position consistent with the
+                # engraving convention nothing here can tell. That yields a
+                # wrong voice for the note and breaks both voices' arithmetic
+                # for that bar, which shows up in the overfull-bar count.
+                # _assign_stem_directions rejects the subset where the
+                # stem's side and its overhang contradict each other; the
+                # consistent-looking case remains.
                 base, flags = 2.0, 0
+                stem = _best_stem(stems, stem_xs, ev.x0, ev.x1, ev.yc, tol)
             else:
                 base = 1.0  # filled/x/diamond head: quarter-or-shorter
                 flags = 0
@@ -1209,8 +1339,20 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
                     hooks = _flag_count_near(flag_events, flag_xs, stem, ev.yc, tol)
                     beam_levels = _beam_count_near(beams, stem, ev.yc, tol)
                     flags = max(hooks, beam_levels)
+            if stem is None and ev.category != "notehead_whole":
+                # An inner or far member of a chord: no stem END is near it,
+                # but its chord's stem runs through it. Voice grouping only -
+                # the duration it was given above stands, and a chord's
+                # duration is recomposed from all its members together (see
+                # tabextract._stem_group_duration).
+                stem = _stem_through_notehead(stems, stem_xs, ev.x0, ev.x1, ev.yc, tol)
+            key = None
+            if stem is not None:
+                key = _stem_key(stem)
+                stems_by_key[key] = stem
             notes.append(NoteEvent(ev.xc, ev.yc, base, flags, min(dot_counts.get(id(ev), 0), 2),
-                                   False, ev.category, notehead_kind=ev.category))
+                                   False, ev.category, notehead_kind=ev.category,
+                                   stem_key=key))
         elif ev.category in REST_CATS:
             # disambiguate flag8_or_rest_quarter by stem proximity: a real
             # stem near it means it's actually a flag glyph, not a rest.
@@ -1236,6 +1378,7 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
                                    True, cat))
 
     notes.sort(key=lambda n: n.x)
+    _assign_stem_directions(notes, stems_by_key)
     _mark_ties(notes, curves, tol)
 
     # Unrecognised glyphs sitting where a flag attaches are the dangerous
