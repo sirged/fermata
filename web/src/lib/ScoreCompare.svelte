@@ -354,7 +354,7 @@
     <!-- both panes always mount, one hidden with CSS rather than an {#if} -
          switching layout used to unmount+remount PdfViewer (re-fetching and
          re-rendering every page, losing scroll position) and tear down and
-         rebuild alphaTab (stopping playback) -->
+         rebuild the score renderer (stopping playback) -->
     {@render pdfPane(activeLayout === "staff")}
     {@render staffPane(activeLayout === "pdf")}
   </div>
