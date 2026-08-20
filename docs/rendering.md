@@ -100,7 +100,17 @@ presets, themes — not the renderer's.
 layout all flow through it. The view it returns exposes `setProfile`,
 `setPreset`, `setTheme`, `setSpeed`, `setLooping`, `setMetronome`, `setCountIn`,
 `playPause`, `stop` and `destroy`, and reports `layout`, `theme`, `profile`,
-`preset` and `lastRenderMs`.
+`supportedProfiles`, `preset` and `lastRenderMs`.
+
+Which profiles a caller may ask for is score-dependent, not fixed: a score
+does not necessarily support all of `SCORE_PROFILES`, and `createScoreView`
+does not just trust whatever `profile` it was given. `onProfiles(profiles)`
+fires once the loaded score's own content has been inspected, with the
+subset it can actually be drawn under (possibly empty - see
+`supportedProfiles()`); `onProfileApplied(profile)` fires separately, once a
+render with that profile has actually finished, which is what a caller
+should wait for before treating a profile switch as visible on screen rather
+than merely requested.
 
 ### Responsive layout
 

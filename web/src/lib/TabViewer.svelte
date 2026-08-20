@@ -1,7 +1,7 @@
 <script>
   import { untrack } from "svelte";
   import { api } from "./api.js";
-  import { createScoreView } from "./score-render.js";
+  import { createScoreView, UNRENDERABLE_MESSAGE } from "./score-render.js";
   import { getSettings, setSetting, STAFF_THEMES, STAFF_THEME_LABELS } from "./settings.svelte.js";
 
   const settings = getSettings();
@@ -40,6 +40,18 @@
   let scroller;
   let view = $state(null);
   let profile = $state("scoretab");
+  // Which profile buttons are worth showing at all - null while unknown (no
+  // score has finished loading yet), otherwise whatever score-render.js
+  // found this score can actually be drawn with - possibly empty. null is
+  // deliberately not "everything": a `score` prop loads over an async fetch,
+  // so there is a real window between mount and the load actually landing
+  // during which every button being live would let a click on "Tab" go
+  // through for a notation-only file before its content is even known - and
+  // then get silently walked back (the button vanishing out from under the
+  // pointer) the moment the fetch resolves and corrects it. Starting at null
+  // and rendering no buttons at all during that window is what avoids
+  // offering a choice this component cannot yet vouch for.
+  let profileOptions = $state(null);
   let playing = $state(false);
   let playerReady = $state(false);
   let speed = $state(1);
@@ -100,6 +112,9 @@
     loadError = "";
     playerReady = false;
     playing = false;
+    // unknown again for this score, not "same as the last one" - see the
+    // comment on profileOptions's declaration
+    profileOptions = null;
     // untrack: everything below is driven imperatively once the view exists;
     // tracking it here would tear down and rebuild the renderer (and stop
     // playback) on a profile switch or a toggle.
@@ -115,6 +130,29 @@
         onPlaying: (p) => (playing = p),
         onError: (m) => (loadError = m),
         onPassComplete: advanceLadder,
+        // Only which buttons to offer, not which one is highlighted - see
+        // onProfileApplied for that. A score with nothing drawable reports an
+        // empty array here, not a fallback list; the empty-state notice in
+        // the markup below is what tells the profileOptions.length === 0
+        // case apart from "still loading" (profileOptions still null).
+        onProfiles: (profiles) => {
+          profileOptions = profiles;
+        },
+        // The highlighted button has to follow what actually finished
+        // drawing, not what was most recently requested - setProfile() below
+        // deliberately does not set `profile` itself, because a requested
+        // profile that fails to render (or hasn't rendered yet) must not
+        // move the highlight onto a staff that isn't the one on screen.
+        // loadError is cleared here too: a render succeeding means whatever
+        // problem it described is resolved, and it must not keep showing
+        // (or keep the .error paragraph occupying space) once the view has
+        // recovered - score-render.js's own setProfile() guard would
+        // otherwise never get a chance to retry a *different* profile
+        // switch while a stale error from an earlier one sat on screen.
+        onProfileApplied: (p) => {
+          profile = p;
+          loadError = "";
+        },
       }),
     );
     view = v;
@@ -132,7 +170,17 @@
   });
 
   function setProfile(p) {
-    profile = p;
+    // the buttons only ever offer a viable profile, but guard anyway rather
+    // than trust that
+    if (!profileOptions?.includes(p)) return;
+    // `profile` (the highlighted button) is deliberately not set here. It is
+    // set from onProfileApplied, above, once a render with this profile has
+    // actually finished - setting it eagerly would move the highlight onto a
+    // staff that is not yet, or never, actually on screen: a render that
+    // fails for a reason other than an unsupported profile (still possible -
+    // see onError) would otherwise leave the highlight on a profile whose
+    // render just threw, with the previous, different render frozen
+    // underneath it. That mismatch was the original bug's second half.
     view?.setProfile(p);
   }
 
@@ -207,11 +255,15 @@
     </div>
   {:else}
     <div class="toolbar">
-      <div class="seg">
-        {#each PROFILE_LABELS as [value, label]}
-          <button class:on={profile === value} onclick={() => setProfile(value)}>{label}</button>
-        {/each}
-      </div>
+      {#if profileOptions?.length}
+        <div class="seg">
+          {#each PROFILE_LABELS as [value, label]}
+            {#if profileOptions.includes(value)}
+              <button class:on={profile === value} onclick={() => setProfile(value)}>{label}</button>
+            {/if}
+          {/each}
+        </div>
+      {/if}
       <select class="theme-picker" value={settings.staff_theme} onchange={chooseTheme} title="Staff theme">
         {#each STAFF_THEMES as t}
           <option value={t}>{STAFF_THEME_LABELS[t]}</option>
@@ -278,7 +330,19 @@
     <p class="error">{loadError}</p>
   {/if}
 
-  <div class="score-scroll" bind:this={scroller}>
+  {#if profileOptions && profileOptions.length === 0}
+    <!-- Nothing about this score is drawable under any profile - see
+    score-render.js's supportedProfiles(). The renderer's own attempt to
+    render it anyway still runs (it cannot be cancelled from here) and still
+    throws internally, but that failure is caught and suppressed at the
+    source rather than shown, so this plain sentence - not a stack trace - is
+    the only thing a guitarist sees. The staff area below stays in the DOM
+    (score-render.js's `host` binding needs a stable element) but is hidden
+    rather than left showing whatever the failed render left behind. -->
+    <p class="notice">{UNRENDERABLE_MESSAGE}</p>
+  {/if}
+
+  <div class="score-scroll" class:hidden={profileOptions?.length === 0} bind:this={scroller}>
     <div class="at-host" bind:this={host}></div>
   </div>
 </div>
@@ -414,6 +478,19 @@
        sideways as well - page layout never overflows this way */
     overflow: auto;
     padding: 20px;
+  }
+
+  /* Stays in the DOM (score-render.js's `host` binding has to stay stable)
+     for a score with nothing drawable - just not shown, so whatever the
+     renderer's own suppressed failed render left behind is never visible. */
+  .score-scroll.hidden {
+    display: none;
+  }
+
+  .notice {
+    color: var(--ink-dim);
+    text-align: center;
+    margin: 32px 8px;
   }
 
   .at-host {
