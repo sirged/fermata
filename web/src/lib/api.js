@@ -87,6 +87,24 @@ export const api = {
   deleteTranscription: (id) =>
     fetch(`/api/scores/${id}/transcription`, { method: "DELETE" }).then(j),
   transcriptionAnalysis: (id) => fetch(`/api/scores/${id}/transcription/analysis`).then(j),
+  instruments: () => fetch("/api/instruments").then(j),
+  instrumentPresets: () => fetch("/api/instruments/presets").then(j),
+  // A whole definition, not a patch: string_count and string_pitches have to
+  // agree, and fret_count exists only when fretted, so half a definition
+  // merged onto an old one is how a five-string bass ends up with four pitches.
+  createInstrument: (body) =>
+    fetch("/api/instruments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(j),
+  saveInstrument: (id, body) =>
+    fetch(`/api/instruments/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(j),
+  deleteInstrument: (id) => fetch(`/api/instruments/${id}`, { method: "DELETE" }).then(j),
   settings: () => fetch("/api/settings").then(j),
   putSettings: (values) =>
     fetch("/api/settings", {

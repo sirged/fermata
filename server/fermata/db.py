@@ -81,7 +81,59 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL,
     PRIMARY KEY (owner, key)
 );
+
+-- An instrument as a player has it in hand, in one tuning: the same guitar in
+-- standard and in dropped D is two rows, because the tuning is what anything
+-- downstream needs. `fretted` is not decoration - a fret is a discrete
+-- position, so position reasoning and tablature only apply when it is 1, and
+-- fret_count/capo are rejected outright on an unfretted row rather than stored
+-- and ignored (see fermata/instruments.py).
+--
+-- `string_pitches` is a JSON array of pitch names ("E2", "F#2"), ordered
+-- highest string NUMBER first, which is how tuning already travels through
+-- this codebase (tabextract.DEFAULT_TUNING, musicxml.open_string_midi). One
+-- column rather than a row per string because a tuning is only ever read and
+-- written whole, and its order is part of its meaning - a child table would
+-- need an explicit ordinal column to say the same thing.
+--
+-- `reference_pitch` is in Hz. Not everyone tunes to A440 and period
+-- instruments generally do not, so a string's sounding frequency is only
+-- determined once this is known.
+--
+-- `owner` mirrors the settings table: unused today, every row written with
+-- DEFAULT_OWNER, present from the start so real accounts arrive as a data
+-- migration rather than a schema redesign.
+CREATE TABLE IF NOT EXISTS instruments (
+    id INTEGER PRIMARY KEY,
+    owner TEXT NOT NULL DEFAULT 'local',
+    name TEXT NOT NULL,
+    fretted INTEGER NOT NULL DEFAULT 1,
+    string_count INTEGER NOT NULL,
+    string_pitches TEXT NOT NULL,
+    fret_count INTEGER,
+    capo INTEGER,
+    reference_pitch REAL NOT NULL DEFAULT 440.0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_instruments_owner ON instruments(owner);
 """
+
+# Columns added to a table that had already shipped. CREATE TABLE IF NOT EXISTS
+# does nothing at all to a table that exists, so SCHEMA alone reaches only fresh
+# installs - an upgraded one would keep the old columns and 500 the moment
+# anything wrote the new one. Applied by name against PRAGMA table_info so
+# running it on every startup is a no-op after the first.
+#
+# Which score an instrument is for lives on the score rather than in a join
+# table: it is one instrument per score, and a score row is what every reader
+# already has in hand. ON DELETE SET NULL because deleting an instrument means
+# the player no longer has it, not that the scores written for it are gone.
+COLUMN_ADDITIONS = {
+    "scores": {
+        "instrument_id": "INTEGER REFERENCES instruments(id) ON DELETE SET NULL",
+    },
+}
 
 
 def connect() -> sqlite3.Connection:
@@ -95,9 +147,18 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def _add_missing_columns(conn) -> None:
+    for table, columns in COLUMN_ADDITIONS.items():
+        present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for column, definition in columns.items():
+            if column not in present:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_db() -> None:
     conn = connect()
     conn.executescript(SCHEMA)
+    _add_missing_columns(conn)
     conn.commit()
 
 

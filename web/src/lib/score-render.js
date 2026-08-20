@@ -275,6 +275,118 @@ function applyBrandingOverride(api) {
 // and re-renders identically. docs/rendering.md has the numbers.
 const RENDER_IN_WORKER = false;
 
+// ------------------------------------------------- auditioning one pitch
+
+// The synthesiser Fermata has is the renderer's, and this is how a single
+// pitch is made audible with no score in play. It is what lets a tuning be
+// checked by ear, and on an unfretted instrument it is not a convenience: with
+// no fret to aim at, a heard pitch is the thing a player matches against, so
+// this is the interface rather than an extra.
+//
+// Played as a one-shot midi file handed to the synth rather than by loading a
+// one-note score, because loading replaces whatever the renderer holds and
+// forces a render - and the settings view has no score to lose in the first
+// place. The renderer will not exist without a container, so the audition view
+// gets an off-screen one of its own, built once and lazily: the soundfont is
+// worth roughly a megabyte and nothing should pay for it until a string is
+// actually clicked.
+
+const AUDITION_CHANNEL = 0;
+// Raw midi program numbers are 0-based, so 24 is Acoustic Guitar (nylon) -
+// the same voice server/fermata/musicxml.py writes, where MusicXML's 1-based
+// numbering calls it 25. What a tuning check needs is a clear fundamental
+// with some decay, not the exact timbre of the instrument in hand.
+const AUDITION_PROGRAM = 24;
+const AUDITION_VELOCITY = 100;
+// Long enough to hear against a plucked string and let it decay, short enough
+// that clicking down a set of six is not a wait.
+const AUDITION_SECONDS = 1.6;
+// The renderer's own division, and a tempo that makes a quarter note half a
+// second. Both are stated rather than left to the sequencer's defaults so the
+// tick arithmetic below has one obvious reading.
+const TICKS_PER_QUARTER = 960;
+const MICROSECONDS_PER_QUARTER = 500_000;
+const TICKS_PER_SECOND = TICKS_PER_QUARTER / (MICROSECONDS_PER_QUARTER / 1_000_000);
+
+const MIN_MIDI = 0;
+const MAX_MIDI = 127;
+
+let auditionApi = null;
+let auditionReady = null;
+
+function auditionPlayer() {
+  if (auditionReady) return auditionReady;
+  const host = document.createElement("div");
+  host.style.cssText =
+    "position:absolute; left:-9999px; top:0; width:0; height:0; overflow:hidden";
+  document.body.appendChild(host);
+  auditionApi = new alphaTab.AlphaTabApi(host, {
+    core: { fontDirectory: "/font/", useWorkers: RENDER_IN_WORKER },
+    player: {
+      // EnabledSynthesizer, not the automatic mode the score view uses: the
+      // automatic mode decides between the synthesiser and an embedded backing
+      // track by looking at the loaded score, so with no score it builds no
+      // player at all and nothing ever loads.
+      playerMode: alphaTab.PlayerMode.EnabledSynthesizer,
+      soundFont: "/soundfont/sonivox.sf2",
+    },
+  });
+  // Waits on the soundfont rather than on playerReady, which is the renderer's
+  // "ready to play THIS SCORE" and needs a midi file generated from one. There
+  // is no score here and never will be, so it would never fire; a loaded
+  // soundfont is the whole of what a one-shot note needs.
+  auditionReady = new Promise((resolve, reject) => {
+    auditionApi.soundFontLoaded.on(() => resolve(auditionApi.player));
+    auditionApi.error.on((e) =>
+      reject(new Error(e?.message ?? "the synthesiser could not be loaded")),
+    );
+  });
+  return auditionReady;
+}
+
+/**
+ * Sound one pitch on its own, as a MIDI note number.
+ *
+ * Resolves true once the note has been handed to the synthesiser, false if the
+ * number is not one the synthesiser can sound. Rejects if the synthesiser
+ * itself could not be loaded, so a caller can say so rather than leaving a
+ * silent click looking like a working one.
+ */
+export async function playPitch(midi) {
+  const key = Math.round(Number(midi));
+  if (!Number.isFinite(key) || key < MIN_MIDI || key > MAX_MIDI) return false;
+  const player = await auditionPlayer();
+  if (!player) return false;
+  const {
+    MidiFile,
+    TempoChangeEvent,
+    ProgramChangeEvent,
+    ControlChangeEvent,
+    ControllerType,
+    NoteOnEvent,
+    NoteOffEvent,
+    EndOfTrackEvent,
+  } = alphaTab.midi;
+  const end = Math.round(AUDITION_SECONDS * TICKS_PER_SECOND);
+  const file = new MidiFile();
+  file.division = TICKS_PER_QUARTER;
+  file.addEvent(new TempoChangeEvent(0, MICROSECONDS_PER_QUARTER));
+  file.addEvent(new ProgramChangeEvent(0, 0, AUDITION_CHANNEL, AUDITION_PROGRAM));
+  // The channel is fresh each time only in the sense that the file is; the
+  // synth's channel volume is whatever the last thing to play left behind, so
+  // it is set rather than assumed.
+  file.addEvent(
+    new ControlChangeEvent(0, 0, AUDITION_CHANNEL, ControllerType.VolumeCoarse, 127),
+  );
+  file.addEvent(new NoteOnEvent(0, 0, AUDITION_CHANNEL, key, AUDITION_VELOCITY));
+  file.addEvent(new NoteOffEvent(0, end, AUDITION_CHANNEL, key, 0));
+  file.addEvent(new EndOfTrackEvent(0, end + 1));
+  // Replaces any audition still sounding, which is what clicking down a set of
+  // strings in quick succession should do.
+  player.playOneTimeMidiFile(file);
+  return true;
+}
+
 // ---------------------------------------------------------------- the view
 
 /**

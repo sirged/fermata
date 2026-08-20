@@ -7,7 +7,7 @@ from fastapi import APIRouter, Body, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import scanner
+from . import instruments, scanner
 from .config import FILE_TYPES, LIBRARY_DIR
 from .db import DEFAULT_OWNER, connect, tx
 from .glyph_rhythm import VALID_TS_DENOMINATORS
@@ -141,6 +141,144 @@ def put_settings(patch: dict[str, str] = Body(...)):
     return get_settings()
 
 
+class InstrumentIn(BaseModel):
+    """A whole definition. Updates replace rather than patch: a tuning is only
+    coherent as a set (string_count and string_pitches have to agree, and
+    fret_count only exists at all when fretted), so accepting half of one and
+    keeping half of the old is how a five-string bass ends up with four
+    pitches."""
+
+    name: str = Field(max_length=instruments.MAX_NAME_CHARS)
+    fretted: bool = True
+    string_count: int
+    string_pitches: list[str]
+    fret_count: int | None = None
+    capo: int | None = None
+    reference_pitch: float = instruments.DEFAULT_REFERENCE_HZ
+
+
+def _instrument_dict(row) -> dict:
+    d = dict(row)
+    d["fretted"] = bool(d["fretted"])
+    d["string_pitches"] = json.loads(d["string_pitches"])
+    # Derived, not stored: note name, MIDI note and sounding frequency for each
+    # string, so the frequency a player reads is the same arithmetic everything
+    # else uses rather than a second copy of it in the browser.
+    d["strings"] = instruments.string_details(d["string_pitches"], d["reference_pitch"])
+    return d
+
+
+def _instrument_row(conn, instrument_id: int):
+    row = conn.execute(
+        "SELECT * FROM instruments WHERE id = ? AND owner = ?",
+        (instrument_id, DEFAULT_OWNER),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "instrument not found")
+    return row
+
+
+def _normalise_instrument(body: InstrumentIn) -> dict:
+    try:
+        return instruments.normalise(
+            name=body.name,
+            fretted=body.fretted,
+            string_count=body.string_count,
+            string_pitches=body.string_pitches,
+            fret_count=body.fret_count,
+            capo=body.capo,
+            reference_pitch=body.reference_pitch,
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+
+
+@router.get("/instruments")
+def list_instruments():
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM instruments WHERE owner = ? ORDER BY name COLLATE NOCASE, id",
+        (DEFAULT_OWNER,),
+    ).fetchall()
+    return [_instrument_dict(r) for r in rows]
+
+
+# Declared before /instruments/{instrument_id}: FastAPI matches in declaration
+# order, and the other way round "presets" would be tried as an int path
+# parameter and answered with a 422 about parsing rather than with the presets.
+@router.get("/instruments/presets")
+def list_instrument_presets():
+    return instruments.presets()
+
+
+@router.post("/instruments")
+def create_instrument(body: InstrumentIn):
+    fields = _normalise_instrument(body)
+    with tx() as conn:
+        cur = conn.execute(
+            """INSERT INTO instruments(owner, name, fretted, string_count, string_pitches,
+                                       fret_count, capo, reference_pitch)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                DEFAULT_OWNER,
+                fields["name"],
+                int(fields["fretted"]),
+                fields["string_count"],
+                json.dumps(fields["string_pitches"]),
+                fields["fret_count"],
+                fields["capo"],
+                fields["reference_pitch"],
+            ),
+        )
+        instrument_id = cur.lastrowid
+    return get_instrument(instrument_id)
+
+
+@router.get("/instruments/{instrument_id}")
+def get_instrument(instrument_id: int):
+    conn = connect()
+    return _instrument_dict(_instrument_row(conn, instrument_id))
+
+
+@router.put("/instruments/{instrument_id}")
+def update_instrument(instrument_id: int, body: InstrumentIn):
+    fields = _normalise_instrument(body)
+    with tx() as conn:
+        _instrument_row(conn, instrument_id)
+        conn.execute(
+            """UPDATE instruments SET name = ?, fretted = ?, string_count = ?,
+                   string_pitches = ?, fret_count = ?, capo = ?, reference_pitch = ?,
+                   updated_at = datetime('now')
+               WHERE id = ? AND owner = ?""",
+            (
+                fields["name"],
+                int(fields["fretted"]),
+                fields["string_count"],
+                json.dumps(fields["string_pitches"]),
+                fields["fret_count"],
+                fields["capo"],
+                fields["reference_pitch"],
+                instrument_id,
+                DEFAULT_OWNER,
+            ),
+        )
+    return get_instrument(instrument_id)
+
+
+@router.delete("/instruments/{instrument_id}")
+def delete_instrument(instrument_id: int):
+    """Forget an instrument the player no longer has. Scores that referenced it
+    keep their own rows - scores.instrument_id is ON DELETE SET NULL, so they
+    revert to naming no instrument rather than disappearing with it."""
+    with tx() as conn:
+        _instrument_row(conn, instrument_id)
+        conn.execute(
+            "DELETE FROM instruments WHERE id = ? AND owner = ?",
+            (instrument_id, DEFAULT_OWNER),
+        )
+    return {"deleted": instrument_id}
+
+
 @router.get("/scores")
 def list_scores(
     search: str = "",
@@ -240,6 +378,9 @@ class ScorePatch(BaseModel):
     favorite: bool | None = None
     last_page: int | None = None
     tags: list[str] | None = None
+    # Which of the player's instruments this score is for. Explicit null clears
+    # it - see patch_score.
+    instrument_id: int | None = None
 
 
 @router.patch("/scores/{score_id}")
@@ -248,11 +389,19 @@ def patch_score(score_id: int, patch: ScorePatch):
         raise HTTPException(422, f"content_kind must be one of {sorted(VALID_KINDS)}")
     with tx() as conn:
         _score_row(conn, score_id)
+        if patch.instrument_id is not None:
+            _instrument_row(conn, patch.instrument_id)
         fields = {
             k: v
             for k, v in patch.model_dump(exclude_none=True).items()
-            if k != "tags"
+            if k not in ("tags", "instrument_id")
         }
+        # instrument_id is the one field where an explicit null is a request
+        # rather than an omission: "this score is for no particular instrument"
+        # has to be sayable, and the omit-nulls rule the other fields need
+        # (a title cannot be cleared - the column is NOT NULL) would swallow it.
+        if "instrument_id" in patch.model_fields_set:
+            fields["instrument_id"] = patch.instrument_id
         if "favorite" in fields:
             fields["favorite"] = int(fields["favorite"])
         if fields:
