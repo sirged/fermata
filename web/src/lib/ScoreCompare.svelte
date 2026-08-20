@@ -188,6 +188,23 @@
     return parts.join(" · ");
   });
 
+  // Gig mode drops the warnings block entirely (see the !gigMode guard
+  // below) - performance isn't when anyone corrects a transcription. But an
+  // unverified rhythm silently drilled at tempo is the exact mistake the
+  // rest of this file exists to prevent, so the two facts that must never
+  // go missing keep a single unobtrusive mark: no text, no layout cost,
+  // nothing at all when the score is clean.
+  let gigMarkTitle = $derived.by(() => {
+    const parts = [];
+    if (barSummary?.defective) {
+      parts.push(
+        `${barSummary.defective} of ${barSummary.total} bar${barSummary.total === 1 ? "" : "s"} don't add up`,
+      );
+    }
+    if (rhythmCapped) parts.push(`rhythm confidence: ${rhythmLabel}`);
+    return parts.join(" · ");
+  });
+
   // A warning's full sentence justifies itself after " - " or a full stop;
   // the lead clause alone already carries the count and the cause, so
   // that's what's shown - the rest is a hover away rather than repeated in
@@ -461,6 +478,9 @@
         </div>
       {/if}
       <div class="staff-render">
+        {#if gigMode && gigMarkTitle}
+          <span class="gig-mark" title={gigMarkTitle} aria-label={`Unverified: ${gigMarkTitle}`}>●</span>
+        {/if}
         <TabViewer
           tex={transcription.content}
           format={transcription.format}
@@ -638,10 +658,26 @@
   }
 
   .staff-render {
+    position: relative;
     flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+
+  /* The one thing that survives into gig mode: a dot, not a banner, sitting
+     clear of TabViewer's own bottom-center gig HUD - present only when
+     there's something unverified to flag (see gigMarkTitle), so it never
+     becomes decoration that stops meaning anything. */
+  .gig-mark {
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    z-index: 3;
+    font-size: 10px;
+    line-height: 1;
+    color: var(--danger);
+    cursor: default;
   }
 
   .hint {
