@@ -27,13 +27,21 @@
   --score-line: #b3a284;
   --score-accent: #8a6a24;
 
-  /* The same staff for practising in the dark. Drawn dark rather than
-     inverted, which is what the PDF reader has to do with a fixed page. */
-  --score-dark-surface: #191510;
-  --score-dark-ink: #ece2cd;
-  --score-dark-ink-soft: #94866a;
-  --score-dark-line: #4d4331;
-  --score-dark-accent: #c9a45c;
+  /* True black with near-white ink - maximum contrast for a dim room or a
+     bright stage, not to be confused with a merely dark page. */
+  --score-noir-surface: #000000;
+  --score-noir-ink: #f5f3ea;
+  --score-noir-ink-soft: #9a9488;
+  --score-noir-line: #4a4438;
+  --score-noir-accent: #e6c377;
+
+  /* The printed-page look: black ink on white, most legible under harsh
+     light. */
+  --score-print-surface: #ffffff;
+  --score-print-ink: #14110a;
+  --score-print-ink-soft: #6b6558;
+  --score-print-line: #c9c3b3;
+  --score-print-accent: #8a6a24;
 }
 
 * {

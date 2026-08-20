@@ -1,11 +1,13 @@
 <script>
   import Library from "./lib/Library.svelte";
   import Viewer from "./lib/Viewer.svelte";
+  import Settings from "./lib/Settings.svelte";
 
   function parse(hash) {
     const m = hash.match(/^#\/score\/(\d+)/);
     if (m) return { page: "score", id: Number(m[1]) };
     if (hash.startsWith("#/demo")) return { page: "demo" };
+    if (hash.startsWith("#/settings")) return { page: "settings" };
     return { page: "library" };
   }
 
@@ -22,6 +24,8 @@
   <Viewer id={route.id} />
 {:else if route.page === "demo"}
   <Viewer demo={true} />
+{:else if route.page === "settings"}
+  <Settings />
 {:else}
   <Library />
 {/if}

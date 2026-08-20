@@ -2,6 +2,9 @@
   import { untrack } from "svelte";
   import { api } from "./api.js";
   import { createScoreView } from "./score-render.js";
+  import { getSettings } from "./settings.svelte.js";
+
+  const settings = getSettings();
 
   let {
     score = null,
@@ -32,7 +35,6 @@
   let ladderStart = $state(60);
   let ladderStep = $state(5);
   let ladderTarget = $state(100);
-  let darkStaff = $state(false);
 
   const PROFILE_LABELS = [
     ["score", "Notation"],
@@ -91,7 +93,7 @@
         source: src,
         profile,
         preset: gigMode ? "stand" : "desk",
-        theme: darkStaff ? "slate" : "parchment",
+        theme: settings.staff_theme,
         transport: { speed, looping, metronome, countIn },
         onReady: () => (playerReady = true),
         onPlaying: (p) => (playing = p),
@@ -110,7 +112,7 @@
   });
 
   $effect(() => {
-    view?.setTheme(darkStaff ? "slate" : "parchment");
+    view?.setTheme(settings.staff_theme);
   });
 
   function setProfile(p) {
@@ -229,13 +231,6 @@
           >
             Ladder
           </button>
-          <button
-            class:on={darkStaff}
-            onclick={() => (darkStaff = !darkStaff)}
-            title="Draw the staff dark for practising in the dark"
-          >
-            ◐
-          </button>
           {#if ladder}
             <div class="ladder-controls">
               <label>
@@ -263,7 +258,7 @@
   {/if}
 
   <div class="score-scroll" bind:this={scroller}>
-    <div class="at-host" class:dark={darkStaff} bind:this={host}></div>
+    <div class="at-host" bind:this={host}></div>
   </div>
 </div>
 
@@ -401,8 +396,18 @@
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.55);
   }
 
-  .at-host.dark {
-    background: var(--score-dark-surface);
+  /* score-render.js publishes its chosen theme onto the host as
+     data-score-theme - reused here rather than a second, component-local
+     record of which theme is active. Parchment is the unmarked default.
+     Fully :global() because the attribute is written by that module's
+     dataset assignment, not by anything in this component's markup - Svelte
+     can't see it and would otherwise prune the rule as unused. */
+  :global(.at-host[data-score-theme="noir"]) {
+    background: var(--score-noir-surface);
+  }
+
+  :global(.at-host[data-score-theme="print"]) {
+    background: var(--score-print-surface);
   }
 
   /* The renderer creates its cursors and selection with position only and no
@@ -425,10 +430,16 @@
     opacity: 0.16;
   }
 
-  .at-host.dark :global(.at-cursor-bar),
-  .at-host.dark :global(.at-cursor-beat),
-  .at-host.dark :global(.at-selection div) {
-    background: var(--score-dark-accent);
+  :global(.at-host[data-score-theme="noir"] .at-cursor-bar),
+  :global(.at-host[data-score-theme="noir"] .at-cursor-beat),
+  :global(.at-host[data-score-theme="noir"] .at-selection div) {
+    background: var(--score-noir-accent);
+  }
+
+  :global(.at-host[data-score-theme="print"] .at-cursor-bar),
+  :global(.at-host[data-score-theme="print"] .at-cursor-beat),
+  :global(.at-host[data-score-theme="print"] .at-selection div) {
+    background: var(--score-print-accent);
   }
 
   .error {

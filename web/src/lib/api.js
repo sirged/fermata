@@ -87,4 +87,11 @@ export const api = {
   deleteTranscription: (id) =>
     fetch(`/api/scores/${id}/transcription`, { method: "DELETE" }).then(j),
   transcriptionAnalysis: (id) => fetch(`/api/scores/${id}/transcription/analysis`).then(j),
+  settings: () => fetch("/api/settings").then(j),
+  putSettings: (values) =>
+    fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(values),
+    }).then(j),
 };

@@ -266,7 +266,7 @@
   {#if error}
     <p class="error">{error}</p>
   {:else if demo}
-    <TabViewer demo={true} />
+    <TabViewer demo={true} {gigMode} onToggleGig={toggleGigMode} />
   {:else if score}
     {#if score.file_type === "pdf"}
       <ScoreCompare {score} {gigMode} onToggleGig={toggleGigMode} {practiceLabel} onStopPractice={flushPractice} />

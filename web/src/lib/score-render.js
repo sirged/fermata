@@ -80,7 +80,7 @@ export function layoutForWidth(width, preset = "desk") {
  * Values come from web/src/app.css so the palette has one home; the fallbacks
  * here only matter if a token is missing or unparseable.
  */
-export const SCORE_THEMES = ["parchment", "slate"];
+export const SCORE_THEMES = ["parchment", "noir", "print"];
 
 const THEME_TOKENS = {
   parchment: {
@@ -90,12 +90,23 @@ const THEME_TOKENS = {
     line: ["--score-line", "#b3a284"],
     accent: ["--score-accent", "#8a6a24"],
   },
-  slate: {
-    surface: ["--score-dark-surface", "#191510"],
-    ink: ["--score-dark-ink", "#ece2cd"],
-    inkSoft: ["--score-dark-ink-soft", "#94866a"],
-    line: ["--score-dark-line", "#4d4331"],
-    accent: ["--score-dark-accent", "#c9a45c"],
+  // Maximum contrast for a dim room or a bright stage - true black, not the
+  // warm dark brown this used to be.
+  noir: {
+    surface: ["--score-noir-surface", "#000000"],
+    ink: ["--score-noir-ink", "#f5f3ea"],
+    inkSoft: ["--score-noir-ink-soft", "#9a9488"],
+    line: ["--score-noir-line", "#4a4438"],
+    accent: ["--score-noir-accent", "#e6c377"],
+  },
+  // The printed-page look: black ink on white, most legible under harsh
+  // light.
+  print: {
+    surface: ["--score-print-surface", "#ffffff"],
+    ink: ["--score-print-ink", "#14110a"],
+    inkSoft: ["--score-print-ink-soft", "#6b6558"],
+    line: ["--score-print-line", "#c9c3b3"],
+    accent: ["--score-print-accent", "#8a6a24"],
   },
 };
 

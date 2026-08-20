@@ -6,6 +6,12 @@ from .config import DB_PATH
 
 _local = threading.local()
 
+# The only owner that exists until real accounts do. Kept as a named constant
+# rather than the literal 'local' scattered wherever a write means "this
+# instance's one user", so the day accounts arrive, every such site is a grep
+# away from being migrated to a real owner id instead of a schema redesign.
+DEFAULT_OWNER = "local"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS scores (
     id INTEGER PRIMARY KEY,
@@ -63,6 +69,18 @@ CREATE TABLE IF NOT EXISTS transcriptions (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_transcriptions_score_source ON transcriptions(score_id, source);
+
+-- Key/value rather than a column per setting, so adding the next preference
+-- needs no migration. `owner` is unused today - every row is written with
+-- DEFAULT_OWNER - but it is here from the start so introducing real accounts
+-- later is a data migration (giving rows real owner ids) rather than a
+-- schema redesign.
+CREATE TABLE IF NOT EXISTS settings (
+    owner TEXT NOT NULL DEFAULT 'local',
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (owner, key)
+);
 """
 
 
