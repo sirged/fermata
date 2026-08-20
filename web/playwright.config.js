@@ -24,6 +24,13 @@ const port = Number(process.env.FERMATA_TEST_PORT || 8123);
 export default defineConfig({
   // Both tests/unit (pure functions, no page fixture, so no browser is
   // launched) and tests/browser.
+  //
+  // NOT web/e2e. Those specs arrived before this runner existed and have never
+  // been executed by anything; pulling them in here would mean this config
+  // vouching for specs nobody has run, and a red suite would say nothing about
+  // the change that turned it red. They are worth wiring up - deliberately, by
+  // whoever owns them - and until that happens the honest state is that they
+  // are not covered rather than that they are.
   testDir: "tests",
   // One worker. The tests share one server and one database, and instruments
   // are global to an install - two workers would delete each other's rows.

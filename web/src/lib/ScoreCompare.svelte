@@ -3,6 +3,7 @@
   import { api } from "./api.js";
   import PdfViewer from "./PdfViewer.svelte";
   import TabViewer from "./TabViewer.svelte";
+  import { STANDING_LIMITS, BAR_RE } from "./warning-patterns.js";
 
   let {
     score,
@@ -81,19 +82,184 @@
   // nests them under confidence.warnings (and confidence may still be the
   // raw JSON string if the backend's own parse of it ever failed) - read
   // whichever shape actually showed up rather than assuming one
+  let confidenceBlob = $derived.by(() => {
+    if (!transcription) return null;
+    let c = transcription.confidence;
+    if (typeof c === "string") {
+      try {
+        c = JSON.parse(c);
+      } catch {
+        c = null;
+      }
+    }
+    return c && typeof c === "object" ? c : null;
+  });
+
   let warningsList = $derived.by(() => {
     if (!transcription) return [];
     if (Array.isArray(transcription.warnings)) return transcription.warnings;
-    let confidence = transcription.confidence;
-    if (typeof confidence === "string") {
-      try {
-        confidence = JSON.parse(confidence);
-      } catch {
-        confidence = null;
+    return Array.isArray(confidenceBlob?.warnings) ? confidenceBlob.warnings : [];
+  });
+
+  // The one number the whole warning list exists to protect: an inferred
+  // rhythm mistaken for a verified one. /transcribe writes it nested as
+  // confidence.confidence.rhythm; read the flat shape too in case that ever
+  // changes.
+  let rhythmConfidence = $derived(
+    confidenceBlob?.confidence?.rhythm ?? confidenceBlob?.rhythm ?? null,
+  );
+  let rhythmCapped = $derived(!!rhythmConfidence && !/^high\b/i.test(rhythmConfidence));
+  let rhythmLabel = $derived(rhythmConfidence ? rhythmConfidence.split(" - ")[0].trim() : "");
+
+  let standingNotes = $derived.by(() => {
+    const found = [];
+    for (const w of warningsList) {
+      for (const lim of STANDING_LIMITS) {
+        if (lim.test.test(w) && !found.includes(lim.label)) found.push(lim.label);
       }
     }
-    return Array.isArray(confidence?.warnings) ? confidence.warnings : [];
+    return found;
   });
+  let scopedWarnings = $derived(
+    warningsList.filter((w) => !STANDING_LIMITS.some((lim) => lim.test.test(w))),
+  );
+
+  // The bar-defect count comes ONLY from transcription.bars_defective /
+  // bars_measured - siblings of `confidence` at the TOP LEVEL of the
+  // transcription object (not nested inside it), the same counts
+  // ExtractionResult already carries as data (see tabextract.py).
+  // `confidence` itself is a mapping of aspect to human-readable sentence
+  // (frets/rhythm/time_signature) and deliberately stays that way, so these
+  // two numbers are lifted out to keep it uniform; _transcription_dict lifts
+  // them on both GET and POST, so this is one lookup, not a two-shape
+  // fallback like rhythmConfidence above.
+  //
+  // There is no honest fallback when they're absent (an edited row has no
+  // confidence at all, which is a normal case, not an error): the backend
+  // emits the overfull and short counts as two separate sentences, and a bar
+  // wrong in both directions at once (two-voice writing where one voice is
+  // over its meter and the other under) is counted into BOTH - per
+  // docs/musicxml-tab-profile.md, overfull + short double-counts such a bar
+  // and can exceed bars_measured, while bars_defective is the one figure
+  // that counts it once. That total isn't recoverable from the two
+  // sentences by any arithmetic - summing guesses high, and "take the
+  // larger one" is still a guess - so this says nothing about bars rather
+  // than something confidently wrong. The individual sentences are still in
+  // the detail list either way.
+  let barSummary = $derived.by(() => {
+    if (transcription && typeof transcription.bars_measured === "number") {
+      return transcription.bars_measured
+        ? { defective: transcription.bars_defective ?? 0, total: transcription.bars_measured }
+        : null;
+    }
+    return null;
+  });
+
+  // Bar-conformance lines are folded into the headline via barSummary above
+  // (only once a real total exists) - don't also count them a second time
+  // under "N more", or the toggle would promise more bullets than it opens.
+  let barLineCount = $derived(scopedWarnings.filter((w) => BAR_RE.test(w)).length);
+
+  let warningsSummary = $derived.by(() => {
+    const parts = [];
+    if (barSummary?.defective) {
+      parts.push(
+        `${barSummary.defective} of ${barSummary.total} bar${barSummary.total === 1 ? "" : "s"} don't add up`,
+      );
+    }
+    if (rhythmCapped) parts.push(`rhythm confidence ${rhythmLabel}`);
+    const remaining = scopedWarnings.length - (barSummary ? barLineCount : 0);
+    if (!parts.length) {
+      const n = remaining || standingNotes.length;
+      parts.push(n === 1 ? "1 caveat" : `${n} caveats`);
+    } else if (remaining) {
+      parts.push(`${remaining} more`);
+    }
+    return parts.join(" · ");
+  });
+
+  // Gig mode drops the warnings block entirely (see the !gigMode guard
+  // below) - performance isn't when anyone corrects a transcription. But an
+  // unverified rhythm silently drilled at tempo is the exact mistake the
+  // rest of this file exists to prevent, so the two facts that must never
+  // go missing keep a single unobtrusive mark: no text, no layout cost,
+  // nothing at all when the score is clean.
+  let gigMarkTitle = $derived.by(() => {
+    const parts = [];
+    if (barSummary?.defective) {
+      parts.push(
+        `${barSummary.defective} of ${barSummary.total} bar${barSummary.total === 1 ? "" : "s"} don't add up`,
+      );
+    }
+    if (rhythmCapped) parts.push(`rhythm confidence: ${rhythmLabel}`);
+    return parts.join(" · ");
+  });
+
+  // A warning's full sentence justifies itself after " - " or a full stop;
+  // the lead clause alone already carries the count and the cause. The
+  // justification is still shown, just dimmer - a `title` tooltip alone
+  // would put it a hover away, unreachable on the tablet-on-a-music-stand
+  // this app is mostly used on, so nothing here depends on hover to be read.
+  function splitWarning(w) {
+    const dot = w.indexOf(". ");
+    const dash = w.indexOf(" - ");
+    let cut = -1;
+    if (dot !== -1 && (dash === -1 || dot < dash)) cut = dot + 1;
+    else if (dash !== -1) cut = dash;
+    if (cut === -1) return [w, ""];
+    return [w.slice(0, cut), w.slice(cut).replace(/^\s*-\s*/, " — ")];
+  }
+
+  // Expanded the first time a score's warnings are seen this session,
+  // collapsed on every later visit - the caveats don't change between
+  // visits, so re-reading them by default is friction, not safety.
+  const WARNINGS_SEEN_KEY = "fermata.warningsSeen";
+  function warningsSeen(id) {
+    try {
+      const raw = sessionStorage.getItem(WARNINGS_SEEN_KEY);
+      return raw ? JSON.parse(raw).includes(id) : false;
+    } catch {
+      return false;
+    }
+  }
+  function markWarningsSeen(id) {
+    try {
+      const raw = sessionStorage.getItem(WARNINGS_SEEN_KEY);
+      const seen = raw ? JSON.parse(raw) : [];
+      if (!seen.includes(id)) {
+        seen.push(id);
+        sessionStorage.setItem(WARNINGS_SEEN_KEY, JSON.stringify(seen));
+      }
+    } catch {
+      // storage unavailable - defaults to open every time, which is safe
+    }
+  }
+
+  let detailOpen = $state(false);
+
+  // The one place that recomputes detailOpen, called after every state
+  // change that can make `transcription` (and so warningsList) point at a
+  // different row - a fresh load, a transcribe, a saved edit (which drops
+  // warnings), or a revert (which can bring them back). Reads warningsList
+  // fresh rather than taking it as an argument, so it only has to be called
+  // after `transcription` is already reassigned.
+  //
+  // Guarded on warningsList.length: an edited row carries no confidence, so
+  // marking a score "seen" while its list is empty would make a REAL
+  // warning list (from a later revert, or reloading in a session that
+  // hadn't shown one yet) default to collapsed on its first-ever showing -
+  // the opposite of the intent. Also guarded on !gigMode: gig mode
+  // suppresses the whole block, so a score only ever viewed in gig mode
+  // must not be marked seen either, or its warnings arrive pre-collapsed
+  // the first time someone opens it in the toolbar view.
+  function refreshWarningsDisplay(id) {
+    if (warningsList.length && !gigMode) {
+      detailOpen = !warningsSeen(id);
+      markWarningsSeen(id);
+    } else {
+      detailOpen = false;
+    }
+  }
 
   // guards against a slower response for a previously-viewed score landing
   // after a newer navigation and overwriting what's on screen
@@ -125,6 +291,7 @@
       transcription = t;
       draft = t.content;
       transcriptionState = "ready";
+      refreshWarningsDisplay(id);
       maybeDefaultToSide();
     } catch (e) {
       if (gen !== loadGen) return;
@@ -164,6 +331,7 @@
       transcription = t;
       draft = t.content;
       transcriptionState = "ready";
+      refreshWarningsDisplay(score.id);
       maybeDefaultToSide();
     } catch (e) {
       if (gen !== loadGen) return;
@@ -193,7 +361,17 @@
       // edit itself is the source of truth for content/source either way
       // `res` carries the format the server read off the content, which is
       // what the viewer dispatches on - so let it win over the loaded row's.
+      // `res` STATES warnings ([]) and the four bars_* figures (null) on
+      // every response rather than omitting them for an edit, which has no
+      // confidence to report - an absent key would be silently kept by this
+      // spread, which is exactly how a saved edit once went on reporting the
+      // bar counts and warnings from the content it had just replaced. An
+      // explicit "not recorded" overwrites those stale values instead.
       transcription = { ...transcription, ...res, content: draft, source: "edited" };
+      // expected to land on "nothing to show" now that `res` cleared the
+      // stale figures above - going through the shared helper rather than
+      // assuming that keeps it correct if this ever changes again
+      refreshWarningsDisplay(score.id);
       editorOpen = false;
     } catch (e) {
       saveError = String(e?.message ?? e);
@@ -212,6 +390,10 @@
       const t = await api.deleteTranscription(score.id);
       transcription = t;
       draft = t.content;
+      // reverting can bring warnings BACK (the extracted row can carry them
+      // even though the edited row just removed never had any) - recompute
+      // rather than leave detailOpen at whatever the edited row last set
+      refreshWarningsDisplay(score.id);
       editorOpen = false;
     } catch (e) {
       if (e.status === 404) {
@@ -219,6 +401,7 @@
         // failure, but don't pretend the old edit is still showing either
         transcription = null;
         transcriptionState = "none";
+        detailOpen = false;
         fetchError = "Reverted — no extracted transcription was left to fall back to.";
         loadAnalysis();
       } else if (e.status === 405) {
@@ -282,15 +465,38 @@
         {/if}
       </div>
     {:else if transcriptionState === "ready"}
-      {#if warningsList.length}
-        <div class="warnings">
-          <div class="warnings-head">⚠ Unverified — check against the PDF</div>
-          <ul>
-            {#each warningsList as w}
-              <li>{w}</li>
-            {/each}
-          </ul>
-        </div>
+      {#if !gigMode && warningsList.length}
+        {#if scopedWarnings.length || rhythmCapped}
+          <div class="warnings">
+            <button
+              class="warnings-summary"
+              onclick={() => (detailOpen = !detailOpen)}
+              aria-expanded={detailOpen}
+              aria-controls="warnings-detail"
+            >
+              <span class="warn-icon">⚠</span>
+              <span class="warn-text">{warningsSummary}</span>
+              <span class="chev">{detailOpen ? "▲" : "▼"}</span>
+            </button>
+            <!-- rendered unconditionally (hidden via the `hidden` attribute,
+                 not an {#if}) so aria-controls has something to point at
+                 even while collapsed - the one state where that reference
+                 actually gets used by anything reading it -->
+            <div class="warnings-detail" id="warnings-detail" hidden={!detailOpen}>
+              <ul>
+                {#each scopedWarnings as w}
+                  {@const [lead, tail] = splitWarning(w)}
+                  <li>{lead}{#if tail}<span class="detail-tail">{tail}</span>{/if}</li>
+                {/each}
+              </ul>
+              {#if standingNotes.length}
+                <p class="standing-note">Also: {standingNotes.join("; ")}.</p>
+              {/if}
+            </div>
+          </div>
+        {:else if standingNotes.length}
+          <p class="standing-footnote">Standing limits: {standingNotes.join("; ")}.</p>
+        {/if}
       {/if}
       {#if editorOpen}
         <div class="editor">
@@ -305,6 +511,9 @@
         </div>
       {/if}
       <div class="staff-render">
+        {#if gigMode && gigMarkTitle}
+          <span class="gig-mark" title={gigMarkTitle} aria-label={`Unverified: ${gigMarkTitle}`}>●</span>
+        {/if}
         <TabViewer
           tex={transcription.content}
           format={transcription.format}
@@ -482,10 +691,26 @@
   }
 
   .staff-render {
+    position: relative;
     flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+
+  /* The one thing that survives into gig mode: a dot, not a banner, sitting
+     clear of TabViewer's own bottom-center gig HUD - present only when
+     there's something unverified to flag (see gigMarkTitle), so it never
+     becomes decoration that stops meaning anything. */
+  .gig-mark {
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    z-index: 3;
+    font-size: 10px;
+    line-height: 1;
+    color: var(--danger);
+    cursor: default;
   }
 
   .hint {
@@ -560,27 +785,72 @@
 
   .warnings {
     margin: 12px 16px 0;
-    padding: 10px 14px;
     border: 1px solid var(--danger);
     border-radius: 8px;
     background: rgba(201, 106, 92, 0.12);
+    overflow: hidden;
   }
 
-  .warnings-head {
+  .warnings-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: none;
+    border: none;
+    border-radius: 0;
+    padding: 9px 14px;
     font-size: 13px;
-    font-weight: 600;
     color: var(--danger);
+    text-align: left;
   }
 
-  .warnings ul {
-    margin: 6px 0 0;
+  .warn-icon,
+  .chev {
+    flex: none;
+  }
+
+  .chev {
+    font-size: 10px;
+    opacity: 0.7;
+  }
+
+  .warn-text {
+    flex: 1;
+    font-weight: 600;
+  }
+
+  .warnings-detail {
+    padding: 0 14px 10px;
+  }
+
+  .warnings-detail ul {
+    margin: 0;
     padding-left: 20px;
     font-size: 12.5px;
     color: var(--ink);
   }
 
-  .warnings li {
-    margin: 2px 0;
+  .warnings-detail li {
+    margin: 3px 0;
+  }
+
+  /* the justification clause, dimmer but always shown - never only in a
+     hover-only title, unreachable on a touch device */
+  .detail-tail {
+    color: var(--ink-dim);
+  }
+
+  .standing-note {
+    margin: 8px 0 0;
+    font-size: 11.5px;
+    color: var(--ink-dim);
+  }
+
+  .standing-footnote {
+    margin: 10px 16px 0;
+    font-size: 11.5px;
+    color: var(--ink-dim);
   }
 
   .editor {

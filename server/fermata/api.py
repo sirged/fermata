@@ -554,13 +554,44 @@ def _transcription_row(conn, score_id: int):
     ).fetchone()
 
 
+# Rule 8 conformance, as the top level of every transcription response.
+#
+# These are STATED on every response rather than included only when known,
+# and that is the whole point of them. A hand edit stores no confidence at
+# all, so on the omitting version of this a client that merged the PUT
+# response over the transcription it already held kept the figures from
+# BEFORE the edit - and went on reporting bars as defective after the edit
+# that fixed them, which is the one thing this project must never do. An
+# explicit "not recorded" overwrites such a merge; a missing key is silently
+# preserved by it.
+#
+# None means not recorded: a row stored before these were persisted, or a
+# hand edit, whose content nothing has measured. It does NOT mean zero -
+# zero would claim every bar was measured and every one of them added up,
+# which is a far stronger statement than either row can support. Anything
+# wanting real figures for edited content has to measure that content; it
+# cannot inherit them from the extraction it replaced.
+_BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured")
+
+
 def _transcription_dict(row) -> dict:
     d = dict(row)
+    blob = None
     if d.get("confidence"):
         try:
-            d["confidence"] = json.loads(d["confidence"])
+            blob = json.loads(d["confidence"])
         except (TypeError, ValueError):
-            pass
+            blob = None  # leave the column as the raw text it turned out to be
+        else:
+            d["confidence"] = blob
+    stored = blob if isinstance(blob, dict) else {}
+
+    warnings = stored.get("warnings")
+    d["warnings"] = warnings if isinstance(warnings, list) else []
+    for key in _BAR_KEYS:
+        value = stored.get(key)
+        # bool is a subclass of int and would otherwise pass as a count.
+        d[key] = value if isinstance(value, int) and not isinstance(value, bool) else None
     return d
 
 
@@ -642,7 +673,25 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
     # written before this change keep rendering as the alphaTex they are, and
     # a hand-edited row stays in whichever format it was edited in until its
     # author edits it again.
-    confidence_json = json.dumps({"warnings": result.warnings, "confidence": result.confidence})
+    # The Rule 8 figures are STORED, not only echoed on this response, because
+    # they cannot be recovered later from the warning prose. A polyphonic bar
+    # can hold one voice over its meter and another under it, so it counts into
+    # both `overfull` and `short`: their sum double-counts such a bar and can
+    # exceed the number of bars measured. `defective` counts each wrong bar
+    # once and is the only figure safe to compare against `measured`, and no
+    # arithmetic over the two warning sentences recovers it. A reader that
+    # reloads a transcription and has only the prose can therefore either say
+    # nothing about bars or say something untrue - so it gets the numbers.
+    confidence_json = json.dumps(
+        {
+            "warnings": result.warnings,
+            "confidence": result.confidence,
+            "bars_overfull": result.bars_overfull,
+            "bars_short": result.bars_short,
+            "bars_defective": result.bars_defective,
+            "bars_measured": result.bars_measured,
+        }
+    )
     with tx() as tx_conn:
         tx_conn.execute(
             """INSERT INTO transcriptions(score_id, format, content, source, confidence, updated_at)
@@ -657,8 +706,12 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
     saved = conn.execute(
         "SELECT * FROM transcriptions WHERE score_id = ? AND source = 'extracted'", (score_id,)
     ).fetchone()
+    # `warnings` and the Rule 8 conformance figures are NOT set from `result`
+    # here. They come back out of the row that was just written, so that this
+    # response and a later GET of the same row are answered from one source
+    # rather than two that could drift. Everything below is extraction detail
+    # that is genuinely only available on this response.
     d = _transcription_dict(saved)
-    d["warnings"] = result.warnings
     d["bars"] = result.bars
     d["beats"] = result.beats
     d["notes"] = result.notes
@@ -669,12 +722,6 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
     d["time_signature_source"] = result.time_signature_source
     d["key_fifths"] = result.key_fifths
     d["key_signature_source"] = result.key_signature_source
-    # Rule 8 conformance as data, not only as prose in the warning list, so a
-    # caller can compare it against what its own MusicXML tooling reports.
-    d["bars_overfull"] = result.bars_overfull
-    d["bars_short"] = result.bars_short
-    d["bars_defective"] = result.bars_defective
-    d["bars_measured"] = result.bars_measured
     return d
 
 
