@@ -2,6 +2,25 @@
   import { untrack } from "svelte";
   import { api } from "./api.js";
   import { createScoreView } from "./score-render.js";
+  import { getSettings, setSetting, STAFF_THEMES, STAFF_THEME_LABELS } from "./settings.svelte.js";
+
+  const settings = getSettings();
+
+  // Changing the theme here just writes the same setting the settings view
+  // writes - it's the same store, so the choice still persists and follows
+  // the user. What this buys over navigating to #/settings: App.svelte
+  // routes with {#if}, so leaving this view for that one and coming back
+  // would unmount and remount this component, rebuilding the renderer from
+  // scratch - losing scroll position and stopping playback. A theme is
+  // exactly the kind of thing you want to change mid-practice (a room going
+  // dark, a stage light coming up), so it needs a way to change without
+  // navigating away.
+  function chooseTheme(ev) {
+    setSetting("staff_theme", ev.target.value).catch(() => {
+      // setSetting already rolled the optimistic value back (and the select
+      // is bound to it), so the control itself already shows the truth
+    });
+  }
 
   let {
     score = null,
@@ -32,7 +51,6 @@
   let ladderStart = $state(60);
   let ladderStep = $state(5);
   let ladderTarget = $state(100);
-  let darkStaff = $state(false);
 
   const PROFILE_LABELS = [
     ["score", "Notation"],
@@ -91,7 +109,7 @@
         source: src,
         profile,
         preset: gigMode ? "stand" : "desk",
-        theme: darkStaff ? "slate" : "parchment",
+        theme: settings.staff_theme,
         transport: { speed, looping, metronome, countIn },
         onReady: () => (playerReady = true),
         onPlaying: (p) => (playing = p),
@@ -110,7 +128,7 @@
   });
 
   $effect(() => {
-    view?.setTheme(darkStaff ? "slate" : "parchment");
+    view?.setTheme(settings.staff_theme);
   });
 
   function setProfile(p) {
@@ -194,6 +212,11 @@
           <button class:on={profile === value} onclick={() => setProfile(value)}>{label}</button>
         {/each}
       </div>
+      <select class="theme-picker" value={settings.staff_theme} onchange={chooseTheme} title="Staff theme">
+        {#each STAFF_THEMES as t}
+          <option value={t}>{STAFF_THEME_LABELS[t]}</option>
+        {/each}
+      </select>
       <div class="player">
         <button class="primary" disabled={!playerReady} onclick={() => view?.playPause()}>
           {playing ? "❚❚ Pause" : "▶ Play"}
@@ -229,13 +252,6 @@
           >
             Ladder
           </button>
-          <button
-            class:on={darkStaff}
-            onclick={() => (darkStaff = !darkStaff)}
-            title="Draw the staff dark for practising in the dark"
-          >
-            ◐
-          </button>
           {#if ladder}
             <div class="ladder-controls">
               <label>
@@ -263,7 +279,7 @@
   {/if}
 
   <div class="score-scroll" bind:this={scroller}>
-    <div class="at-host" class:dark={darkStaff} bind:this={host}></div>
+    <div class="at-host" bind:this={host}></div>
   </div>
 </div>
 
@@ -279,11 +295,18 @@
   .toolbar {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 12px;
     padding: 10px 16px;
     border-bottom: 1px solid var(--line);
     background: var(--bg-raised);
+  }
+
+  /* Not part of .player (the transport row) on purpose - a persistent
+     preference living among per-session playback toggles would read as one
+     of them. It's still reachable without leaving this view, which is the
+     whole point (see chooseTheme above). */
+  .theme-picker {
+    flex-shrink: 0;
   }
 
   .gig-hud {
@@ -337,6 +360,10 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    /* pushed to the far edge now that .toolbar no longer uses
+       justify-content: space-between - the theme picker sits between it and
+       .seg instead of splitting the row in two */
+    margin-left: auto;
   }
 
   .practice {
@@ -401,8 +428,18 @@
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.55);
   }
 
-  .at-host.dark {
-    background: var(--score-dark-surface);
+  /* score-render.js publishes its chosen theme onto the host as
+     data-score-theme - reused here rather than a second, component-local
+     record of which theme is active. Parchment is the unmarked default.
+     Fully :global() because the attribute is written by that module's
+     dataset assignment, not by anything in this component's markup - Svelte
+     can't see it and would otherwise prune the rule as unused. */
+  :global(.at-host[data-score-theme="noir"]) {
+    background: var(--score-noir-surface);
+  }
+
+  :global(.at-host[data-score-theme="print"]) {
+    background: var(--score-print-surface);
   }
 
   /* The renderer creates its cursors and selection with position only and no
@@ -425,10 +462,16 @@
     opacity: 0.16;
   }
 
-  .at-host.dark :global(.at-cursor-bar),
-  .at-host.dark :global(.at-cursor-beat),
-  .at-host.dark :global(.at-selection div) {
-    background: var(--score-dark-accent);
+  :global(.at-host[data-score-theme="noir"] .at-cursor-bar),
+  :global(.at-host[data-score-theme="noir"] .at-cursor-beat),
+  :global(.at-host[data-score-theme="noir"] .at-selection div) {
+    background: var(--score-noir-accent);
+  }
+
+  :global(.at-host[data-score-theme="print"] .at-cursor-bar),
+  :global(.at-host[data-score-theme="print"] .at-cursor-beat),
+  :global(.at-host[data-score-theme="print"] .at-selection div) {
+    background: var(--score-print-accent);
   }
 
   .error {

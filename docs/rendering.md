@@ -167,12 +167,20 @@ palette has one home:
 
 ```
 --score-surface  --score-ink  --score-ink-soft  --score-line  --score-accent
---score-dark-surface  --score-dark-ink  --score-dark-ink-soft  ...
+--score-noir-surface  --score-noir-ink  --score-noir-ink-soft  ...
+--score-print-surface  --score-print-ink  --score-print-ink-soft  ...
 ```
 
-Two themes: `parchment` (warm paper, dark ink) and `slate` (a dark staff for
-practising in the dark). The PDF reader has to invert a fixed page; a rendered
-staff can simply be drawn dark, which is what `slate` does.
+Three themes: `parchment` (warm paper, dark ink - the default, matching the
+rest of the interface), `noir` (true black with near-white ink, for a dim room
+or a bright stage) and `print` (black ink on white, the printed-page look,
+most legible under harsh light). The PDF reader has to invert a fixed page; a
+rendered staff can simply be drawn in whichever of these it needs.
+
+The staff theme is a user setting stored on the server (`/api/settings`), not
+browser-local, so it follows a person between devices - see
+`web/src/lib/settings.svelte.js` and the settings view
+(`web/src/lib/Settings.svelte`).
 
 Values must stay in a form the renderer's colour parser accepts: hex, or the
 **comma-separated** `rgb()`/`rgba()` form. It splits the function body on
@@ -223,8 +231,9 @@ invisible in page layout and so easy to ship broken:
 - The renderer draws the whole score as one system, far wider than any sensible
   card. Left alone, the staff scrolls off the paper onto the page background —
   and with the parchment theme that is dark ink on a dark page, effectively
-  invisible. `slate` hides the problem, because its surface is close to the page
-  colour.
+  invisible. `noir` hides the problem too, since its surface is close enough
+  to the page's own dark background; `print`'s white surface would have made
+  it obvious immediately.
 - The renderer sizes its drawing surface from the total width it *reports*, but
   draws partials wider than that and clips the excess with `overflow: hidden`.
   On a real transcription that hid 53 of 316 glyphs — the last bar and the final

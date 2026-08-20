@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from . import scanner
 from .config import FILE_TYPES, LIBRARY_DIR
-from .db import connect, tx
+from .db import DEFAULT_OWNER, connect, tx
 from .glyph_rhythm import VALID_TS_DENOMINATORS
 from .tabextract import analyze as analyze_pdf, extract as extract_pdf
 from .thumbs import thumb_path
@@ -18,6 +18,18 @@ router = APIRouter(prefix="/api")
 
 VALID_KINDS = {"notation", "tab", "both", "unknown"}
 VALID_PRACTICED = {"recent", "neglected"}
+
+# A user setting, not a per-score one - kept server-side (not browser storage)
+# so it follows a person between devices. Defaults are what a fresh install
+# with nothing stored behaves as. `SETTINGS_CHOICES` is optional per key: a
+# key with no entry there accepts any string value.
+#
+# staff_theme's choices must be kept in sync with SCORE_THEMES in
+# web/src/lib/score-render.js - test_settings_api.py's
+# test_staff_theme_choices_match_the_frontends_score_themes parses that file
+# and fails if the two ever disagree.
+SETTINGS_DEFAULTS = {"staff_theme": "parchment"}
+SETTINGS_CHOICES = {"staff_theme": {"parchment", "noir", "print"}}
 # MusicXML is a good deal more verbose than alphaTex for the same music: across
 # the sampled library it runs about 44x the characters, and the longest score
 # comes out around 660 KB. This leaves room for a compilation several times
@@ -79,6 +91,54 @@ def _with_tags(conn, rows):
 @router.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@router.get("/settings")
+def get_settings():
+    conn = connect()
+    rows = conn.execute(
+        "SELECT key, value FROM settings WHERE owner = ?", (DEFAULT_OWNER,)
+    ).fetchall()
+    result = dict(SETTINGS_DEFAULTS)
+    for row in rows:
+        key, value = row["key"], row["value"]
+        if key not in SETTINGS_DEFAULTS:
+            continue  # a setting since retired - ignore rather than surface it
+        choices = SETTINGS_CHOICES.get(key)
+        if choices and value not in choices:
+            # A value that was valid when stored but isn't any more - this PR
+            # itself renames the theme 'slate' to 'noir', so an existing
+            # install can hold staff_theme='slate'. put_settings() can never
+            # write this today, but a stored value outliving the choices it
+            # was written under is exactly the kind of drift a rename causes,
+            # so fall back to the default rather than hand back a value
+            # nothing can render (the picker would then highlight no card at
+            # all, and the renderer would quietly fall back on its own).
+            continue
+        result[key] = value
+    return result
+
+
+@router.put("/settings")
+def put_settings(patch: dict[str, str] = Body(...)):
+    # A settings store that takes arbitrary keys becomes a junk drawer - only
+    # known keys are accepted, and a key with choices in SETTINGS_CHOICES must
+    # be one of them.
+    unknown = set(patch) - set(SETTINGS_DEFAULTS)
+    if unknown:
+        raise HTTPException(422, f"unknown setting(s): {sorted(unknown)}")
+    for key, value in patch.items():
+        choices = SETTINGS_CHOICES.get(key)
+        if choices and value not in choices:
+            raise HTTPException(422, f"{key} must be one of {sorted(choices)}")
+    with tx() as conn:
+        for key, value in patch.items():
+            conn.execute(
+                """INSERT INTO settings(owner, key, value) VALUES (?, ?, ?)
+                   ON CONFLICT(owner, key) DO UPDATE SET value = excluded.value""",
+                (DEFAULT_OWNER, key, value),
+            )
+    return get_settings()
 
 
 @router.get("/scores")
