@@ -51,11 +51,26 @@ ExtractionResult.warnings, .confidence and .rhythm_provenance rather than
 papered over; callers can also offer a manual time-signature override (see
 extract()'s time_signature argument) for when auto-detection comes up empty.
 
-KNOWN LIMITATION, deliberately not modeled: two-voice writing is collapsed
-into one voice (one onset, one duration - see _cluster_glyph_duration), so a
-bar whose voices genuinely differ sums to more than its meter's budget. This
-is the dominant residual error in the emitted rhythm and it is a modelling
-gap, not a decode bug.
+VOICES: classical and fingerstyle guitar is polyphonic - a melody sounding
+OVER an independent bass line - so a bar's notes are not one sequence. Each
+notehead is grouped with the others on ITS OWN STEM (a chord is one beat),
+and where two stems genuinely sound at the same onset the bar is split into
+concurrent voices by stem direction, which is the signal engravers use for
+exactly this (see _assign_group_voices). Each voice is then filled out with
+rests so it accounts for the bar on its own, and the bar is emitted with
+alphaTex's `\\voice` separator. Assembling every note into one sequence
+instead made a bar hold the SUM of its voices - typically about double its
+meter - while every individual duration in it was decoded correctly.
+
+Stem direction alone is not enough and is not used alone: in ordinary
+single-voice writing stems also flip with pitch around the middle line, so
+splitting on direction wherever it changes would shred a monophonic melody
+into two voices at every crossing. Simultaneity is what distinguishes the
+two, because one voice never has two stems at one onset.
+
+KNOWN LIMITATIONS, deliberately not modeled: tuplets, ties, and any bar
+whose voices the stems do not separate. Bars that still do not add up are
+counted and reported (see _overfull_bars) rather than smoothed over.
 """
 
 from __future__ import annotations
@@ -693,105 +708,492 @@ def _cluster_pitched_glyph_events(events, cluster_x_tol=1.5):
 _REST_ONSET_MERGE_SPACINGS = 0.8
 
 
-def _cluster_glyph_duration(cluster):
-    """Pick one representative (duration_code, dots) for a cluster. Members
-    usually agree (chord noteheads share one stem, so one duration); when
-    they genuinely don't (overlapping voices with different notated values
-    at the same onset), take the most common reading, breaking ties toward
-    the longer value - true polyphony isn't modeled here (one beat, one
-    duration), so when two voices genuinely disagree something is picked
-    rather than fragmenting the beat."""
-    counts = collections.Counter((ev.duration_code, ev.dotted) for ev in cluster)
-    return max(counts.items(), key=lambda kv: (kv[1], -kv[0][0]))[0]
+# ---------------------------------------------------------------------------
+# Voices
+# ---------------------------------------------------------------------------
+
+# Two stem groups whose x differ by less than this SHARE AN ONSET - they
+# sound together, so they are separate voices rather than consecutive beats.
+# In notation-staff line spacings. Measured on the library's two-voice
+# writing: an upper and a lower voice notated at the same onset are engraved
+# within about 0.1pt of each other (0.02 spacings), while the closest
+# DIFFERENT onsets this must never fuse - consecutive sixteenths - sit about
+# 1.25 spacings apart. 0.6 is half of that, so it clears real simultaneity by
+# more than an order of magnitude and still cannot merge two real onsets.
+_ONSET_SHARE_SPACINGS = 0.6
+
+# Guitar fingerstyle and classical writing is two voices: a melody over an
+# accompaniment. Three genuinely independent voices on one guitar staff are
+# rare enough that a third simultaneous stem is far more likely to be a chord
+# whose shared stem was not found than a real third voice, so extra groups
+# join the lower voice and the bar reports itself as overfull rather than
+# inventing a voice.
+_MAX_VOICES = 2
 
 
-def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol, spacing):
-    """Build one measure's beats from glyph-decoded note/rest events on the
+class _StemGroup:
+    """One beat: every notehead hanging off ONE engraved stem (a chord), or a
+    notehead with no stem to hang off."""
+
+    __slots__ = ("members", "x", "y", "stem_dir", "signal", "voice")
+
+    def __init__(self, members):
+        self.members = list(members)
+        first = self.members[0]
+        self.stem_dir = first.stem_dir
+        # What this group says about which voice it belongs to. Two groups
+        # sounding together are only two voices if they say DIFFERENT things.
+        if first.stem_dir:
+            self.signal = first.stem_dir
+        elif first.notehead_kind == "notehead_whole":
+            self.signal = "whole"  # never takes a stem in any notation
+        else:
+            self.signal = None  # a stem that should exist and was not found
+        self.voice = 0
+        self._recentre()
+
+    def absorb(self, other):
+        self.members.extend(other.members)
+        self._recentre()
+
+    def _recentre(self):
+        self.x = sum(m.x for m in self.members) / len(self.members)
+        self.y = sum(m.y for m in self.members) / len(self.members)
+
+
+def _stem_groups(events, onset_tol):
+    """Partition a measure's pitched glyph events into one group per beat, in
+    x order.
+
+    This is the basis of both voice separation and of telling a chord apart
+    from two simultaneous voices - the one distinction the tab staff cannot
+    make. A chord is several noteheads threaded on ONE stem and has to stay
+    ONE beat; two noteheads at the same onset on DIFFERENT stems are two
+    voices and have to become two beats. In the tab both are the same thing,
+    a vertical stack of fret numbers at one x. Only the stems separate them,
+    because an engraver draws exactly one per beat.
+
+    Two things are therefore folded back together rather than being allowed
+    to look like extra voices:
+
+      - a notehead whose stem was NOT found joins whatever else sounds at its
+        onset. Stems are what two-voice writing is notated with, so an onset
+        carrying no stem evidence is not evidence of two voices - it is a
+        chord. Some scores in the library engrave chords whose stem the
+        vector pass cannot see at all, and splitting those by pitch invented
+        a second voice out of one chord and left both halves short.
+      - two groups sounding together whose stems point the SAME way. That is
+        not three-voice writing; it is one chord whose stem came through as
+        two separate strokes.
+    """
+    by_stem = {}
+    member_lists = []
+    for ev in sorted(events, key=lambda e: e.x):
+        if ev.stem_key is None:
+            member_lists.append([ev])
+            continue
+        members = by_stem.get(ev.stem_key)
+        if members is None:
+            members = []
+            by_stem[ev.stem_key] = members
+            member_lists.append(members)
+        members.append(ev)
+    pending = [_StemGroup(m) for m in member_lists]
+
+    # Stem-bearing groups settle first, so a notehead with no stem has
+    # something real to attach itself to.
+    groups = []
+    for g in sorted(pending, key=lambda g: (g.signal is None, g.x)):
+        host = None
+        best = None
+        for h in groups:
+            if abs(h.x - g.x) > onset_tol:
+                continue
+            if g.signal is not None and h.signal != g.signal:
+                continue
+            d = abs(h.y - g.y)
+            if best is None or d < best:
+                host, best = h, d
+        if host is None:
+            groups.append(g)
+        else:
+            host.absorb(g)
+    groups.sort(key=lambda g: g.x)
+    return groups
+
+
+def _stem_group_duration(group):
+    """One (duration_code, dots) for a whole chord, composed from every
+    notehead on the stem rather than voted on.
+
+    Only the notehead at the stem's END can see the flag or beam that
+    shortens the chord (see glyph_rhythm._best_stem, and the looser
+    _stem_through_notehead that attaches the rest of them); the inner members
+    read a plain quarter, and in a three-note chord they would outvote the
+    one member that actually read the duration. A flag can be missed but
+    never invented, so take the largest flag and dot count found anywhere on
+    the stem, over the notehead value its members agree on.
+    """
+    counts = collections.Counter(m.base_units for m in group.members)
+    base = max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+    flags = max(m.flags for m in group.members)
+    dots = max(m.dotted for m in group.members)
+    plain = base / (2 ** flags)
+    codes = glyph.DURATION_CODE
+    code = codes.get(plain) or codes[min(codes, key=lambda k: abs(k - plain))]
+    return code, min(dots, 2)
+
+
+def _onsets(groups, onset_tol):
+    """Cluster x-sorted stem groups into the onsets they sound at."""
+    onsets = []
+    for g in groups:
+        if onsets and (g.x - onsets[-1][0].x) <= onset_tol:
+            onsets[-1].append(g)
+        else:
+            onsets.append([g])
+    return onsets
+
+
+def _stemless_voice(group, up_y, down_y):
+    """Which voice a notehead with no stem belongs to.
+
+    A whole note is the case that matters: it never takes a stem in any
+    notation, so the only signal left is where it sits relative to the voices
+    that do have one. Page y grows downward, so the upper voice has the
+    smaller y.
+    """
+    if up_y is not None and down_y is not None:
+        return 0 if abs(group.y - up_y) <= abs(group.y - down_y) else 1
+    if up_y is not None:
+        return 1 if group.y > up_y else 0
+    if down_y is not None:
+        return 0 if group.y < down_y else 1
+    return 0
+
+
+def _assign_group_voices(groups, onset_tol):
+    """Split one bar's stem groups into voices - a list of voices in
+    top-to-bottom order, each a list of groups in x order. A single-element
+    result means the bar is monophonic and must stay that way.
+
+    Stem direction is the signal engravers use: an upper voice's stems are
+    forced up and a lower voice's forced down, whatever the pitches do. But
+    stem direction ALSO flips with pitch in ordinary single-voice writing - a
+    melody crossing the middle line is engraved stems-down above it and
+    stems-up below it - so direction ON ITS OWN would shred a monophonic line
+    into two voices at every crossing.
+
+    What separates the two cases is simultaneity: a single voice never has
+    two stems at one onset. So a bar counts as polyphonic only where some
+    onset genuinely carries more than one group - which after _stem_groups
+    has folded chords back together means two stems saying different things -
+    and stem direction is used to sort the notes into voices only once that
+    is established.
+    """
+    onsets = _onsets(groups, onset_tol)
+    if not any(len(o) > 1 for o in onsets):
+        return [groups]
+
+    ups = [g for g in groups if g.stem_dir == "up"]
+    downs = [g for g in groups if g.stem_dir == "down"]
+    up_y = sum(g.y for g in ups) / len(ups) if ups else None
+    down_y = sum(g.y for g in downs) / len(downs) if downs else None
+
+    for g in groups:
+        if g.stem_dir == "up":
+            g.voice = 0
+        elif g.stem_dir == "down":
+            g.voice = 1
+        else:
+            g.voice = _stemless_voice(g, up_y, down_y)
+
+    # Two groups sounding at one onset cannot be the same voice. Where that
+    # happened - two stemless noteheads, or two stems the same way up - fall
+    # back to pitch order within the onset, which is what "upper" and "lower"
+    # voice mean in the first place.
+    for onset in onsets:
+        if len(onset) < 2 or len({g.voice for g in onset}) == len(onset):
+            continue
+        for rank, g in enumerate(sorted(onset, key=lambda g: g.y)):
+            g.voice = min(rank, _MAX_VOICES - 1)
+
+    voices = [[g for g in groups if g.voice == v] for v in range(_MAX_VOICES)]
+    voices = [v for v in voices if v]
+    return voices or [groups]
+
+
+def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol):
+    """Hand the tab digits sounding at one onset out to the groups there.
+
+    A chord and two simultaneous voices are the same shape in the tab - a
+    stack of fret numbers at one x - so the split cannot be read from the tab
+    at all. It is read from the notation instead: the noteheads at this onset
+    ordered by PITCH correspond one for one to the digits at this column
+    ordered by STRING (string 1 is the highest-pitched). Rank-matching them
+    puts each voice's note on the string the engraver actually wrote it on,
+    and does so whether the onset is one chord or two voices.
+
+    Returns ({id(group): [(string, fret), ...]}, noteheads_with_no_digit).
+    """
+    heads = sorted(((m, g) for g in onset_groups for m in g.members),
+                   key=lambda mg: mg[0].y)
+    needed = len(heads)
+    ox = sum(m.x for m, _ in heads) / needed
+
+    digits = []
+    while len(digits) < needed:
+        lo = bisect.bisect_left(col_xcs, ox - x_tol)
+        hi = bisect.bisect_right(col_xcs, ox + x_tol)
+        best_i, best_d = None, None
+        for i in range(lo, hi):
+            if used[i]:
+                continue
+            d = abs(col_xcs[i] - ox)
+            if best_d is None or d < best_d:
+                best_i, best_d = i, d
+        if best_i is None:
+            break
+        used[best_i] = True
+        digits.extend(cols_sorted[best_i]["notes"])
+
+    digits.sort(key=lambda n: n[0])  # by string: 1 is the highest-pitched
+    per_group = {id(g): [] for g in onset_groups}
+    for (_m, g), digit in zip(heads, digits):
+        per_group[id(g)].append(digit)
+    leftover = digits[needed:]
+    if leftover:
+        # More fret numbers at this onset than noteheads were read from the
+        # notation. The tab plainly shows those notes, so give them to the
+        # lowest voice sounding here rather than dropping them.
+        per_group[id(max(onset_groups, key=lambda g: g.y))].extend(leftover)
+    for g in onset_groups:
+        per_group[id(g)].sort(key=lambda n: n[0])
+    return per_group, max(0, needed - len(digits))
+
+
+def _rest_beats_for(quarters, limit=12):
+    """Decompose a span of silence into plain rest beats, longest first."""
+    out = []
+    remaining = quarters
+    for q, code in _PLAIN_DURATIONS:
+        while remaining >= q - 1e-6 and len(out) < limit:
+            out.append((code, 0, []))
+            remaining -= q
+    return out
+
+
+def _pad_voice_to_budget(tagged, budget, bar_first_x, onset_tol):
+    """Fill a voice's silence so it accounts for the whole bar on its own.
+
+    A voice that sounds for only part of a bar is engraved with rests for the
+    remainder, and those rests are what make the arithmetic work: without
+    them every voice but the busiest reads as a short bar and the others
+    drift out of time against it. Where the decoded rest glyphs already
+    account for the silence this adds nothing.
+
+    Returns the quarters of rest that had to be inferred, so the caller can
+    say how much of the emitted silence was read from the score and how much
+    was deduced from the meter.
+    """
+    total = sum(_beat_quarters(code, dots) for _x, code, dots, _n in tagged)
+    deficit = budget - total
+    if deficit <= 1e-6:
+        return 0.0
+    fills = _rest_beats_for(deficit)
+    if not fills:
+        return 0.0
+    # A voice whose first note sits well right of the bar's first onset
+    # entered late, so its silence belongs at the front.
+    late = not tagged or (tagged[0][0] - bar_first_x) > onset_tol
+    x = (bar_first_x - 1.0) if late else (tagged[-1][0] + 1.0)
+    inserted = [(x, code, dots, notes) for code, dots, notes in fills]
+    if late:
+        tagged[:0] = inserted
+    else:
+        tagged.extend(inserted)
+    return sum(_beat_quarters(c, d) for _x, c, d, _n in inserted)
+
+
+def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
+                               notation_spacing, budget=None):
+    """Build one measure's VOICES from glyph-decoded note/rest events on the
     tab staff's paired standard-notation staff, matching each event to the
     tab column at (approximately) the same x. A tab column with no matching
     glyph event within x_tol falls back to an eighth-note placeholder
     (counted in the returned unmatched-column total rather than silently
     trusted - see _extract's unmatched-column warning).
 
-    Rests are clustered by onset and dropped where a pitched onset already
-    sits, because the library's core content is two-voice fingerstyle
-    writing: a voice-2 quarter rest engraved under a voice-1 note is the
-    same beat, not an extra one. Emitting every rest glyph as its own beat
-    made a 3/4 bar hold `:4 r` plus three notes - four beats' worth - and
-    shifted the whole bar's playback while still reporting high confidence.
-    Simultaneous rests in two voices collapse to one beat for the same
-    reason.
+    Classical and fingerstyle guitar is polyphonic - a melody sounding OVER
+    an independent bass line - so the notes of a bar do not form one
+    sequence. They are grouped by the stem each hangs off (_stem_groups),
+    split into voices by stem direction wherever two stems genuinely sound
+    together (_assign_group_voices), and each voice is then filled out with
+    rests so it accounts for the bar on its own (_pad_voice_to_budget).
+    Assembling everything into one sequence instead made a bar hold the SUM
+    of its voices - typically about double its meter - with every individual
+    duration decoded correctly.
+
+    Rests: in a monophonic bar they are clustered by onset and dropped where
+    a pitched onset already sits, since a rest under a sounding note is the
+    other voice's and not a beat of its own (emitting it made a 3/4 bar hold
+    `:4 r` plus three notes). In a polyphonic bar that same rest is real
+    information - it says WHICH voice is silent there - so it is assigned to
+    a voice instead of dropped.
 
     `note_events` must be sorted by x and `note_xs` their x values, so each
     measure takes a bisect-bounded slice instead of rescanning the staff's
     whole event list (O(M*E) across a staff's measures).
+    `notation_spacing` is the NOTATION staff's line spacing: every tolerance
+    here compares the positions of two glyphs on that staff, not on the tab
+    staff. `budget` is the measure's quarter-note allowance, needed to know
+    how much of each voice is silence; without it no rests are inferred.
 
-    Returns (beats, unmatched_columns, unmatched_glyph_notes) where beats is
-    a list of (duration_code, dots, notes) triples in x order, ready for
+    Returns (voices, unmatched_columns, unmatched_glyph_notes,
+    inferred_rest_quarters): voices is a list of one or more beat lists, each
+    a list of (duration_code, dots, notes) triples in x order ready for
     _fmt_beat; unmatched_columns is how many tab columns had no glyph note
-    within x_tol; unmatched_glyph_notes is how many pitched glyph notes had
-    no tab column to match (expected to be rare - every played tab note
-    should have a fret number).
+    within x_tol; unmatched_glyph_notes is how many decoded noteheads had no
+    fret number to match (expected to be rare - every played tab note should
+    have one); inferred_rest_quarters is how much silence was deduced from
+    the meter rather than read from a rest glyph.
     """
     lo_i = bisect.bisect_left(note_xs, m_lo)
     hi_i = bisect.bisect_left(note_xs, m_hi)
     measure_events = note_events[lo_i:hi_i]
-    pitched_clusters = _cluster_pitched_glyph_events([n for n in measure_events if not n.is_rest])
+    onset_tol = notation_spacing * _ONSET_SHARE_SPACINGS
+    merge_tol = notation_spacing * _REST_ONSET_MERGE_SPACINGS
+    groups = _stem_groups([n for n in measure_events if not n.is_rest], onset_tol)
     rest_clusters = _cluster_pitched_glyph_events([n for n in measure_events if n.is_rest])
+
+    voice_groups = _assign_group_voices(groups, onset_tol)
+    polyphonic = len(voice_groups) > 1
+    voice_of = {id(g): vi for vi, gs in enumerate(voice_groups) for g in gs}
 
     cols_sorted = sorted(m_cols, key=lambda c: c["x"])
     col_xcs = [c["xc"] for c in cols_sorted]
     used = [False] * len(cols_sorted)
 
-    tagged = []  # (x, duration_code, dots, notes)
+    tagged = [[] for _ in voice_groups]  # per voice: (x, code, dots, notes)
     unmatched_glyph_notes = 0
-
-    pitched_xs = sorted(sum(ev.x for ev in c) / len(c) for c in pitched_clusters)
-    merge_tol = spacing * _REST_ONSET_MERGE_SPACINGS
-    for cluster in rest_clusters:
-        rx = sum(ev.x for ev in cluster) / len(cluster)
-        j = bisect.bisect_left(pitched_xs, rx)
-        near = False
-        for k in (j - 1, j):
-            if 0 <= k < len(pitched_xs) and abs(pitched_xs[k] - rx) <= merge_tol:
-                near = True
-                break
-        if near:
-            continue  # a second voice's rest under a sounding note, not a beat
-        # one beat per rest onset; pick the longest reading among voices so a
-        # collapsed pair doesn't silently shorten the bar
-        rep = min(cluster, key=lambda ev: (ev.duration_code, -ev.dotted))
-        tagged.append((rx, rep.duration_code, rep.dotted, []))
-
-    for cluster in pitched_clusters:
-        cx = sum(ev.x for ev in cluster) / len(cluster)
-        code, dots = _cluster_glyph_duration(cluster)
-        lo = bisect.bisect_left(col_xcs, cx - x_tol)
-        hi = bisect.bisect_right(col_xcs, cx + x_tol)
-        best_i, best_d = None, None
-        for i in range(lo, hi):
-            if used[i]:
+    onsets = _onsets(groups, onset_tol)
+    for onset in onsets:
+        per_group, missing = _match_onset_columns(
+            onset, cols_sorted, col_xcs, used, x_tol)
+        unmatched_glyph_notes += missing
+        for g in onset:
+            notes = per_group[id(g)]
+            if not notes:
+                # A decoded notehead with no fret number anywhere near it -
+                # already counted above. Nothing to emit a note for, so skip
+                # rather than fabricate one.
                 continue
-            d = abs(col_xcs[i] - cx)
-            if best_d is None or d < best_d:
-                best_i, best_d = i, d
-        if best_i is None:
-            # a pitched glyph cluster with no matching tab digit column - can
-            # happen on decode noise; nothing to emit a fret number for, so
-            # skip rather than fabricate one.
-            unmatched_glyph_notes += len(cluster)
-            continue
-        used[best_i] = True
-        tagged.append((cx, code, dots, cols_sorted[best_i]["notes"]))
+            code, dots = _stem_group_duration(g)
+            tagged[voice_of[id(g)]].append((g.x, code, dots, notes))
+
+    _place_rest_clusters(rest_clusters, onsets, voice_groups, voice_of, tagged,
+                         merge_tol, polyphonic)
 
     unmatched_columns = 0
     for i, col in enumerate(cols_sorted):
         if not used[i]:
             unmatched_columns += 1
-            tagged.append((col["x"], 8, 0, col["notes"]))  # conservative fallback
+            # A conservative placeholder, in whichever voice already plays
+            # nearest to it on the fretboard.
+            tagged[_placeholder_voice(col, tagged)].append(
+                (col["x"], 8, 0, col["notes"]))
 
-    tagged.sort(key=lambda t: t[0])
-    return [(code, dots, notes) for _, code, dots, notes in tagged], unmatched_columns, unmatched_glyph_notes
+    for t in tagged:
+        t.sort(key=lambda b: b[0])
+
+    inferred = 0.0
+    if polyphonic and budget:
+        first_x = min((t[0][0] for t in tagged if t), default=0.0)
+        for t in tagged:
+            inferred += _pad_voice_to_budget(t, budget, first_x, onset_tol)
+
+    voices = [[(code, dots, notes) for _x, code, dots, notes in t] for t in tagged]
+    voices = [v for v in voices if v]
+    return voices, unmatched_columns, unmatched_glyph_notes, inferred
+
+
+def _voice_mean_y(groups):
+    return sum(g.y for g in groups) / len(groups) if groups else 0.0
+
+
+def _mean_string(notes):
+    return sum(s for s, _f in notes) / len(notes) if notes else 0.0
+
+
+def _placeholder_voice(col, tagged):
+    """Which voice an unmatched tab column's placeholder belongs to: whichever
+    already plays nearest to it on the fretboard.
+
+    A column with no notation event beside it has no stem to read, so the
+    STRING it is written on is the only signal left - and a string number can
+    only be compared against other string numbers, never against a notehead's
+    position on the notation staff, which is a different quantity in
+    different units.
+    """
+    target = _mean_string(col["notes"])
+    best, best_d = 0, None
+    for vi, beats in enumerate(tagged):
+        strings = [s for _x, _c, _d, notes in beats for s, _f in notes]
+        if not strings:
+            continue
+        d = abs(sum(strings) / len(strings) - target)
+        if best_d is None or d < best_d:
+            best, best_d = vi, d
+    return best
+
+
+def _place_rest_clusters(rest_clusters, onsets, voice_groups, voice_of, tagged,
+                         merge_tol, polyphonic):
+    """Turn decoded rest glyphs into beats in the right voice.
+
+    In a MONOPHONIC bar a rest sharing an onset with a sounding note is the
+    other voice's rest and is not a beat here at all - emitting it made a 3/4
+    bar hold four beats' worth and shifted the whole bar's playback while
+    still reporting high confidence. Simultaneous rests collapse to one beat
+    for the same reason.
+
+    In a POLYPHONIC bar that same rest is exactly the information needed: it
+    says which voice is silent at that onset. So it is assigned to a voice
+    that has nothing sounding there rather than dropped, and two rests at one
+    onset become one beat in each voice.
+    """
+    onset_xs = [sum(g.x for g in o) / len(o) for o in onsets]
+    voice_y = {vi: _voice_mean_y(gs) for vi, gs in enumerate(voice_groups)}
+
+    for cluster in rest_clusters:
+        rx = sum(ev.x for ev in cluster) / len(cluster)
+        j = bisect.bisect_left(onset_xs, rx)
+        hit = None
+        for k in (j - 1, j):
+            if 0 <= k < len(onset_xs) and abs(onset_xs[k] - rx) <= merge_tol:
+                hit = onsets[k]
+                break
+
+        if not polyphonic:
+            if hit is not None:
+                continue  # the other voice's rest under a sounding note
+            # one beat per rest onset; take the longest reading so a
+            # collapsed pair doesn't silently shorten the bar
+            rep = min(cluster, key=lambda ev: (ev.duration_code, -ev.dotted))
+            tagged[0].append((rx, rep.duration_code, rep.dotted, []))
+            continue
+
+        free = set(voice_y)
+        if hit is not None:
+            free -= {voice_of[id(g)] for g in hit}
+        if not free:
+            continue  # every voice is already sounding here
+        for ev in sorted(cluster, key=lambda e: e.y):
+            if not free:
+                break
+            v = min(free, key=lambda k: abs(voice_y[k] - ev.y))
+            free.discard(v)
+            tagged[v].append((ev.x, ev.duration_code, ev.dotted, []))
 
 
 # ---------------------------------------------------------------------------
@@ -907,22 +1309,39 @@ _TIE_WARNING = (
 _DOT_FACTORS = (1.0, 1.5, 1.75)
 
 
+def _beat_quarters(code, dots) -> float:
+    if not code:
+        return 0.0
+    return (4.0 / code) * _DOT_FACTORS[min(dots, len(_DOT_FACTORS) - 1)]
+
+
+def _voices_of(beats):
+    """A measure's beats as a list of voices. A measure is normally a list of
+    voices already; a plain flat list of beats is accepted as the one-voice
+    case, which is what the spacing-heuristic path and callers with no
+    polyphony to model hand over."""
+    if not beats:
+        return []
+    return list(beats) if isinstance(beats[0], list) else [beats]
+
+
 def _bar_quarters(beats) -> float:
-    total = 0.0
-    for code, dots, _notes in beats:
-        if not code:
-            continue
-        total += (4.0 / code) * _DOT_FACTORS[min(dots, len(_DOT_FACTORS) - 1)]
-    return total
+    """The longest voice in this bar, in quarter notes. Voices sound
+    CONCURRENTLY, so a bar is as long as its longest voice - not the sum of
+    them, which is exactly the mistake that made a bar of two-voice writing
+    read as double its meter."""
+    return max((sum(_beat_quarters(code, dots) for code, dots, _n in v)
+                for v in _voices_of(beats)), default=0.0)
 
 
 def _overfull_bars(measures) -> tuple[int, int]:
-    """Count bars holding more than their time signature allows.
+    """Count bars where some voice holds more than its time signature allows.
 
-    Polyphony flattened into one voice lands here: each note's own duration
-    can be decoded correctly while the bar sums to roughly the total of its
-    voices. Every individual reading is right and the bar is still wrong, so
-    this is measured separately from how the durations were obtained.
+    A bar is counted once however many of its voices overflow: it is the bar
+    that plays wrong. Undetected tuplets, a flag the decoder missed, and two
+    voices the stems did not separate all land here, so this stays measured
+    separately from how the durations were obtained - every individual
+    reading can be right while the bar is still not.
     """
     overfull = 0
     counted = 0
@@ -987,21 +1406,22 @@ def _rhythm_report(counts, details, overfull=0, bars=0):
             )
 
     # Bars that don't add up outrank how the durations were obtained: a
-    # confident reading of every notehead still produces a wrong bar when two
-    # voices were merged into one, and playback follows the bar.
+    # confident reading of every notehead still produces a wrong bar when its
+    # voices don't come apart, and playback follows the bar.
     if bars and overfull:
         share = overfull / bars
         warnings.append(
-            f"{overfull} of {bars} bar(s) hold more than their time signature allows, usually "
-            "because music written in two voices (a melody over a separate bass line) is "
-            "flattened into a single voice - the notes and their individual durations can still "
-            "be right while the bar as a whole is not, so playback timing will drift in those bars"
+            f"{overfull} of {bars} bar(s) hold more than their time signature allows. Music "
+            "written in two voices (a melody over a separate bass line) is separated into "
+            "concurrent voices where the stems say so, but a bar whose voices the stems do not "
+            "separate is still flattened into one, and an undetected tuplet or a missed flag "
+            "lands here too - the notes and their individual durations can still be right while "
+            "the bar as a whole is not, so playback timing will drift in those bars"
         )
         if share >= 0.25:
             confidence = (
                 "low overall - individual durations were read from the score's own engraving, but "
-                f"{overfull} of {bars} bar(s) do not add up to their time signature because "
-                "separate voices are merged into one"
+                f"{overfull} of {bars} bar(s) do not add up to their time signature"
             )
 
     # Surface the concrete per-staff reasons behind any downgrade, capped so
@@ -1050,21 +1470,32 @@ def _escape_tex_string(s: str) -> str:
 
 
 def _build_alphatex(title, tempo, tuning, ts, measures):
-    """measures: list of (beats, measure_ts) where beats is a list of
-    (duration_code, dots, notes). measure_ts may be None (meaning "whatever
-    is already in effect"); where it differs from the meter currently in
-    effect, a `\\ts` is emitted on that bar, so a score that changes meter
-    part-way through is transcribed with the change in it rather than having
-    every later bar measured against the opening meter.
+    """measures: list of (beats, measure_ts) where beats is a list of VOICES,
+    each voice a list of (duration_code, dots, notes). A flat list of beats
+    is accepted as the one-voice case. measure_ts may be None (meaning
+    "whatever is already in effect"); where it differs from the meter
+    currently in effect, a `\\ts` is emitted on that bar, so a score that
+    changes meter part-way through is transcribed with the change in it
+    rather than having every later bar measured against the opening meter.
 
     A plain list of beats per measure is also accepted, for callers that
     have no per-measure meter to carry.
+
+    Concurrent voices are separated by `\\voice` INSIDE the bar, which needs
+    `\\voicemode barwise` in the header - alphaTex's default (staffwise) reads
+    `\\voice` as "start the whole staff again for the next voice" and would
+    take everything after the first one as bar 1 onwards of voice 2. Verified
+    against the installed renderer: barwise gives one bar per line with the
+    intended voices in it, and `|` closes the bar and returns to voice 1.
     """
     lines = [f'\\title "{_escape_tex_string(title)}"']
     if tempo:
         lines.append(f"\\tempo {tempo}")
     if ts:
         lines.append(f"\\ts {ts[0]} {ts[1]}")
+    if any(len(_voices_of(m[0] if isinstance(m, tuple) and len(m) == 2 else m)) > 1
+           for m in measures):
+        lines.append("\\voicemode barwise")
     if tuning:
         # alphaTex binds the FIRST \tuning entry to string 1, and
         # _Staff.string_for_y assigns string 1 to the top tab line (the
@@ -1085,8 +1516,11 @@ def _build_alphatex(title, tempo, tuning, ts, measures):
         if measure_ts and tuple(measure_ts) != in_effect:
             in_effect = tuple(measure_ts)
             prefix = f"\\ts {in_effect[0]} {in_effect[1]} "
-        beats = " ".join(_fmt_beat(dur, dots, notes) for dur, dots, notes in beats_in)
-        body_lines.append(prefix + beats + " |")
+        voices = " \\voice ".join(
+            " ".join(_fmt_beat(dur, dots, notes) for dur, dots, notes in voice)
+            for voice in _voices_of(beats_in)
+        )
+        body_lines.append(prefix + voices + " |")
     lines.append("\n".join(body_lines))
     return "\n".join(lines)
 
@@ -1365,6 +1799,12 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     prov_details = collections.defaultdict(list)
     unmatched_columns_glyph = 0
     unmatched_glyph_notes_total = 0
+    # How many bars were transcribed as concurrent voices, and how much of
+    # the silence in them was deduced from the meter rather than read from a
+    # rest glyph - both reported, so "the voices add up" can be told apart
+    # from "the voices were padded until they added up".
+    multivoice_bars = 0
+    inferred_rest_quarters = 0.0
     font_warnings_seen = []
     for page_idx, page, tab_staves, std_staves in pages_with_tab:
         tokens = _extract_digit_tokens(page)
@@ -1434,18 +1874,23 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             for i, m_cols in enumerate(measures_for_staff):
                 m_lo, m_hi = bounds[i], bounds[i + 1]
                 if source.uses_glyphs:
-                    beats, unmatched_cols, unmatched_notes = _build_measure_beats_glyph(
-                        m_cols, m_lo, m_hi, source.note_events, source.note_xs,
-                        x_tol, staff.spacing,
+                    voices, unmatched_cols, unmatched_notes, inferred = (
+                        _build_measure_beats_glyph(
+                            m_cols, m_lo, m_hi, source.note_events, source.note_xs,
+                            x_tol, std_staff.spacing, measure_quarter_len,
+                        )
                     )
                     unmatched_columns_glyph += unmatched_cols
                     unmatched_glyph_notes_total += unmatched_notes
-                    if not beats:
+                    inferred_rest_quarters += inferred
+                    if len(voices) > 1:
+                        multivoice_bars += 1
+                    if not voices:
                         # Nothing decoded and no tab columns either - still
                         # emit an explicit rest bar rather than dropping the
                         # measure (see the non-glyph branch below for why).
-                        beats = [(_snap_duration(measure_quarter_len), 0, [])]
-                    all_measures.append((beats, staff_ts))
+                        voices = [_rest_beats_for(measure_quarter_len)]
+                    all_measures.append((voices, staff_ts))
                     continue
                 if not m_cols:
                     # No digit columns landed in this bar - emit an explicit
@@ -1453,7 +1898,10 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                     # would omit its "|" separator and shift every later
                     # bar's number one position earlier than the PDF, which
                     # breaks side-by-side comparison against the original.
-                    all_measures.append(([(_snap_duration(measure_quarter_len), 0, [])], staff_ts))
+                    # Rests that ADD UP to the meter, not one snapped to the
+                    # nearest plain value: a 3/4 bar's 3.0 quarters snap to a
+                    # whole rest, which is a third longer than the bar.
+                    all_measures.append((_rest_beats_for(measure_quarter_len), staff_ts))
                     continue
                 durations_q = _infer_measure_rhythm(m_cols, measure_quarter_len, m_hi)
                 beats = [(_snap_duration(dq), 0, col["notes"]) for col, dq in zip(m_cols, durations_q)]
@@ -1475,6 +1923,18 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         if fw not in already:
             warnings.append(f"music font: {fw}")
 
+    if multivoice_bars:
+        warnings.append(
+            f"{multivoice_bars} bar(s) were transcribed as two concurrent voices, split by the "
+            "direction of the stems the score engraves them with"
+        )
+    if inferred_rest_quarters:
+        warnings.append(
+            f"about {inferred_rest_quarters:.4g} quarter note(s) of rest across those bars were "
+            "deduced from the time signature rather than read from a rest printed in the score - "
+            "a voice with a note missing from it is padded with silence the same way a genuinely "
+            "resting voice is"
+        )
     if unmatched_columns_glyph:
         warnings.append(
             f"{unmatched_columns_glyph} fret number(s) could not be matched to a note in the "
@@ -1518,8 +1978,9 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
 
     title = Path(pdf_path).stem
     alphatex = _build_alphatex(title, tempo, tuning, ts, all_measures)
-    beats_total = sum(len(beats) for beats, _ in all_measures)
-    notes_total = sum(len(notes) for beats, _ in all_measures for _, _, notes in beats)
+    beats_total = sum(len(v) for beats, _ in all_measures for v in _voices_of(beats))
+    notes_total = sum(len(notes) for beats, _ in all_measures
+                      for v in _voices_of(beats) for _, _, notes in v)
 
     ts_confidence = {
         "manual override": "n/a - caller supplied",

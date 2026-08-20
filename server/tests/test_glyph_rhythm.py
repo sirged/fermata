@@ -427,3 +427,56 @@ def test_non_truetype_embedding_is_refused_by_flavour():
     mf, warn = G._load_one_font(doc=None, xref=1, base="Maestro", ext="cff")
     assert mf is None
     assert "cff" in warn
+
+
+# ---------------------------------------------------------------------------
+# Stem direction: the signal voices are separated by
+# ---------------------------------------------------------------------------
+
+
+def _note(x, y, key):
+    return G.NoteEvent(x, y, 1.0, 0, 0, False, "notehead_filled",
+                       notehead_kind="notehead_filled", stem_key=key)
+
+
+def test_stem_direction_comes_from_which_end_overhangs_the_notehead():
+    """Page y grows DOWNWARD. An up-stem runs about an octave ABOVE its
+    notehead and stops dead at it, so the overhang is on the small-y side."""
+    up = G.Stem(x=50.0, y0=60.0, y1=100.0)      # tip above a notehead at y=100
+    down = G.Stem(x=80.0, y0=100.0, y1=140.0)   # tip below a notehead at y=100
+    notes = [_note(50.0, 100.0, "u"), _note(80.0, 100.0, "d")]
+    G._assign_stem_directions(notes, {"u": up, "d": down})
+    assert [n.stem_dir for n in notes] == ["up", "down"]
+
+
+def test_a_chords_direction_is_not_read_off_one_of_its_noteheads():
+    """A chord shares ONE stem that runs PAST all of its noteheads, so the
+    end further from any given member is on the wrong side for every member
+    but the outermost - reading "the free end is below me, therefore stem
+    down" off the top note of an up-stemmed chord inverts it."""
+    # up-stem chord: noteheads at y=100/110/120, stem from its tip at y=60
+    # down to the lowest notehead at y=120.
+    stem = G.Stem(x=50.0, y0=60.0, y1=120.0)
+    notes = [_note(50.0, y, "c") for y in (100.0, 110.0, 120.0)]
+    G._assign_stem_directions(notes, {"c": stem})
+    assert [n.stem_dir for n in notes] == ["up", "up", "up"]
+
+    # and the mirror image
+    stem_d = G.Stem(x=50.0, y0=100.0, y1=160.0)
+    notes_d = [_note(50.0, y, "c") for y in (100.0, 110.0, 120.0)]
+    G._assign_stem_directions(notes_d, {"c": stem_d})
+    assert [n.stem_dir for n in notes_d] == ["down", "down", "down"]
+
+
+def test_a_notehead_partway_along_a_chord_stem_still_finds_it():
+    """_best_stem only attaches a notehead at a stem's END, which is where
+    the flag lives. A chord's inner members sit far outside that window and
+    would each become a beat - and, at one onset, a phantom second voice."""
+    tol = G._Tol(REF)
+    stem = G.Stem(x=50.0, y0=60.0, y1=120.0)
+    stems, stem_xs = [stem], [stem.x]
+    # a notehead centred at y=100: halfway up the stem, nowhere near an end
+    assert G._best_stem(stems, stem_xs, 44.0, 50.0, 100.0, tol) is None
+    assert G._stem_through_notehead(stems, stem_xs, 44.0, 50.0, 100.0, tol) is stem
+    # ...but a notehead the stem does not span is not on it
+    assert G._stem_through_notehead(stems, stem_xs, 44.0, 50.0, 200.0, tol) is None
