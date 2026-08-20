@@ -316,9 +316,9 @@ def test_bar_conformance_survives_a_reload(app_env, zanarkand_pdf, monkeypatch, 
     assert fetched["warnings"] == posted["warnings"]
 
 
-def test_a_row_stored_before_the_bar_figures_omits_them(app_env, insert_score):
+def test_a_row_stored_before_the_bar_figures_reports_them_unrecorded(app_env, insert_score):
     """Rows written before these were persisted carry a blob without them.
-    Absent must read as absent: defaulting to zero would claim every bar was
+    Unrecorded must read as None, not as zero: zero would claim every bar was
     measured and every one of them added up, which is a stronger statement
     than the row can support."""
     conn = db.connect()
@@ -333,4 +333,71 @@ def test_a_row_stored_before_the_bar_figures_omits_them(app_env, insert_score):
     fetched = api.get_transcription(score_id)
     assert fetched["warnings"] == ["something was odd"]
     for key in BAR_KEYS:
-        assert key not in fetched, key
+        assert key in fetched, key
+        assert fetched[key] is None, key
+
+
+def test_an_edit_states_that_nothing_measured_it(app_env, zanarkand_pdf, monkeypatch, insert_score):
+    """A hand edit replaces the content the figures describe, so it has none of
+    its own - and it must SAY so rather than leave the keys out.
+
+    A client that merges this response over the transcription it already held
+    would keep the pre-edit figures if they were merely absent, and go on
+    reporting bars as defective after the edit that fixed them. Carrying the
+    extraction's figures forward would be worse still: it would assert
+    measurements of content that nothing has measured."""
+    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, zanarkand_pdf.name)
+
+    extracted = api.transcribe(score_id, body=None)
+    assert extracted["bars_measured"] > 0
+    assert extracted["warnings"]
+
+    edited = api.save_transcription(
+        score_id, api.TranscriptionEditIn(content=":4 0.1 |", format="alphatex")
+    )
+    for state in (edited, api.get_transcription(score_id)):
+        assert state["source"] == "edited"
+        assert state["warnings"] == []
+        for key in BAR_KEYS:
+            assert key in state, key
+            assert state[key] is None, key
+
+    # Reverting restores the extracted row, and with it the real figures.
+    api.delete_transcription(score_id)
+    reverted = api.get_transcription(score_id)
+    assert reverted["bars_measured"] == extracted["bars_measured"]
+    assert reverted["bars_defective"] == extracted["bars_defective"]
+
+
+def test_a_corrupt_blob_does_not_yield_a_bar_count(app_env, insert_score):
+    """The figures are only ever numbers. A blob carrying something else in
+    those keys must read as unrecorded rather than passing a string or a bool
+    through to a caller that will do arithmetic on it."""
+    conn = db.connect()
+    score_id = insert_score(conn, "odd.pdf")
+    conn.execute(
+        """INSERT INTO transcriptions(score_id, format, content, source, confidence, updated_at)
+           VALUES (?, 'alphatex', ':4 0.1 |', 'extracted', ?, datetime('now'))""",
+        (
+            score_id,
+            json.dumps(
+                {
+                    "warnings": "not a list",
+                    "bars_measured": "twelve",
+                    "bars_defective": None,
+                    "bars_overfull": True,
+                    "bars_short": 2,
+                }
+            ),
+        ),
+    )
+    conn.commit()
+
+    fetched = api.get_transcription(score_id)
+    assert fetched["warnings"] == []
+    assert fetched["bars_measured"] is None
+    assert fetched["bars_defective"] is None
+    assert fetched["bars_overfull"] is None, "a bool is not a bar count"
+    assert fetched["bars_short"] == 2

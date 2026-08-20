@@ -363,37 +363,44 @@ def _transcription_row(conn, score_id: int):
     ).fetchone()
 
 
-# Keys a caller reads at the top level of a transcription however it arrived.
-# POST /transcribe builds them from the extraction result it still holds; GET
-# has only the stored blob, so it lifts the same names back out. Without this
-# the two endpoints describe the same transcription in two different shapes,
-# and a client that reloads a score has to reconstruct what POST told it -
-# which, for the bar figures, cannot be done. See the note in transcribe().
-_BLOB_TOP_LEVEL = (
-    "warnings",
-    "bars_overfull",
-    "bars_short",
-    "bars_defective",
-    "bars_measured",
-)
+# Rule 8 conformance, as the top level of every transcription response.
+#
+# These are STATED on every response rather than included only when known,
+# and that is the whole point of them. A hand edit stores no confidence at
+# all, so on the omitting version of this a client that merged the PUT
+# response over the transcription it already held kept the figures from
+# BEFORE the edit - and went on reporting bars as defective after the edit
+# that fixed them, which is the one thing this project must never do. An
+# explicit "not recorded" overwrites such a merge; a missing key is silently
+# preserved by it.
+#
+# None means not recorded: a row stored before these were persisted, or a
+# hand edit, whose content nothing has measured. It does NOT mean zero -
+# zero would claim every bar was measured and every one of them added up,
+# which is a far stronger statement than either row can support. Anything
+# wanting real figures for edited content has to measure that content; it
+# cannot inherit them from the extraction it replaced.
+_BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured")
 
 
 def _transcription_dict(row) -> dict:
     d = dict(row)
-    if not d.get("confidence"):
-        return d
-    try:
-        blob = json.loads(d["confidence"])
-    except (TypeError, ValueError):
-        return d
-    d["confidence"] = blob
-    if isinstance(blob, dict):
-        # Absent rather than zero for a row written before these were stored:
-        # a missing key means "not recorded", and zero would claim every bar
-        # was measured and every one of them was fine.
-        for key in _BLOB_TOP_LEVEL:
-            if key in blob:
-                d[key] = blob[key]
+    blob = None
+    if d.get("confidence"):
+        try:
+            blob = json.loads(d["confidence"])
+        except (TypeError, ValueError):
+            blob = None  # leave the column as the raw text it turned out to be
+        else:
+            d["confidence"] = blob
+    stored = blob if isinstance(blob, dict) else {}
+
+    warnings = stored.get("warnings")
+    d["warnings"] = warnings if isinstance(warnings, list) else []
+    for key in _BAR_KEYS:
+        value = stored.get(key)
+        # bool is a subclass of int and would otherwise pass as a count.
+        d[key] = value if isinstance(value, int) and not isinstance(value, bool) else None
     return d
 
 
@@ -508,8 +515,12 @@ def transcribe(score_id: int, body: TranscribeIn | None = Body(default=None)):
     saved = conn.execute(
         "SELECT * FROM transcriptions WHERE score_id = ? AND source = 'extracted'", (score_id,)
     ).fetchone()
+    # `warnings` and the Rule 8 conformance figures are NOT set from `result`
+    # here. They come back out of the row that was just written, so that this
+    # response and a later GET of the same row are answered from one source
+    # rather than two that could drift. Everything below is extraction detail
+    # that is genuinely only available on this response.
     d = _transcription_dict(saved)
-    d["warnings"] = result.warnings
     d["bars"] = result.bars
     d["beats"] = result.beats
     d["notes"] = result.notes
@@ -520,12 +531,6 @@ def transcribe(score_id: int, body: TranscribeIn | None = Body(default=None)):
     d["time_signature_source"] = result.time_signature_source
     d["key_fifths"] = result.key_fifths
     d["key_signature_source"] = result.key_signature_source
-    # Rule 8 conformance as data, not only as prose in the warning list, so a
-    # caller can compare it against what its own MusicXML tooling reports.
-    d["bars_overfull"] = result.bars_overfull
-    d["bars_short"] = result.bars_short
-    d["bars_defective"] = result.bars_defective
-    d["bars_measured"] = result.bars_measured
     return d
 
 

@@ -1340,3 +1340,33 @@ def test_reported_conformance_matches_the_emitted_measures(zanarkand_pdf):
     # than summing to it
     assert result.bars_defective <= result.bars_overfull + result.bars_short
     assert max(result.bars_overfull, result.bars_short) <= result.bars_defective
+
+
+def test_a_bar_wrong_in_both_directions_is_counted_once():
+    """The case the whole reporting contract rests on, which no real score in
+    the library exhibits.
+
+    Two voices sound concurrently: one runs over the meter, the other falls
+    short of it. That is ONE bar that plays wrong, and `defective` says so -
+    while `overfull` and `short` each count it, so their sum exceeds the
+    number of bars there are. Anything comparing that sum against the total
+    reports more defective bars than the music has, which is why `defective`
+    is the only figure a reader may put over `measured`.
+
+    Constructed rather than extracted on purpose: no score in the library is
+    wrong in both directions at once, so this is the only place the behaviour
+    is pinned. If it were deleted the fault would not be rediscovered.
+    """
+    from fermata.tabextract import _bar_conformance
+
+    over = [(4, 0, None)] * 5  # five quarter notes
+    under = [(4, 0, None)] * 3  # three quarter notes
+    counts = _bar_conformance([([over, under], (4, 4))])  # a 4/4 bar wants four
+
+    assert counts.counted == 1
+    assert counts.defective == 1, "one bar plays wrong, however many ways it is wrong"
+    assert counts.overfull == 1
+    assert counts.short == 1
+    assert counts.overfull + counts.short > counts.counted, (
+        "the sum overstates the music - this is the arithmetic no reader may do"
+    )
