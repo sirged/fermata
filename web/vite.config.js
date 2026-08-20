@@ -4,7 +4,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   // alphaTab() wires up the worker/audio-worklet bundling and copies its
-  // font + soundfont assets into public/ — see TabViewer.svelte for the
+  // font + soundfont assets into public/ — see src/lib/score-render.js for the
   // matching core.fontDirectory / player.soundFont paths.
   plugins: [svelte(), alphaTab()],
   server: {

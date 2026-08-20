@@ -27,7 +27,11 @@ them.
   interactively and can be switched between standard notation, tablature, or
   both staves at once, with audio playback, adjustable speed, and a moving
   cursor. The built-in synthesizer also drives practice tools: drag-select a
-  passage on the score to loop it, plus metronome and count-in toggles.
+  passage on the score to loop it, plus metronome and count-in toggles. The
+  staff is themed to match the interface, lays itself out differently on a
+  phone, a tablet on a stand and a desktop, and can be drawn dark for
+  practising in the dark — see [how scores are rendered](docs/rendering.md) for
+  what the renderer does, what that layer adds, and why this renderer.
 - **Tab out of a PDF** — engraved guitar PDFs carry their tab as real text and
   their rhythm in the music font's own glyphs, so Fermata reads both directly
   instead of guessing at pixels, and renders the result as a playable,
@@ -90,6 +94,11 @@ cd web
 npm install
 npm run dev
 ```
+
+Everything to do with drawing a staff — appearance, responsive layout, and the
+renderer's quirks — lives in `web/src/lib/score-render.js`; components never
+touch the renderer directly. [docs/rendering.md](docs/rendering.md) explains
+that boundary and the decisions behind it.
 
 Tests:
 

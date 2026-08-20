@@ -1,7 +1,7 @@
 <script>
   import { untrack } from "svelte";
-  import * as alphaTab from "@coderline/alphatab";
   import { api } from "./api.js";
+  import { createScoreView } from "./score-render.js";
 
   let {
     score = null,
@@ -19,7 +19,7 @@
 
   let host;
   let scroller;
-  let atApi = $state(null);
+  let view = $state(null);
   let profile = $state("scoretab");
   let playing = $state(false);
   let playerReady = $state(false);
@@ -32,20 +32,15 @@
   let ladderStart = $state(60);
   let ladderStep = $state(5);
   let ladderTarget = $state(100);
+  let darkStaff = $state(false);
 
-  const PROFILES = [
+  const PROFILE_LABELS = [
     ["score", "Notation"],
     ["tab", "Tab"],
     ["scoretab", "Both"],
   ];
 
   const SPEEDS = [0.5, 0.75, 1, 1.25];
-
-  const PROFILE_MAP = {
-    score: alphaTab.StaveProfile.Score,
-    tab: alphaTab.StaveProfile.Tab,
-    scoretab: alphaTab.StaveProfile.ScoreTab,
-  };
 
   const DEMO_TEX = `\\title "Fermata Demo"
 \\subtitle "Estudio in E minor"
@@ -57,114 +52,92 @@
 :8 0.1 0.2 1.3 0.1 0.2 1.3 0.1 0.2 |
 :2 (0.6 2.5 2.4 0.3 0.2 0.1) :2 (0.6 2.5 2.4 0.3 0.2 0.1)`;
 
+  function source() {
+    if (demo) return { kind: "alphatex", text: DEMO_TEX };
+    if (tex != null) return { kind: format === "musicxml" ? "musicxml" : "alphatex", text: tex };
+    if (score) return { kind: "file", url: api.fileUrl(score.id) };
+    return null;
+  }
+
+  function advanceLadder() {
+    if (!ladder) return;
+    const next = Math.round(speed * 100) + ladderStep;
+    if (next >= ladderTarget) {
+      speed = ladderTarget / 100;
+      ladder = false;
+    } else {
+      speed = next / 100;
+    }
+    view?.setSpeed(speed);
+  }
+
   $effect(() => {
+    // read tracked, outside the untrack below: a new tex/score/demo has to
+    // rebuild the renderer, which is what makes "Save & render" re-render
+    const src = source();
     // a stale error or transport state from a previous load (e.g. a bad
-    // edit) must not linger once a new tex/score/demo load starts - without
-    // this, "Save & render" leaves the old Pause/enabled buttons showing
-    // while the new player is still loading its soundfont
+    // edit) must not linger once a new load starts - without this, "Save &
+    // render" leaves the old Pause/enabled buttons showing while the new
+    // player is still loading its soundfont
     loadError = "";
     playerReady = false;
     playing = false;
-    const at = new alphaTab.AlphaTabApi(host, {
-      // worker/audio-worklet URLs are wired up by the @coderline/alphatab-vite
-      // plugin (vite.config.js); fontDirectory/soundFont still need to match
-      // where that plugin copies the assets (site root, see its README).
-      core: {
-        fontDirectory: "/font/",
-      },
-      player: {
-        enablePlayer: true,
-        soundFont: "/soundfont/sonivox.sf2",
-        scrollElement: scroller,
-      },
-      display: {
-        // untrack: profile changes are handled imperatively in setProfile;
-        // tracking it here would tear down and recreate the player.
-        staveProfile: PROFILE_MAP[untrack(() => profile)],
-        scale: 1,
-      },
-    });
+    // untrack: everything below is driven imperatively once the view exists;
+    // tracking it here would tear down and rebuild the renderer (and stop
+    // playback) on a profile switch or a toggle.
+    const v = untrack(() =>
+      createScoreView(host, {
+        scroller,
+        source: src,
+        profile,
+        preset: gigMode ? "stand" : "desk",
+        theme: darkStaff ? "slate" : "parchment",
+        transport: { speed, looping, metronome, countIn },
+        onReady: () => (playerReady = true),
+        onPlaying: (p) => (playing = p),
+        onError: (m) => (loadError = m),
+        onPassComplete: advanceLadder,
+      }),
+    );
+    view = v;
+    return () => v.destroy();
+  });
 
-    // A new player starts at its own defaults, so carry the practice settings
-    // over; switching scores reuses this component and would silently drop them.
-    // untrack keeps the toggles from tearing the player down when they change.
-    untrack(() => {
-      at.isLooping = looping;
-      at.playbackSpeed = speed;
-      at.metronomeVolume = metronome ? 1 : 0;
-      at.countInVolume = countIn ? 1 : 0;
-    });
+  // Gig mode is the same width read from further away, so it wants a
+  // different layout at that width rather than a different width.
+  $effect(() => {
+    view?.setPreset(gigMode ? "stand" : "desk");
+  });
 
-    at.playerReady.on(() => (playerReady = true));
-    at.playerStateChanged.on((e) => (playing = e.state === 1));
-    at.error.on((e) => {
-      loadError = e?.message ?? "failed to load score";
-    });
-    // playerFinished fires at the end of each loop pass (not just final stop),
-    // which is what makes it usable as the "one clean pass done" signal below.
-    at.playerFinished.on(() => {
-      if (!ladder) return;
-      const next = Math.round(speed * 100) + ladderStep;
-      if (next >= ladderTarget) {
-        speed = ladderTarget / 100;
-        ladder = false;
-      } else {
-        speed = next / 100;
-      }
-      at.playbackSpeed = speed;
-    });
-
-    if (demo) {
-      at.tex(DEMO_TEX);
-    } else if (tex != null && format === "musicxml") {
-      // MusicXML goes through the same byte loader a file from the library
-      // uses - alphaTab detects the format from the content, so there is no
-      // separate MusicXML entry point. Re-runs whenever tex changes, so
-      // saving or reverting an edit re-renders.
-      at.load(new TextEncoder().encode(tex));
-    } else if (tex != null) {
-      // caller supplies alphaTex directly - re-runs whenever tex changes, so
-      // saving/reverting an edit re-renders
-      at.tex(tex);
-    } else if (score) {
-      fetch(api.fileUrl(score.id))
-        .then((r) => r.arrayBuffer())
-        .then((buf) => at.load(new Uint8Array(buf)))
-        .catch((e) => (loadError = String(e)));
-    }
-
-    atApi = at;
-    return () => at.destroy();
+  $effect(() => {
+    view?.setTheme(darkStaff ? "slate" : "parchment");
   });
 
   function setProfile(p) {
     profile = p;
-    if (!atApi) return;
-    atApi.settings.display.staveProfile = PROFILE_MAP[p];
-    atApi.updateSettings();
-    atApi.render();
+    view?.setProfile(p);
   }
 
   function setSpeed(ev) {
     speed = Number(ev.target.value);
-    if (atApi) atApi.playbackSpeed = speed;
+    view?.setSpeed(speed);
   }
 
   function toggleLoop() {
     looping = !looping;
-    if (atApi) atApi.isLooping = looping;
+    view?.setLooping(looping);
     // the ladder advances on loop completions, so it cannot run unlooped
     if (!looping) ladder = false;
   }
 
   function toggleMetronome() {
     metronome = !metronome;
-    if (atApi) atApi.metronomeVolume = metronome ? 1 : 0;
+    view?.setMetronome(metronome);
   }
 
   function toggleCountIn() {
     countIn = !countIn;
-    if (atApi) atApi.countInVolume = countIn ? 1 : 0;
+    view?.setCountIn(countIn);
   }
 
   function clamp(n, lo, hi) {
@@ -179,10 +152,8 @@
     if (ladderTarget <= ladderStart) ladderTarget = Math.min(200, ladderStart + ladderStep);
     looping = true;
     speed = ladderStart / 100;
-    if (atApi) {
-      atApi.isLooping = true;
-      atApi.playbackSpeed = speed;
-    }
+    view?.setLooping(true);
+    view?.setSpeed(speed);
   }
 
   function setLadderStart(ev) {
@@ -205,10 +176,10 @@
     <!-- gig mode: hide the practice toolbar chrome, but playback and the way
     back out must stay reachable even with no keyboard (touch/tablet) -->
     <div class="gig-hud">
-      <button class="primary" disabled={!playerReady} onclick={() => atApi?.playPause()}>
+      <button class="primary" disabled={!playerReady} onclick={() => view?.playPause()}>
         {playing ? "❚❚ Pause" : "▶ Play"}
       </button>
-      <button disabled={!playerReady} onclick={() => atApi?.stop()}>■</button>
+      <button disabled={!playerReady} onclick={() => view?.stop()}>■</button>
       {#if practiceLabel}
         <button class="practice-indicator" onclick={onStopPractice} title="Stop practice timer">
           ● {practiceLabel}
@@ -219,15 +190,15 @@
   {:else}
     <div class="toolbar">
       <div class="seg">
-        {#each PROFILES as [value, label]}
+        {#each PROFILE_LABELS as [value, label]}
           <button class:on={profile === value} onclick={() => setProfile(value)}>{label}</button>
         {/each}
       </div>
       <div class="player">
-        <button class="primary" disabled={!playerReady} onclick={() => atApi?.playPause()}>
+        <button class="primary" disabled={!playerReady} onclick={() => view?.playPause()}>
           {playing ? "❚❚ Pause" : "▶ Play"}
         </button>
-        <button disabled={!playerReady} onclick={() => atApi?.stop()}>■</button>
+        <button disabled={!playerReady} onclick={() => view?.stop()}>■</button>
         <select value={speed} onchange={setSpeed} title="Playback speed">
           {#if !SPEEDS.includes(speed)}
             <!-- the ladder steps to speeds between the presets -->
@@ -258,6 +229,13 @@
           >
             Ladder
           </button>
+          <button
+            class:on={darkStaff}
+            onclick={() => (darkStaff = !darkStaff)}
+            title="Draw the staff dark for practising in the dark"
+          >
+            ◐
+          </button>
           {#if ladder}
             <div class="ladder-controls">
               <label>
@@ -285,7 +263,7 @@
   {/if}
 
   <div class="score-scroll" bind:this={scroller}>
-    <div class="at-host" bind:this={host}></div>
+    <div class="at-host" class:dark={darkStaff} bind:this={host}></div>
   </div>
 </div>
 
@@ -405,17 +383,50 @@
 
   .score-scroll {
     flex: 1;
-    overflow-y: auto;
+    /* horizontal layout is one endless system, so the stage has to scroll
+       sideways as well - page layout never overflows this way */
+    overflow: auto;
     padding: 20px;
   }
 
   .at-host {
-    background: var(--paper);
+    background: var(--score-surface);
     border-radius: 6px;
-    max-width: 1100px;
+    /* the staff's own width is what score-render.js picks a layout from, so
+       this cap is what decides where the desktop tier starts - keep it above
+       TABLET_MAX_WIDTH or that tier is unreachable */
+    max-width: 1400px;
     margin: 0 auto;
     padding: 24px;
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.55);
+  }
+
+  .at-host.dark {
+    background: var(--score-dark-surface);
+  }
+
+  /* The renderer creates its cursors and selection with position only and no
+     colour at all - they are invisible until styled here. */
+  .at-host :global(.at-cursor-bar) {
+    background: var(--score-accent);
+    opacity: 0.1;
+  }
+
+  .at-host :global(.at-cursor-beat) {
+    background: var(--score-accent);
+    width: 3px;
+    opacity: 0.85;
+  }
+
+  .at-host :global(.at-selection div) {
+    background: var(--score-accent);
+    opacity: 0.16;
+  }
+
+  .at-host.dark :global(.at-cursor-bar),
+  .at-host.dark :global(.at-cursor-beat),
+  .at-host.dark :global(.at-selection div) {
+    background: var(--score-dark-accent);
   }
 
   .error {

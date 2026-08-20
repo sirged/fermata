@@ -12,6 +12,25 @@
   --radius: 10px;
   --font-display: "Fraunces Variable", Georgia, serif;
   --font-ui: "Figtree Variable", "Segoe UI", sans-serif;
+
+  /* Staff palette. These are not only CSS: lib/score-render.js reads them and
+     hands them to the notation renderer as its own colour resources, so the
+     staff is themed here rather than left at the renderer's defaults. Values
+     must stay in a form the renderer's colour parser accepts - hex or
+     rgb()/rgba() - because anything else it silently ignores. */
+  --score-surface: #f7f2e6;
+  --score-ink: #241d0f;
+  --score-ink-soft: #6f6045;
+  --score-line: #b3a284;
+  --score-accent: #8a6a24;
+
+  /* The same staff for practising in the dark. Drawn dark rather than
+     inverted, which is what the PDF reader has to do with a fixed page. */
+  --score-dark-surface: #191510;
+  --score-dark-ink: #ece2cd;
+  --score-dark-ink-soft: #94866a;
+  --score-dark-line: #4d4331;
+  --score-dark-accent: #c9a45c;
 }
 
 * {
