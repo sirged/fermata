@@ -18,18 +18,33 @@ const STAVE_PROFILE = {
   scoretab: alphaTab.StaveProfile.ScoreTab,
 };
 
-// A profile only draws a staff if the renderer has some glyph type to draw it
-// with - standard notation for "score", a strung tuning for "tab", either (or
-// slash/numbered notation) for "scoretab". This mirrors the checks the
-// renderer's own bar-renderer factories make (ScoreBarRendererFactory,
-// TabBarRendererFactory, ...): when every staff of every rendered track fails
-// a profile's check, the renderer builds a staff system with no staves in it
-// at all, and StaffSystem.addBars crashes dereferencing the group that was
-// never created - that crash is what sends a MusicXML file with pitches but
-// no fret/string data into a broken view the moment "Tab" is chosen. Asking
-// first, here, is what lets a caller offer only profiles that will not do
-// that.
-function staffDrawableUnder(staff, profileKey) {
+// A profile only draws a (track, staff) pair if the renderer has a bar
+// renderer willing to take it - standard notation for "score", a strung
+// tuning for "tab", any glyph type at all for "scoretab". When every pair in
+// the rendered set fails a profile's check, the renderer builds a staff
+// system with no staves in it at all, and StaffSystem.addBars crashes
+// dereferencing the group that was never created - that crash is what sends
+// a MusicXML file with pitches but no fret/string data into a broken view the
+// moment "Tab" is chosen. Asking first, here, is what lets a caller offer
+// only profiles that will not do that.
+//
+// This mirrors PageViewLayout.createEmptyStaffSystem's own test -
+// `this.profile.has(factory.staffId) && factory.canCreate(track, staff)` -
+// against Environment.staveProfiles / Environment.defaultRenderers, the
+// renderer's own lookup and factory list. Both are plain public static class
+// fields (`/** @internal */` only in the source, which is why they are
+// missing from the shipped .d.ts and easy to miss), so calling the real
+// canCreate() is possible and is what canDrawStaff below does - a
+// reimplementation of the rules can only ever be *consistent with* the
+// library, never *be* it, and would silently answer wrong the day a rule
+// changes underneath it. It also picks up canCreate's other terms for free,
+// e.g. TabBarRendererFactory's hideOnPercussionTrack, without this file
+// having to know they exist.
+//
+// mirroredCanDraw is the fallback for when that internal shape moves or is
+// renamed - see environmentCanDraw below - kept as a hand-written second
+// opinion rather than deleted once the delegation was written.
+function mirroredCanDraw(_track, staff, profileKey) {
   const hasTab = staff.showTablature && staff.tuning.length > 0;
   switch (profileKey) {
     case "score":
@@ -44,19 +59,78 @@ function staffDrawableUnder(staff, profileKey) {
 }
 
 /**
+ * The real canDrawStaff(track, staff, profileKey), built from the renderer's
+ * own internals - or null if they are not shaped the way this expects, so the
+ * caller can fall back rather than trust a wrong answer. Checked once, at
+ * module load: Environment's static fields are initialised when the class is
+ * defined, which has already happened by the time this module's top-level
+ * code runs the import above.
+ */
+function environmentCanDraw() {
+  const env = alphaTab.Environment;
+  const staveProfiles = env?.staveProfiles;
+  const renderers = env?.defaultRenderers;
+  const expectedStaveProfiles = [STAVE_PROFILE.score, STAVE_PROFILE.tab, STAVE_PROFILE.scoretab];
+  if (
+    !(staveProfiles instanceof Map) ||
+    !expectedStaveProfiles.every((k) => staveProfiles.get(k) instanceof Set) ||
+    !Array.isArray(renderers) ||
+    renderers.length === 0 ||
+    !renderers.every((f) => typeof f?.staffId === "string" && typeof f?.canCreate === "function")
+  ) {
+    return null;
+  }
+  return (track, staff, profileKey) => {
+    // Map.get returns undefined for a key that was never registered - only
+    // reachable here if profileKey is not one of SCORE_PROFILES.
+    const staffIds = staveProfiles.get(STAVE_PROFILE[profileKey]);
+    if (!staffIds) return false;
+    return renderers.some((f) => staffIds.has(f.staffId) && f.canCreate(track, staff));
+  };
+}
+
+const canDrawStaff = environmentCanDraw();
+if (!canDrawStaff) {
+  console.warn(
+    "score-render: alphaTab's Environment.staveProfiles/defaultRenderers are not shaped as " +
+      "expected (an internal API this file depends on has likely moved or been renamed) - " +
+      "falling back to a hand-mirrored profile-support check, which can silently drift from " +
+      "the renderer's own rules after an upgrade. Update environmentCanDraw() in score-render.js.",
+  );
+}
+const canDraw = canDrawStaff ?? mirroredCanDraw;
+
+/**
  * Which of SCORE_PROFILES the given tracks can actually be drawn with, in
- * SCORE_PROFILES order. `tracks` is empty before anything has loaded, in
- * which case every profile is offered rather than none.
+ * SCORE_PROFILES order. Can legitimately be empty: a MusicXML part carrying a
+ * percussion clef together with `<staff-details><staff-tuning>` imports as
+ * showStandardNotation=false, showTablature=false (Staff.finish clears tuning
+ * and tablature for a percussion staff) and showSlash=showNumbered=false too
+ * - nothing this file, or the renderer, can draw that with. An earlier
+ * version of this function answered a wholly-unsupported score with "offer
+ * everything instead of nothing", which only moved this exact crash from a
+ * click to page load: the default profile would pass the (now permissive)
+ * support check, the renderer would still find zero drawable staves on its
+ * first render, and StaffSystem.addBars would still throw. There is no
+ * profile a caller can pick that fixes a score with nothing to draw - the
+ * caller has to be told that plainly instead (see UNRENDERABLE_MESSAGE and
+ * its use in createScoreView below), not handed a full-but-lying menu.
+ *
+ * The crash this exists to prevent only happens when *every* (track, staff)
+ * pair in the rendered set fails a profile's check - the renderer loops over
+ * all of them building one staff system - so a profile is supported the
+ * moment any single pair can draw it: this ORs canDraw across every pair, it
+ * does not decide from one staff. A two-track score where only the second
+ * track has tablature still has to offer "tab" - see multi-staff.musicxml in
+ * web/test-fixtures for a fixture that reaches this specifically.
  */
 export function supportedProfiles(tracks) {
-  const staves = (tracks ?? []).flatMap((t) => t.staves ?? []);
-  if (!staves.length) return SCORE_PROFILES;
-  const supported = SCORE_PROFILES.filter((p) => staves.some((s) => staffDrawableUnder(s, p)));
-  // Every profile failing would mean the renderer itself has nothing to draw
-  // this score with at all - not something restricting the choice can fix, so
-  // fall back to offering everything rather than leaving the switcher empty.
-  return supported.length ? supported : SCORE_PROFILES;
+  const pairs = (tracks ?? []).flatMap((t) => (t.staves ?? []).map((s) => [t, s]));
+  return SCORE_PROFILES.filter((p) => pairs.some(([t, s]) => canDraw(t, s, p)));
 }
+
+/** Shown in place of the staff view when supportedProfiles() comes back empty. */
+export const UNRENDERABLE_MESSAGE = "This score has no notation or tablature the staff view can draw.";
 
 // ---------------------------------------------------------------- layout
 
@@ -333,9 +407,16 @@ const RENDER_IN_WORKER = false;
  * @param opts.onError      (message) load or render failed
  * @param opts.onPassComplete  one pass finished (drives the tempo ladder)
  * @param opts.onLayout     (layout) the chosen layout changed
- * @param opts.onProfiles   (profiles, active) the profiles this score supports
- *                          changed - fires once a score has loaded, `active`
- *                          is the current profile after any fallback below
+ * @param opts.onProfiles   (profiles, unrenderable) the profiles this score
+ *                          supports changed - fires once a score has loaded.
+ *                          `profiles` can be empty; `unrenderable` is true in
+ *                          exactly that case, when nothing about this score
+ *                          can be drawn under any profile
+ * @param opts.onProfileApplied  (profile) a render has actually finished
+ *                          successfully with this profile showing - the
+ *                          signal a caller should wait for before treating a
+ *                          profile switch as having taken effect, rather than
+ *                          assuming success the moment it is requested
  */
 export function createScoreView(host, opts = {}) {
   const {
@@ -351,13 +432,26 @@ export function createScoreView(host, opts = {}) {
     onPassComplete = () => {},
     onLayout = () => {},
     onProfiles = () => {},
+    onProfileApplied = () => {},
   } = opts;
 
   let profile = SCORE_PROFILES.includes(initialProfile) ? initialProfile : "scoretab";
-  // Nothing has loaded yet, so nothing is ruled out - narrowed once
-  // scoreLoaded fires below, with SCORE_PROFILES itself as the safe fallback
-  // if a score turns out to support none of them (see supportedProfiles).
-  let scoreProfiles = SCORE_PROFILES;
+  // null until scoreLoaded fires below: nothing is known to be supported yet,
+  // which is not the same thing as everything being supported. A caller
+  // (TabViewer) reads null as "do not offer any profile button yet" rather
+  // than showing every button and having to walk one back once the real
+  // answer arrives - see the note on the "score" prop / async fetch path in
+  // web/test-fixtures/tab-profile-selection.md for the bug that came from
+  // treating "not yet known" as "everything works" here.
+  let scoreProfiles = null;
+  // Set once scoreLoaded finds a score with nothing to draw under any
+  // profile - see UNRENDERABLE_MESSAGE. The renderer's own automatic first
+  // render cannot be cancelled from this handler (AlphaTabApi calls it
+  // unconditionally right after scoreLoaded's listeners return), so it still
+  // runs and still throws inside addBars exactly as it always has - this
+  // flag is what lets the api.error handler below recognise that specific,
+  // predicted failure and swallow it instead of surfacing a TypeError.
+  let unrenderable = false;
   let preset = LAYOUT_PRESETS.includes(initialPreset) ? initialPreset : "desk";
   let theme = readScoreTheme(initialTheme);
   const fonts = fontsFor(document.documentElement);
@@ -379,6 +473,19 @@ export function createScoreView(host, opts = {}) {
   let renderStartedAt = 0;
   let lastRenderMs = null;
   let renderCount = 0;
+  // Set on renderStarted, cleared on postRenderFinished - a render that
+  // throws (see the error handler below) leaves this true, because
+  // ScoreRenderer.renderScore's try/catch means postRenderFinished never
+  // fires for a render that failed partway through. That makes this a
+  // complete failed-render detector: "a render started and none finished
+  // since" is exactly "the last render attempt failed", without needing to
+  // know why.
+  let renderInFlight = false;
+  // Whether the most recently *attempted* render actually finished. Kept
+  // distinct from renderCount/lastRenderMs, which only ever advance on
+  // success and would otherwise go stale and misleadingly report the
+  // previous successful render's numbers after a failed one.
+  let renderOk = true;
   // a queued resize render must not touch a torn-down renderer
   let destroyed = false;
 
@@ -421,7 +528,14 @@ export function createScoreView(host, opts = {}) {
     host.dataset.scorePreset = preset;
     host.dataset.scoreTheme = theme.name;
     host.dataset.scoreProfile = profile;
-    host.dataset.scoreProfiles = scoreProfiles.join(",");
+    // "" (not omitted) once scoreLoaded has run and found nothing to offer -
+    // distinct from the attribute being altogether absent, which means no
+    // score has loaded yet at all.
+    if (scoreProfiles != null) host.dataset.scoreProfiles = scoreProfiles.join(",");
+    // Read this before trusting scoreRenderMs/scoreRenders: those only ever
+    // advance on a successful render (see renderOk above), so after a failed
+    // one they still hold the previous successful render's numbers.
+    host.dataset.scoreRenderOk = String(renderOk);
     if (lastRenderMs != null) {
       host.dataset.scoreRenderMs = lastRenderMs.toFixed(1);
       host.dataset.scoreRenders = String(renderCount);
@@ -487,38 +601,68 @@ export function createScoreView(host, opts = {}) {
   // before the first layout pass, which is when the annotation is drawn.
   api.renderStarted.on(() => {
     renderStartedAt = performance.now();
+    renderInFlight = true;
     applyBrandingOverride(api);
   });
   api.postRenderFinished.on(() => {
+    renderInFlight = false;
+    renderOk = true;
     lastRenderMs = performance.now() - renderStartedAt;
     renderCount += 1;
     publish();
     growPaperToDrawing();
+    // The profile that just actually finished drawing - not the profile a
+    // caller most recently asked for, which may not be the same thing if a
+    // render is still in flight or the previous one failed. See onProfileApplied.
+    onProfileApplied(profile);
   });
 
   // A profile carried over from a previous score, or the "scoretab" default,
   // can be one this score has nothing to draw for a staff under - offering
   // "Tab" for a MusicXML file with pitches but no fret/string data is exactly
   // that, and the renderer's own answer to being asked for it anyway is to
-  // throw out of addBars (see staffDrawableUnder above) rather than draw an
-  // empty staff. Correcting the setting here, in the scoreLoaded handler,
-  // runs before the load's own first render: AlphaTabApi triggers scoreLoaded
+  // throw out of addBars (see canDraw above) rather than draw an empty
+  // staff. Correcting the setting here, in the scoreLoaded handler, runs
+  // before the load's own first render: AlphaTabApi triggers scoreLoaded
   // synchronously and only calls render() once every listener has returned,
   // so this is not a race against it.
   api.scoreLoaded.on((loadedScore) => {
     scoreProfiles = supportedProfiles(api.tracks?.length ? api.tracks : loadedScore.tracks);
-    if (!scoreProfiles.includes(profile)) {
+    unrenderable = scoreProfiles.length === 0;
+    if (!unrenderable && !scoreProfiles.includes(profile)) {
       profile = scoreProfiles[0];
       api.settings.display.staveProfile = STAVE_PROFILE[profile];
       api.updateSettings();
     }
     publish();
-    onProfiles(scoreProfiles, profile);
+    onProfiles(scoreProfiles, unrenderable);
   });
 
   api.playerReady.on(() => onReady());
   api.playerStateChanged.on((e) => onPlaying(e.state === 1));
-  api.error.on((e) => onError(e?.message ?? "failed to load score"));
+  api.error.on((e) => {
+    // renderStarted fired with no matching postRenderFinished since: this
+    // error came from the render throwing partway through, not from a load,
+    // soundfont, or MIDI failure - those never leave a render in flight.
+    const failedRender = renderInFlight;
+    if (failedRender) {
+      renderInFlight = false;
+      renderOk = false;
+      publish();
+    }
+    if (unrenderable && failedRender) {
+      // The exact, predicted failure UNRENDERABLE_MESSAGE exists for: every
+      // (track, staff) pair failed every profile's check, so this render was
+      // never going to succeed no matter which profile was set, and the
+      // caller has already been told so via onProfiles(profiles, true).
+      // Surfacing the renderer's own TypeError here on top of that would put
+      // a developer's stack trace in front of a guitarist for a condition
+      // that isn't actually broken - it's a score with nothing to stage.
+      console.debug("score-render: suppressed the predicted render failure for an unrenderable score.", e);
+      return;
+    }
+    onError(e?.message ?? "failed to load score");
+  });
   // Fires at the end of each loop pass, not only the final stop, which is
   // what makes it usable as "one clean pass done".
   api.playerFinished.on(() => onPassComplete());
@@ -545,6 +689,18 @@ export function createScoreView(host, opts = {}) {
   // Watching the stage rather than listening for the renderer's own resize
   // event, because the event reports the host's width - which in horizontal
   // layout is the score's width, not the screen's.
+  //
+  // The renderer registers its own ResizeObserver on the container, unasked
+  // and unconditionally, in the AlphaTabApi constructor - there is no setting
+  // to turn it off in 1.8.4, its unsubscribe closure is discarded, and the
+  // container class isn't exported, so this file cannot reach in and remove
+  // it. It is throttled at a hardcoded 10ms and its handler no-ops once
+  // `container.width === renderer.width`, which is what keeps the two
+  // observers from fighting each other once a render settles - reapply()
+  // below writes `api.renderer.width` before rendering specifically to reach
+  // that quiescent state. This is the fact whose absence caused the original
+  // resize oscillation bug here; if this observer's logic changes, re-check
+  // against the library's handler, not just against itself.
   let resizePending = false;
   const observer = new ResizeObserver(() => {
     const next = layoutForWidth(stageWidth(), preset);
@@ -564,6 +720,12 @@ export function createScoreView(host, opts = {}) {
   if (scroller ?? host) observer.observe(scroller ?? host);
 
   function reapply() {
+    // A resize, theme or preset change still fires while an unrenderable
+    // score is on screen, and unlike the load's own first render, this call
+    // is entirely ours to skip - re-attempting a render already known to
+    // find zero drawable staves would just repeat the same suppressed
+    // failure on every window resize for no benefit.
+    if (unrenderable) return;
     // before anything measures it: the host carries the previous layout's
     // width when that layout was horizontal
     resetSurfaceFit();
@@ -609,9 +771,14 @@ export function createScoreView(host, opts = {}) {
     get profile() {
       return profile;
     },
-    /** Which of SCORE_PROFILES the loaded score can actually be drawn with. */
+    /**
+     * Which of SCORE_PROFILES the loaded score can actually be drawn with -
+     * null before a score has loaded, possibly empty once one has (see
+     * supportedProfiles). A copy, not the live array, so a caller cannot
+     * accidentally mutate this instance's notion of what is supported.
+     */
     get supportedProfiles() {
-      return scoreProfiles;
+      return scoreProfiles ? [...scoreProfiles] : scoreProfiles;
     },
     get preset() {
       return preset;
@@ -622,7 +789,7 @@ export function createScoreView(host, opts = {}) {
     },
 
     setProfile(next) {
-      if (!scoreProfiles.includes(next) || next === profile) return;
+      if (!scoreProfiles?.includes(next) || next === profile) return;
       profile = next;
       reapply();
     },
