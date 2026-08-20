@@ -70,6 +70,10 @@ docker compose up --build -d
 Open http://localhost:8080 — your library is scanned automatically on startup,
 or hit **Scan library** in the sidebar.
 
+See [the deployment guide](docs/deployment.md) for backups, upgrading, and
+current limitations — read that before deciding whether this belongs on your
+home network.
+
 ### Volumes
 
 | Mount           | Purpose                                        |
