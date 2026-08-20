@@ -132,12 +132,31 @@
   );
 
   const BAR_RE = /^(\d+) of (\d+) bar\(s\) hold (?:more|less) than (?:its|their) time signature allows/i;
-  // Bars holding too much and bars holding too little both count as "don't
-  // add up" for the headline; a bar wrong in both directions at once would
-  // be counted twice here (the backend's own comments flag this as the rare
-  // edge case) - the exact per-direction figures are still in the detail
-  // list below.
+  // Preferred source: confidence.confidence.bars_defective / bars_measured,
+  // the same counts ExtractionResult already carries as data (see
+  // tabextract.py) - read directly rather than reconstructed, once the
+  // backend persists them there. Only trusted when bars_measured is present
+  // as a number at all (including 0, meaning "no bars measured" - a real
+  // answer, not a missing one).
   let barSummary = $derived.by(() => {
+    const structured = confidenceBlob?.confidence;
+    if (structured && typeof structured.bars_measured === "number") {
+      return structured.bars_measured
+        ? { defective: structured.bars_defective ?? 0, total: structured.bars_measured }
+        : null;
+    }
+    // Fallback for a backend that hasn't started persisting bars_defective /
+    // bars_measured yet: parse the same counts out of the warning prose
+    // instead. This is inherently fragile - it breaks silently (the headline
+    // count just disappears) the moment that wording changes, which it has
+    // already done twice in this project - so drop this branch once the
+    // structured field above is always present.
+    //
+    // Bars holding too much and bars holding too little both count as
+    // "don't add up" for the headline; a bar wrong in both directions at
+    // once would be counted twice here (the backend's own comments flag
+    // this as the rare edge case) - the exact per-direction figures are
+    // still in the detail list below.
     let defective = 0;
     let total = 0;
     for (const w of scopedWarnings) {
