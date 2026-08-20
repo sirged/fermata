@@ -392,9 +392,9 @@
   .at-host {
     background: var(--score-surface);
     border-radius: 6px;
-    /* the staff's own width is what score-render.js picks a layout from, so
-       this cap is what decides where the desktop tier starts - keep it above
-       TABLET_MAX_WIDTH or that tier is unreachable */
+    /* a reading measure for page layout. score-render.js overrides it for
+       horizontal layout, where the paper has to run the whole length of the
+       score rather than stop at a comfortable column width. */
     max-width: 1400px;
     margin: 0 auto;
     padding: 24px;
@@ -412,9 +412,11 @@
     opacity: 0.1;
   }
 
+  /* width is the renderer's: it writes an inline width with a matching scale
+     transform, and overriding one without the other would scale our value
+     down to nothing */
   .at-host :global(.at-cursor-beat) {
     background: var(--score-accent);
-    width: 3px;
     opacity: 0.85;
   }
 

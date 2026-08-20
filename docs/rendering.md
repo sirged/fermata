@@ -105,11 +105,40 @@ layout all flow through it. The view it returns exposes `setProfile`,
 ### Responsive layout
 
 The layer picks `layoutMode`, `barsPerRow` and `scale` from the width of the
-**score container** — not the window, because a side-by-side PDF comparison
+**scrolling stage** — not the window, because a side-by-side PDF comparison
 hands the staff half a desktop and half a desktop should lay out like the tablet
 it is that wide. Breakpoints are `PHONE_MAX_WIDTH` (620) and `TABLET_MAX_WIDTH`
-(1100), and the choice is re-applied from the renderer's own `resize` event, in
-the handler, so a viewport change costs one render rather than two.
+(1100).
+
+Two details of this are load-bearing and were both got wrong first time round.
+
+**The width comes from the stage, never from the host.** The host is also the
+renderer's own container, and in horizontal layout it grows to fit the score
+(see the quirks below) — so measuring it would feed the layout's output back
+into its input: a wide score reads as a wide screen, flips to the desktop tier,
+shrinks, reads as narrow, and oscillates. A `ResizeObserver` on the stage, whose
+width never depends on the layout chosen, is what drives the decision.
+
+**A tier change is a full render of the layer's own.** The renderer's answer to
+a width change is resize-*optimised* rather than a re-layout, and it is not
+enough:
+
+- it rebuilds the layout only when `layoutMode` itself changed;
+- otherwise it asks the layout to resize, and `HorizontalScreenLayout` declines
+  — `supportsResize` is `false` and `doResize()` is empty — so **nothing is
+  drawn at all**. Crossing 620px in the `stand` preset is horizontal to
+  horizontal with only a scale change, which is exactly this case;
+- and the vertical layouts regroup systems only when `barsPerRow` is auto.
+  `_resizeAndRenderScore` tests `getBarsPerSystem(0) > 0` against the *new*
+  value and, when set, keeps the grouping it already has and merely refits
+  widths — so phone (1 bar) to tablet (2 bars) would stay one stretched bar per
+  row.
+
+Relying on that path meant the layer could announce a new scale it had not
+drawn. It now renders the tier change itself, from a microtask so the renderer's
+new width is already assigned, and before the next paint so no intermediate
+state is visible. On a 360-bar score that render is 29–61 ms; on a normal one it
+is 1–4 ms.
 
 There are two presets, because the same width wants different answers depending
 on where the screen is:
@@ -145,10 +174,14 @@ Two themes: `parchment` (warm paper, dark ink) and `slate` (a dark staff for
 practising in the dark). The PDF reader has to invert a fixed page; a rendered
 staff can simply be drawn dark, which is what `slate` does.
 
-Values must stay in a form the renderer's colour parser accepts — hex, `rgb()`
-or `rgba()`. It answers `null` for anything else rather than raising, and a null
-colour draws as nothing at all, so the layer validates each token and falls back
-to a built-in default.
+Values must stay in a form the renderer's colour parser accepts: hex, or the
+**comma-separated** `rgb()`/`rgba()` form. It splits the function body on
+commas, so the modern space-separated syntax — `rgb(36 29 15)` — is not one of
+them; it parses to `null`, and a null colour draws as nothing at all. Some
+malformed input makes it throw instead. So the layer does not try to recognise
+the syntax itself: it hands each token to the parser, catches both answers, and
+falls back to a built-in default for anything the parser will not take. A
+mistyped token gives a readable staff, not an invisible one.
 
 **Exactly what the renderer exposes** — this is the whole surface:
 
@@ -181,6 +214,29 @@ to a built-in default.
   styled at all.
 - One hardcoded exception found in the source: a tab bend spanning more than one
   note is forced to the secondary colour regardless of voice.
+
+### Horizontal layout, and where the paper ends
+
+Two things the layer has to correct in horizontal layout, both of which are
+invisible in page layout and so easy to ship broken:
+
+- The renderer draws the whole score as one system, far wider than any sensible
+  card. Left alone, the staff scrolls off the paper onto the page background —
+  and with the parchment theme that is dark ink on a dark page, effectively
+  invisible. `slate` hides the problem, because its surface is close to the page
+  colour.
+- The renderer sizes its drawing surface from the total width it *reports*, but
+  draws partials wider than that and clips the excess with `overflow: hidden`.
+  On a real transcription that hid 53 of 316 glyphs — the last bar and the final
+  barline — with no scroll position that could reach them.
+
+So after a horizontal render the layer measures what was actually drawn and sets
+the host's width and the surface's overflow to match. Because the host is also
+the renderer's container, that width is cleared again before any render, or the
+renderer would measure the last score's width instead of the screen's. Partials
+arrive after the render reports itself finished — and more of them arrive as the
+score is scrolled — so the measurement follows a `MutationObserver` on the host
+rather than the render event.
 
 ### The branding override
 
@@ -223,13 +279,16 @@ scores, same machine:
 | --- | --- | --- |
 | First paint, navigation to first staff on screen | 267–403 ms | 504–621 ms |
 | First render, as the library reports it | 6.9–16 ms | 7.9–13.5 ms |
-| Re-render, library work | 0.3–1.6 ms | 0.2–0.6 ms |
-| Re-render, to pixels | 16–35 ms | 17–36 ms |
+| Profile switch, library work | 0.5–1.0 ms | 0.2–0.6 ms |
+| Profile switch, to pixels | 16–35 ms | 17–36 ms |
 
-The worker costs 130–260 ms of startup and buys nothing measurable back: layout
-of a 27 KB transcription is 12 ms, so it never gets close to a frame budget. On
-a much longer score main-thread layout would block briefly on load, and that is
-the trade this constant represents — one line to change if it ever bites.
+The worker costs 130–260 ms of startup and buys nothing measurable back. The
+cost it is meant to avoid is a main-thread stall on a long score, so that was
+measured too: a **360-bar** score renders in 69 ms of library work and 103 ms
+wall to first paint, a tier change re-renders in 29–61 ms, and the longest
+main-thread task across the whole run is **102 ms**, with none over 250 ms —
+because the renderer chunks the work into partials and only draws the ones on
+screen. That is the trade this one constant represents, if it ever bites.
 
 ## Keeping it replaceable
 

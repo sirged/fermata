@@ -66,7 +66,7 @@ const LAYOUT_MODE = {
  */
 export function layoutForWidth(width, preset = "desk") {
   const rows = LAYOUT_TABLE[preset] ?? LAYOUT_TABLE.desk;
-  // width 0 happens once at construction, before the host is measured
+  // width 0 happens once at construction, before the stage is measured
   const w = Number.isFinite(width) && width > 0 ? width : TABLET_MAX_WIDTH;
   return rows.find((r) => w <= r.maxWidth) ?? rows[rows.length - 1];
 }
@@ -99,11 +99,6 @@ const THEME_TOKENS = {
   },
 };
 
-// The renderer's colour parser answers null for anything it does not
-// recognise - not an error - and a null colour draws as nothing at all. So a
-// token is only used if it is a form the parser accepts.
-const COLOR_RE = /^(#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|rgba?\([^)]*\))$/i;
-
 function cssValue(root, token) {
   try {
     return getComputedStyle(root).getPropertyValue(token).trim();
@@ -112,13 +107,38 @@ function cssValue(root, token) {
   }
 }
 
-/** Resolve a theme's tokens against the live stylesheet. */
+/**
+ * Ask the renderer's own parser whether it can read this value, because
+ * guessing at the syntax it accepts gets it wrong: it splits an `rgb()` body on
+ * commas, so the modern space-separated form (`rgb(36 29 15)`) parses to null
+ * rather than raising, and a null colour draws as nothing at all. It also
+ * throws outright on some malformed input. Anything it will not take is a
+ * token we must not use.
+ */
+function parseColor(value) {
+  if (!value) return null;
+  try {
+    return alphaTab.model.Color.fromJson(value) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve a theme's tokens against the live stylesheet. Each token is kept only
+ * if the renderer can parse it; otherwise the built-in fallback is used, so a
+ * mistyped token degrades to a readable staff rather than an invisible one.
+ */
 export function readScoreTheme(name = SCORE_THEMES[0], root = document.documentElement) {
-  const tokens = THEME_TOKENS[name] ?? THEME_TOKENS[SCORE_THEMES[0]];
-  const theme = { name: THEME_TOKENS[name] ? name : SCORE_THEMES[0] };
-  for (const [key, [token, fallback]] of Object.entries(tokens)) {
+  // includes(), not a property lookup: "constructor" and "toString" are
+  // truthy on any object and would yield a theme with no colours in it.
+  const resolved = SCORE_THEMES.includes(name) ? name : SCORE_THEMES[0];
+  const theme = { name: resolved, colors: {} };
+  for (const [key, [token, fallback]] of Object.entries(THEME_TOKENS[resolved])) {
     const value = cssValue(root, token);
-    theme[key] = COLOR_RE.test(value) ? value : fallback;
+    const parsed = parseColor(value);
+    theme[key] = parsed ? value : fallback;
+    theme.colors[key] = parsed ?? parseColor(fallback);
   }
   return theme;
 }
@@ -155,20 +175,20 @@ function fontsFor(root) {
 // The renderer's colour resources have to hold its own Color objects. A hex
 // string is only accepted when the whole settings tree is handed over as JSON
 // at construction; assigning one onto a live resource leaves the renderer with
-// a string where it expects a colour, and it draws nothing. So colours are
-// converted once, here, and the same objects are used on every path.
+// a string where it expects a colour, and it draws nothing. readScoreTheme
+// parsed them once, so this only names them.
 function themeColors(theme) {
-  const { Color } = alphaTab.model;
+  const c = theme.colors;
   return {
-    mainGlyphColor: Color.fromJson(theme.ink),
-    // Voice 2 and up, and whatever else the renderer treats as secondary.
-    // Not a note-head or stem colour - there is no such resource; every glyph
+    mainGlyphColor: c.ink,
+    // Voice 2 and up, and whatever else the renderer treats as secondary. Not
+    // a note-head or stem colour - there is no such resource; every glyph
     // follows main or secondary according to the voice it belongs to.
-    secondaryGlyphColor: Color.fromJson(theme.inkSoft),
-    staffLineColor: Color.fromJson(theme.line),
-    barSeparatorColor: Color.fromJson(theme.inkSoft),
-    barNumberColor: Color.fromJson(theme.accent),
-    scoreInfoColor: Color.fromJson(theme.ink),
+    secondaryGlyphColor: c.inkSoft,
+    staffLineColor: c.line,
+    barSeparatorColor: c.inkSoft,
+    barNumberColor: c.accent,
+    scoreInfoColor: c.ink,
   };
 }
 
@@ -277,10 +297,26 @@ export function createScoreView(host, opts = {}) {
   let preset = LAYOUT_PRESETS.includes(initialPreset) ? initialPreset : "desk";
   let theme = readScoreTheme(initialTheme);
   const fonts = fontsFor(document.documentElement);
-  let layout = layoutForWidth(host?.clientWidth ?? 0, preset);
+
+  // The width to choose a layout from is the space the score has to fill - the
+  // scrolling stage - and never the host's own width. In horizontal layout the
+  // host grows to fit the score it is given, so measuring it would feed the
+  // layout's own output back into its input: a wide score would read as a wide
+  // screen, flip to the desktop tier, shrink, read as narrow, and oscillate.
+  function stageWidth() {
+    const el = scroller ?? host;
+    if (!el) return 0;
+    const style = getComputedStyle(el);
+    const padding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+    return el.clientWidth - (Number.isFinite(padding) ? padding : 0);
+  }
+
+  let layout = layoutForWidth(stageWidth(), preset);
   let renderStartedAt = 0;
   let lastRenderMs = null;
   let renderCount = 0;
+  // a queued resize render must not touch a torn-down renderer
+  let destroyed = false;
 
   const api = new alphaTab.AlphaTabApi(host, {
     // worker/audio-worklet URLs are wired up by the @coderline/alphatab-vite
@@ -326,6 +362,57 @@ export function createScoreView(host, opts = {}) {
       host.dataset.scoreRenders = String(renderCount);
     }
   }
+  // Horizontal layout sizes its drawing surface from the total width the
+  // renderer reports, but draws partials wider than that and clips the excess
+  // with overflow:hidden - on a real transcription that hid 53 of 316 glyphs,
+  // the last bar, with nothing able to scroll to them. So after a horizontal
+  // render the paper is grown to cover what was actually drawn.
+  //
+  // The host is also the renderer's own container, so it must be back to its
+  // natural width before any render or the renderer would measure the last
+  // score's width instead of the screen's. Hence two functions, and the reset
+  // runs first.
+  function resetSurfaceFit() {
+    if (!host) return;
+    const surface = host.querySelector(".at-surface");
+    if (surface) surface.style.overflow = "";
+    host.style.width = "";
+    host.style.maxWidth = "";
+  }
+
+  function growPaperToDrawing() {
+    if (!host || layout.mode !== "horizontal") return;
+    const drawn = [...host.querySelectorAll("svg")].reduce((w, s) => Math.max(w, s.getBoundingClientRect().width), 0);
+    if (!drawn) return;
+    const surface = host.querySelector(".at-surface");
+    if (surface) surface.style.overflow = "visible";
+    const style = getComputedStyle(host);
+    const padding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+    // never narrower than the stage, or a short score would stop mid-screen
+    const width = `${Math.max(Math.ceil(drawn + (Number.isFinite(padding) ? padding : 0)), stageWidth())}px`;
+    if (host.style.width === width) return;
+    // an explicit width, not max-content: the surface clips its own overflow,
+    // so content-based sizing would measure the same short width that hid the
+    // last bar. The stylesheet's reading-measure cap has to give way here.
+    host.style.maxWidth = "none";
+    host.style.width = width;
+  }
+
+  // Partials reach the DOM after the render reports itself finished, and in
+  // horizontal layout more of them arrive as the score is scrolled, so the
+  // measurement above has to follow the partials rather than the render.
+  // childList only: our own style writes must not retrigger it.
+  let fitQueued = false;
+  const partialWatcher = new MutationObserver(() => {
+    if (fitQueued || layout.mode !== "horizontal") return;
+    fitQueued = true;
+    requestAnimationFrame(() => {
+      fitQueued = false;
+      if (!destroyed) growPaperToDrawing();
+    });
+  });
+  if (host) partialWatcher.observe(host, { childList: true, subtree: true });
+
   publish();
   onLayout(layout);
 
@@ -341,6 +428,7 @@ export function createScoreView(host, opts = {}) {
     lastRenderMs = performance.now() - renderStartedAt;
     renderCount += 1;
     publish();
+    growPaperToDrawing();
   });
 
   api.playerReady.on(() => onReady());
@@ -357,24 +445,46 @@ export function createScoreView(host, opts = {}) {
   if (transport.metronome != null) api.metronomeVolume = transport.metronome ? 1 : 0;
   if (transport.countIn != null) api.countInVolume = transport.countIn ? 1 : 0;
 
-  // The renderer raises this before it re-renders, and settings changed in
-  // the handler are the ones it uses - so this is where a viewport change
-  // becomes a layout change, with no extra render of our own.
-  api.resize.on((e) => {
-    const next = layoutForWidth(e.newWidth, preset);
+  // A tier change is applied as a full render of our own, because the
+  // renderer's own answer to a width change is resize-*optimised* rather than
+  // a re-layout:
+  //
+  //  - it only rebuilds the layout when layoutMode itself changed;
+  //  - otherwise it asks the layout to resize, and horizontal layout declines
+  //    (supportsResize is false, doResize is empty) so nothing is drawn at all;
+  //  - and the vertical layouts only regroup systems when barsPerRow is auto.
+  //    With an explicit barsPerRow they keep the grouping they already have and
+  //    merely refit widths, so phone (1 bar) -> tablet (2 bars) would stay one
+  //    stretched bar per row.
+  //
+  // Watching the stage rather than listening for the renderer's own resize
+  // event, because the event reports the host's width - which in horizontal
+  // layout is the score's width, not the screen's.
+  let resizePending = false;
+  const observer = new ResizeObserver(() => {
+    const next = layoutForWidth(stageWidth(), preset);
     if (next === layout) return;
     layout = next;
-    const display = e.settings?.display;
-    if (display) {
-      display.layoutMode = LAYOUT_MODE[layout.mode];
-      display.barsPerRow = layout.barsPerRow;
-      display.scale = layout.scale;
-    }
-    publish();
-    onLayout(layout);
+    if (resizePending) return;
+    resizePending = true;
+    // out of the observer callback: rendering inside it would measure and
+    // mutate layout in the same frame the browser is still resolving
+    queueMicrotask(() => {
+      resizePending = false;
+      if (destroyed) return;
+      reapply();
+      onLayout(layout);
+    });
   });
+  if (scroller ?? host) observer.observe(scroller ?? host);
 
   function reapply() {
+    // before anything measures it: the host carries the previous layout's
+    // width when that layout was horizontal
+    resetSurfaceFit();
+    // and tell the renderer that width directly rather than waiting for it to
+    // notice, so the render below cannot use the stale one
+    api.renderer.width = host?.clientWidth ?? 0;
     const display = api.settings.display;
     display.staveProfile = STAVE_PROFILE[profile];
     display.layoutMode = LAYOUT_MODE[layout.mode];
@@ -431,7 +541,7 @@ export function createScoreView(host, opts = {}) {
     setPreset(next) {
       if (!LAYOUT_PRESETS.includes(next) || next === preset) return;
       preset = next;
-      layout = layoutForWidth(host?.clientWidth ?? 0, preset);
+      layout = layoutForWidth(stageWidth(), preset);
       reapply();
       onLayout(layout);
     },
@@ -462,6 +572,9 @@ export function createScoreView(host, opts = {}) {
     },
 
     destroy() {
+      destroyed = true;
+      observer.disconnect();
+      partialWatcher.disconnect();
       api.destroy();
     },
   };
