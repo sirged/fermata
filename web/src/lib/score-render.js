@@ -18,6 +18,46 @@ const STAVE_PROFILE = {
   scoretab: alphaTab.StaveProfile.ScoreTab,
 };
 
+// A profile only draws a staff if the renderer has some glyph type to draw it
+// with - standard notation for "score", a strung tuning for "tab", either (or
+// slash/numbered notation) for "scoretab". This mirrors the checks the
+// renderer's own bar-renderer factories make (ScoreBarRendererFactory,
+// TabBarRendererFactory, ...): when every staff of every rendered track fails
+// a profile's check, the renderer builds a staff system with no staves in it
+// at all, and StaffSystem.addBars crashes dereferencing the group that was
+// never created - that crash is what sends a MusicXML file with pitches but
+// no fret/string data into a broken view the moment "Tab" is chosen. Asking
+// first, here, is what lets a caller offer only profiles that will not do
+// that.
+function staffDrawableUnder(staff, profileKey) {
+  const hasTab = staff.showTablature && staff.tuning.length > 0;
+  switch (profileKey) {
+    case "score":
+      return staff.showStandardNotation;
+    case "tab":
+      return hasTab;
+    case "scoretab":
+      return staff.showStandardNotation || hasTab || staff.showSlash || staff.showNumbered;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Which of SCORE_PROFILES the given tracks can actually be drawn with, in
+ * SCORE_PROFILES order. `tracks` is empty before anything has loaded, in
+ * which case every profile is offered rather than none.
+ */
+export function supportedProfiles(tracks) {
+  const staves = (tracks ?? []).flatMap((t) => t.staves ?? []);
+  if (!staves.length) return SCORE_PROFILES;
+  const supported = SCORE_PROFILES.filter((p) => staves.some((s) => staffDrawableUnder(s, p)));
+  // Every profile failing would mean the renderer itself has nothing to draw
+  // this score with at all - not something restricting the choice can fix, so
+  // fall back to offering everything rather than leaving the switcher empty.
+  return supported.length ? supported : SCORE_PROFILES;
+}
+
 // ---------------------------------------------------------------- layout
 
 // Widths are of the score container, not the window: a side-by-side PDF
@@ -293,6 +333,9 @@ const RENDER_IN_WORKER = false;
  * @param opts.onError      (message) load or render failed
  * @param opts.onPassComplete  one pass finished (drives the tempo ladder)
  * @param opts.onLayout     (layout) the chosen layout changed
+ * @param opts.onProfiles   (profiles, active) the profiles this score supports
+ *                          changed - fires once a score has loaded, `active`
+ *                          is the current profile after any fallback below
  */
 export function createScoreView(host, opts = {}) {
   const {
@@ -307,9 +350,14 @@ export function createScoreView(host, opts = {}) {
     onError = () => {},
     onPassComplete = () => {},
     onLayout = () => {},
+    onProfiles = () => {},
   } = opts;
 
   let profile = SCORE_PROFILES.includes(initialProfile) ? initialProfile : "scoretab";
+  // Nothing has loaded yet, so nothing is ruled out - narrowed once
+  // scoreLoaded fires below, with SCORE_PROFILES itself as the safe fallback
+  // if a score turns out to support none of them (see supportedProfiles).
+  let scoreProfiles = SCORE_PROFILES;
   let preset = LAYOUT_PRESETS.includes(initialPreset) ? initialPreset : "desk";
   let theme = readScoreTheme(initialTheme);
   const fonts = fontsFor(document.documentElement);
@@ -373,6 +421,7 @@ export function createScoreView(host, opts = {}) {
     host.dataset.scorePreset = preset;
     host.dataset.scoreTheme = theme.name;
     host.dataset.scoreProfile = profile;
+    host.dataset.scoreProfiles = scoreProfiles.join(",");
     if (lastRenderMs != null) {
       host.dataset.scoreRenderMs = lastRenderMs.toFixed(1);
       host.dataset.scoreRenders = String(renderCount);
@@ -445,6 +494,26 @@ export function createScoreView(host, opts = {}) {
     renderCount += 1;
     publish();
     growPaperToDrawing();
+  });
+
+  // A profile carried over from a previous score, or the "scoretab" default,
+  // can be one this score has nothing to draw for a staff under - offering
+  // "Tab" for a MusicXML file with pitches but no fret/string data is exactly
+  // that, and the renderer's own answer to being asked for it anyway is to
+  // throw out of addBars (see staffDrawableUnder above) rather than draw an
+  // empty staff. Correcting the setting here, in the scoreLoaded handler,
+  // runs before the load's own first render: AlphaTabApi triggers scoreLoaded
+  // synchronously and only calls render() once every listener has returned,
+  // so this is not a race against it.
+  api.scoreLoaded.on((loadedScore) => {
+    scoreProfiles = supportedProfiles(api.tracks?.length ? api.tracks : loadedScore.tracks);
+    if (!scoreProfiles.includes(profile)) {
+      profile = scoreProfiles[0];
+      api.settings.display.staveProfile = STAVE_PROFILE[profile];
+      api.updateSettings();
+    }
+    publish();
+    onProfiles(scoreProfiles, profile);
   });
 
   api.playerReady.on(() => onReady());
@@ -540,6 +609,10 @@ export function createScoreView(host, opts = {}) {
     get profile() {
       return profile;
     },
+    /** Which of SCORE_PROFILES the loaded score can actually be drawn with. */
+    get supportedProfiles() {
+      return scoreProfiles;
+    },
     get preset() {
       return preset;
     },
@@ -549,7 +622,7 @@ export function createScoreView(host, opts = {}) {
     },
 
     setProfile(next) {
-      if (!SCORE_PROFILES.includes(next) || next === profile) return;
+      if (!scoreProfiles.includes(next) || next === profile) return;
       profile = next;
       reapply();
     },

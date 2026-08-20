@@ -1,7 +1,7 @@
 <script>
   import { untrack } from "svelte";
   import { api } from "./api.js";
-  import { createScoreView } from "./score-render.js";
+  import { createScoreView, SCORE_PROFILES } from "./score-render.js";
   import { getSettings, setSetting, STAFF_THEMES, STAFF_THEME_LABELS } from "./settings.svelte.js";
 
   const settings = getSettings();
@@ -40,6 +40,11 @@
   let scroller;
   let view = $state(null);
   let profile = $state("scoretab");
+  // Which profile buttons are worth showing at all - narrowed once the score
+  // has loaded and score-render.js has looked at what it actually contains.
+  // Starts permissive so nothing flashes and disappears while a score is
+  // still loading.
+  let profileOptions = $state(SCORE_PROFILES);
   let playing = $state(false);
   let playerReady = $state(false);
   let speed = $state(1);
@@ -100,6 +105,9 @@
     loadError = "";
     playerReady = false;
     playing = false;
+    // a restriction the previous score earned (e.g. tab-only) must not keep
+    // hiding buttons for this one while it is still loading
+    profileOptions = SCORE_PROFILES;
     // untrack: everything below is driven imperatively once the view exists;
     // tracking it here would tear down and rebuild the renderer (and stop
     // playback) on a profile switch or a toggle.
@@ -115,6 +123,14 @@
         onPlaying: (p) => (playing = p),
         onError: (m) => (loadError = m),
         onPassComplete: advanceLadder,
+        // The renderer may have had to fall back off `profile` itself (e.g. a
+        // tab profile carried over to a score with no tablature) - `active`
+        // is what it actually ended up drawing with, so the toolbar's
+        // highlighted button has to follow it rather than the stale request.
+        onProfiles: (profiles, active) => {
+          profileOptions = profiles;
+          profile = active;
+        },
       }),
     );
     view = v;
@@ -132,6 +148,11 @@
   });
 
   function setProfile(p) {
+    // the buttons only ever offer a viable profile, but guard anyway rather
+    // than trust that: view.setProfile silently no-ops on one the score can't
+    // draw, and letting this flip the highlighted button without it would
+    // show a profile that was never actually rendered
+    if (!profileOptions.includes(p)) return;
     profile = p;
     view?.setProfile(p);
   }
@@ -209,7 +230,9 @@
     <div class="toolbar">
       <div class="seg">
         {#each PROFILE_LABELS as [value, label]}
-          <button class:on={profile === value} onclick={() => setProfile(value)}>{label}</button>
+          {#if profileOptions.includes(value)}
+            <button class:on={profile === value} onclick={() => setProfile(value)}>{label}</button>
+          {/if}
         {/each}
       </div>
       <select class="theme-picker" value={settings.staff_theme} onchange={chooseTheme} title="Staff theme">
