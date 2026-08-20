@@ -69,11 +69,14 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body ?? {}),
     }).then(j),
-  saveTranscription: (id, content) =>
+  // `format` says what the edited text actually is. The endpoint will sniff
+  // it when omitted, but the client already knows and the renderer dispatches
+  // on the stored value, so send it rather than rely on the guess.
+  saveTranscription: (id, content, format) =>
     fetch(`/api/scores/${id}/transcription`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, format }),
     }).then(j),
   // deletes only the edited row, leaving the extracted one (if any) as the
   // real revert target; may 404 (nothing left) or 405 (not deployed yet)

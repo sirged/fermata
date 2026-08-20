@@ -20,6 +20,12 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
+    # Validating emitted MusicXML against the real MusicXML 4.0 XSD, which
+    # needs a schema-aware parser - the standard library has none. The
+    # validation test skips unless FERMATA_MUSICXML_XSD points at a schema, so
+    # this is what makes running it possible rather than what triggers it.
+    # See docs/musicxml-tab-profile.md#checking-a-file.
+    "lxml>=5.0",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -1544,3 +1544,89 @@ def decode_time_signature(page, staff_top, staff_bottom, staff_x0, spacing=None)
               if staff_top - tol.spacing <= e.yc <= staff_bottom + tol.spacing
               and staff_x0 - tol.drawing_x_pad <= e.x0 <= staff_x0 + lead]
     return _signature_from_window(window, mid)
+
+
+# ---------------------------------------------------------------------------
+# Key signature
+# ---------------------------------------------------------------------------
+
+# The accidental glyphs a key signature is built from. The parenthesised
+# variants are cautionary accidentals printed over a note and are never part
+# of one.
+KEY_ACCIDENTAL_CATS = {"sharp": 1, "flat": -1}
+# What ENDS the key signature: the printed meter. Both the digit form and the
+# common/cut-time symbols count.
+_METER_CATS = set(DIGIT_CATS) | {"common_time", "cut_time"}
+# How far into the staff the clef + up to seven accidentals + the meter
+# reach. Wider than decode_time_signature's own lead window, because a
+# seven-accidental signature pushes the meter further right than the 8.8
+# spacings that window allows for.
+_KEY_LEAD_SPACINGS = 20.0
+# A key signature holds at most seven accidentals (C flat major / C sharp
+# major). More than that in the leading window is not a key signature.
+_MAX_KEY_ACCIDENTALS = 7
+
+
+def decode_key_signature(page, staff_top, staff_bottom, staff_x0, spacing=None):
+    """The key signature printed at the START of this staff, as a MusicXML
+    `fifths` count (positive for sharps, negative for flats), or (None, why).
+
+    Only ever read from a staff that also prints its METER, and only from the
+    accidentals engraved to the LEFT of that meter. That restriction is what
+    makes the reading safe rather than merely plausible: an accidental
+    applying to a single note is engraved immediately before its notehead,
+    which puts it to the RIGHT of the meter, while a key signature is always
+    between the clef and the meter. Without the meter as a right-hand
+    boundary, a piece in C major whose first note happens to be an F sharp
+    reads as G major.
+
+    Engravers print the meter once, at the start of the piece and again only
+    where it changes, but reprint the key signature on every system - so in
+    practice this answers on the first system and declines on the rest, which
+    is all a document-level key needs.
+
+    A wrong answer here costs nothing but an odd enharmonic spelling: fret,
+    string and sounding pitch are computed from the tuning and are unaffected
+    by the key (see musicxml.spell_pitch). That asymmetry is why declining
+    is cheap and why the default when nothing is found is plain `fifths` 0.
+    """
+    tol = _Tol(spacing if spacing else (staff_bottom - staff_top) / 4.0)
+    glyphs = extract_glyph_events(page)
+    if not glyphs.events:
+        return None, "no music glyphs found"
+
+    lead = tol.spacing * _KEY_LEAD_SPACINGS
+    band = [e for e in glyphs.events
+            if staff_top - tol.spacing <= e.yc <= staff_bottom + tol.spacing
+            and staff_x0 - tol.drawing_x_pad <= e.x0 <= staff_x0 + lead]
+    if not band:
+        return None, "no music glyphs at the start of this staff"
+
+    meter_xs = [e.x0 for e in band if e.category in _METER_CATS]
+    if not meter_xs:
+        return None, (
+            "no meter is printed at the start of this staff, so there is no boundary "
+            "separating a key signature from an accidental on the first note"
+        )
+    meter_x0 = min(meter_xs)
+
+    # Right of the clef, left of the meter.
+    clef_xs = [e.x1 for e in band if e.category == "clef"]
+    left = max(clef_xs) if clef_xs else (staff_x0 - tol.drawing_x_pad)
+
+    run = [e for e in band
+           if e.category in KEY_ACCIDENTAL_CATS and left <= e.x0 < meter_x0]
+    if not run:
+        return 0, "no accidentals between the clef and the meter"
+
+    signs = {KEY_ACCIDENTAL_CATS[e.category] for e in run}
+    if len(signs) > 1:
+        return None, "both sharps and flats between the clef and the meter"
+    if len(run) > _MAX_KEY_ACCIDENTALS:
+        return None, (
+            f"{len(run)} accidentals between the clef and the meter - more than a key "
+            "signature can hold"
+        )
+    return signs.pop() * len(run), (
+        f"{len(run)} accidental glyph(s) between the clef and the printed meter"
+    )

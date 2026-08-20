@@ -1154,3 +1154,102 @@ def test_calibrated_maestro_still_decodes(zanarkand_pdf):
     assert "own engraving" in result.confidence["rhythm"]
     assert result.time_signature_source == "glyph-decoded"
     assert not any("NOT the calibrated Maestro subset" in w for w in result.warnings)
+
+
+# ---------------------------------------------------------------------------
+# MusicXML as the canonical output
+# ---------------------------------------------------------------------------
+
+
+def test_bar_conformance_counts_both_directions():
+    """The MusicXML profile's Rule 8 measured on the beats model. A bar can be
+    wrong in either direction and both have to be visible - only the overfull
+    count existed before, so a bar with a note missing from it looked clean."""
+    exact = [[(4, 0, [(1, 0)])] * 3]
+    over = [[(4, 0, [(1, 0)])] * 4]
+    short = [[(4, 0, [(1, 0)])] * 2]
+    assert tabextract._bar_conformance([(exact, (3, 4))]) == (0, 0, 1)
+    assert tabextract._bar_conformance([(over, (3, 4))]) == (1, 0, 1)
+    assert tabextract._bar_conformance([(short, (3, 4))]) == (0, 1, 1)
+    # a bar is counted once per direction however many voices are wrong
+    both = [[(4, 0, [(1, 0)])] * 4, [(4, 0, [(2, 0)])] * 2]
+    assert tabextract._bar_conformance([(both, (3, 4))]) == (1, 1, 1)
+    # _overfull_bars keeps its old shape for the callers that want just that
+    assert tabextract._overfull_bars([(over, (3, 4))]) == (1, 1)
+
+
+def test_short_bars_are_reported_not_padded():
+    short = [([[(4, 0, [(1, 0)])] * 2], (3, 4))]
+    warnings, _confidence = tabextract._rhythm_report(
+        collections.Counter({tabextract.PROV_GLYPHS: 1}), {},
+        overfull=0, bars=1, short=1)
+    assert any("hold less than their time signature" in w for w in warnings)
+    # and the emitted score really does carry the short bar as-is
+    from fermata import musicxml
+    assert musicxml.voice_durations(short[0][0]) == [2 * musicxml.DIVISIONS]
+
+
+def test_extract_emits_musicxml_alongside_alphatex(zanarkand_pdf):
+    """Both emitters read the same measures, so their note counts must agree -
+    a MusicXML document holding a different number of notes than the alphaTex
+    for the same score means one of them is dropping beats."""
+    import xml.etree.ElementTree as ET
+
+    result = tabextract.extract(zanarkand_pdf)
+    assert result.musicxml is not None
+    root = ET.fromstring(result.musicxml)
+    assert root.tag == "score-partwise"
+    assert len(root.findall("./part/measure")) == result.bars
+    pitched = [n for n in root.findall("./part/measure/note") if n.find("rest") is None]
+    assert len(pitched) == result.notes
+
+
+def test_extract_decodes_the_key_signature(zanarkand_pdf):
+    result = tabextract.extract(zanarkand_pdf)
+    assert result.key_signature_source == "glyph-decoded"
+    assert -7 <= result.key_fifths <= 7
+    assert "high" in result.confidence["key_signature"]
+
+
+def test_an_impossible_fret_becomes_a_rest_and_the_bar_still_adds_up(tmp_path):
+    """A fret read off a two-digit text span can be nonsense (78, 79 - two
+    adjacent notes rendered as one span), and 78 semitones above a string is
+    past the top of MusicXML's octave range. Writing it anyway made the whole
+    document fail schema validation, which is far worse than one missing note,
+    so the note is dropped - but its beat keeps its place as a rest, or the
+    measure would stop adding up because of it."""
+    import xml.etree.ElementTree as ET
+
+    from fermata import musicxml
+
+    beats = [[(4, 0, [(1, 78)]), (4, 0, [(1, 0)]), (4, 0, [(1, 2)]), (4, 0, [(1, 3)])]]
+    measures = [(beats, (4, 4))]
+    assert musicxml.unrepresentable_notes(measures, tabextract.DEFAULT_TUNING) == 1
+    xml = musicxml.build("T", None, tabextract.DEFAULT_TUNING, (4, 4), measures)
+    root = ET.fromstring(xml)
+    notes = root.findall("./part/measure/note")
+    assert len(notes) == 4
+    assert notes[0].find("rest") is not None
+    assert notes[0].findtext("duration") == str(musicxml.DIVISIONS)
+    # no octave outside what MusicXML can express reached the document
+    for octave in root.findall(".//pitch/octave"):
+        assert musicxml.MIN_OCTAVE <= int(octave.text) <= musicxml.MAX_OCTAVE
+    # and the bar still sums to its meter
+    total = sum(int(n.findtext("duration")) for n in notes if n.find("chord") is None)
+    assert total == musicxml.measure_divisions((4, 4))
+
+
+def test_a_chord_with_one_impossible_fret_keeps_its_other_notes():
+    import xml.etree.ElementTree as ET
+
+    from fermata import musicxml
+
+    beats = [[(4, 0, [(1, 78), (3, 2), (5, 0)])]]
+    xml = musicxml.build("T", None, tabextract.DEFAULT_TUNING, (4, 4), [(beats, (4, 4))])
+    root = ET.fromstring(xml)
+    notes = root.findall("./part/measure/note")
+    assert len(notes) == 2
+    # the surviving notes re-form a chord: the first leads, the second follows
+    assert notes[0].find("chord") is None
+    assert notes[1].find("chord") is not None
+    assert [n.findtext("notations/technical/fret") for n in notes] == ["2", "0"]
