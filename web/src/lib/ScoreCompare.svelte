@@ -3,6 +3,7 @@
   import { api } from "./api.js";
   import PdfViewer from "./PdfViewer.svelte";
   import TabViewer from "./TabViewer.svelte";
+  import { STANDING_LIMITS, BAR_RE } from "./warning-patterns.js";
 
   let {
     score,
@@ -110,14 +111,6 @@
   let rhythmCapped = $derived(!!rhythmConfidence && !/^high\b/i.test(rhythmConfidence));
   let rhythmLabel = $derived(rhythmConfidence ? rhythmConfidence.split(" - ")[0].trim() : "");
 
-  // Two caveats that read identically on every transcribed score
-  // (tabextract._TUPLET_WARNING / _TIE_WARNING) - a standing limit of the
-  // feature, not a fact about this score, so they're kept out of the
-  // per-score list and its count.
-  const STANDING_LIMITS = [
-    { test: /tuplets? \(triplets and similar\) are not detected/i, label: "tuplets aren't detected" },
-    { test: /tie detection is low confidence/i, label: "tie detection is approximate" },
-  ];
   let standingNotes = $derived.by(() => {
     const found = [];
     for (const w of warningsList) {
@@ -131,13 +124,19 @@
     warningsList.filter((w) => !STANDING_LIMITS.some((lim) => lim.test.test(w))),
   );
 
-  const BAR_RE = /^(\d+) of (\d+) bar\(s\) hold (?:more|less) than (?:its|their) time signature allows/i;
-  // Preferred source: confidence.confidence.bars_defective / bars_measured,
-  // the same counts ExtractionResult already carries as data (see
-  // tabextract.py) - read directly rather than reconstructed, once the
-  // backend persists them there. Only trusted when bars_measured is present
-  // as a number at all (including 0, meaning "no bars measured" - a real
-  // answer, not a missing one).
+  // The bar-defect count comes ONLY from confidence.confidence.bars_defective
+  // / bars_measured, the same counts ExtractionResult already carries as
+  // data (see tabextract.py). There is no honest fallback: the backend
+  // emits the overfull and short counts as two separate sentences, and a bar
+  // wrong in both directions at once (two-voice writing where one voice is
+  // over its meter and the other under) is counted into BOTH - per
+  // docs/musicxml-tab-profile.md, overfull + short double-counts such a bar
+  // and can exceed bars_measured, while bars_defective is the one figure
+  // that counts it once. That total isn't recoverable from the two
+  // sentences by any arithmetic - summing guesses high, and "take the
+  // larger one" is still a guess - so when the structured field isn't
+  // there, this says nothing about bars rather than something confidently
+  // wrong. The individual sentences are still in the detail list either way.
   let barSummary = $derived.by(() => {
     const structured = confidenceBlob?.confidence;
     if (structured && typeof structured.bars_measured === "number") {
@@ -145,29 +144,13 @@
         ? { defective: structured.bars_defective ?? 0, total: structured.bars_measured }
         : null;
     }
-    // Fallback for a backend that hasn't started persisting bars_defective /
-    // bars_measured yet: parse the same counts out of the warning prose
-    // instead. This is inherently fragile - it breaks silently (the headline
-    // count just disappears) the moment that wording changes, which it has
-    // already done twice in this project - so drop this branch once the
-    // structured field above is always present.
-    //
-    // Bars holding too much and bars holding too little both count as
-    // "don't add up" for the headline; a bar wrong in both directions at
-    // once would be counted twice here (the backend's own comments flag
-    // this as the rare edge case) - the exact per-direction figures are
-    // still in the detail list below.
-    let defective = 0;
-    let total = 0;
-    for (const w of scopedWarnings) {
-      const m = BAR_RE.exec(w);
-      if (m) {
-        defective += Number(m[1]);
-        total = Math.max(total, Number(m[2]));
-      }
-    }
-    return total ? { defective, total } : null;
+    return null;
   });
+
+  // Bar-conformance lines are folded into the headline via barSummary above
+  // (only once a real total exists) - don't also count them a second time
+  // under "N more", or the toggle would promise more bullets than it opens.
+  let barLineCount = $derived(scopedWarnings.filter((w) => BAR_RE.test(w)).length);
 
   let warningsSummary = $derived.by(() => {
     const parts = [];
@@ -177,8 +160,7 @@
       );
     }
     if (rhythmCapped) parts.push(`rhythm confidence ${rhythmLabel}`);
-    const barLines = scopedWarnings.filter((w) => BAR_RE.test(w)).length;
-    const remaining = scopedWarnings.length - barLines;
+    const remaining = scopedWarnings.length - (barSummary ? barLineCount : 0);
     if (!parts.length) {
       const n = remaining || standingNotes.length;
       parts.push(n === 1 ? "1 caveat" : `${n} caveats`);
@@ -206,15 +188,18 @@
   });
 
   // A warning's full sentence justifies itself after " - " or a full stop;
-  // the lead clause alone already carries the count and the cause, so
-  // that's what's shown - the rest is a hover away rather than repeated in
-  // full above every score.
-  function terseText(w) {
+  // the lead clause alone already carries the count and the cause. The
+  // justification is still shown, just dimmer - a `title` tooltip alone
+  // would put it a hover away, unreachable on the tablet-on-a-music-stand
+  // this app is mostly used on, so nothing here depends on hover to be read.
+  function splitWarning(w) {
     const dot = w.indexOf(". ");
     const dash = w.indexOf(" - ");
-    if (dot === -1 && dash === -1) return w;
-    if (dot !== -1 && (dash === -1 || dot < dash)) return w.slice(0, dot + 1);
-    return w.slice(0, dash);
+    let cut = -1;
+    if (dot !== -1 && (dash === -1 || dot < dash)) cut = dot + 1;
+    else if (dash !== -1) cut = dash;
+    if (cut === -1) return [w, ""];
+    return [w.slice(0, cut), w.slice(cut).replace(/^\s*-\s*/, " — ")];
   }
 
   // Expanded the first time a score's warnings are seen this session,
@@ -243,6 +228,30 @@
   }
 
   let detailOpen = $state(false);
+
+  // The one place that recomputes detailOpen, called after every state
+  // change that can make `transcription` (and so warningsList) point at a
+  // different row - a fresh load, a transcribe, a saved edit (which drops
+  // warnings), or a revert (which can bring them back). Reads warningsList
+  // fresh rather than taking it as an argument, so it only has to be called
+  // after `transcription` is already reassigned.
+  //
+  // Guarded on warningsList.length: an edited row carries no confidence, so
+  // marking a score "seen" while its list is empty would make a REAL
+  // warning list (from a later revert, or reloading in a session that
+  // hadn't shown one yet) default to collapsed on its first-ever showing -
+  // the opposite of the intent. Also guarded on !gigMode: gig mode
+  // suppresses the whole block, so a score only ever viewed in gig mode
+  // must not be marked seen either, or its warnings arrive pre-collapsed
+  // the first time someone opens it in the toolbar view.
+  function refreshWarningsDisplay(id) {
+    if (warningsList.length && !gigMode) {
+      detailOpen = !warningsSeen(id);
+      markWarningsSeen(id);
+    } else {
+      detailOpen = false;
+    }
+  }
 
   // guards against a slower response for a previously-viewed score landing
   // after a newer navigation and overwriting what's on screen
@@ -274,8 +283,7 @@
       transcription = t;
       draft = t.content;
       transcriptionState = "ready";
-      detailOpen = warningsList.length ? !warningsSeen(id) : false;
-      markWarningsSeen(id);
+      refreshWarningsDisplay(id);
       maybeDefaultToSide();
     } catch (e) {
       if (gen !== loadGen) return;
@@ -315,8 +323,7 @@
       transcription = t;
       draft = t.content;
       transcriptionState = "ready";
-      detailOpen = warningsList.length ? !warningsSeen(score.id) : false;
-      markWarningsSeen(score.id);
+      refreshWarningsDisplay(score.id);
       maybeDefaultToSide();
     } catch (e) {
       if (gen !== loadGen) return;
@@ -347,6 +354,10 @@
       // `res` carries the format the server read off the content, which is
       // what the viewer dispatches on - so let it win over the loaded row's.
       transcription = { ...transcription, ...res, content: draft, source: "edited" };
+      // an edit is stored with no `confidence` row, so this is expected to
+      // land on "nothing to show" - going through the shared helper rather
+      // than assuming that keeps it correct if that ever stops being true
+      refreshWarningsDisplay(score.id);
       editorOpen = false;
     } catch (e) {
       saveError = String(e?.message ?? e);
@@ -365,6 +376,10 @@
       const t = await api.deleteTranscription(score.id);
       transcription = t;
       draft = t.content;
+      // reverting can bring warnings BACK (the extracted row can carry them
+      // even though the edited row just removed never had any) - recompute
+      // rather than leave detailOpen at whatever the edited row last set
+      refreshWarningsDisplay(score.id);
       editorOpen = false;
     } catch (e) {
       if (e.status === 404) {
@@ -372,6 +387,7 @@
         // failure, but don't pretend the old edit is still showing either
         transcription = null;
         transcriptionState = "none";
+        detailOpen = false;
         fetchError = "Reverted — no extracted transcription was left to fall back to.";
         loadAnalysis();
       } else if (e.status === 405) {
@@ -448,18 +464,21 @@
               <span class="warn-text">{warningsSummary}</span>
               <span class="chev">{detailOpen ? "▲" : "▼"}</span>
             </button>
-            {#if detailOpen}
-              <div class="warnings-detail" id="warnings-detail">
-                <ul>
-                  {#each scopedWarnings as w}
-                    <li title={w}>{terseText(w)}</li>
-                  {/each}
-                </ul>
-                {#if standingNotes.length}
-                  <p class="standing-note">Also: {standingNotes.join("; ")}.</p>
-                {/if}
-              </div>
-            {/if}
+            <!-- rendered unconditionally (hidden via the `hidden` attribute,
+                 not an {#if}) so aria-controls has something to point at
+                 even while collapsed - the one state where that reference
+                 actually gets used by anything reading it -->
+            <div class="warnings-detail" id="warnings-detail" hidden={!detailOpen}>
+              <ul>
+                {#each scopedWarnings as w}
+                  {@const [lead, tail] = splitWarning(w)}
+                  <li>{lead}{#if tail}<span class="detail-tail">{tail}</span>{/if}</li>
+                {/each}
+              </ul>
+              {#if standingNotes.length}
+                <p class="standing-note">Also: {standingNotes.join("; ")}.</p>
+              {/if}
+            </div>
           </div>
         {:else if standingNotes.length}
           <p class="standing-footnote">Standing limits: {standingNotes.join("; ")}.</p>
@@ -800,6 +819,12 @@
 
   .warnings-detail li {
     margin: 3px 0;
+  }
+
+  /* the justification clause, dimmer but always shown - never only in a
+     hover-only title, unreachable on a touch device */
+  .detail-tail {
+    color: var(--ink-dim);
   }
 
   .standing-note {
