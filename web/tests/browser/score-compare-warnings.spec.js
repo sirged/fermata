@@ -1,27 +1,26 @@
-// Preserved Playwright coverage for the transcription-warnings summary in
+// Playwright coverage for the transcription-warnings summary in
 // ScoreCompare.svelte (issue #45 / PR #67, and the shape fix that followed
 // once server/fermata/api.py started lifting bars_defective/bars_measured
 // to the top level of the transcription object - PR #70).
 //
-// NOT WIRED TO A RUNNER YET. This repo has no frontend test harness as of
-// this writing - no @playwright/test dependency, no config, no CI job. A
-// separate branch is bringing one in (a "Browser tests" CI job). Adding a
-// second, competing harness here would be worse than adding none, so this
-// file is deliberately inert: it imports "@playwright/test", which will not
-// resolve until that dependency exists. What's preserved is the exact
-// scenarios and assertions this component was verified against by hand
-// (chromium.launch() + manual route stubs, run from a scratchpad, results
-// checked against real screenshots) - written in real spec form so wiring
-// it up later is "move this file and run it", not "remember what to test".
+// None of this needs the real extraction pipeline - it's about what the
+// component does with a given payload shape, which server/tests already
+// covers on the backend side - so every scenario stubs `/api/scores/1*`
+// with `page.route` rather than transcribing a real PDF against the real
+// backend this harness runs. That backend still serves the page shell and
+// everything these tests don't stub (e.g. the library list on `#/`), the
+// same way "a failed load is retryable" in instruments.spec.js layers a
+// route stub over the real running app for one scenario rather than
+// standing up a second server.
 //
-// Every scenario here was actually exercised against a running instance
-// before being written down: the mocked ones via `page.route`, and the
-// "structured field" shape specifically against a real server built from
-// fix/persist-bar-conformance (PR #70) transcribing the real "To Zanarkand"
-// PDF from the library, reloading, and confirming the same N/M survived -
-// see the PR discussion for that run's output. The two-voice fixture below
-// does not reproduce on any of the 144 extractable scores in the real
-// library; it exists because a fixture is the only way to exercise it.
+// The one thing here that WAS run against a real backend, by hand, before
+// this suite existed: the "structured field" shape and the save/revert
+// scenario below, against a real server built from fix/persist-bar-
+// conformance (PR #70 / #71) transcribing the real "To Zanarkand" PDF,
+// reloading, hand-editing, and reverting - see those PRs' discussion for
+// that run's output. The two-voice fixture below does not reproduce on any
+// of the 144 extractable scores in the real library; it exists because a
+// fixture is the only way to exercise it.
 import { test, expect } from "@playwright/test";
 import {
   SCORE,

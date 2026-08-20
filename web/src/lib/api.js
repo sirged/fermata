@@ -7,6 +7,24 @@ export class ApiError extends Error {
   }
 }
 
+// FastAPI reports its own request validation as a LIST of objects under
+// `detail`, not a string - and a caller that only looked for a string showed
+// "Request failed (422)" for a rejection the server had described precisely,
+// naming the field. `loc` starts with the source ("body", "path", "query"),
+// which is noise to a person looking at a form, so it is dropped.
+function describeValidationErrors(errors) {
+  return errors
+    .map((e) => {
+      const path = Array.isArray(e?.loc)
+        ? e.loc.filter((part) => !["body", "path", "query"].includes(part)).join(".")
+        : "";
+      const message = e?.msg ?? "is not valid";
+      return path ? `${path}: ${message}` : message;
+    })
+    .filter(Boolean)
+    .join("; ");
+}
+
 async function j(res) {
   if (!res.ok) {
     // FastAPI puts the actionable text in `detail` (422 validation errors,
@@ -17,6 +35,7 @@ async function j(res) {
     try {
       const body = await res.json();
       if (typeof body?.detail === "string") detail = body.detail;
+      else if (Array.isArray(body?.detail)) detail = describeValidationErrors(body.detail);
     } catch {
       // not JSON - nothing to extract
     }
@@ -87,6 +106,24 @@ export const api = {
   deleteTranscription: (id) =>
     fetch(`/api/scores/${id}/transcription`, { method: "DELETE" }).then(j),
   transcriptionAnalysis: (id) => fetch(`/api/scores/${id}/transcription/analysis`).then(j),
+  instruments: () => fetch("/api/instruments").then(j),
+  instrumentPresets: () => fetch("/api/instruments/presets").then(j),
+  // A whole definition, not a patch: string_count and string_pitches have to
+  // agree, and fret_count exists only when fretted, so half a definition
+  // merged onto an old one is how a five-string bass ends up with four pitches.
+  createInstrument: (body) =>
+    fetch("/api/instruments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(j),
+  saveInstrument: (id, body) =>
+    fetch(`/api/instruments/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(j),
+  deleteInstrument: (id) => fetch(`/api/instruments/${id}`, { method: "DELETE" }).then(j),
   settings: () => fetch("/api/settings").then(j),
   putSettings: (values) =>
     fetch("/api/settings", {

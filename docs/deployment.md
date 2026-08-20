@@ -168,8 +168,8 @@ docker compose up --build -d
 
 Fermata's database applies its own schema changes automatically on startup —
 new tables or columns an upgrade needs are created the first time the new
-version starts, and this has never required a manual step. You do not need to
-run a migration command.
+version starts, and so far this has never required a manual step. You do not
+need to run a migration command.
 
 That said, take a backup first anyway, the same way you would before any
 software upgrade you can't easily undo:
@@ -183,6 +183,22 @@ docker compose up --build -d
 
 If something looks wrong after an upgrade, restoring that backup and going
 back to the previous `git` commit gets you back to where you started.
+
+Going back without restoring the backup is a different matter, and this is why
+the backup is worth taking. Once a version has started, its schema changes have
+already been applied to `config/fermata.db`, and the database records which
+version wrote it. An older Fermata will run quite happily against a database it
+recognises — but if the newer version changed the schema, the older one refuses
+to start rather than write to a database it does not understand, and says so:
+
+```
+RuntimeError: this database is at schema version 2, but this version of
+Fermata understands 1. It was written by a newer release - upgrade, or
+restore a backup taken before it.
+```
+
+That is the message telling you a `git` rollback alone is not enough. Either go
+forward again, or restore the `config/` backup you took before upgrading.
 
 ## Current limitations
 
@@ -286,6 +302,33 @@ Then restart:
 
 ```bash
 docker compose up -d
+```
+
+There are two other reasons Fermata will stop on purpose, and because
+`docker-compose.yml` sets `restart: unless-stopped`, either one shows up as a
+container restarting over and over. Both print a plain explanation, so it is
+worth reading to the end of the log rather than only the last line.
+
+**"this database is at schema version N"** — the database was written by a
+newer Fermata than the one you are running, so this one will not touch it. This
+is the message you get from rolling a version back without restoring the
+matching backup; see [Upgrading](#upgrading) for what to do.
+
+**"missing the link that keeps it pointing at real rows"** — something is wrong
+with the structure of the database itself. This cannot happen from normal use or
+from any upgrade, so unless you have edited `fermata.db` by hand it is a bug we
+would like to hear about: please open an issue with the log text. Your sheet
+music in `library/` is not involved either way — only the database in `config/`.
+If you have a backup of that folder, restoring it (see
+[Restoring a backup](#restoring-a-backup)) is the safe way back. The message itself ends with a
+repair note for anyone comfortable with SQLite, including which option
+permanently discards data and which does not.
+
+In both cases, stop the restart loop before working on it, so the container is
+not fighting you:
+
+```bash
+docker compose stop
 ```
 
 ### Empty library after a scan

@@ -275,6 +275,197 @@ function applyBrandingOverride(api) {
 // and re-renders identically. docs/rendering.md has the numbers.
 const RENDER_IN_WORKER = false;
 
+// ------------------------------------------------- auditioning one pitch
+
+// The synthesiser Fermata has is the renderer's, and this is how a single
+// pitch is made audible with no score in play. It is what lets a tuning be
+// checked by ear, and on an unfretted instrument it is not a convenience: with
+// no fret to aim at, a heard pitch is the thing a player matches against, so
+// this is the interface rather than an extra.
+//
+// Played as a one-shot midi file handed to the synth rather than by loading a
+// one-note score, because loading replaces whatever the renderer holds and
+// forces a render - and the settings view has no score to lose in the first
+// place. The renderer will not exist without a container, so the audition view
+// gets an off-screen one of its own, built once and lazily: the soundfont is
+// worth roughly a megabyte and nothing should pay for it until a string is
+// actually clicked.
+
+const AUDITION_CHANNEL = 0;
+// Raw midi program numbers are 0-based, so 24 is Acoustic Guitar (nylon) -
+// the same voice server/fermata/musicxml.py writes, where MusicXML's 1-based
+// numbering calls it 25. What a tuning check needs is a clear fundamental
+// with some decay, not the exact timbre of the instrument in hand.
+const AUDITION_PROGRAM = 24;
+const AUDITION_VELOCITY = 100;
+// Long enough to hear against a plucked string and let it decay, short enough
+// that clicking down a set of six is not a wait.
+const AUDITION_SECONDS = 1.6;
+// The renderer's own division, and a tempo that makes a quarter note half a
+// second. Both are stated rather than left to the sequencer's defaults so the
+// tick arithmetic below has one obvious reading.
+const TICKS_PER_QUARTER = 960;
+const MICROSECONDS_PER_QUARTER = 500_000;
+const TICKS_PER_SECOND = TICKS_PER_QUARTER / (MICROSECONDS_PER_QUARTER / 1_000_000);
+
+const MIN_MIDI = 0;
+const MAX_MIDI = 127;
+// Generous - the soundfont is about a megabyte and a cold cache on a slow link
+// is not a failure - but finite, so a stalled fetch is recoverable.
+const SOUNDFONT_TIMEOUT_MS = 45_000;
+
+let auditionApi = null;
+let auditionHost = null;
+let auditionReady = null;
+
+// Puts the audition back to never-having-been-built. Called on any failure, so
+// the next click starts a fresh attempt: a cached rejection would turn one
+// failed soundfont fetch into every play button being dead for the life of the
+// page, with nothing but a reload to recover.
+function resetAudition() {
+  try {
+    auditionApi?.destroy();
+  } catch {
+    // a half-constructed renderer may not survive its own teardown; the host
+    // still has to go
+  }
+  auditionHost?.remove();
+  auditionApi = null;
+  auditionHost = null;
+  auditionReady = null;
+}
+
+function auditionPlayer() {
+  if (auditionReady) return auditionReady;
+
+  const host = document.createElement("div");
+  host.style.cssText =
+    "position:absolute; left:-9999px; top:0; width:0; height:0; overflow:hidden";
+  document.body.appendChild(host);
+  auditionHost = host;
+
+  let api;
+  try {
+    api = new alphaTab.AlphaTabApi(host, {
+      core: { fontDirectory: "/font/", useWorkers: RENDER_IN_WORKER },
+      player: {
+        // EnabledSynthesizer, not the automatic mode the score view uses: the
+        // automatic mode decides between the synthesiser and an embedded
+        // backing track by looking at the loaded score, so with no score it
+        // builds no player at all and nothing ever loads.
+        playerMode: alphaTab.PlayerMode.EnabledSynthesizer,
+        soundFont: "/soundfont/sonivox.sf2",
+      },
+    });
+  } catch (e) {
+    // The host is already in the document, so it has to come back out here or
+    // every retry would leave another orphan behind it.
+    resetAudition();
+    return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+  }
+  auditionApi = api;
+
+  // Waits on the soundfont rather than on playerReady, which is the renderer's
+  // "ready to play THIS SCORE" and needs a midi file generated from one. There
+  // is no score here and never will be, so it would never fire; a loaded
+  // soundfont is the whole of what a one-shot note needs.
+  //
+  // Failure comes from the synth's own soundFontLoadFailed where there is one,
+  // rather than from api.error: that fires for anything at all, and a render
+  // complaint has no business disabling playback.
+  const ready = new Promise((resolve, reject) => {
+    api.soundFontLoaded.on(() => resolve(api.player));
+    const failed = api.player?.soundFontLoadFailed;
+    if (failed) {
+      failed.on((e) => reject(toError(e, "the synthesiser's soundfont could not be loaded")));
+    } else {
+      api.error.on((e) => reject(toError(e, "the synthesiser could not be loaded")));
+    }
+    // A fetch that never resolves and never errors is not covered by either
+    // event, and without this the promise would be cached in a pending state
+    // for the life of the page - a hang being permanent where a failure is
+    // retryable, which is the wrong way round.
+    setTimeout(
+      () => reject(new Error("the synthesiser took too long to load")),
+      SOUNDFONT_TIMEOUT_MS,
+    );
+  }).catch((e) => {
+    // Guarded on identity so a failure arriving late cannot tear down a newer
+    // attempt that has already succeeded.
+    if (auditionApi === api) resetAudition();
+    throw e;
+  });
+
+  auditionReady = ready;
+  return ready;
+}
+
+function toError(e, fallback) {
+  // Tested on the MESSAGE, not just the type, and joined with `||` rather than
+  // `??`: an Error whose message is the empty string is common (an aborted fetch
+  // is one) and is not a usable explanation. Passing it through renders as
+  // nothing, which is a failure indistinguishable from a working click - exactly
+  // what playPitch promises not to leave behind.
+  if (e instanceof Error && e.message) return e;
+  return new Error(e?.message || fallback);
+}
+
+/**
+ * Sound one pitch on its own, as a MIDI note number.
+ *
+ * Resolves with THE MIDI NOTE ACTUALLY SOUNDED - the number written into the
+ * note-on event - or null if it is not one the synthesiser can play. Returning
+ * the note rather than a success flag is deliberate: it lets a caller display
+ * and publish what crossed this boundary instead of restating what it asked
+ * for, which is the only way an interface can be observed to have played the
+ * right pitch rather than merely to have intended one.
+ *
+ * Rejects if the synthesiser could not be loaded, so a caller can say so rather
+ * than leaving a silent click looking like a working one.
+ *
+ * Note that the synthesiser is equal-tempered around A440 and takes no
+ * reference pitch, so an instrument defined at A415 has its frequencies shown
+ * at A415 but is auditioned at A440. Fine for finding a note by ear against
+ * itself; not yet a period-pitch reference.
+ */
+export async function playPitch(midi) {
+  const key = Math.round(Number(midi));
+  if (!Number.isFinite(key) || key < MIN_MIDI || key > MAX_MIDI) return null;
+  const player = await auditionPlayer();
+  if (!player) return null;
+  const {
+    MidiFile,
+    TempoChangeEvent,
+    ProgramChangeEvent,
+    ControlChangeEvent,
+    ControllerType,
+    NoteOnEvent,
+    NoteOffEvent,
+    EndOfTrackEvent,
+  } = alphaTab.midi;
+  const end = Math.round(AUDITION_SECONDS * TICKS_PER_SECOND);
+  const file = new MidiFile();
+  file.division = TICKS_PER_QUARTER;
+  file.addEvent(new TempoChangeEvent(0, MICROSECONDS_PER_QUARTER));
+  file.addEvent(new ProgramChangeEvent(0, 0, AUDITION_CHANNEL, AUDITION_PROGRAM));
+  // The channel is fresh each time only in the sense that the file is; the
+  // synth's channel volume is whatever the last thing to play left behind, so
+  // it is set rather than assumed.
+  file.addEvent(
+    new ControlChangeEvent(0, 0, AUDITION_CHANNEL, ControllerType.VolumeCoarse, 127),
+  );
+  file.addEvent(new NoteOnEvent(0, 0, AUDITION_CHANNEL, key, AUDITION_VELOCITY));
+  file.addEvent(new NoteOffEvent(0, end, AUDITION_CHANNEL, key, 0));
+  file.addEvent(new EndOfTrackEvent(0, end + 1));
+  // Replaces any audition still sounding, which is what clicking down a set of
+  // strings in quick succession should do.
+  player.playOneTimeMidiFile(file);
+  // Read back off the events that were handed over rather than off the input,
+  // so what this reports is the note the synthesiser actually received.
+  const noteOn = file.events.find((e) => e instanceof NoteOnEvent);
+  return noteOn ? noteOn.noteKey : key;
+}
+
 // ---------------------------------------------------------------- the view
 
 /**
@@ -449,7 +640,7 @@ export function createScoreView(host, opts = {}) {
 
   api.playerReady.on(() => onReady());
   api.playerStateChanged.on((e) => onPlaying(e.state === 1));
-  api.error.on((e) => onError(e?.message ?? "failed to load score"));
+  api.error.on((e) => onError(e?.message || "failed to load score"));
   // Fires at the end of each loop pass, not only the final stop, which is
   // what makes it usable as "one clean pass done".
   api.playerFinished.on(() => onPassComplete());

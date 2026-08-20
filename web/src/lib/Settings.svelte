@@ -1,4 +1,5 @@
 <script>
+  import Instruments from "./Instruments.svelte";
   import {
     getSettings,
     setSetting,
@@ -72,6 +73,8 @@
         <p class="error">{error}</p>
       {/if}
     </section>
+
+    <Instruments />
   </main>
 </div>
 
@@ -108,9 +111,15 @@
     flex: 1;
     overflow-y: auto;
     padding: 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 36px;
   }
 
-  section {
+  /* Instruments are a child component, so the reading measure has to reach
+     past this file's scoping to apply to its section as well as this one. */
+  main > section,
+  main > :global(section) {
     max-width: 640px;
   }
 
