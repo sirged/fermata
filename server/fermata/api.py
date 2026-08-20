@@ -363,13 +363,37 @@ def _transcription_row(conn, score_id: int):
     ).fetchone()
 
 
+# Keys a caller reads at the top level of a transcription however it arrived.
+# POST /transcribe builds them from the extraction result it still holds; GET
+# has only the stored blob, so it lifts the same names back out. Without this
+# the two endpoints describe the same transcription in two different shapes,
+# and a client that reloads a score has to reconstruct what POST told it -
+# which, for the bar figures, cannot be done. See the note in transcribe().
+_BLOB_TOP_LEVEL = (
+    "warnings",
+    "bars_overfull",
+    "bars_short",
+    "bars_defective",
+    "bars_measured",
+)
+
+
 def _transcription_dict(row) -> dict:
     d = dict(row)
-    if d.get("confidence"):
-        try:
-            d["confidence"] = json.loads(d["confidence"])
-        except (TypeError, ValueError):
-            pass
+    if not d.get("confidence"):
+        return d
+    try:
+        blob = json.loads(d["confidence"])
+    except (TypeError, ValueError):
+        return d
+    d["confidence"] = blob
+    if isinstance(blob, dict):
+        # Absent rather than zero for a row written before these were stored:
+        # a missing key means "not recorded", and zero would claim every bar
+        # was measured and every one of them was fine.
+        for key in _BLOB_TOP_LEVEL:
+            if key in blob:
+                d[key] = blob[key]
     return d
 
 
@@ -451,7 +475,25 @@ def transcribe(score_id: int, body: TranscribeIn | None = Body(default=None)):
     # written before this change keep rendering as the alphaTex they are, and
     # a hand-edited row stays in whichever format it was edited in until its
     # author edits it again.
-    confidence_json = json.dumps({"warnings": result.warnings, "confidence": result.confidence})
+    # The Rule 8 figures are STORED, not only echoed on this response, because
+    # they cannot be recovered later from the warning prose. A polyphonic bar
+    # can hold one voice over its meter and another under it, so it counts into
+    # both `overfull` and `short`: their sum double-counts such a bar and can
+    # exceed the number of bars measured. `defective` counts each wrong bar
+    # once and is the only figure safe to compare against `measured`, and no
+    # arithmetic over the two warning sentences recovers it. A reader that
+    # reloads a transcription and has only the prose can therefore either say
+    # nothing about bars or say something untrue - so it gets the numbers.
+    confidence_json = json.dumps(
+        {
+            "warnings": result.warnings,
+            "confidence": result.confidence,
+            "bars_overfull": result.bars_overfull,
+            "bars_short": result.bars_short,
+            "bars_defective": result.bars_defective,
+            "bars_measured": result.bars_measured,
+        }
+    )
     with tx() as tx_conn:
         tx_conn.execute(
             """INSERT INTO transcriptions(score_id, format, content, source, confidence, updated_at)
