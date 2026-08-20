@@ -79,6 +79,11 @@ export function layoutForWidth(width, preset = "desk") {
  * application paints behind the staff, and four the renderer itself uses.
  * Values come from web/src/app.css so the palette has one home; the fallbacks
  * here only matter if a token is missing or unparseable.
+ *
+ * Kept in sync with SETTINGS_CHOICES["staff_theme"] in
+ * server/fermata/api.py - server/tests/test_settings_api.py's
+ * test_staff_theme_choices_match_the_frontends_score_themes parses this
+ * array out of this file and fails if the two ever disagree.
  */
 export const SCORE_THEMES = ["parchment", "noir", "print"];
 

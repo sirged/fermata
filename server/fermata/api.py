@@ -23,6 +23,11 @@ VALID_PRACTICED = {"recent", "neglected"}
 # so it follows a person between devices. Defaults are what a fresh install
 # with nothing stored behaves as. `SETTINGS_CHOICES` is optional per key: a
 # key with no entry there accepts any string value.
+#
+# staff_theme's choices must be kept in sync with SCORE_THEMES in
+# web/src/lib/score-render.js - test_settings_api.py's
+# test_staff_theme_choices_match_the_frontends_score_themes parses that file
+# and fails if the two ever disagree.
 SETTINGS_DEFAULTS = {"staff_theme": "parchment"}
 SETTINGS_CHOICES = {"staff_theme": {"parchment", "noir", "print"}}
 # MusicXML is a good deal more verbose than alphaTex for the same music: across
@@ -95,7 +100,22 @@ def get_settings():
         "SELECT key, value FROM settings WHERE owner = ?", (DEFAULT_OWNER,)
     ).fetchall()
     result = dict(SETTINGS_DEFAULTS)
-    result.update({r["key"]: r["value"] for r in rows})
+    for row in rows:
+        key, value = row["key"], row["value"]
+        if key not in SETTINGS_DEFAULTS:
+            continue  # a setting since retired - ignore rather than surface it
+        choices = SETTINGS_CHOICES.get(key)
+        if choices and value not in choices:
+            # A value that was valid when stored but isn't any more - this PR
+            # itself renames the theme 'slate' to 'noir', so an existing
+            # install can hold staff_theme='slate'. put_settings() can never
+            # write this today, but a stored value outliving the choices it
+            # was written under is exactly the kind of drift a rename causes,
+            # so fall back to the default rather than hand back a value
+            # nothing can render (the picker would then highlight no card at
+            # all, and the renderer would quietly fall back on its own).
+            continue
+        result[key] = value
     return result
 
 

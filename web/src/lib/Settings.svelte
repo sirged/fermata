@@ -9,17 +9,25 @@
 
   const settings = getSettings();
 
-  // Which theme (if any) has a write in flight, so only that card disables
-  // itself rather than the whole picker while the request is out.
+  // Which theme has a write in flight. The whole picker is disabled while
+  // this is set, not just that one card - letting the others stay clickable
+  // would let a second write for the same key race the first, and a slow
+  // connection would otherwise make every *other* card look clickable while
+  // silently doing nothing.
   let pending = $state(null);
+  let error = $state("");
 
   async function chooseTheme(theme) {
     if (theme === settings.staff_theme || pending) return;
     pending = theme;
+    error = "";
     try {
       await setSetting("staff_theme", theme);
-    } catch {
-      // setSetting already rolled the optimistic value back; nothing else to do
+    } catch (e) {
+      // setSetting already rolled the optimistic value back - surface why,
+      // so a failed save reads as a failure rather than an unexplained
+      // highlight-then-unhighlight
+      error = e?.message ?? "Could not save that.";
     } finally {
       pending = null;
     }
@@ -45,7 +53,8 @@
           <button
             class="theme-card"
             class:on={settings.staff_theme === theme}
-            disabled={pending === theme}
+            class:saving={pending === theme}
+            disabled={!!pending}
             onclick={() => chooseTheme(theme)}
           >
             <span
@@ -59,6 +68,9 @@
           </button>
         {/each}
       </div>
+      {#if error}
+        <p class="error">{error}</p>
+      {/if}
     </section>
   </main>
 </div>
@@ -134,6 +146,20 @@
   .theme-card.on {
     border-color: var(--brass);
     box-shadow: 0 0 0 1px var(--brass);
+  }
+
+  .theme-card.saving {
+    opacity: 0.6;
+  }
+
+  .theme-card:disabled {
+    cursor: default;
+  }
+
+  .error {
+    color: var(--danger);
+    font-size: 13px;
+    margin: 14px 0 0;
   }
 
   .swatch {
