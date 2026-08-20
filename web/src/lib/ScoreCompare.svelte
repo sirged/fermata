@@ -81,19 +81,132 @@
   // nests them under confidence.warnings (and confidence may still be the
   // raw JSON string if the backend's own parse of it ever failed) - read
   // whichever shape actually showed up rather than assuming one
+  let confidenceBlob = $derived.by(() => {
+    if (!transcription) return null;
+    let c = transcription.confidence;
+    if (typeof c === "string") {
+      try {
+        c = JSON.parse(c);
+      } catch {
+        c = null;
+      }
+    }
+    return c && typeof c === "object" ? c : null;
+  });
+
   let warningsList = $derived.by(() => {
     if (!transcription) return [];
     if (Array.isArray(transcription.warnings)) return transcription.warnings;
-    let confidence = transcription.confidence;
-    if (typeof confidence === "string") {
-      try {
-        confidence = JSON.parse(confidence);
-      } catch {
-        confidence = null;
+    return Array.isArray(confidenceBlob?.warnings) ? confidenceBlob.warnings : [];
+  });
+
+  // The one number the whole warning list exists to protect: an inferred
+  // rhythm mistaken for a verified one. /transcribe writes it nested as
+  // confidence.confidence.rhythm; read the flat shape too in case that ever
+  // changes.
+  let rhythmConfidence = $derived(
+    confidenceBlob?.confidence?.rhythm ?? confidenceBlob?.rhythm ?? null,
+  );
+  let rhythmCapped = $derived(!!rhythmConfidence && !/^high\b/i.test(rhythmConfidence));
+  let rhythmLabel = $derived(rhythmConfidence ? rhythmConfidence.split(" - ")[0].trim() : "");
+
+  // Two caveats that read identically on every transcribed score
+  // (tabextract._TUPLET_WARNING / _TIE_WARNING) - a standing limit of the
+  // feature, not a fact about this score, so they're kept out of the
+  // per-score list and its count.
+  const STANDING_LIMITS = [
+    { test: /tuplets? \(triplets and similar\) are not detected/i, label: "tuplets aren't detected" },
+    { test: /tie detection is low confidence/i, label: "tie detection is approximate" },
+  ];
+  let standingNotes = $derived.by(() => {
+    const found = [];
+    for (const w of warningsList) {
+      for (const lim of STANDING_LIMITS) {
+        if (lim.test.test(w) && !found.includes(lim.label)) found.push(lim.label);
       }
     }
-    return Array.isArray(confidence?.warnings) ? confidence.warnings : [];
+    return found;
   });
+  let scopedWarnings = $derived(
+    warningsList.filter((w) => !STANDING_LIMITS.some((lim) => lim.test.test(w))),
+  );
+
+  const BAR_RE = /^(\d+) of (\d+) bar\(s\) hold (?:more|less) than (?:its|their) time signature allows/i;
+  // Bars holding too much and bars holding too little both count as "don't
+  // add up" for the headline; a bar wrong in both directions at once would
+  // be counted twice here (the backend's own comments flag this as the rare
+  // edge case) - the exact per-direction figures are still in the detail
+  // list below.
+  let barSummary = $derived.by(() => {
+    let defective = 0;
+    let total = 0;
+    for (const w of scopedWarnings) {
+      const m = BAR_RE.exec(w);
+      if (m) {
+        defective += Number(m[1]);
+        total = Math.max(total, Number(m[2]));
+      }
+    }
+    return total ? { defective, total } : null;
+  });
+
+  let warningsSummary = $derived.by(() => {
+    const parts = [];
+    if (barSummary?.defective) {
+      parts.push(
+        `${barSummary.defective} of ${barSummary.total} bar${barSummary.total === 1 ? "" : "s"} don't add up`,
+      );
+    }
+    if (rhythmCapped) parts.push(`rhythm confidence ${rhythmLabel}`);
+    const barLines = scopedWarnings.filter((w) => BAR_RE.test(w)).length;
+    const remaining = scopedWarnings.length - barLines;
+    if (!parts.length) {
+      const n = remaining || standingNotes.length;
+      parts.push(n === 1 ? "1 caveat" : `${n} caveats`);
+    } else if (remaining) {
+      parts.push(`${remaining} more`);
+    }
+    return parts.join(" · ");
+  });
+
+  // A warning's full sentence justifies itself after " - " or a full stop;
+  // the lead clause alone already carries the count and the cause, so
+  // that's what's shown - the rest is a hover away rather than repeated in
+  // full above every score.
+  function terseText(w) {
+    const dot = w.indexOf(". ");
+    const dash = w.indexOf(" - ");
+    if (dot === -1 && dash === -1) return w;
+    if (dot !== -1 && (dash === -1 || dot < dash)) return w.slice(0, dot + 1);
+    return w.slice(0, dash);
+  }
+
+  // Expanded the first time a score's warnings are seen this session,
+  // collapsed on every later visit - the caveats don't change between
+  // visits, so re-reading them by default is friction, not safety.
+  const WARNINGS_SEEN_KEY = "fermata.warningsSeen";
+  function warningsSeen(id) {
+    try {
+      const raw = sessionStorage.getItem(WARNINGS_SEEN_KEY);
+      return raw ? JSON.parse(raw).includes(id) : false;
+    } catch {
+      return false;
+    }
+  }
+  function markWarningsSeen(id) {
+    try {
+      const raw = sessionStorage.getItem(WARNINGS_SEEN_KEY);
+      const seen = raw ? JSON.parse(raw) : [];
+      if (!seen.includes(id)) {
+        seen.push(id);
+        sessionStorage.setItem(WARNINGS_SEEN_KEY, JSON.stringify(seen));
+      }
+    } catch {
+      // storage unavailable - defaults to open every time, which is safe
+    }
+  }
+
+  let detailOpen = $state(false);
 
   // guards against a slower response for a previously-viewed score landing
   // after a newer navigation and overwriting what's on screen
@@ -125,6 +238,8 @@
       transcription = t;
       draft = t.content;
       transcriptionState = "ready";
+      detailOpen = warningsList.length ? !warningsSeen(id) : false;
+      markWarningsSeen(id);
       maybeDefaultToSide();
     } catch (e) {
       if (gen !== loadGen) return;
@@ -164,6 +279,8 @@
       transcription = t;
       draft = t.content;
       transcriptionState = "ready";
+      detailOpen = warningsList.length ? !warningsSeen(score.id) : false;
+      markWarningsSeen(score.id);
       maybeDefaultToSide();
     } catch (e) {
       if (gen !== loadGen) return;
@@ -282,15 +399,35 @@
         {/if}
       </div>
     {:else if transcriptionState === "ready"}
-      {#if warningsList.length}
-        <div class="warnings">
-          <div class="warnings-head">⚠ Unverified — check against the PDF</div>
-          <ul>
-            {#each warningsList as w}
-              <li>{w}</li>
-            {/each}
-          </ul>
-        </div>
+      {#if !gigMode && warningsList.length}
+        {#if scopedWarnings.length || rhythmCapped}
+          <div class="warnings">
+            <button
+              class="warnings-summary"
+              onclick={() => (detailOpen = !detailOpen)}
+              aria-expanded={detailOpen}
+              aria-controls="warnings-detail"
+            >
+              <span class="warn-icon">⚠</span>
+              <span class="warn-text">{warningsSummary}</span>
+              <span class="chev">{detailOpen ? "▲" : "▼"}</span>
+            </button>
+            {#if detailOpen}
+              <div class="warnings-detail" id="warnings-detail">
+                <ul>
+                  {#each scopedWarnings as w}
+                    <li title={w}>{terseText(w)}</li>
+                  {/each}
+                </ul>
+                {#if standingNotes.length}
+                  <p class="standing-note">Also: {standingNotes.join("; ")}.</p>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {:else if standingNotes.length}
+          <p class="standing-footnote">Standing limits: {standingNotes.join("; ")}.</p>
+        {/if}
       {/if}
       {#if editorOpen}
         <div class="editor">
@@ -560,27 +697,66 @@
 
   .warnings {
     margin: 12px 16px 0;
-    padding: 10px 14px;
     border: 1px solid var(--danger);
     border-radius: 8px;
     background: rgba(201, 106, 92, 0.12);
+    overflow: hidden;
   }
 
-  .warnings-head {
+  .warnings-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: none;
+    border: none;
+    border-radius: 0;
+    padding: 9px 14px;
     font-size: 13px;
-    font-weight: 600;
     color: var(--danger);
+    text-align: left;
   }
 
-  .warnings ul {
-    margin: 6px 0 0;
+  .warn-icon,
+  .chev {
+    flex: none;
+  }
+
+  .chev {
+    font-size: 10px;
+    opacity: 0.7;
+  }
+
+  .warn-text {
+    flex: 1;
+    font-weight: 600;
+  }
+
+  .warnings-detail {
+    padding: 0 14px 10px;
+  }
+
+  .warnings-detail ul {
+    margin: 0;
     padding-left: 20px;
     font-size: 12.5px;
     color: var(--ink);
   }
 
-  .warnings li {
-    margin: 2px 0;
+  .warnings-detail li {
+    margin: 3px 0;
+  }
+
+  .standing-note {
+    margin: 8px 0 0;
+    font-size: 11.5px;
+    color: var(--ink-dim);
+  }
+
+  .standing-footnote {
+    margin: 10px 16px 0;
+    font-size: 11.5px;
+    color: var(--ink-dim);
   }
 
   .editor {
