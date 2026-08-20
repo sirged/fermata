@@ -244,6 +244,30 @@ test("a saved instrument's strings play without opening the editor", async ({ pa
   await expect(page.locator(".sounding")).toContainText("E5");
 });
 
+test("a failed load is retryable", async ({ page }) => {
+  // One hiccup must not leave the section permanently empty. A preset is the
+  // only way to start a definition, so a cached rejection would mean an empty
+  // list above an empty dropdown until a full page reload - and navigating away
+  // and back would hand back the same failure.
+  let failing = true;
+  await page.route("**/api/instruments/presets", (route) =>
+    failing ? route.abort("failed") : route.continue(),
+  );
+  await page.reload();
+
+  const failure = page.locator(".error.load");
+  await expect(failure).toBeVisible();
+  // and it does not claim there is simply nothing here
+  await expect(page.locator(".start select")).toHaveCount(0);
+  await expect(page.locator(".empty")).toHaveCount(0);
+
+  failing = false;
+  await failure.locator("button").click();
+  await expect(page.locator(".start select")).toBeVisible();
+  await expect(failure).toHaveCount(0);
+  await expect(page.locator(".start select option")).toHaveCount(12);
+});
+
 test("a definition can be deleted", async ({ page }) => {
   await choosePreset(page, "ukulele");
   await page.locator(".actions button.primary").click();
