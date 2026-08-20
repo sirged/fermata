@@ -18,7 +18,16 @@ router = APIRouter(prefix="/api")
 
 VALID_KINDS = {"notation", "tab", "both", "unknown"}
 VALID_PRACTICED = {"recent", "neglected"}
-MAX_TRANSCRIPTION_CHARS = 2_000_000
+# MusicXML is a good deal more verbose than alphaTex for the same music: across
+# the sampled library it runs about 44x the characters, and the longest score
+# comes out around 660 KB. This leaves room for a compilation several times
+# longer than anything in that sample.
+MAX_TRANSCRIPTION_CHARS = 8_000_000
+
+# The format a new extraction is stored in. Rows carry their own format, so
+# this changing does not invalidate what is already stored - see transcribe().
+TRANSCRIPTION_FORMAT = "musicxml"
+VALID_TRANSCRIPTION_FORMATS = {"musicxml", "alphatex"}
 
 
 def _score_row(conn, score_id: int):
@@ -372,15 +381,25 @@ def transcribe(score_id: int, body: TranscribeIn | None = Body(default=None)):
 
     # Only ever writes the source='extracted' row (see unique index on
     # (score_id, source) in db.py) - a source='edited' row is untouched.
+    #
+    # MusicXML REPLACES alphaTex as the stored format rather than sitting
+    # beside it: the unique index is (score_id, source) with no format in it,
+    # so two extracted rows in different formats could not coexist anyway, and
+    # a canonical output that is only sometimes canonical is not one. The
+    # `format` column is what makes the swap safe without a data migration -
+    # it is read back and dispatched on (see the web TabViewer), so rows
+    # written before this change keep rendering as the alphaTex they are, and
+    # a hand-edited row stays in whichever format it was edited in until its
+    # author edits it again.
     confidence_json = json.dumps({"warnings": result.warnings, "confidence": result.confidence})
     with tx() as tx_conn:
         tx_conn.execute(
             """INSERT INTO transcriptions(score_id, format, content, source, confidence, updated_at)
-               VALUES (?, 'alphatex', ?, 'extracted', ?, datetime('now'))
+               VALUES (?, ?, ?, 'extracted', ?, datetime('now'))
                ON CONFLICT(score_id, source) DO UPDATE SET
-                   content = excluded.content, confidence = excluded.confidence,
-                   updated_at = datetime('now')""",
-            (score_id, result.alphatex, confidence_json),
+                   format = excluded.format, content = excluded.content,
+                   confidence = excluded.confidence, updated_at = datetime('now')""",
+            (score_id, TRANSCRIPTION_FORMAT, result.musicxml, confidence_json),
         )
 
     conn = connect()
@@ -397,23 +416,58 @@ def transcribe(score_id: int, body: TranscribeIn | None = Body(default=None)):
     d["tuning_label"] = result.tuning_label
     d["time_signature"] = list(result.time_signature) if result.time_signature else None
     d["time_signature_source"] = result.time_signature_source
+    d["key_fifths"] = result.key_fifths
+    d["key_signature_source"] = result.key_signature_source
+    # Rule 8 conformance as data, not only as prose in the warning list, so a
+    # caller can compare it against what its own MusicXML tooling reports.
+    d["bars_overfull"] = result.bars_overfull
+    d["bars_short"] = result.bars_short
+    d["bars_defective"] = result.bars_defective
+    d["bars_measured"] = result.bars_measured
     return d
 
 
 class TranscriptionEditIn(BaseModel):
     content: str = Field(min_length=1, max_length=MAX_TRANSCRIPTION_CHARS)
+    # Optional because the stored format changed once and could again: a
+    # client that knows what it edited should say so, and one that does not
+    # gets the answer sniffed from the content rather than assumed. Storing
+    # the wrong format here is not a cosmetic mistake - the renderer dispatches
+    # on it, so a MusicXML document labelled alphatex fails to load at all.
+    format: str | None = None
+
+
+def _sniff_transcription_format(content: str) -> str:
+    """Which format an edited transcription is written in, read off the content.
+
+    This is the only thing that decides an edit's format, because the format of
+    the row being edited says nothing about what was typed into it: pasting
+    alphaTex over a MusicXML transcription used to store it as MusicXML, and
+    the viewer then handed it to the MusicXML loader and rendered nothing.
+
+    The test is that the content begins with '<'. Every MusicXML document does,
+    whether it opens with an XML declaration, a DOCTYPE, a comment or its root
+    element, and alphaTex has no form in which it can - metadata lines begin
+    with a backslash, beats with a colon or a fret number.
+    """
+    return "musicxml" if content.lstrip().startswith("<") else "alphatex"
 
 
 @router.put("/scores/{score_id}/transcription")
 def save_transcription(score_id: int, body: TranscriptionEditIn):
+    fmt = body.format or _sniff_transcription_format(body.content)
+    if fmt not in VALID_TRANSCRIPTION_FORMATS:
+        raise HTTPException(
+            422, f"format must be one of {sorted(VALID_TRANSCRIPTION_FORMATS)}")
     with tx() as conn:
         _score_row(conn, score_id)
         conn.execute(
             """INSERT INTO transcriptions(score_id, format, content, source, updated_at)
-               VALUES (?, 'alphatex', ?, 'edited', datetime('now'))
+               VALUES (?, ?, ?, 'edited', datetime('now'))
                ON CONFLICT(score_id, source) DO UPDATE SET
-                   content = excluded.content, updated_at = datetime('now')""",
-            (score_id, body.content),
+                   format = excluded.format, content = excluded.content,
+                   updated_at = datetime('now')""",
+            (score_id, fmt, body.content),
         )
     conn = connect()
     row = conn.execute(

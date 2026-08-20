@@ -31,12 +31,16 @@ them.
 - **Tab out of a PDF** — engraved guitar PDFs carry their tab as real text and
   their rhythm in the music font's own glyphs, so Fermata reads both directly
   instead of guessing at pixels, and renders the result as a playable,
-  editable staff beside the original page. Fret numbers, strings and chords
-  come out reliably; how much of the rhythm survives depends on the engraving,
-  and whatever stayed uncertain is listed with the staff rather than hidden.
-  Music written in two voices is still flattened into one, so bars in
-  polyphonic pieces frequently do not add up yet — the count is reported.
-  Scanned PDFs have nothing to read and are not transcribed.
+  editable staff beside the original page. The transcription is written as
+  **MusicXML**, so it opens in other notation software rather than only here —
+  see [the tab profile](docs/musicxml-tab-profile.md) for exactly what is
+  written. Fret numbers, strings and chords come out reliably; how much of the
+  rhythm survives depends on the engraving, and whatever stayed uncertain is
+  listed with the staff rather than hidden. Bars whose voices the engraved
+  stems do not separate still do not add up — that is now a stated conformance
+  rule of the profile, so any MusicXML tool finds those bars too, and the count
+  is reported either way. Scanned PDFs have nothing to read and are not
+  transcribed.
 - **Practice tracking** — a session timer per piece, with recently-practised
   and neglected views so the library reflects what you are actually working on.
 - **Gig mode** — fullscreen, screen kept awake, oversized tap targets and
@@ -87,11 +91,24 @@ npm install
 npm run dev
 ```
 
+Tests:
+
+```bash
+cd server
+pip install -e ".[dev]"
+python -m pytest -q
+```
+
+Tests that need real sheet music read it from `FERMATA_TEST_LIBRARY` and skip
+when it is unset. Setting `FERMATA_MUSICXML_XSD` to a local copy of the
+MusicXML 4.0 schema additionally validates the emitted transcriptions against
+it — see [the tab profile](docs/musicxml-tab-profile.md#checking-a-file).
+
 ## Formats
 
 | Format | How it reads |
 | --- | --- |
-| PDF, engraved with a tab staff | Practice reader, plus transcription to a playable staff you can view beside the page |
+| PDF, engraved with a tab staff | Practice reader, plus transcription to MusicXML — a playable staff beside the page, and a file other notation software reads ([profile](docs/musicxml-tab-profile.md)) |
 | PDF, engraved without tab | Practice reader; nothing to transcribe from |
 | PDF, scanned | Practice reader only — a scan holds no text or glyphs to read |
 | MusicXML (`.musicxml`, `.mxl`) | Interactive: notation / tab / both, audio, full fidelity |
@@ -104,9 +121,9 @@ demo*) if your library is PDF-only so far.
 
 ## Roadmap
 
-- **Separating voices when transcribing** — the largest gap between a
-  transcription and a score you could practise from, and the reason bars in
-  polyphonic pieces overfill today
+- **Tuplets and ties when transcribing** — the largest remaining gap between a
+  transcription and a score you could practise from, and the reason bars still
+  overfill once voices have been separated
 - **Score creation and editing** — build a staff from scratch in the browser,
   instrument-agnostic with first-class guitar tablature support
 - **More import formats** — MIDI and plain-text tab in particular, since those

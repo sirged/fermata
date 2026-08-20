@@ -7,6 +7,10 @@
     score = null,
     demo = false,
     tex = null,
+    // Which format `tex` holds. Transcriptions are stored as MusicXML, but a
+    // row written before that change - or hand-edited in alphaTex - carries
+    // its own format, so this is read from the row rather than assumed.
+    format = "alphatex",
     gigMode = false,
     onToggleGig = () => {},
     practiceLabel = null,
@@ -112,9 +116,15 @@
 
     if (demo) {
       at.tex(DEMO_TEX);
+    } else if (tex != null && format === "musicxml") {
+      // MusicXML goes through the same byte loader a file from the library
+      // uses - alphaTab detects the format from the content, so there is no
+      // separate MusicXML entry point. Re-runs whenever tex changes, so
+      // saving or reverting an edit re-renders.
+      at.load(new TextEncoder().encode(tex));
     } else if (tex != null) {
-      // caller supplies alphaTex directly (e.g. a rendered transcription) -
-      // re-runs whenever tex changes, so saving/reverting an edit re-renders
+      // caller supplies alphaTex directly - re-runs whenever tex changes, so
+      // saving/reverting an edit re-renders
       at.tex(tex);
     } else if (score) {
       fetch(api.fileUrl(score.id))

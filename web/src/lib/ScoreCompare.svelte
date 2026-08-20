@@ -191,6 +191,8 @@
       const res = await api.saveTranscription(score.id, draft);
       // be defensive about what the endpoint actually echoes back - the
       // edit itself is the source of truth for content/source either way
+      // `res` carries the format the server read off the content, which is
+      // what the viewer dispatches on - so let it win over the loaded row's.
       transcription = { ...transcription, ...res, content: draft, source: "edited" };
       editorOpen = false;
     } catch (e) {
@@ -259,7 +261,8 @@
           <h3>No staff transcription yet</h3>
           <p>
             Fermata can pull the guitar tab out of this PDF and render it as a playable,
-            editable staff. Fret and string extraction is accurate; how much of the rhythm
+            editable staff, saved as MusicXML so it opens in other notation software too.
+            Fret and string extraction is accurate; how much of the rhythm
             can be recovered depends on how the PDF was engraved, and anything left
             uncertain is listed alongside the finished staff. Check it against the PDF
             before trusting it.
@@ -302,7 +305,14 @@
         </div>
       {/if}
       <div class="staff-render">
-        <TabViewer tex={transcription.content} {gigMode} {onToggleGig} {practiceLabel} {onStopPractice} />
+        <TabViewer
+          tex={transcription.content}
+          format={transcription.format}
+          {gigMode}
+          {onToggleGig}
+          {practiceLabel}
+          {onStopPractice}
+        />
       </div>
     {/if}
   </div>
@@ -321,6 +331,12 @@
           <span class="source-badge" class:edited={transcription.source === "edited"}>
             {transcription.source === "edited" ? "edited" : "extracted"}
           </span>
+          <!-- the stored format, so "Edit source" says what you'd be editing -
+               transcriptions are MusicXML, but a row saved before that change,
+               or hand-edited in alphaTex, keeps its own format -->
+          {#if transcription.format}
+            <span class="source-badge">{transcription.format}</span>
+          {/if}
           <button class="ghost" onclick={() => (editorOpen ? (editorOpen = false) : openEditor())}>
             {editorOpen ? "Close editor" : "Edit source"}
           </button>

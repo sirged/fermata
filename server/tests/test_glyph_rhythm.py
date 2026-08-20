@@ -519,3 +519,139 @@ def test_a_seconds_chord_keeps_its_stem_despite_one_displaced_notehead():
                _note(57.0, 100.0, "c")]  # the displaced one, right of the stem
     G._assign_stem_directions(members, {"c": stem})
     assert [m.stem_dir for m in members] == ["up", "up", "up"]
+
+
+# ---------------------------------------------------------------------------
+# Key signature
+# ---------------------------------------------------------------------------
+
+# One synthetic notation staff: five lines 5pt apart, top 200, bottom 220,
+# middle 210. A clef at x 50-66, then the key signature, then the meter.
+_KS_TOP, _KS_BOTTOM, _KS_MID = 200.0, 220.0, 210.0
+
+
+def _ks_clef(x0=50.0):
+    return _ev("clef", x0, 200.0, x0 + 16.0, 220.0)
+
+
+def _ks_meter(x0=110.0):
+    """A stacked 4/4: numerator above the middle line, denominator below, at
+    the same x."""
+    return [
+        _ev("digit4", x0, 200.0, x0 + 7.0, 209.0),
+        _ev("digit4", x0, 211.0, x0 + 7.0, 220.0),
+    ]
+
+
+def _ks_sharps(count, x0=70.0, step=7.0):
+    return [_ev("sharp", x0 + i * step, 203.0, x0 + i * step + 5.0, 213.0)
+            for i in range(count)]
+
+
+def _decode_ks(events, monkeypatch):
+    """Run decode_key_signature over a synthetic glyph set."""
+    page = object()
+    monkeypatch.setattr(
+        G, "extract_glyph_events",
+        lambda _page: G.PageGlyphs(list(events), {"Opus": []}, [], []))
+    return G.decode_key_signature(page, _KS_TOP, _KS_BOTTOM, 48.0, 5.0)
+
+
+def test_key_signature_reads_the_accidentals_between_clef_and_meter(monkeypatch):
+    events = [_ks_clef()] + _ks_sharps(4) + _ks_meter()
+    fifths, why = _decode_ks(events, monkeypatch)
+    assert fifths == 4
+    assert "4 accidental glyph" in why
+
+
+def test_key_signature_counts_flats_as_negative_fifths(monkeypatch):
+    flats = [_ev("flat", 70.0 + i * 7.0, 203.0, 75.0 + i * 7.0, 213.0) for i in range(3)]
+    events = [_ks_clef()] + flats + _ks_meter()
+    fifths, _why = _decode_ks(events, monkeypatch)
+    assert fifths == -3
+
+
+def test_an_octave_transposing_clef_digit_is_not_a_meter_boundary(monkeypatch):
+    """The regression this guard exists for. An octave-transposing treble clef
+    - routine in guitar notation - carries a small 8 below the staff, which is
+    a digit glyph sitting AT the clef, left of the key signature. Treating any
+    digit as the meter collapsed the window to nothing, so the accidental run
+    came out empty and the reader returned a confident 0: a piece in E major
+    silently spelled as C major and reported as glyph-decoded, high
+    confidence. Only a stacked numerator/denominator pair is a meter."""
+    transposing_8 = _ev("digit8", 54.0, 221.0, 60.0, 229.0)  # under the clef
+    events = [_ks_clef(), transposing_8] + _ks_sharps(4) + _ks_meter()
+    fifths, why = _decode_ks(events, monkeypatch)
+    assert fifths == 4, f"transposing clef digit swallowed the key signature: {why}"
+
+
+def test_a_stray_numeral_between_accidentals_does_not_truncate_the_run(monkeypatch):
+    """Same failure in a different disguise: a lone digit part-way through the
+    key signature used to end it, reading four sharps as two."""
+    stray = _ev("digit3", 83.0, 221.0, 88.0, 229.0)
+    events = [_ks_clef(), stray] + _ks_sharps(4) + _ks_meter()
+    fifths, _why = _decode_ks(events, monkeypatch)
+    assert fifths == 4
+
+
+def test_no_printed_meter_declines_rather_than_answering_zero(monkeypatch):
+    """Without the meter as a right-hand boundary there is nothing separating a
+    key signature from an accidental on the first note, so the honest answer is
+    "not detected" - not C major."""
+    events = [_ks_clef()] + _ks_sharps(1)
+    fifths, why = _decode_ks(events, monkeypatch)
+    assert fifths is None
+    assert "no meter is printed" in why
+
+
+def test_a_lone_meter_digit_is_not_enough_to_establish_the_window(monkeypatch):
+    events = [_ks_clef()] + _ks_sharps(2) + [_ev("digit4", 110.0, 200.0, 117.0, 209.0)]
+    fifths, why = _decode_ks(events, monkeypatch)
+    assert fifths is None
+    assert "no meter is printed" in why
+
+
+def test_a_common_time_symbol_is_a_valid_meter_boundary(monkeypatch):
+    events = [_ks_clef()] + _ks_sharps(2) + [_ev("common_time", 110.0, 203.0, 118.0, 217.0)]
+    fifths, _why = _decode_ks(events, monkeypatch)
+    assert fifths == 2
+
+
+def test_an_empty_key_signature_is_zero_not_a_failure(monkeypatch):
+    """C major and A minor really do print no accidentals, and once the window
+    is established that is an answer rather than a miss."""
+    events = [_ks_clef()] + _ks_meter()
+    fifths, why = _decode_ks(events, monkeypatch)
+    assert fifths == 0
+    assert "no accidentals" in why
+
+
+def test_a_meter_left_of_the_clef_declines_instead_of_reading_zero(monkeypatch):
+    """A degenerate window holds no accidentals for the same reason an empty
+    key signature does. The two must not come back as the same answer."""
+    events = [_ks_clef(x0=90.0)] + _ks_sharps(2, x0=70.0) + _ks_meter(x0=50.0)
+    fifths, why = _decode_ks(events, monkeypatch)
+    assert fifths is None
+    assert "not to the right of the clef" in why
+
+
+def test_mixed_sharps_and_flats_are_not_a_key_signature(monkeypatch):
+    events = ([_ks_clef()] + _ks_sharps(1)
+              + [_ev("flat", 80.0, 203.0, 85.0, 213.0)] + _ks_meter())
+    fifths, why = _decode_ks(events, monkeypatch)
+    assert fifths is None
+    assert "both sharps and flats" in why
+
+
+def test_more_accidentals_than_a_key_signature_can_hold_is_declined(monkeypatch):
+    events = [_ks_clef()] + _ks_sharps(8, x0=70.0, step=4.0) + _ks_meter()
+    fifths, why = _decode_ks(events, monkeypatch)
+    assert fifths is None
+    assert "more than a key signature can hold" in why
+
+
+def test_meter_left_edge_takes_the_leftmost_stacked_pair():
+    window = _ks_meter(x0=110.0) + _ks_meter(x0=200.0)
+    edge, why = G._meter_left_edge(window, _KS_MID)
+    assert edge == 110.0
+    assert why is None

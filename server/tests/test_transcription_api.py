@@ -158,3 +158,125 @@ def test_delete_transcription_404_when_none_exists(app_env, insert_score):
     with pytest.raises(HTTPException) as exc_info2:
         api.delete_transcription(score_id)
     assert exc_info2.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# The stored format
+# ---------------------------------------------------------------------------
+
+
+def test_extraction_is_stored_as_musicxml(app_env, zanarkand_pdf, monkeypatch, insert_score):
+    """MusicXML is the canonical stored format. The row carries its own format
+    rather than the reader assuming one, which is what lets this change land
+    without a data migration."""
+    import xml.etree.ElementTree as ET
+
+    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, zanarkand_pdf.name)
+
+    result = api.transcribe(score_id, body=None)
+    assert result["format"] == "musicxml"
+    root = ET.fromstring(result["content"])
+    assert root.tag == "score-partwise"
+    assert root.get("version") == "4.0"
+    assert result["key_signature_source"] == "glyph-decoded"
+
+    fetched = api.get_transcription(score_id)
+    assert fetched["format"] == "musicxml"
+    assert fetched["content"] == result["content"]
+
+
+def test_an_alphatex_edit_is_stored_and_returned_as_alphatex(
+    app_env, zanarkand_pdf, monkeypatch, insert_score
+):
+    """A row written in one format must keep saying so. The renderer dispatches
+    on it, so a hand edit relabelled musicxml would simply fail to load."""
+    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, zanarkand_pdf.name)
+    api.transcribe(score_id, body=None)
+
+    tex = '\title "hand edited"\n.\n:4 0.1 |'
+    edited = api.save_transcription(score_id, api.TranscriptionEditIn(content=tex))
+    assert edited["format"] == "alphatex"
+    assert api.get_transcription(score_id)["format"] == "alphatex"
+    # the extracted row underneath is untouched and still MusicXML
+    row = conn.execute(
+        "SELECT format FROM transcriptions WHERE score_id = ? AND source = 'extracted'",
+        (score_id,),
+    ).fetchone()
+    assert row["format"] == "musicxml"
+
+
+def test_an_edit_format_is_sniffed_when_the_client_does_not_say(app_env, insert_score):
+    """A client that does not send `format` gets it read off the content rather
+    than assumed, because assuming wrong makes the transcription unrenderable."""
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+    xml = '<?xml version="1.0" encoding="UTF-8"?>\n<score-partwise version="4.0"/>'
+    saved = api.save_transcription(score_id, api.TranscriptionEditIn(content=xml))
+    assert saved["format"] == "musicxml"
+    tex = ":4 0.1 |"
+    saved = api.save_transcription(score_id, api.TranscriptionEditIn(content=tex))
+    assert saved["format"] == "alphatex"
+
+
+def test_an_explicit_edit_format_wins_over_the_sniff(app_env, insert_score):
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+    saved = api.save_transcription(
+        score_id, api.TranscriptionEditIn(content=":4 0.1 |", format="musicxml"))
+    assert saved["format"] == "musicxml"
+
+
+def test_an_unknown_edit_format_is_rejected(app_env, insert_score):
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+    with pytest.raises(HTTPException) as exc_info:
+        api.save_transcription(
+            score_id, api.TranscriptionEditIn(content=":4 0.1 |", format="lilypond"))
+    assert exc_info.value.status_code == 422
+
+
+def test_pasting_alphatex_over_a_musicxml_row_stores_it_as_alphatex(
+    app_env, zanarkand_pdf, monkeypatch, insert_score
+):
+    """The format of an edit is decided by what was TYPED, not by the format of
+    the row it replaces. Storing the loaded row's format meant a user who
+    pasted alphaTex into the source editor of a MusicXML transcription got a
+    row labelled musicxml; the viewer dispatched on that label, handed alphaTex
+    to the MusicXML loader, and the staff never appeared."""
+    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, zanarkand_pdf.name)
+
+    extracted = api.transcribe(score_id, body=None)
+    assert extracted["format"] == "musicxml"
+
+    tex = '\title "hand edited"\n.\n:4 0.1 |'
+    saved = api.save_transcription(score_id, api.TranscriptionEditIn(content=tex))
+    assert saved["format"] == "alphatex"
+    assert api.get_transcription(score_id)["format"] == "alphatex"
+
+    # and the reverse: MusicXML pasted over an alphatex row
+    xml = '<?xml version="1.0"?>\n<score-partwise version="4.0"/>'
+    saved = api.save_transcription(score_id, api.TranscriptionEditIn(content=xml))
+    assert saved["format"] == "musicxml"
+
+
+@pytest.mark.parametrize("content,expected", [
+    ('<?xml version="1.0"?><score-partwise/>', "musicxml"),
+    ("<score-partwise version=\"4.0\"/>", "musicxml"),
+    ("<!DOCTYPE score-partwise><score-partwise/>", "musicxml"),
+    ("<!-- a comment first --><score-partwise/>", "musicxml"),
+    ("\n\n  <score-partwise/>", "musicxml"),
+    ('\title "x"\n.\n:4 0.1 |', "alphatex"),
+    (":4 0.1 |", "alphatex"),
+    ("\tempo 88\n.\n:8 3.4{d} |", "alphatex"),
+])
+def test_edit_format_is_read_off_the_content(content, expected):
+    """alphaTex has no form that begins with '<' - metadata lines begin with a
+    backslash and beats with a colon or a fret number - so the leading
+    character settles it."""
+    assert api._sniff_transcription_format(content) == expected
