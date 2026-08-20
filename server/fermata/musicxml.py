@@ -148,10 +148,13 @@ def spell_pitch(midi: int, fifths: int = 0) -> tuple[str, int, int]:
     Diatonic notes are never affected by the tie-break: a key's own seven
     notes sit within three positions of its centre and their enharmonic
     partners twelve further out, so distance alone always decides them. Only
-    chromatic notes are ever in question, and in a key with five or more
-    accidentals the nearest-position rule can pick a spelling an engraver
-    would not have chosen (B sharp rather than C natural in B major). It is
-    the right pitch either way - see the module docstring.
+    chromatic notes are ever in question, and from FOUR accidentals up the
+    nearest-position rule can pick a spelling an engraver would not have
+    chosen. E major spells F natural as E sharp, and A flat major spells B
+    natural as C flat - which also moves the printed octave, since C flat 5
+    and B natural 4 are the same pitch. Three accidentals or fewer never
+    produce one. It is the right pitch either way, only oddly written - see
+    the module docstring.
 
     The octave follows from the spelling rather than from the MIDI number
     alone, so MIDI 60 spelled as B sharp is octave 3, not 4.
@@ -215,10 +218,16 @@ def is_representable(midi: int, fifths: int = 0) -> bool:
     return MIN_OCTAVE <= spell_pitch(midi, fifths)[2] <= MAX_OCTAVE
 
 
-def unrepresentable_notes(measures, tuning, capo=0, fifths=0) -> int:
+def unrepresentable_notes(measures, tuning, fifths=0, capo=None) -> int:
     """How many notes in these measures have no writable `<pitch>`, and so are
     replaced in the emitted score - see build(). Counted from the same
-    predicate the emitter applies, so the report and the file agree."""
+    predicate the emitter applies, so the report and the file agree.
+
+    `fifths` and `capo` mirror build()'s own parameters, in the same order and
+    with the same defaults: both shift which notes are representable at the
+    octave boundary, so a caller that passes one to build() and not to this
+    would get a count that quietly disagrees with the file.
+    """
     tuning = list(tuning) if tuning else []
     if not tuning:
         return 0

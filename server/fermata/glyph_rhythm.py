@@ -1468,6 +1468,63 @@ def _cluster_span(cluster):
     return min(e.x0 for e in cluster), max(e.x1 for e in cluster)
 
 
+_METER_SYMBOL_CATS = ("common_time", "cut_time")
+
+
+def _stacked_digit_pairs(window, mid):
+    """Numerator/denominator digit-run pairs in this window: runs above and
+    below `mid` whose x-spans OVERLAP. Returns (pairs, why_not), pairs sorted
+    widest overlap first.
+
+    Overlapping x is what makes two digits a METER rather than two unrelated
+    numerals, and it is the only structural test available - which is why both
+    readers of a printed meter share this one function.
+    _signature_from_window needs the meter's VALUE; _meter_left_edge, for
+    decode_key_signature, needs only its POSITION. Neither may treat a LONE
+    digit as a meter: the small 8 of an octave-transposing treble clef is a
+    digit glyph engraved at the clef, and it is routine in guitar notation.
+    """
+    digits = [e for e in window if e.category in DIGIT_CATS]
+    if len(digits) < 2:
+        return [], f"only {len(digits)} time-signature digit glyph(s) found"
+
+    num_digits = [e for e in digits if e.yc < mid]
+    den_digits = [e for e in digits if e.yc >= mid]
+    if not num_digits or not den_digits:
+        return [], "digit glyphs found but not split across a numerator/denominator band"
+
+    pairs = []
+    for nc in _group_digit_clusters(num_digits):
+        n0, n1 = _cluster_span(nc)
+        for dc in _group_digit_clusters(den_digits):
+            d0, d1 = _cluster_span(dc)
+            overlap = min(n1, d1) - max(n0, d0)
+            if overlap > 0:
+                pairs.append((overlap, nc, dc))
+    if not pairs:
+        return [], "digit glyphs found but numerator/denominator x-spans don't align"
+
+    pairs.sort(key=lambda t: -t[0])
+    return pairs, None
+
+
+def _meter_left_edge(window, mid):
+    """The x of the leftmost printed meter in this window, or (None, why).
+
+    A meter is a common/cut-time symbol, or a numerator digit run stacked over
+    a denominator run - see _stacked_digit_pairs for why a lone digit is not
+    one. Used as the right-hand boundary of the key signature, where getting
+    it too far left silently empties the key signature instead of failing.
+    """
+    edges = [e.x0 for e in window if e.category in _METER_SYMBOL_CATS]
+    pairs, why_not = _stacked_digit_pairs(window, mid)
+    for _overlap, nc, dc in pairs:
+        edges.append(min(_cluster_span(nc)[0], _cluster_span(dc)[0]))
+    if not edges:
+        return None, why_not or "no common-time symbol and no stacked meter digits"
+    return min(edges), None
+
+
 def _signature_from_window(window, mid):
     """Resolve one x-window of glyphs into a time signature, or (None, why)."""
     for e in window:
@@ -1476,36 +1533,16 @@ def _signature_from_window(window, mid):
         if e.category == "cut_time":
             return (2, 2), "cut_time symbol"
 
-    digits = [e for e in window if e.category in DIGIT_CATS]
-    if len(digits) < 2:
-        return None, f"only {len(digits)} time-signature digit glyph(s) found"
-
-    num_digits = [e for e in digits if e.yc < mid]
-    den_digits = [e for e in digits if e.yc >= mid]
-    if not num_digits or not den_digits:
-        return None, "digit glyphs found but not split across a numerator/denominator band"
-
-    num_clusters = _group_digit_clusters(num_digits)
-    den_clusters = _group_digit_clusters(den_digits)
-
-    # A real time signature stacks its numerator and denominator digit runs
-    # at the same x column - pick the numerator/denominator cluster pair
-    # whose x-spans overlap most, and require that match to be unambiguous
-    # (no near-tied second-best pair using a DIFFERENT cluster) before
-    # trusting it. If nothing lines up cleanly, report "not detected"
-    # rather than ever returning a confidently-wrong guess.
-    pairs = []
-    for nc in num_clusters:
-        n0, n1 = _cluster_span(nc)
-        for dc in den_clusters:
-            d0, d1 = _cluster_span(dc)
-            overlap = min(n1, d1) - max(n0, d0)
-            if overlap > 0:
-                pairs.append((overlap, nc, dc))
+    # A real time signature stacks its numerator and denominator digit runs at
+    # the same x column - take the pair whose x-spans overlap most, and require
+    # that match to be unambiguous (no near-tied second-best pair using a
+    # DIFFERENT cluster) before trusting it. If nothing lines up cleanly,
+    # report "not detected" rather than ever returning a confidently-wrong
+    # guess.
+    pairs, why_not = _stacked_digit_pairs(window, mid)
     if not pairs:
-        return None, "digit glyphs found but numerator/denominator x-spans don't align"
+        return None, why_not
 
-    pairs.sort(key=lambda t: -t[0])
     best_overlap, best_nc, best_dc = pairs[0]
     for overlap, nc, dc in pairs[1:]:
         if overlap > best_overlap * 0.6 and (nc is not best_nc or dc is not best_dc):
@@ -1554,9 +1591,6 @@ def decode_time_signature(page, staff_top, staff_bottom, staff_x0, spacing=None)
 # variants are cautionary accidentals printed over a note and are never part
 # of one.
 KEY_ACCIDENTAL_CATS = {"sharp": 1, "flat": -1}
-# What ENDS the key signature: the printed meter. Both the digit form and the
-# common/cut-time symbols count.
-_METER_CATS = set(DIGIT_CATS) | {"common_time", "cut_time"}
 # How far into the staff the clef + up to seven accidentals + the meter
 # reach. Wider than decode_time_signature's own lead window, because a
 # seven-accidental signature pushes the meter further right than the 8.8
@@ -1580,6 +1614,16 @@ def decode_key_signature(page, staff_top, staff_bottom, staff_x0, spacing=None):
     boundary, a piece in C major whose first note happens to be an F sharp
     reads as G major.
 
+    "Meter" here means a real one - a common/cut-time symbol, or a numerator
+    digit run stacked over a denominator run (_meter_left_edge). Accepting any
+    digit as the boundary is not good enough, and fails in the one direction
+    that cannot be noticed: the small 8 of an octave-transposing treble clef is
+    a digit glyph engraved AT the clef, so it collapses the window to nothing,
+    the accidental run comes out empty, and the function returns a confident 0.
+    A piece in E major would be spelled as C major and reported as decoded. The
+    same goes for any stray numeral between two accidentals, which would
+    truncate the run and read four sharps as two.
+
     Engravers print the meter once, at the start of the piece and again only
     where it changes, but reprint the key signature on every system - so in
     practice this answers on the first system and declines on the rest, which
@@ -1602,17 +1646,28 @@ def decode_key_signature(page, staff_top, staff_bottom, staff_x0, spacing=None):
     if not band:
         return None, "no music glyphs at the start of this staff"
 
-    meter_xs = [e.x0 for e in band if e.category in _METER_CATS]
-    if not meter_xs:
+    mid = (staff_top + staff_bottom) / 2
+    meter_x0, why_no_meter = _meter_left_edge(band, mid)
+    if meter_x0 is None:
         return None, (
             "no meter is printed at the start of this staff, so there is no boundary "
-            "separating a key signature from an accidental on the first note"
+            f"separating a key signature from an accidental on the first note ({why_no_meter})"
         )
-    meter_x0 = min(meter_xs)
 
-    # Right of the clef, left of the meter.
-    clef_xs = [e.x1 for e in band if e.category == "clef"]
-    left = max(clef_xs) if clef_xs else (staff_x0 - tol.drawing_x_pad)
+    # Right of the clef, left of the meter. The LEFTMOST clef's right edge: a
+    # courtesy clef further along the system would otherwise push the window's
+    # left wall past the accidentals and empty it.
+    clefs = [e for e in band if e.category == "clef"]
+    left = min(clefs, key=lambda e: e.x0).x1 if clefs else (staff_x0 - tol.drawing_x_pad)
+
+    if meter_x0 <= left:
+        # A degenerate window has no accidentals in it for the same reason an
+        # empty key signature does, and the two must not be confused - "no
+        # sharps or flats" is an answer, "I could not look" is not.
+        return None, (
+            "the printed meter is not to the right of the clef, so no key-signature "
+            "window can be established on this staff"
+        )
 
     run = [e for e in band
            if e.category in KEY_ACCIDENTAL_CATS and left <= e.x0 < meter_x0]

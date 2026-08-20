@@ -418,6 +418,12 @@ def transcribe(score_id: int, body: TranscribeIn | None = Body(default=None)):
     d["time_signature_source"] = result.time_signature_source
     d["key_fifths"] = result.key_fifths
     d["key_signature_source"] = result.key_signature_source
+    # Rule 8 conformance as data, not only as prose in the warning list, so a
+    # caller can compare it against what its own MusicXML tooling reports.
+    d["bars_overfull"] = result.bars_overfull
+    d["bars_short"] = result.bars_short
+    d["bars_defective"] = result.bars_defective
+    d["bars_measured"] = result.bars_measured
     return d
 
 
@@ -432,16 +438,19 @@ class TranscriptionEditIn(BaseModel):
 
 
 def _sniff_transcription_format(content: str) -> str:
-    """Which format an edited transcription is written in, from the content.
+    """Which format an edited transcription is written in, read off the content.
 
-    Unambiguous in practice: a MusicXML document opens with an XML declaration
-    or its root element, and alphaTex has no form in which it can begin with
-    a '<'.
+    This is the only thing that decides an edit's format, because the format of
+    the row being edited says nothing about what was typed into it: pasting
+    alphaTex over a MusicXML transcription used to store it as MusicXML, and
+    the viewer then handed it to the MusicXML loader and rendered nothing.
+
+    The test is that the content begins with '<'. Every MusicXML document does,
+    whether it opens with an XML declaration, a DOCTYPE, a comment or its root
+    element, and alphaTex has no form in which it can - metadata lines begin
+    with a backslash, beats with a colon or a fret number.
     """
-    head = content.lstrip()[:200]
-    if head.startswith("<?xml") or head.startswith("<score-partwise") or head.startswith("<!DOCTYPE"):
-        return "musicxml"
-    return "alphatex"
+    return "musicxml" if content.lstrip().startswith("<") else "alphatex"
 
 
 @router.put("/scores/{score_id}/transcription")

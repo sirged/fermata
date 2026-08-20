@@ -366,9 +366,14 @@ six positions either way — and both halves of the tie-break earn their place:
 
 **Where this profile guesses, and what it costs.** Two honest limitations:
 
-1. In a key with five or more accidentals, the nearest-position rule can pick a
-   chromatic spelling an engraver would not have — B sharp rather than C
-   natural in B major. It is the right pitch, spelled unusually.
+1. From **four** accidentals up, the nearest-position rule can pick a chromatic
+   spelling an engraver would not have. E major spells F natural as E sharp; A
+   flat major spells B natural as C flat, which also moves the printed octave,
+   since C flat 5 and B natural 4 are the same pitch. B major spells C natural
+   as B sharp. Three accidentals or fewer never produce one. The pitch is
+   correct in every case; only the spelling is unusual, so a reader that
+   derives pitch from `<pitch>` is unaffected and one that renders accidentals
+   literally will show something a human would have written differently.
 2. A producer that cannot read the key signature at all should write
    `<fifths>0</fifths>`, which is what MusicXML means by no key signature, and
    spell accordingly.
@@ -677,8 +682,17 @@ voice and note counts along with the first note's MIDI value, string and fret.
 **What Fermata reports about its own transcriptions.** A transcription's
 warnings and confidence live on the transcription record and in the API
 response, not in the MusicXML — the emitted file is an ordinary score with
-nothing unusual in it. Those warnings include how many measures fail Rule 8, in
-each direction, and how many notes were unwritable under Rule 11.
+nothing unusual in it. The warnings say how many measures fail Rule 8, in each
+direction, and how many notes were unwritable under Rule 11. The same Rule 8
+counts are also returned as numbers — `bars_overfull`, `bars_short`,
+`bars_defective` and `bars_measured` — so a consumer can compare them against
+what its own MusicXML tooling makes of the file.
+
+`bars_defective` counts a measure once whichever way it is wrong. A measure
+with two voices can have one over its meter and the other under it, so
+`bars_overfull + bars_short` double-counts such a measure and can exceed
+`bars_measured`; `bars_defective` is the figure to compare against another
+tool's count, and the one the reported confidence is derived from.
 
 ## Out of scope
 

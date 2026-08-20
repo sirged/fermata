@@ -69,14 +69,18 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body ?? {}),
     }).then(j),
-  // `format` says what the edited text actually is. The endpoint will sniff
-  // it when omitted, but the client already knows and the renderer dispatches
-  // on the stored value, so send it rather than rely on the guess.
-  saveTranscription: (id, content, format) =>
+  // No `format` is sent: what the user typed into the source editor decides
+  // it, not the format of the row they opened, and the server reads it off the
+  // content. Sending the loaded row's format stored a pasted alphaTex edit as
+  // musicxml, after which the viewer handed it to the MusicXML loader and the
+  // staff never appeared. Sniffing here as well would be a second copy of the
+  // rule with its own chance to disagree; the endpoint still accepts an
+  // explicit format for a client that genuinely knows.
+  saveTranscription: (id, content) =>
     fetch(`/api/scores/${id}/transcription`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, format }),
+      body: JSON.stringify({ content }),
     }).then(j),
   // deletes only the edited row, leaving the extracted one (if any) as the
   // real revert target; may 404 (nothing left) or 405 (not deployed yet)

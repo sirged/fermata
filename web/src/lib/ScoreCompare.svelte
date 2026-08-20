@@ -188,9 +188,11 @@
     saving = true;
     saveError = "";
     try {
-      const res = await api.saveTranscription(score.id, draft, transcription?.format);
+      const res = await api.saveTranscription(score.id, draft);
       // be defensive about what the endpoint actually echoes back - the
       // edit itself is the source of truth for content/source either way
+      // `res` carries the format the server read off the content, which is
+      // what the viewer dispatches on - so let it win over the loaded row's.
       transcription = { ...transcription, ...res, content: draft, source: "edited" };
       editorOpen = false;
     } catch (e) {

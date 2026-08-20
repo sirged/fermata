@@ -1007,14 +1007,16 @@ def test_overfull_bars_are_reported_and_cap_the_confidence():
     wrong, because merged voices overfill it. That must not read as high
     confidence, and the count must reach the user."""
     all_glyph = collections.Counter({tabextract.PROV_GLYPHS: 5})
-    w, c = tabextract._rhythm_report(all_glyph, {}, overfull=37, bars=50)
+    w, c = tabextract._rhythm_report(
+        all_glyph, {}, tabextract._BarConformance(37, 0, 37, 50))
     assert any("37 of 50 bar(s) hold more than their time signature" in x for x in w)
     assert any("two voices" in x for x in w)
     assert not c.startswith("high")
     assert "37 of 50" in c
 
     # A stray overfull bar is worth reporting but shouldn't condemn the score.
-    w2, c2 = tabextract._rhythm_report(all_glyph, {}, overfull=1, bars=50)
+    w2, c2 = tabextract._rhythm_report(
+        all_glyph, {}, tabextract._BarConformance(1, 0, 1, 50))
     assert any("1 of 50 bar(s) hold more" in x for x in w2)
     assert c2.startswith("high")
 
@@ -1164,16 +1166,20 @@ def test_calibrated_maestro_still_decodes(zanarkand_pdf):
 def test_bar_conformance_counts_both_directions():
     """The MusicXML profile's Rule 8 measured on the beats model. A bar can be
     wrong in either direction and both have to be visible - only the overfull
-    count existed before, so a bar with a note missing from it looked clean."""
+    count existed before, so a bar with a note missing from it looked clean.
+
+    The fields are (overfull, short, defective, counted)."""
     exact = [[(4, 0, [(1, 0)])] * 3]
     over = [[(4, 0, [(1, 0)])] * 4]
     short = [[(4, 0, [(1, 0)])] * 2]
-    assert tabextract._bar_conformance([(exact, (3, 4))]) == (0, 0, 1)
-    assert tabextract._bar_conformance([(over, (3, 4))]) == (1, 0, 1)
-    assert tabextract._bar_conformance([(short, (3, 4))]) == (0, 1, 1)
-    # a bar is counted once per direction however many voices are wrong
+    assert tabextract._bar_conformance([(exact, (3, 4))]) == (0, 0, 0, 1)
+    assert tabextract._bar_conformance([(over, (3, 4))]) == (1, 0, 1, 1)
+    assert tabextract._bar_conformance([(short, (3, 4))]) == (0, 1, 1, 1)
+    # A bar with one voice over its meter and another under it is wrong ONCE.
+    # overfull + short would count it twice and can exceed the bar count, which
+    # is why `defective` is a field of its own.
     both = [[(4, 0, [(1, 0)])] * 4, [(4, 0, [(2, 0)])] * 2]
-    assert tabextract._bar_conformance([(both, (3, 4))]) == (1, 1, 1)
+    assert tabextract._bar_conformance([(both, (3, 4))]) == (1, 1, 1, 1)
     # _overfull_bars keeps its old shape for the callers that want just that
     assert tabextract._overfull_bars([(over, (3, 4))]) == (1, 1)
 
@@ -1182,11 +1188,58 @@ def test_short_bars_are_reported_not_padded():
     short = [([[(4, 0, [(1, 0)])] * 2], (3, 4))]
     warnings, _confidence = tabextract._rhythm_report(
         collections.Counter({tabextract.PROV_GLYPHS: 1}), {},
-        overfull=0, bars=1, short=1)
+        tabextract._BarConformance(overfull=0, short=1, defective=1, counted=1))
     assert any("hold less than their time signature" in w for w in warnings)
     # and the emitted score really does carry the short bar as-is
     from fermata import musicxml
     assert musicxml.voice_durations(short[0][0]) == [2 * musicxml.DIVISIONS]
+
+
+def test_short_bars_downgrade_confidence_the_same_way_overfull_ones_do():
+    """Rule 8 treats both directions as defective, so the confidence string has
+    to as well. A score whose bars are mostly short because notes were dropped
+    used to report "high - decoded directly from the ... engraving" over a
+    warning list saying most of its bars do not add up."""
+    counts = collections.Counter({tabextract.PROV_GLYPHS: 1})
+    _w, high = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 1, 1, 10))
+    assert high.startswith("high"), high
+
+    _w, low = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 6, 6, 10))
+    assert low.startswith("low overall"), low
+    assert "6 of 10" in low
+
+    # and overfull still downgrades exactly as it did
+    _w, low_over = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(6, 0, 6, 10))
+    assert low_over.startswith("low overall"), low_over
+
+    # a bar wrong in both directions is one defective bar, not two - a 10-bar
+    # score with 2 such bars is 20% defective and must NOT be downgraded
+    _w, still_high = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(2, 2, 2, 10))
+    assert still_high.startswith("high"), still_high
+
+
+def test_reported_note_count_matches_what_the_musicxml_holds():
+    """`notes` is reported beside the MusicXML, so it has to be what the file
+    contains - not what came off the page before the emitter dropped the notes
+    it had no pitch for."""
+    import xml.etree.ElementTree as ET
+
+    from fermata import musicxml
+
+    beats = [[(4, 0, [(1, 78)]), (4, 0, [(1, 0)]), (4, 0, [(1, 2)]), (4, 0, [(1, 3)])]]
+    measures = [(beats, (4, 4))]
+    extracted = sum(len(n) for v in beats for _c, _d, n in v)
+    unwritable = musicxml.unrepresentable_notes(measures, tabextract.DEFAULT_TUNING)
+    root = ET.fromstring(
+        musicxml.build("T", None, tabextract.DEFAULT_TUNING, (4, 4), measures))
+    written = len([n for n in root.findall("./part/measure/note") if n.find("rest") is None])
+    assert extracted == 4
+    assert unwritable == 1
+    assert written == extracted - unwritable
 
 
 def test_extract_emits_musicxml_alongside_alphatex(zanarkand_pdf):
@@ -1253,3 +1306,37 @@ def test_a_chord_with_one_impossible_fret_keeps_its_other_notes():
     assert notes[0].find("chord") is None
     assert notes[1].find("chord") is not None
     assert [n.findtext("notations/technical/fret") for n in notes] == ["2", "0"]
+
+
+def test_reported_conformance_matches_the_emitted_measures(zanarkand_pdf):
+    """The Rule 8 counts are reported as data as well as prose, so they have to
+    agree with what a consumer reads out of the emitted document - which is the
+    whole argument for emitting a standard format."""
+    import xml.etree.ElementTree as ET
+
+    result = tabextract.extract(zanarkand_pdf)
+    root = ET.fromstring(result.musicxml)
+    assert result.bars_measured == result.bars
+
+    defective = 0
+    divisions = int(root.findtext("./part/measure/attributes/divisions"))
+    beats = beat_type = None
+    for measure in root.findall("./part/measure"):
+        time = measure.find("attributes/time")
+        if time is not None:
+            beats = int(time.findtext("beats"))
+            beat_type = int(time.findtext("beat-type"))
+        expected = round(divisions * 4 * beats / beat_type)
+        sums = {}
+        for note in measure.findall("note"):
+            if note.find("chord") is not None:
+                continue
+            voice = note.findtext("voice")
+            sums[voice] = sums.get(voice, 0) + int(note.findtext("duration"))
+        if any(total != expected for total in sums.values()):
+            defective += 1
+    assert defective == result.bars_defective
+    # a bar can be wrong in both directions at once, so these bound it rather
+    # than summing to it
+    assert result.bars_defective <= result.bars_overfull + result.bars_short
+    assert max(result.bars_overfull, result.bars_short) <= result.bars_defective

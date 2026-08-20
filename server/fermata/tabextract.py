@@ -89,6 +89,7 @@ import collections
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 import fitz  # PyMuPDF
 
@@ -127,6 +128,15 @@ class ExtractionResult:
     bars: int = 0
     beats: int = 0
     notes: int = 0
+    # How many bars fail the MusicXML profile's Rule 8, and how - the same
+    # numbers the warnings state in prose, as data. `bars_defective` counts a
+    # bar once whichever way it is wrong, so it is the one to compare against
+    # what an independent MusicXML tool reports; overfull + short double-counts
+    # a bar that is wrong in both directions at once. See _bar_conformance.
+    bars_overfull: int = 0
+    bars_short: int = 0
+    bars_defective: int = 0
+    bars_measured: int = 0
     # Total tab / standard staff systems found across the whole document
     # (summed across pages) - same definition analyze() uses, not a
     # per-page maximum.
@@ -157,6 +167,10 @@ class ExtractionResult:
             "bars": self.bars,
             "beats": self.beats,
             "notes": self.notes,
+            "bars_overfull": self.bars_overfull,
+            "bars_short": self.bars_short,
+            "bars_defective": self.bars_defective,
+            "bars_measured": self.bars_measured,
             "tab_staff_count": self.tab_staff_count,
             "standard_staff_count": self.standard_staff_count,
             "pages_processed": self.pages_processed,
@@ -1426,9 +1440,24 @@ def _bar_quarters(beats) -> float:
     return max(_voice_quarters(beats), default=0.0)
 
 
-def _bar_conformance(measures) -> tuple[int, int, int]:
-    """Count bars whose voices do not add up, in each direction: returns
-    (overfull, short, counted).
+class _BarConformance(NamedTuple):
+    """How many bars fail the MusicXML profile's Rule 8, and how.
+
+    `defective` counts a bar once whichever way it is wrong - a polyphonic bar
+    can have one voice over its meter and another under it, so overfull + short
+    would count that bar twice and can exceed `counted`. Rule 8 treats both
+    directions as defective, so `defective` is what the reported confidence is
+    derived from.
+    """
+
+    overfull: int
+    short: int
+    defective: int
+    counted: int
+
+
+def _bar_conformance(measures) -> _BarConformance:
+    """Count bars whose voices do not add up, in each direction.
 
     This is exactly the MusicXML profile's Rule 8 - every sounding voice's
     durations sum to the measure's duration - measured on the beats model
@@ -1447,6 +1476,7 @@ def _bar_conformance(measures) -> tuple[int, int, int]:
     """
     overfull = 0
     short = 0
+    defective = 0
     counted = 0
     for beats, ts in measures:
         if not ts:
@@ -1456,28 +1486,33 @@ def _bar_conformance(measures) -> tuple[int, int, int]:
         voices = _voice_quarters(beats)
         if not voices:
             continue
-        if max(voices) > budget + 1e-6:
-            overfull += 1
-        if min(voices) < budget - 1e-6:
-            short += 1
-    return overfull, short, counted
+        over = max(voices) > budget + 1e-6
+        under = min(voices) < budget - 1e-6
+        overfull += over
+        short += under
+        defective += over or under
+    return _BarConformance(overfull, short, defective, counted)
 
 
 def _overfull_bars(measures) -> tuple[int, int]:
     """Bars holding MORE than their time signature allows, and how many bars
     were checked - see _bar_conformance."""
-    overfull, _short, counted = _bar_conformance(measures)
-    return overfull, counted
+    bars = _bar_conformance(measures)
+    return bars.overfull, bars.counted
 
 
-def _rhythm_report(counts, details, overfull=0, bars=0, short=0):
+def _rhythm_report(counts, details, conformance=None):
     """Derive the document's rhythm warnings and confidence string from the
     collected per-staff provenances - the single place that decides both, so
     they cannot drift out of step with each other or with the measure loop.
 
     `counts` is a Counter over the PROV_* values; `details` maps each
     provenance to the distinct per-staff explanations collected for it.
+    `conformance` is a _BarConformance, or None where no bars were measured.
     """
+    conformance = conformance or _BarConformance(0, 0, 0, 0)
+    overfull, short = conformance.overfull, conformance.short
+    defective, bars = conformance.defective, conformance.counted
     glyphs = counts.get(PROV_GLYPHS, 0)
     degraded = counts.get(PROV_GLYPHS_DEGRADED, 0)
     spacing = counts.get(PROV_SPACING, 0)
@@ -1525,7 +1560,6 @@ def _rhythm_report(counts, details, overfull=0, bars=0, short=0):
     # confident reading of every notehead still produces a wrong bar when its
     # voices don't come apart, and playback follows the bar.
     if bars and overfull:
-        share = overfull / bars
         warnings.append(
             f"{overfull} of {bars} bar(s) hold more than their time signature allows. Music "
             "written in two voices (a melody over a separate bass line) is separated into "
@@ -1534,17 +1568,23 @@ def _rhythm_report(counts, details, overfull=0, bars=0, short=0):
             "lands here too - the notes and their individual durations can still be right while "
             "the bar as a whole is not, so playback timing will drift in those bars"
         )
-        if share >= 0.25:
-            confidence = (
-                "low overall - individual durations were read from the score's own engraving, but "
-                f"{overfull} of {bars} bar(s) do not add up to their time signature"
-            )
     if bars and short:
         warnings.append(
             f"{short} of {bars} bar(s) hold less than their time signature allows - a note whose "
             "duration was read short, or one dropped for want of a fret number, leaves the bar "
             "with a gap at the end. The emitted score says so rather than padding it out, so any "
             "MusicXML tool will report those bars too"
+        )
+    # The downgrade is driven by bars that fail Rule 8 in EITHER direction. A
+    # score whose bars are mostly SHORT because notes were dropped is just as
+    # unplayable as one whose bars overflow, and reporting "high - decoded
+    # directly from the ... engraving" over a warning list saying most bars do
+    # not add up is exactly the kind of confident-but-wrong claim the rest of
+    # this module exists to avoid.
+    if bars and defective / bars >= 0.25:
+        confidence = (
+            "low overall - individual durations were read from the score's own engraving, but "
+            f"{defective} of {bars} bar(s) do not add up to their time signature"
         )
 
     # Surface the concrete per-staff reasons behind any downgrade, capped so
@@ -2061,9 +2101,9 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
 
     # Rhythm warnings and confidence: derived once, from what the staves
     # actually resolved to.
-    overfull_bars, short_bars, counted_bars = _bar_conformance(all_measures)
+    conformance = _bar_conformance(all_measures)
     rhythm_warnings, rhythm_confidence = _rhythm_report(
-        prov_counts, prov_details, overfull_bars, counted_bars, short_bars
+        prov_counts, prov_details, conformance
     )
     warnings.extend(rhythm_warnings)
     # Font-level problems that weren't already the reason a staff degraded
@@ -2143,8 +2183,13 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     alphatex = _build_alphatex(title, tempo, tuning, ts, all_measures)
     musicxml = mxl.build(title, tempo, tuning, ts, all_measures, fifths=key_fifths)
     beats_total = sum(len(v) for beats, _ in all_measures for v in _voices_of(beats))
+    # What the emitted score actually HOLDS, not what was read off the page:
+    # `unwritable` notes have no expressible pitch and are left out of the
+    # MusicXML (their beat stays, as a rest, so beats_total is unaffected).
+    # Reporting the pre-emission figure made `notes` larger than the canonical
+    # output it is reported beside.
     notes_total = sum(len(notes) for beats, _ in all_measures
-                      for v in _voices_of(beats) for _, _, notes in v)
+                      for v in _voices_of(beats) for _, _, notes in v) - unwritable
 
     ts_confidence = {
         "manual override": "n/a - caller supplied",
@@ -2188,6 +2233,10 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         bars=len(all_measures),
         beats=beats_total,
         notes=notes_total,
+        bars_overfull=conformance.overfull,
+        bars_short=conformance.short,
+        bars_defective=conformance.defective,
+        bars_measured=conformance.counted,
         tab_staff_count=tab_count,
         standard_staff_count=std_count,
         pages_processed=len(pages_with_tab),

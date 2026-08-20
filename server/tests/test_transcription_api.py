@@ -237,3 +237,46 @@ def test_an_unknown_edit_format_is_rejected(app_env, insert_score):
         api.save_transcription(
             score_id, api.TranscriptionEditIn(content=":4 0.1 |", format="lilypond"))
     assert exc_info.value.status_code == 422
+
+
+def test_pasting_alphatex_over_a_musicxml_row_stores_it_as_alphatex(
+    app_env, zanarkand_pdf, monkeypatch, insert_score
+):
+    """The format of an edit is decided by what was TYPED, not by the format of
+    the row it replaces. Storing the loaded row's format meant a user who
+    pasted alphaTex into the source editor of a MusicXML transcription got a
+    row labelled musicxml; the viewer dispatched on that label, handed alphaTex
+    to the MusicXML loader, and the staff never appeared."""
+    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, zanarkand_pdf.name)
+
+    extracted = api.transcribe(score_id, body=None)
+    assert extracted["format"] == "musicxml"
+
+    tex = '\title "hand edited"\n.\n:4 0.1 |'
+    saved = api.save_transcription(score_id, api.TranscriptionEditIn(content=tex))
+    assert saved["format"] == "alphatex"
+    assert api.get_transcription(score_id)["format"] == "alphatex"
+
+    # and the reverse: MusicXML pasted over an alphatex row
+    xml = '<?xml version="1.0"?>\n<score-partwise version="4.0"/>'
+    saved = api.save_transcription(score_id, api.TranscriptionEditIn(content=xml))
+    assert saved["format"] == "musicxml"
+
+
+@pytest.mark.parametrize("content,expected", [
+    ('<?xml version="1.0"?><score-partwise/>', "musicxml"),
+    ("<score-partwise version=\"4.0\"/>", "musicxml"),
+    ("<!DOCTYPE score-partwise><score-partwise/>", "musicxml"),
+    ("<!-- a comment first --><score-partwise/>", "musicxml"),
+    ("\n\n  <score-partwise/>", "musicxml"),
+    ('\title "x"\n.\n:4 0.1 |', "alphatex"),
+    (":4 0.1 |", "alphatex"),
+    ("\tempo 88\n.\n:8 3.4{d} |", "alphatex"),
+])
+def test_edit_format_is_read_off_the_content(content, expected):
+    """alphaTex has no form that begins with '<' - metadata lines begin with a
+    backslash and beats with a colon or a fret number - so the leading
+    character settles it."""
+    assert api._sniff_transcription_format(content) == expected
