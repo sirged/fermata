@@ -1,15 +1,19 @@
 <script>
   import {
     MAX_FRETS,
+    MAX_NAME_CHARS,
     MAX_REFERENCE_HZ,
     MAX_STRINGS,
+    MIN_FRETS,
     MIN_REFERENCE_HZ,
+    MIN_STRINGS,
     auditionPitch,
     definitionFrom,
     draftFrom,
     draftStrings,
     formatFrequency,
     getInstruments,
+    isPlayable,
     loadInstruments,
     removeInstrument,
     resizeStrings,
@@ -19,25 +23,32 @@
   const instruments = getInstruments();
   loadInstruments();
 
-  // The definition being edited, or null when nothing is. A draft is a copy,
-  // so nothing a person types touches the saved instrument until they save -
-  // which matters here more than usual, because the way to check a tuning is
-  // to type a pitch and listen to it, and most of what gets typed that way is
-  // meant to be thrown away.
+  // The definition being edited, or null when nothing is. A draft is a copy, so
+  // nothing a person types touches the saved instrument until they save - which
+  // matters here more than usual, because the way to check a tuning is to type
+  // a pitch and listen to it, and most of what gets typed that way is meant to
+  // be thrown away.
   let draft = $state(null);
   let presetKey = $state("");
   let saving = $state(false);
   let error = $state("");
-  // What was last sounded, and how many times anything has been. Published
-  // onto the section (see data-audition-*) for the same reason score-render.js
+  // What was last sounded, and how many times anything has been. Published onto
+  // the section (see data-audition-*) for the same reason score-render.js
   // publishes its layout: it is the only way to see from outside that a click
   // reached the synthesiser rather than merely looking as though it had.
   let auditioned = $state(null);
   let auditions = $state(0);
   let auditionError = $state("");
+  let notice = $state("");
+  let retrying = $state(false);
 
+  // Only ever for the draft. A saved instrument's strings come from the server,
+  // which has already worked out every note name and frequency - see
+  // instruments.svelte.js.
   const strings = $derived(draftStrings(draft));
-  const badStrings = $derived(strings.filter((s) => s.midi == null).length);
+  const unnamed = $derived(strings.filter((s) => s.midi == null).length);
+  const unreachable = $derived(strings.filter((s) => s.midi != null && !isPlayable(s)).length);
+  const draftCapo = $derived((draft?.fretted && Number(draft.capo)) || 0);
 
   function startFromPreset(key) {
     presetKey = key;
@@ -60,7 +71,7 @@
   }
 
   function setStringCount(count) {
-    const wanted = Math.max(1, Math.min(MAX_STRINGS, Math.round(count) || 1));
+    const wanted = Math.max(MIN_STRINGS, Math.min(MAX_STRINGS, Math.round(count) || MIN_STRINGS));
     draft.string_pitches = resizeStrings(draft.string_pitches, wanted);
   }
 
@@ -68,8 +79,8 @@
     draft.fretted = fretted;
     // Position reasoning and tablature mean nothing without frets, so the
     // fields that only describe frets are dropped rather than hidden and kept -
-    // the server rejects them on an unfretted definition, and a value that is
-    // invisible on screen but still in the payload is the worst of both.
+    // the server rejects a fret count on an unfretted definition, and a value
+    // that is invisible on screen but still in the payload is the worst of both.
     if (fretted) {
       draft.fret_count = draft.fret_count ?? 22;
       draft.capo = draft.capo ?? 0;
@@ -84,10 +95,9 @@
     saving = true;
     error = "";
     try {
-      const saved = await saveInstrument(draft.id, definitionFrom(draft));
+      await saveInstrument(draft.id, definitionFrom(draft));
       draft = null;
       presetKey = "";
-      return saved;
     } catch (e) {
       error = e?.message ?? "Could not save that.";
     } finally {
@@ -97,19 +107,36 @@
 
   async function remove(instrument) {
     error = "";
+    notice = "";
     try {
-      await removeInstrument(instrument.id);
+      const unlinked = await removeInstrument(instrument.id);
       if (draft?.id === instrument.id) draft = null;
+      // Said out loud rather than done silently: those scores were written for
+      // this instrument, and they no longer name one.
+      if (unlinked === 1) notice = "1 score no longer names an instrument.";
+      else if (unlinked > 1) notice = `${unlinked} scores no longer name an instrument.`;
     } catch (e) {
       error = e?.message ?? "Could not delete that.";
     }
   }
 
+  async function retryLoad() {
+    retrying = true;
+    try {
+      await loadInstruments();
+    } finally {
+      retrying = false;
+    }
+  }
+
+  // Plays the SOUNDING pitch, not the nominal one: a capo raises every string,
+  // and an audition that ignored it would be teaching a reference wrong by the
+  // capo's position - worse than offering none.
   async function play(string) {
-    if (string.midi == null) return;
+    if (!isPlayable(string)) return;
     auditionError = "";
     try {
-      const sounded = await auditionPitch(string.midi);
+      const sounded = await auditionPitch(string.sounding_midi);
       if (!sounded) {
         auditionError = "That pitch is outside what can be played.";
         return;
@@ -121,21 +148,68 @@
     }
   }
 
+  function plural(count, word) {
+    return `${count} ${word}${count === 1 ? "" : "s"}`;
+  }
+
+  /** "A440", "A415.5" - trimmed rather than rounded, so a reference of 415.6
+   * does not read back as a tuning nobody uses. */
+  function referenceLabel(hz) {
+    return `A${Number(Number(hz).toFixed(2))}`;
+  }
+
   function summary(instrument) {
-    const parts = [`${instrument.string_count} strings`];
-    parts.push(instrument.fretted ? `${instrument.fret_count} frets` : "unfretted");
-    if (instrument.capo) parts.push(`capo ${instrument.capo}`);
-    parts.push(`A${Math.round(instrument.reference_pitch)}`);
+    const parts = [plural(instrument.string_count, "string")];
+    if (instrument.fretted) {
+      parts.push(plural(instrument.fret_count, "fret"));
+      if (instrument.capo) parts.push(`capo ${instrument.capo}`);
+    } else {
+      parts.push("unfretted");
+    }
+    parts.push(referenceLabel(instrument.reference_pitch));
     return parts.join(" · ");
   }
 </script>
+
+<!-- The sounding half of a string row: where a capo puts it, what that sounds
+     at, and the button to hear it. Shared between a saved instrument's strings
+     (from the server) and a draft's (computed locally) because both arrive in
+     the same shape, and because the capo rule must not be written twice. -->
+{#snippet soundingOf(string, capo)}
+  {#if capo > 0 && string.sounding_pitch}
+    <span class="arrow" aria-hidden="true">→</span>
+    <span class="string-sounding">{string.sounding_pitch}</span>
+  {/if}
+  {#if string.sounding_frequency == null}
+    <span class="string-bad">not a pitch name</span>
+  {:else}
+    <span class="string-hz">{formatFrequency(string.sounding_frequency)}</span>
+  {/if}
+  <button
+    class="play"
+    disabled={!isPlayable(string)}
+    aria-label={`Play string ${string.number}`}
+    onclick={() => play(string)}
+  >
+    ▶
+  </button>
+{/snippet}
+
+{#snippet capoLegend(capo)}
+  {#if capo > 0}
+    <p class="capo-note">
+      Nominal tuning → sounding pitch, with the capo at fret {capo}. The stored tuning is the
+      open one; what you hear is what the capo makes.
+    </p>
+  {/if}
+{/snippet}
 
 <section
   data-instrument-count={instruments.list.length}
   data-instrument-draft={draft ? (draft.id ?? "new") : ""}
   data-audition-count={auditions}
-  data-audition-midi={auditioned?.midi ?? ""}
-  data-audition-pitch={auditioned?.pitch ?? ""}
+  data-audition-midi={auditioned?.sounding_midi ?? ""}
+  data-audition-pitch={auditioned?.sounding_pitch ?? ""}
 >
   <h2>Instruments</h2>
   <p class="hint">
@@ -144,40 +218,84 @@
     know. Play any string on its own to check a tuning by ear.
   </p>
 
+  <!-- One readout for the whole section, not one per panel: a string can be
+       played from a saved instrument's row or from the editor, and feedback
+       that appeared only inside the editor would report a click that happened
+       somewhere else - or nowhere at all, with no editor open. -->
+  <!-- A load failure is retryable, and has to be: a preset is the only way to
+       start a definition, so an empty list with an empty dropdown and no
+       explanation would look like a feature that does not work. -->
+  {#if instruments.error}
+    <p class="error load">
+      {instruments.error}
+      <button onclick={retryLoad} disabled={retrying}>
+        {retrying ? "Trying…" : "Try again"}
+      </button>
+    </p>
+  {/if}
+
+  {#if auditionError}
+    <p class="error audition">{auditionError}</p>
+  {:else if auditioned}
+    <p class="sounding">
+      Sounding string {auditioned.number} — {auditioned.sounding_pitch},
+      {formatFrequency(auditioned.sounding_frequency)}
+    </p>
+  {/if}
+
+  {#if notice}
+    <p class="notice">{notice}</p>
+  {/if}
+
   {#if instruments.list.length}
     <ul class="owned">
       {#each instruments.list as instrument (instrument.id)}
         <li data-instrument-id={instrument.id}>
-          <div class="owned-text">
-            <span class="owned-name">{instrument.name}</span>
-            <span class="owned-summary">{summary(instrument)}</span>
+          <div class="owned-head">
+            <div class="owned-text">
+              <span class="owned-name">{instrument.name}</span>
+              <span class="owned-summary">{summary(instrument)}</span>
+            </div>
+            <div class="owned-actions">
+              <button onclick={() => edit(instrument)}>Tune</button>
+              <button class="danger" onclick={() => remove(instrument)}>Delete</button>
+            </div>
           </div>
-          <div class="owned-actions">
-            <button onclick={() => edit(instrument)}>Tune</button>
-            <button class="danger" onclick={() => remove(instrument)}>Delete</button>
-          </div>
+          {@render capoLegend(instrument.capo ?? 0)}
+          <ul class="strings">
+            {#each instrument.strings as string (string.number)}
+              <li
+                data-string={string.number}
+                data-frequency={string.sounding_frequency}
+                data-sounding-midi={string.sounding_midi}
+              >
+                <span class="string-number">{string.number}</span>
+                <span class="string-pitch-fixed">{string.pitch}</span>
+                {@render soundingOf(string, instrument.capo ?? 0)}
+              </li>
+            {/each}
+          </ul>
         </li>
       {/each}
     </ul>
-  {:else if instruments.loaded}
+  {:else if instruments.loaded && !instruments.error}
     <p class="empty">No instruments yet. Start from one of the presets below.</p>
   {/if}
 
   {#if !draft}
-    <div class="start">
-      <label>
-        Start from
-        <select
-          value={presetKey}
-          onchange={(e) => startFromPreset(e.currentTarget.value)}
-        >
-          <option value="">Choose a preset…</option>
-          {#each instruments.presets as preset (preset.key)}
-            <option value={preset.key}>{preset.name}</option>
-          {/each}
-        </select>
-      </label>
-    </div>
+    {#if instruments.presets.length}
+      <div class="start">
+        <label>
+          Start from
+          <select value={presetKey} onchange={(e) => startFromPreset(e.currentTarget.value)}>
+            <option value="">Choose a preset…</option>
+            {#each instruments.presets as preset (preset.key)}
+              <option value={preset.key}>{preset.name}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+    {/if}
   {:else}
     <div class="editor">
       <div class="row">
@@ -185,7 +303,7 @@
           Name
           <input
             type="text"
-            maxlength="80"
+            maxlength={MAX_NAME_CHARS}
             bind:value={draft.name}
             placeholder="My guitar"
           />
@@ -194,7 +312,7 @@
           Strings
           <input
             type="number"
-            min="1"
+            min={MIN_STRINGS}
             max={MAX_STRINGS}
             value={draft.string_pitches.length}
             onchange={(e) => setStringCount(Number(e.currentTarget.value))}
@@ -224,7 +342,12 @@
         {#if draft.fretted}
           <label class="narrow">
             Frets
-            <input type="number" min="1" max={MAX_FRETS} bind:value={draft.fret_count} />
+            <input
+              type="number"
+              min={MIN_FRETS}
+              max={MAX_FRETS}
+              bind:value={draft.fret_count}
+            />
           </label>
           <label class="narrow">
             Capo
@@ -243,9 +366,15 @@
         {/if}
       </div>
 
+      {@render capoLegend(draftCapo)}
+
       <ul class="strings">
         {#each strings as string (string.number)}
-          <li data-string={string.number} data-frequency={string.frequency ?? ""}>
+          <li
+            data-string={string.number}
+            data-frequency={string.sounding_frequency ?? ""}
+            data-sounding-midi={string.sounding_midi ?? ""}
+          >
             <span class="string-number">{string.number}</span>
             <input
               class="string-pitch"
@@ -254,32 +383,17 @@
               aria-label={`String ${string.number} pitch`}
               value={string.pitch}
               oninput={(e) =>
-                (draft.string_pitches[strings.length - string.number] =
-                  e.currentTarget.value)}
+                (draft.string_pitches[strings.length - string.number] = e.currentTarget.value)}
             />
-            {#if string.midi == null}
-              <span class="string-bad">not a pitch name</span>
-            {:else}
-              <span class="string-hz">{formatFrequency(string.frequency)}</span>
-            {/if}
-            <button
-              class="play"
-              disabled={string.midi == null}
-              aria-label={`Play string ${string.number}`}
-              onclick={() => play(string)}
-            >
-              ▶
-            </button>
+            {@render soundingOf(string, draftCapo)}
           </li>
         {/each}
       </ul>
 
-      {#if auditionError}
-        <p class="error">{auditionError}</p>
-      {:else if auditioned}
-        <p class="sounding">
-          Sounding string {auditioned.number} — {auditioned.pitch},
-          {formatFrequency(auditioned.frequency)}
+      {#if unreachable > 0}
+        <p class="error">
+          The capo puts {unreachable === 1 ? "a string" : `${unreachable} strings`} above the
+          highest note that can be played.
         </p>
       {/if}
 
@@ -290,7 +404,7 @@
       <div class="actions">
         <button
           class="primary"
-          disabled={saving || !draft.name.trim() || badStrings > 0}
+          disabled={saving || !draft.name.trim() || unnamed > 0 || unreachable > 0}
           onclick={save}
         >
           {draft.id == null ? "Save instrument" : "Save changes"}
@@ -329,15 +443,18 @@
     gap: 8px;
   }
 
-  .owned li {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
+  .owned > li {
     padding: 10px 14px;
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: var(--radius);
+  }
+
+  .owned-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
   }
 
   .owned-text {
@@ -359,6 +476,10 @@
     display: flex;
     gap: 8px;
     flex-shrink: 0;
+  }
+
+  .owned .strings {
+    margin-top: 10px;
   }
 
   button.danger:hover {
@@ -425,6 +546,13 @@
     color: var(--ink-dim);
   }
 
+  .capo-note {
+    margin: 0 0 12px;
+    font-size: 12px;
+    color: var(--ink-dim);
+    line-height: 1.5;
+  }
+
   .strings {
     list-style: none;
     margin: 0;
@@ -454,6 +582,22 @@
     font-family: var(--font-display);
   }
 
+  .string-pitch-fixed {
+    width: 44px;
+    font-family: var(--font-display);
+  }
+
+  .arrow {
+    color: var(--ink-dim);
+    font-size: 12px;
+  }
+
+  .string-sounding {
+    width: 44px;
+    color: var(--brass-bright);
+    font-family: var(--font-display);
+  }
+
   .string-hz {
     /* tabular so a column of frequencies lines up on the decimal point */
     font-variant-numeric: tabular-nums;
@@ -465,7 +609,7 @@
   .string-bad {
     color: var(--danger);
     font-size: 12px;
-    min-width: 136px;
+    min-width: 92px;
   }
 
   .play {
@@ -479,7 +623,7 @@
   }
 
   .sounding {
-    margin: 14px 0 0;
+    margin: 0 0 14px;
     font-size: 13px;
     color: var(--brass);
   }
@@ -488,6 +632,23 @@
     color: var(--danger);
     font-size: 13px;
     margin: 14px 0 0;
+  }
+
+  .error.audition,
+  .error.load {
+    margin: 0 0 14px;
+  }
+
+  .error.load {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .notice {
+    margin: 0 0 14px;
+    font-size: 13px;
+    color: var(--ink-dim);
   }
 
   .actions {

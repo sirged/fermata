@@ -2,9 +2,21 @@ import re
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
-from fermata import api, db, instruments
+from fermata import api, db, instruments, musicxml
+
+
+@pytest.fixture
+def client(app_env):
+    """The router alone, without main.py's lifespan or its static mount, so a
+    request goes to a throwaway database instead of the real config directory.
+    Needed for anything whose validation lives in the HTTP layer - a path
+    parameter's bounds are never applied when the endpoint is called directly."""
+    app = FastAPI()
+    app.include_router(api.router)
+    return TestClient(app)
 
 GUITAR = {
     "name": "My guitar",
@@ -103,7 +115,7 @@ def test_the_reentrant_ukulele_preset_is_not_rejected_for_its_order(app_env):
 
 def test_standard_tuning_frequencies_at_a440(app_env):
     saved = api.create_instrument(make())
-    by_pitch = {s["pitch"]: s["frequency"] for s in saved["strings"]}
+    by_pitch = {s["pitch"]: round(s["frequency"], 3) for s in saved["strings"]}
     assert by_pitch == {
         "E2": 82.407,
         "A2": 110.0,
@@ -114,6 +126,18 @@ def test_standard_tuning_frequencies_at_a440(app_env):
     }
 
 
+def test_frequencies_are_sent_unrounded(app_env):
+    """The server rounding and the browser formatting would be two opinions
+    about precision, and they disagree: at 300 Hz, MIDI 22 is 19.8650...,
+    which rounds to 19.865 and then formats to 19.87, while formatting the
+    unrounded value gives 19.86. Exactly one place turns a frequency into text,
+    and it is not this one."""
+    saved = api.create_instrument(make())
+    low_e = next(s for s in saved["strings"] if s["pitch"] == "E2")
+    assert low_e["frequency"] != round(low_e["frequency"], 3)
+    assert low_e["frequency"] == instruments.frequency(40, 440.0)
+
+
 def test_the_reference_pitch_moves_every_string(app_env):
     saved = api.create_instrument(make(reference_pitch=415.0))
     by_pitch = {s["pitch"]: s["frequency"] for s in saved["strings"]}
@@ -121,6 +145,87 @@ def test_the_reference_pitch_moves_every_string(app_env):
     # low E follows it down from 82.407 rather than staying put.
     assert by_pitch["A2"] == pytest.approx(103.75, abs=0.001)
     assert by_pitch["E2"] == pytest.approx(77.725, abs=0.001)
+
+
+# ---------------------------------------------------------------- capo
+# A capo raises every string, so it decides what the instrument sounds - and
+# the sounding pitch is what the audition plays and what a player matches by
+# ear. What is STORED stays the open, non-capo tuning, which is what
+# <staff-tuning> records.
+
+
+def test_a_capo_does_not_change_what_is_stored(app_env):
+    saved = api.create_instrument(make(capo=5))
+    assert saved["string_pitches"] == GUITAR["string_pitches"]
+    conn = db.connect()
+    row = conn.execute(
+        "SELECT string_pitches, capo FROM instruments WHERE id = ?", (saved["id"],)
+    ).fetchone()
+    assert row["capo"] == 5
+    assert "E2" in row["string_pitches"]
+
+
+def test_a_capo_raises_every_sounding_pitch(app_env):
+    saved = api.create_instrument(make(capo=5))
+    assert [s["sounding_pitch"] for s in saved["strings"]] == [
+        "A2", "D3", "G3", "C4", "E4", "A4",
+    ]
+    assert [s["sounding_midi"] for s in saved["strings"]] == [45, 50, 55, 60, 64, 69]
+    # nominal is untouched
+    assert [s["pitch"] for s in saved["strings"]] == GUITAR["string_pitches"]
+    assert [s["midi"] for s in saved["strings"]] == [40, 45, 50, 55, 59, 64]
+
+
+def test_the_capo_moves_the_sounding_frequency_not_the_nominal_one(app_env):
+    saved = api.create_instrument(make(capo=5))
+    low = saved["strings"][0]
+    assert low["frequency"] == pytest.approx(82.407, abs=0.001)
+    assert low["sounding_frequency"] == pytest.approx(110.0, abs=0.001)
+
+
+def test_a_capo_of_zero_leaves_the_two_pitches_identical(app_env):
+    """The ordinary case: nothing to explain, and the interface has nothing
+    extra to show."""
+    saved = api.create_instrument(make())
+    for s in saved["strings"]:
+        assert s["sounding_pitch"] == s["pitch"]
+        assert s["sounding_midi"] == s["midi"]
+        assert s["sounding_frequency"] == s["frequency"]
+
+
+def test_a_capo_at_five_is_distinguishable_from_no_capo(app_env):
+    """The whole defect this guards: both instruments used to report string 6
+    as E2 at 82.407 Hz, byte for byte."""
+    plain = api.create_instrument(make(name="Plain"))
+    capoed = api.create_instrument(make(name="Capoed", capo=5))
+    assert plain["strings"][0]["sounding_frequency"] != capoed["strings"][0]["sounding_frequency"]
+
+
+def test_a_capo_that_pushes_a_string_off_the_top_is_rejected(app_env):
+    """0 <= capo <= fret_count says nothing about where the capo puts a string
+    that is already near the ceiling: G9 is the highest note MIDI has, so any
+    capo at all takes it past what the synthesiser can sound."""
+    with pytest.raises(HTTPException) as exc_info:
+        api.create_instrument(
+            make(string_count=1, string_pitches=["G9"], fret_count=24, capo=24)
+        )
+    assert exc_info.value.status_code == 422
+    assert "capo" in exc_info.value.detail
+    assert "sounds outside" in exc_info.value.detail
+
+
+def test_the_same_string_without_a_capo_is_accepted(app_env):
+    """The bound above must be about the capo, not about G9 being unusable."""
+    saved = api.create_instrument(make(string_count=1, string_pitches=["G9"], fret_count=24))
+    assert saved["strings"][0]["sounding_midi"] == 127
+
+
+def test_a_capo_of_zero_on_an_unfretted_instrument_is_accepted(app_env):
+    """Zero plainly means "no capo" - a client that always sends the field is
+    not claiming a violin has one."""
+    saved = api.create_instrument(make_unfretted(capo=0))
+    assert saved["capo"] is None
+    assert saved["fretted"] is False
 
 
 def test_string_numbers_run_opposite_to_list_order(app_env):
@@ -252,6 +357,31 @@ def test_a_string_outside_the_playable_range_is_rejected(app_env):
     assert exc_info.value.status_code == 422
 
 
+@pytest.mark.parametrize("pitch", ["C-1", "B-1"])
+def test_a_string_below_what_musicxml_can_write_is_rejected(app_env, pitch):
+    """MIDI reaches down to C-1, but MusicXML's `octave` type starts at 0, so a
+    tuning stored down there could never be written out by the emitter that
+    will eventually read it."""
+    with pytest.raises(HTTPException) as exc_info:
+        api.create_instrument(make(string_count=1, string_pitches=[pitch], fret_count=12))
+    assert exc_info.value.status_code == 422
+
+
+def test_c0_is_the_lowest_string_accepted(app_env):
+    saved = api.create_instrument(make(string_count=1, string_pitches=["C0"], fret_count=12))
+    assert saved["strings"][0]["midi"] == instruments.MIN_MIDI == 12
+
+
+def test_the_accepted_range_is_exactly_what_musicxml_can_write(app_env):
+    """MIN_MIDI/MAX_MIDI are derived from musicxml.MIN_OCTAVE rather than
+    restated, and this is what pins the derivation to its reason."""
+    assert musicxml.is_representable(instruments.MIN_MIDI)
+    assert not musicxml.is_representable(instruments.MIN_MIDI - 1)
+    assert musicxml.is_representable(instruments.MAX_MIDI)
+    # the ceiling is MIDI's, not MusicXML's - 128 would still be writable
+    assert instruments.MAX_MIDI == 127
+
+
 @pytest.mark.parametrize("hz", [0, 100.0, 1000.0])
 def test_a_reference_pitch_outside_the_bounds_is_rejected(app_env, hz):
     with pytest.raises(HTTPException) as exc_info:
@@ -268,6 +398,36 @@ def test_a_blank_name_is_rejected(app_env):
 def test_a_name_is_stored_trimmed(app_env):
     created = api.create_instrument(make(name="  Parlour guitar  "))
     assert created["name"] == "Parlour guitar"
+
+
+@pytest.mark.parametrize(
+    "raw,stored",
+    [
+        ("Guitar\x00", "Guitar"),
+        ("Guitar\nBass", "GuitarBass"),
+        ("Line one\r\nLine two", "Line oneLine two"),
+        ("Tab\there", "Tabhere"),
+        ("Spaced   out", "Spaced out"),
+    ],
+)
+def test_control_characters_do_not_survive_into_a_name(app_env, raw, stored):
+    """A NUL or a newline pasted out of a tuning chart is not part of a name,
+    and stored verbatim it travels into every place the name is later shown."""
+    created = api.create_instrument(make(name=raw))
+    assert created["name"] == stored
+
+
+def test_a_name_of_nothing_but_control_characters_is_rejected(app_env):
+    with pytest.raises(HTTPException) as exc_info:
+        api.create_instrument(make(name="\x00\n\t"))
+    assert exc_info.value.status_code == 422
+
+
+def test_the_length_limit_applies_to_what_is_actually_stored(app_env):
+    """Controls are removed first, so a name that is only over the limit
+    because of them is not refused for a length it will not have."""
+    created = api.create_instrument(make(name="G" * instruments.MAX_NAME_CHARS + "\x00\x00"))
+    assert len(created["name"]) == instruments.MAX_NAME_CHARS
 
 
 # ---------------------------------------------------------------- update
@@ -345,7 +505,10 @@ def test_update_keeps_created_at(app_env):
 
 def test_delete_removes_it(app_env):
     created = api.create_instrument(make())
-    assert api.delete_instrument(created["id"]) == {"deleted": created["id"]}
+    assert api.delete_instrument(created["id"]) == {
+        "deleted": created["id"],
+        "scores_unlinked": 0,
+    }
     assert api.list_instruments() == []
     with pytest.raises(HTTPException) as exc_info:
         api.get_instrument(created["id"])
@@ -365,6 +528,51 @@ def test_delete_leaves_the_others_alone(app_env):
     second = api.create_instrument(make(name="B guitar"))
     api.delete_instrument(first["id"])
     assert [i["id"] for i in api.list_instruments()] == [second["id"]]
+
+
+def test_an_id_is_never_reused_after_a_delete(app_env):
+    """A plain INTEGER PRIMARY KEY hands the largest deleted rowid to the next
+    insert, so an id held anywhere outside the database - an open settings tab,
+    a request in flight, a scores.instrument_id in a backup - would come to
+    name a different instrument. Hence AUTOINCREMENT on this table."""
+    first = api.create_instrument(make(name="First"))
+    second = api.create_instrument(make(name="Second"))
+    api.delete_instrument(second["id"])
+    third = api.create_instrument(make(name="Third"))
+    assert third["id"] not in (first["id"], second["id"])
+    assert third["id"] > second["id"]
+
+
+# ------------------------------------------------- ids the database cannot hold
+
+
+def test_an_id_wider_than_sqlite_can_hold_is_refused_not_a_500(client):
+    """SQLite's INTEGER is 64-bit and the driver raises OverflowError on
+    anything wider, from inside the query - a 500 for what is only ever a row
+    that cannot exist."""
+    huge = str(2**64)
+    for method, path in [
+        ("GET", f"/api/instruments/{huge}"),
+        ("DELETE", f"/api/instruments/{huge}"),
+        ("GET", f"/api/scores/{huge}"),
+    ]:
+        response = client.request(method, path)
+        assert response.status_code == 422, (method, path, response.status_code)
+
+
+def test_an_oversized_id_in_a_request_body_is_refused(client):
+    response = client.patch("/api/scores/1", json={"instrument_id": 2**64})
+    assert response.status_code == 422
+
+
+def test_a_zero_or_negative_id_is_refused(client):
+    assert client.get("/api/instruments/0").status_code == 422
+    assert client.get("/api/instruments/-1").status_code == 422
+
+
+def test_an_ordinary_missing_id_is_still_a_404(client):
+    """The bound must not turn "no such instrument" into a validation error."""
+    assert client.get("/api/instruments/999").status_code == 404
 
 
 # ------------------------------------------------- a score's instrument
@@ -413,39 +621,217 @@ def test_deleting_an_instrument_leaves_its_scores_in_place(app_env, insert_score
     score_id = insert_score(conn, "a.pdf")
     guitar = api.create_instrument(make())
     api.patch_score(score_id, api.ScorePatch(instrument_id=guitar["id"]))
-    api.delete_instrument(guitar["id"])
+    result = api.delete_instrument(guitar["id"])
+    # reported rather than done silently: those scores were written for it
+    assert result["scores_unlinked"] == 1
     score = api.get_score(score_id)
     assert score["instrument_id"] is None
 
 
-def test_the_bounds_the_editor_offers_match_the_ones_the_server_enforces():
-    """web/src/lib/instruments.svelte.js mirrors these four bounds so a number
-    input can offer the right range. Nothing connects the two at runtime - the
-    editor never asks the server what is valid - so if they drift, the form
-    accepts a value the server answers with a 422 for no visible reason.
-    Parsing the frontend source is the cheapest way to keep them honest,
-    following test_settings_api.py's check on the staff themes."""
-    js_path = (
-        Path(__file__).resolve().parents[2] / "web" / "src" / "lib" / "instruments.svelte.js"
+def _editor_source() -> str:
+    return (
+        Path(__file__).resolve().parents[2] / "web" / "src" / "lib" / "pitch.js"
+    ).read_text(encoding="utf-8")
+
+
+# Every numeric constant web/src/lib/pitch.js mirrors from this module. The test
+# below checks both directions: each of these must agree with its Python
+# counterpart, AND pitch.js must export no other numeric constant - so mirroring
+# a new bound over there without guarding it here is a failure rather than a
+# silent gap.
+MIRRORED_CONSTANTS = [
+    "MIN_STRINGS",
+    "MAX_STRINGS",
+    "MIN_FRETS",
+    "MAX_FRETS",
+    "MIN_REFERENCE_HZ",
+    "MAX_REFERENCE_HZ",
+    "DEFAULT_REFERENCE_HZ",
+    "MAX_NAME_CHARS",
+    "MIN_MIDI",
+    "MAX_MIDI",
+    "REFERENCE_MIDI",
+]
+
+
+def test_the_constants_the_editor_mirrors_match_the_ones_here():
+    """web/src/lib/pitch.js mirrors these so a number input can offer the right
+    range and a draft can be checked before a save is attempted. Nothing
+    connects the two at runtime - the editor never asks the server what is
+    valid - so if they drift, the form accepts a value the server answers with a
+    422 for no visible reason.
+
+    WHAT THIS CANNOT DO, because it is a regex over a source file: tell whether
+    the arithmetic using these numbers is right. Matching constants would pass
+    happily while every frequency came out an octave wrong. That is covered by
+    calling the functions - web/tests/unit/pitch.spec.js - and this is kept only
+    for the narrow thing it is good for, which is catching a bound edited on one
+    side and not the other."""
+    found = dict(re.findall(r"export const ([A-Z][A-Z0-9_]*) = ([\d.]+);", _editor_source()))
+    assert set(found) == set(MIRRORED_CONSTANTS), (
+        "the editor's numeric constants and MIRRORED_CONSTANTS have diverged"
     )
-    source = js_path.read_text(encoding="utf-8")
-    found = dict(re.findall(r"export const (\w+) = ([\d.]+);", source))
-    assert found.get("MAX_STRINGS") == str(instruments.MAX_STRINGS)
-    assert found.get("MAX_FRETS") == str(instruments.MAX_FRETS)
-    assert float(found["MIN_REFERENCE_HZ"]) == instruments.MIN_REFERENCE_HZ
-    assert float(found["MAX_REFERENCE_HZ"]) == instruments.MAX_REFERENCE_HZ
-    assert float(found["DEFAULT_REFERENCE_HZ"]) == instruments.DEFAULT_REFERENCE_HZ
+    for name in MIRRORED_CONSTANTS:
+        assert float(found[name]) == float(getattr(instruments, name)), name
+
+
+def test_the_editors_pitch_spelling_matches_the_servers():
+    """pitch.js needs to name the pitch a capo produces, and cannot call
+    musicxml.spell_pitch to do it, so it carries the twelve names as a table.
+    Which accidental each pitch class gets is not a free choice - it is what
+    spell_pitch returns with no key signature - so this walks every note MIDI
+    has and fails if the two ever disagree."""
+    match = re.search(r"PITCH_CLASS_NAMES = \[([^\]]*)\]", _editor_source())
+    assert match, "could not find PITCH_CLASS_NAMES in instruments.svelte.js"
+    names = re.findall(r'"([^"]+)"', match.group(1))
+    assert len(names) == 12
+    for midi in range(0, 128):
+        octave = midi // 12 - 1
+        assert f"{names[midi % 12]}{octave}" == instruments.spell_midi(midi), midi
+
+
+def _instrument_foreign_key(conn):
+    return next(
+        (
+            dict(r)
+            for r in conn.execute("PRAGMA foreign_key_list(scores)")
+            if r["from"] == "instrument_id"
+        ),
+        None,
+    )
 
 
 def test_the_instrument_column_is_added_to_a_database_that_predates_it(app_env):
     """SCHEMA's CREATE TABLE IF NOT EXISTS does nothing to a scores table that
     already exists, so the column has to be added explicitly. Simulated by
-    dropping it and re-running init_db, which is what an upgrade looks like."""
+    dropping it and re-running init_db, which is what an upgrade looks like.
+
+    Asserts the FOREIGN KEY, not merely that a column of the right name turned
+    up: the name is all PRAGMA table_info reports, and a column present without
+    its REFERENCES clause is one where ON DELETE SET NULL never fires and a
+    dangling id is accepted. A test that checked only the name would pass
+    against exactly that broken state."""
     conn = db.connect()
     conn.execute("ALTER TABLE scores DROP COLUMN instrument_id")
     conn.commit()
-    columns = {r["name"] for r in conn.execute("PRAGMA table_info(scores)")}
-    assert "instrument_id" not in columns
+    assert "instrument_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(scores)")}
+    assert _instrument_foreign_key(conn) is None
+
     db.init_db()
-    columns = {r["name"] for r in conn.execute("PRAGMA table_info(scores)")}
-    assert "instrument_id" in columns
+
+    assert "instrument_id" in {r["name"] for r in conn.execute("PRAGMA table_info(scores)")}
+    key = _instrument_foreign_key(conn)
+    assert key is not None, "the column came back without its foreign key"
+    assert key["table"] == "instruments"
+    assert key["to"] == "id"
+    assert key["on_delete"] == "SET NULL"
+
+
+def test_a_dangling_instrument_id_is_refused_by_the_database(app_env, insert_score):
+    """What the foreign key is actually for. If it were missing, this write
+    would succeed and the row would point at nothing."""
+    import sqlite3
+
+    conn = db.connect()
+    score_id = insert_score(conn, "a.pdf")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE scores SET instrument_id = 9999 WHERE id = ?", (score_id,))
+
+
+def test_a_column_present_without_its_foreign_key_stops_startup(app_env):
+    """The one hole in matching columns by name. SQLite cannot add a constraint
+    to an existing column, so this is not repairable at startup - and carrying
+    on would mean running with an integrity guarantee the code assumes and the
+    database does not provide."""
+    conn = db.connect()
+    conn.execute("ALTER TABLE scores DROP COLUMN instrument_id")
+    conn.execute("ALTER TABLE scores ADD COLUMN instrument_id TEXT")
+    conn.commit()
+    with pytest.raises(RuntimeError) as exc_info:
+        db.init_db()
+    assert "foreign key" in str(exc_info.value)
+
+
+def test_the_schema_version_is_stamped(app_env):
+    conn = db.connect()
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 1
+
+
+def test_a_database_from_a_newer_release_stops_startup(app_env):
+    """Its schema may hold columns and constraints this code knows nothing
+    about; writing to it blind is how a downgrade loses data."""
+    conn = db.connect()
+    conn.execute(f"PRAGMA user_version = {db.SCHEMA_VERSION + 1}")
+    conn.commit()
+    with pytest.raises(RuntimeError) as exc_info:
+        db.init_db()
+    assert "newer release" in str(exc_info.value)
+
+
+def test_running_init_db_again_changes_nothing(app_env):
+    """Idempotence is this mechanism's only safety property - it runs on every
+    startup."""
+    conn = db.connect()
+    before = conn.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall()
+    db.init_db()
+    db.init_db()
+    after = conn.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall()
+    assert [r["sql"] for r in before] == [r["sql"] for r in after]
+
+
+# ---------------------------------------------------------------- kind
+
+
+def test_kind_defaults_to_string(app_env):
+    created = api.create_instrument(make())
+    assert created["kind"] == "string"
+
+
+def test_every_preset_is_a_string_instrument(app_env):
+    assert {p["kind"] for p in instruments.presets()} == {"string"}
+
+
+def test_an_unimplemented_kind_is_rejected(app_env):
+    """`fretted: False` means an unfretted STRING instrument, not "not a string
+    instrument" - this column is what a piano will use instead of it."""
+    with pytest.raises(HTTPException) as exc_info:
+        api.create_instrument(make(kind="keyboard"))
+    assert exc_info.value.status_code == 422
+    assert "kind" in exc_info.value.detail
+
+
+# ------------------------------------------------- stored spelling
+
+
+@pytest.mark.parametrize(
+    "typed,stored",
+    [
+        ("e2", "E2"),
+        ("f#2", "F#2"),
+        ("eb3", "Eb3"),
+        (" g3 ", "G3"),
+    ],
+)
+def test_a_pitch_is_stored_in_one_spelling(app_env, typed, stored):
+    """"e2" and "E2" are the same string. Storing it as typed renders lowercase
+    in the editor and the summary, and makes any later comparison by name -
+    against a preset, against tabextract.DEFAULT_TUNING - miss."""
+    created = api.create_instrument(
+        make(string_count=1, string_pitches=[typed], fret_count=12)
+    )
+    assert created["string_pitches"] == [stored]
+    assert created["strings"][0]["pitch"] == stored
+
+
+def test_the_choice_of_accidental_is_kept_as_written(app_env):
+    """E flat and D sharp are the same pitch and a real distinction to whoever
+    typed one, so canonicalising case must not canonicalise spelling."""
+    flat = api.create_instrument(
+        make(name="Flat", string_count=1, string_pitches=["Eb3"], fret_count=12)
+    )
+    sharp = api.create_instrument(
+        make(name="Sharp", string_count=1, string_pitches=["D#3"], fret_count=12)
+    )
+    assert flat["string_pitches"] == ["Eb3"]
+    assert sharp["string_pitches"] == ["D#3"]
+    assert flat["strings"][0]["midi"] == sharp["strings"][0]["midi"]

@@ -312,36 +312,86 @@ const MIN_MIDI = 0;
 const MAX_MIDI = 127;
 
 let auditionApi = null;
+let auditionHost = null;
 let auditionReady = null;
+
+// Puts the audition back to never-having-been-built. Called on any failure, so
+// the next click starts a fresh attempt: a cached rejection would turn one
+// failed soundfont fetch into every play button being dead for the life of the
+// page, with nothing but a reload to recover.
+function resetAudition() {
+  try {
+    auditionApi?.destroy();
+  } catch {
+    // a half-constructed renderer may not survive its own teardown; the host
+    // still has to go
+  }
+  auditionHost?.remove();
+  auditionApi = null;
+  auditionHost = null;
+  auditionReady = null;
+}
 
 function auditionPlayer() {
   if (auditionReady) return auditionReady;
+
   const host = document.createElement("div");
   host.style.cssText =
     "position:absolute; left:-9999px; top:0; width:0; height:0; overflow:hidden";
   document.body.appendChild(host);
-  auditionApi = new alphaTab.AlphaTabApi(host, {
-    core: { fontDirectory: "/font/", useWorkers: RENDER_IN_WORKER },
-    player: {
-      // EnabledSynthesizer, not the automatic mode the score view uses: the
-      // automatic mode decides between the synthesiser and an embedded backing
-      // track by looking at the loaded score, so with no score it builds no
-      // player at all and nothing ever loads.
-      playerMode: alphaTab.PlayerMode.EnabledSynthesizer,
-      soundFont: "/soundfont/sonivox.sf2",
-    },
-  });
+  auditionHost = host;
+
+  let api;
+  try {
+    api = new alphaTab.AlphaTabApi(host, {
+      core: { fontDirectory: "/font/", useWorkers: RENDER_IN_WORKER },
+      player: {
+        // EnabledSynthesizer, not the automatic mode the score view uses: the
+        // automatic mode decides between the synthesiser and an embedded
+        // backing track by looking at the loaded score, so with no score it
+        // builds no player at all and nothing ever loads.
+        playerMode: alphaTab.PlayerMode.EnabledSynthesizer,
+        soundFont: "/soundfont/sonivox.sf2",
+      },
+    });
+  } catch (e) {
+    // The host is already in the document, so it has to come back out here or
+    // every retry would leave another orphan behind it.
+    resetAudition();
+    return Promise.reject(e instanceof Error ? e : new Error(String(e)));
+  }
+  auditionApi = api;
+
   // Waits on the soundfont rather than on playerReady, which is the renderer's
   // "ready to play THIS SCORE" and needs a midi file generated from one. There
   // is no score here and never will be, so it would never fire; a loaded
   // soundfont is the whole of what a one-shot note needs.
-  auditionReady = new Promise((resolve, reject) => {
-    auditionApi.soundFontLoaded.on(() => resolve(auditionApi.player));
-    auditionApi.error.on((e) =>
-      reject(new Error(e?.message ?? "the synthesiser could not be loaded")),
-    );
+  //
+  // Failure comes from the synth's own soundFontLoadFailed where there is one,
+  // rather than from api.error: that fires for anything at all, and a render
+  // complaint has no business disabling playback.
+  const ready = new Promise((resolve, reject) => {
+    api.soundFontLoaded.on(() => resolve(api.player));
+    const failed = api.player?.soundFontLoadFailed;
+    if (failed) {
+      failed.on((e) => reject(toError(e, "the synthesiser's soundfont could not be loaded")));
+    } else {
+      api.error.on((e) => reject(toError(e, "the synthesiser could not be loaded")));
+    }
+  }).catch((e) => {
+    // Guarded on identity so a failure arriving late cannot tear down a newer
+    // attempt that has already succeeded.
+    if (auditionApi === api) resetAudition();
+    throw e;
   });
-  return auditionReady;
+
+  auditionReady = ready;
+  return ready;
+}
+
+function toError(e, fallback) {
+  if (e instanceof Error) return e;
+  return new Error(e?.message ?? fallback);
 }
 
 /**

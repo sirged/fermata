@@ -4,100 +4,102 @@
 // person owns follow them from phone to tablet to desk. Loaded once here;
 // components read the live object rather than each fetching their own copy,
 // and writes go back through the same place.
+//
+// The pitch arithmetic lives in ./pitch.js, which has no runes and no imports
+// so it can be tested on its own.
 import { api } from "./api.js";
+import {
+  DEFAULT_REFERENCE_HZ,
+  MAX_MIDI,
+  MIN_MIDI,
+  pitchFrequency,
+  pitchMidi,
+  spellMidi,
+} from "./pitch.js";
 import { playPitch } from "./score-render.js";
 
-// Mirrors of server/fermata/instruments.py's bounds, so a number input can
-// offer the right range instead of letting a person type a value only the
-// server will refuse. The server stays the authority - it revalidates
-// everything and its message is what gets shown - and
-// server/tests/test_instruments_api.py parses these four constants out of this
-// file and fails if they ever drift from the Python ones.
-export const MAX_STRINGS = 24;
-export const MAX_FRETS = 36;
-export const MIN_REFERENCE_HZ = 300;
-export const MAX_REFERENCE_HZ = 600;
+export {
+  DEFAULT_REFERENCE_HZ,
+  MAX_FRETS,
+  MAX_NAME_CHARS,
+  MAX_REFERENCE_HZ,
+  MAX_STRINGS,
+  MIN_FRETS,
+  MIN_REFERENCE_HZ,
+  MIN_STRINGS,
+  formatFrequency,
+} from "./pitch.js";
 
-export const DEFAULT_REFERENCE_HZ = 440;
-
-const STEP_SEMITONES = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
-const PITCH_NAME = /^([A-Ga-g])(#{1,2}|b{1,2}|)(-?\d+)$/;
-
-// Concert A, the note a reference pitch names.
-const REFERENCE_MIDI = 69;
-
-/** A pitch name ("E2", "F#2", "Eb3") as a MIDI note number, or null if it is
- * not one. The same grammar server/fermata/musicxml.py's parse_pitch_name
- * accepts, because a name this rejects is a name the server would reject too
- * and the form should say so before a save is attempted. */
-export function pitchMidi(name) {
-  const m = PITCH_NAME.exec(String(name ?? "").trim());
-  if (!m) return null;
-  const accidentals = m[2];
-  const alter = accidentals.startsWith("#") ? accidentals.length : -accidentals.length;
-  const midi = 12 * (Number(m[3]) + 1) + STEP_SEMITONES[m[1].toUpperCase()] + alter;
-  return midi >= 0 && midi <= 127 ? midi : null;
-}
-
-/** The sounding frequency of a MIDI note under a reference pitch. Equal
- * temperament, and the reference names concert A - so a period tuning moves
- * every string with it. This is the one piece of arithmetic that has to exist
- * on both sides: the server computes it for a stored definition, and the form
- * needs it for a draft that has not been saved yet. */
-export function pitchFrequency(midi, referenceHz = DEFAULT_REFERENCE_HZ) {
-  return referenceHz * 2 ** ((midi - REFERENCE_MIDI) / 12);
-}
-
-/** How a frequency is written wherever one is shown. Two decimals: a cent at
- * the bottom of a bass's range is about 0.03 Hz, so fewer would hide the
- * difference a reference pitch makes. */
-export function formatFrequency(hz) {
-  return `${hz.toFixed(2)} Hz`;
-}
-
-/** Each string of a draft definition, as the editor shows it: number, the name
- * as typed, and - when that name parses - its MIDI note and frequency. String
- * numbers run opposite to list order, matching the server and the rest of the
- * codebase (a guitar's string 6 is first). */
+/** Each string of an unsaved draft, in the same shape the server sends for a
+ * saved one, so one renderer displays either.
+ *
+ * This exists ONLY for a draft: a saved instrument's strings come from the
+ * server. The capo is applied here for the same reason it is there - it raises
+ * every string, so it decides what the instrument sounds, and the sounding
+ * pitch is what gets played and matched by ear. `midi` is null for a name that
+ * does not parse, which is the ordinary state of a half-typed one. */
 export function draftStrings(draft) {
   const pitches = draft?.string_pitches ?? [];
   const reference = Number(draft?.reference_pitch) || DEFAULT_REFERENCE_HZ;
+  const capo = (draft?.fretted && Number(draft.capo)) || 0;
   return pitches.map((pitch, index) => {
     const midi = pitchMidi(pitch);
+    const sounding = midi == null ? null : midi + capo;
     return {
       number: pitches.length - index,
       pitch,
       midi,
       frequency: midi == null ? null : pitchFrequency(midi, reference),
+      sounding_midi: sounding,
+      sounding_pitch: sounding == null ? null : spellMidi(sounding),
+      sounding_frequency: sounding == null ? null : pitchFrequency(sounding, reference),
     };
   });
 }
 
-const store = $state({ list: [], presets: [], loaded: false });
+/** Whether a string can be sounded. A nominal pitch is bounded by pitchMidi,
+ * but a capo can push the sounding pitch off the top of MIDI - the server
+ * refuses to store that, and until it is saved the draft has to show it as
+ * unplayable rather than offer a button that does nothing. */
+export function isPlayable(string) {
+  const midi = string?.sounding_midi;
+  return midi != null && midi >= MIN_MIDI && midi <= MAX_MIDI;
+}
+
+const store = $state({ list: [], presets: [], loaded: false, error: "" });
 
 let loadPromise = null;
 
-/** The live store: `list` is the saved instruments, `presets` the ones to
- * start from. Mutating either does not persist anything. */
+/** The live store: `list` is the saved instruments, `presets` the ones to start
+ * from, `error` why the last load failed. Mutating any of it persists nothing. */
 export function getInstruments() {
   return store;
 }
 
 export function loadInstruments() {
   if (loadPromise) return loadPromise;
-  loadPromise = Promise.all([api.instruments(), api.instrumentPresets()])
+  const attempt = Promise.all([api.instruments(), api.instrumentPresets()])
     .then(([list, presets]) => {
       store.list = list;
       store.presets = presets;
+      store.error = "";
       store.loaded = true;
     })
-    .catch(() => {
-      // backend not deployed, network down - an empty list with no presets is
-      // a usable (if useless) view, and the editor surfaces the real error the
-      // moment a save is attempted
+    .catch((e) => {
+      // A FAILURE IS NOT CACHED. Unlike `settings`, there is nothing usable to
+      // fall back on: a preset is the only way to start a definition, so one
+      // hiccup while the settings view was loading would leave an empty list
+      // above an empty dropdown, with the feature dead until a full page
+      // reload - navigating away and back would hand back this same rejected
+      // promise. Clearing it lets the next caller (a remount, or the retry
+      // button) actually try again, and the message gives something to retry
+      // from rather than an unexplained "no instruments yet".
+      if (loadPromise === attempt) loadPromise = null;
       store.loaded = true;
+      store.error = e?.message ?? "Could not load your instruments.";
     });
-  return loadPromise;
+  loadPromise = attempt;
+  return attempt;
 }
 
 /** Create a definition, or replace an existing one. The server answers with
@@ -117,9 +119,12 @@ export async function saveInstrument(id, definition) {
   return saved;
 }
 
+/** Forget an instrument. Returns how many scores stopped naming one as a
+ * result, so the interface can say so instead of unlinking them silently. */
 export async function removeInstrument(id) {
-  await api.deleteInstrument(id);
+  const result = await api.deleteInstrument(id);
   store.list = store.list.filter((i) => i.id !== id);
+  return result?.scores_unlinked ?? 0;
 }
 
 /** Sound one string on its own, through the renderer's synthesiser. */
@@ -133,6 +138,7 @@ export function auditionPitch(midi) {
 export function draftFrom(source) {
   return {
     id: source?.id ?? null,
+    kind: source?.kind ?? "string",
     name: source?.name ?? "",
     fretted: source?.fretted ?? true,
     string_pitches: [...(source?.string_pitches ?? [])],
@@ -147,7 +153,9 @@ export function draftFrom(source) {
  * the server checks anyway, but there is no reason for this end to be the
  * thing that gets it wrong. */
 export function definitionFrom(draft) {
+  const reference = Number(draft.reference_pitch);
   return {
+    kind: draft.kind ?? "string",
     name: draft.name,
     fretted: draft.fretted,
     string_count: draft.string_pitches.length,
@@ -157,7 +165,12 @@ export function definitionFrom(draft) {
     // is to pick a fretted preset and switch it over.
     fret_count: draft.fretted ? draft.fret_count : null,
     capo: draft.fretted ? (draft.capo ?? 0) : null,
-    reference_pitch: draft.reference_pitch,
+    // An emptied number input reads back as null, which means UNSET, not
+    // invalid - so it takes the same default a fresh definition would, which is
+    // also the pitch the frequencies on screen were computed at. Forwarding the
+    // null instead produced a 422 about a field the form was still showing
+    // plausible numbers for.
+    reference_pitch: reference > 0 ? reference : DEFAULT_REFERENCE_HZ,
   };
 }
 

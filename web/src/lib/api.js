@@ -7,6 +7,24 @@ export class ApiError extends Error {
   }
 }
 
+// FastAPI reports its own request validation as a LIST of objects under
+// `detail`, not a string - and a caller that only looked for a string showed
+// "Request failed (422)" for a rejection the server had described precisely,
+// naming the field. `loc` starts with the source ("body", "path", "query"),
+// which is noise to a person looking at a form, so it is dropped.
+function describeValidationErrors(errors) {
+  return errors
+    .map((e) => {
+      const path = Array.isArray(e?.loc)
+        ? e.loc.filter((part) => !["body", "path", "query"].includes(part)).join(".")
+        : "";
+      const message = e?.msg ?? "is not valid";
+      return path ? `${path}: ${message}` : message;
+    })
+    .filter(Boolean)
+    .join("; ");
+}
+
 async function j(res) {
   if (!res.ok) {
     // FastAPI puts the actionable text in `detail` (422 validation errors,
@@ -17,6 +35,7 @@ async function j(res) {
     try {
       const body = await res.json();
       if (typeof body?.detail === "string") detail = body.detail;
+      else if (Array.isArray(body?.detail)) detail = describeValidationErrors(body.detail);
     } catch {
       // not JSON - nothing to extract
     }
