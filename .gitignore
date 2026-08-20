@@ -19,6 +19,11 @@ web/public/soundfont/
 # left behind by older checkouts that copied the runtime assets by hand
 web/public/alphatab/
 
+# browser test output (traces on failure, the html report)
+web/test-results/
+web/playwright-report/
+web/blob-report/
+
 # editors / os
 .DS_Store
 Thumbs.db

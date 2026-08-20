@@ -45,6 +45,56 @@ jobs:
         working-directory: web
         run: npm run build
 
+  browser:
+    name: Browser tests
+    runs-on: ubuntu-latest
+    # Well above the ~75s this takes, and below the six-hour default a hung
+    # browser would otherwise sit burning.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # This suite drives the real backend serving the real build, because a
+      # passing build proves nothing about whether anything rendered - so both
+      # halves are installed here. Playwright starts the server itself; see
+      # web/playwright.config.js.
+      - name: Install server
+        working-directory: server
+        run: pip install -e .
+      - name: Install web
+        working-directory: web
+        run: npm ci
+      - name: Build
+        working-directory: web
+        run: npm run build
+      - name: Cache browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+      - name: Install browser
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Test
+        working-directory: web
+        run: npm run test:browser
+      - name: Report
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-test-report
+          path: |
+            web/playwright-report/
+            web/test-results/
+          retention-days: 7
+
   image:
     name: Container image
     runs-on: ubuntu-latest

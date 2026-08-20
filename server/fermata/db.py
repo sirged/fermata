@@ -81,7 +81,112 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL,
     PRIMARY KEY (owner, key)
 );
+
+-- An instrument as a player has it in hand, in one tuning: the same guitar in
+-- standard and in dropped D is two rows, because the tuning is what anything
+-- downstream needs. `fretted` is not decoration - a fret is a discrete
+-- position, so position reasoning and tablature only apply when it is 1, and
+-- fret_count/capo are rejected outright on an unfretted row rather than stored
+-- and ignored (see fermata/instruments.py).
+--
+-- `string_pitches` is a JSON array of pitch names ("E2", "F#2"), ordered
+-- highest string NUMBER first, which is how tuning already travels through
+-- this codebase (tabextract.DEFAULT_TUNING, musicxml.open_string_midi). One
+-- column rather than a row per string because a tuning is only ever read and
+-- written whole, and its order is part of its meaning - a child table would
+-- need an explicit ordinal column to say the same thing.
+--
+-- `reference_pitch` is in Hz. Not everyone tunes to A440 and period
+-- instruments generally do not, so a string's sounding frequency is only
+-- determined once this is known.
+--
+-- `owner` mirrors the settings table: unused today, every row written with
+-- DEFAULT_OWNER, present from the start so real accounts arrive as a data
+-- migration rather than a schema redesign.
+-- AUTOINCREMENT, unlike every other table here: a plain INTEGER PRIMARY KEY
+-- reuses the largest rowid once its row is deleted, so deleting an instrument
+-- and defining another would hand the new one the old one's id. Any id held
+-- outside the database - an open settings tab, a request already in flight,
+-- scores.instrument_id in a backup being restored - would then silently name a
+-- different instrument. Instruments are the first table here that is routinely
+-- deleted from, and this is free to add now and a migration later.
+--
+-- `kind` is 'string' and nothing else today - string_count, string_pitches and
+-- `fretted` all presuppose it - but it is here from the start because the
+-- intent is to describe any instrument eventually. Note that fretted=0 means an
+-- unfretted STRING instrument (a violin), which is not the same thing as "not a
+-- string instrument", and must not be pressed into service as though it were:
+-- that is what this column is for. Having it now means a piano or a voice
+-- changes what a definition may CONTAIN rather than changing the shape of every
+-- response, once there is data to migrate.
+CREATE TABLE IF NOT EXISTS instruments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL DEFAULT 'local',
+    kind TEXT NOT NULL DEFAULT 'string',
+    name TEXT NOT NULL,
+    fretted INTEGER NOT NULL DEFAULT 1,
+    string_count INTEGER NOT NULL,
+    string_pitches TEXT NOT NULL,
+    fret_count INTEGER,
+    capo INTEGER,
+    reference_pitch REAL NOT NULL DEFAULT 440.0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_instruments_owner ON instruments(owner);
 """
+
+# The schema this code expects. Stamped into PRAGMA user_version once a startup
+# has finished bringing a database up to date.
+#
+# Recorded rather than inferred, and that distinction is the whole point. The
+# mechanism below works out what to do by LOOKING at the live schema, which is
+# fine while every change is "add a column if it is missing" and hopeless the
+# moment one is not: the first non-additive change would have to guess each
+# deployed database's history from its column set. Stamping now, while every
+# deployed database is unambiguously either pre-instruments or version 1, costs
+# one PRAGMA; stamping later costs that guesswork.
+SCHEMA_VERSION = 1
+
+# Columns added to a table that had already shipped. CREATE TABLE IF NOT EXISTS
+# does nothing at all to a table that exists, so SCHEMA alone reaches only fresh
+# installs - an upgraded one would keep the old columns and 500 the moment
+# anything wrote the new one.
+#
+# THIS EXPRESSES ADD COLUMN AND NOTHING ELSE, and is not the beginning of a
+# migration framework. There is no ordering and no down direction, so it cannot
+# rename, drop, change a constraint, or add an index. In particular it cannot
+# BACKFILL: idempotence is this mechanism's only safety property - it runs on
+# every startup - and a backfill is not idempotent, so putting one here would
+# rewrite rows a user had since edited. And SQLite requires that an added
+# column's default be NULL when it carries a foreign key, so a future column
+# needing both a foreign key and NOT NULL cannot come through here at all.
+# Anything in that list needs a real runner, and SCHEMA_VERSION is what will let
+# one be written.
+#
+# Applied by name AND, where the definition carries one, by checking the foreign
+# key is really there: PRAGMA table_info reports only names, so a column that
+# existed without its REFERENCES clause would be matched, skipped, and left with
+# no foreign key - ON DELETE SET NULL would never fire and a dangling reference
+# would be accepted. Nothing in this repo's history produces that state, but the
+# check is what makes the schema's guarantee true rather than assumed.
+#
+# Which score an instrument is for lives on the score rather than in a join
+# table: it is one instrument per score, and a score row is what every reader
+# already has in hand. ON DELETE SET NULL because deleting an instrument means
+# the player no longer has it, not that the scores written for it are gone.
+#
+# NOTHING READS THIS COLUMN YET - see issue #72. Two things a first consumer
+# has to know. Transcription still opens every extraction with
+# tabextract.DEFAULT_TUNING, so a drop-D or seven-string score is read as a
+# standard six-string whatever instrument it names; and nothing revalidates a
+# score when its instrument is edited underneath it, so a reference can outlive
+# the shape it was chosen for (see api.update_instrument).
+COLUMN_ADDITIONS = {
+    "scores": {
+        "instrument_id": "INTEGER REFERENCES instruments(id) ON DELETE SET NULL",
+    },
+}
 
 
 def connect() -> sqlite3.Connection:
@@ -95,15 +200,110 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def _add_missing_columns(conn) -> None:
+    for table, columns in COLUMN_ADDITIONS.items():
+        present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        keyed = {row["from"] for row in conn.execute(f"PRAGMA foreign_key_list({table})")}
+        for column, definition in columns.items():
+            if column not in present:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            elif "REFERENCES" in definition.upper() and column not in keyed:
+                # Present by name but carrying no foreign key, so ON DELETE SET
+                # NULL can never fire and a dangling id would be accepted.
+                # SQLite cannot add a constraint to an existing column, so this
+                # is not repairable here - and continuing would mean running
+                # with an integrity guarantee the rest of the code assumes and
+                # the database does not provide.
+                raise RuntimeError(
+                    f"Fermata cannot start: the '{column}' column of the '{table}' table is "
+                    "missing the link that keeps it pointing at real rows.\n"
+                    "\n"
+                    "This cannot happen through normal use or through any upgrade - if you "
+                    "have not edited the database by hand, it is a bug in Fermata and we "
+                    "would like to hear about it. Please open an issue with the lines above "
+                    "and the version you upgraded from.\n"
+                    "\n"
+                    "Your sheet music is not affected either way; only the database in the "
+                    "config folder is. If you have a backup of that folder, restoring it is "
+                    "the safe way back - see the Backups section of docs/deployment.md.\n"
+                    "\n"
+                    f"(If you are comfortable with SQLite: rebuilding '{table}' with the "
+                    "definition in db.SCHEMA, carrying the existing rows across, repairs this "
+                    f"with nothing lost. Dropping the '{column}' column also lets Fermata "
+                    "start, but it PERMANENTLY DISCARDS which instrument each score was for, "
+                    "for every score - so take a copy of the config folder first.)"
+                )
+
+
+def _check_schema_version(conn) -> None:
+    stored = conn.execute("PRAGMA user_version").fetchone()[0]
+    if stored > SCHEMA_VERSION:
+        # Written by a newer Fermata. Its schema may hold columns and
+        # constraints this code knows nothing about, and writing to it blind is
+        # how a downgrade silently loses data.
+        raise RuntimeError(
+            f"this database is at schema version {stored}, but this version of Fermata "
+            f"understands {SCHEMA_VERSION}. It was written by a newer release - upgrade, "
+            "or restore a backup taken before it."
+        )
+
+
 def init_db() -> None:
     conn = connect()
+    # Before SCHEMA runs, not after. executescript() commits as it goes, so
+    # checking afterwards means a database written by a newer release has
+    # already been altered by this one - and the check exists precisely because
+    # writing blind is how a downgrade loses data. SCHEMA is written blind.
+    _check_schema_version(conn)
     conn.executescript(SCHEMA)
     conn.commit()
+    # BEGIN IMMEDIATE takes the write lock before the read below rather than on
+    # the first write after it. Two processes starting at once - a second
+    # `docker run` against the same config volume is a one-liner - could
+    # otherwise both read a schema without the column and both try to add it,
+    # and the loser would abort startup on an unexplained "duplicate column
+    # name". Serialised, the second one reads a schema that already has it and
+    # does nothing. The connection's 30s timeout is what it waits with.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Checked again inside the lock: a newer release could have upgraded and
+        # re-stamped the database between the read above and this point.
+        _check_schema_version(conn)
+        _add_missing_columns(conn)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 @contextmanager
 def tx():
     conn = connect()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+@contextmanager
+def write_tx():
+    """A transaction holding the write lock from the start.
+
+    tx() relies on the driver opening a transaction at the first DML statement,
+    so any SELECT made before that - an existence check, a count - reads
+    OUTSIDE the transaction and can be invalidated before the write lands. A
+    concurrent delete arriving between "does this row exist" and the update that
+    assumes it does turns an intended 404 into an unhandled IntegrityError and a
+    500, and makes a count reported alongside the write untrustworthy.
+
+    Use this for any mutation that reads before it writes. init_db() does the
+    same thing for the same reason.
+    """
+    conn = connect()
+    conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
         conn.commit()

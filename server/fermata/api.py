@@ -2,19 +2,28 @@ import json
 import re
 import shutil
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, Body, HTTPException, UploadFile
+from fastapi import APIRouter, Body, HTTPException, Path as PathParam, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import scanner
+from . import instruments, scanner
 from .config import FILE_TYPES, LIBRARY_DIR
-from .db import DEFAULT_OWNER, connect, tx
+from .db import DEFAULT_OWNER, connect, tx, write_tx
 from .glyph_rhythm import VALID_TS_DENOMINATORS
 from .tabextract import analyze as analyze_pdf, extract as extract_pdf
 from .thumbs import thumb_path
 
 router = APIRouter(prefix="/api")
+
+# SQLite's INTEGER is 64-bit, and handing the driver anything wider raises
+# OverflowError from inside the query - a 500 for what is only ever a row that
+# cannot exist. Bounded in the signature so an impossible id is refused before
+# it reaches a database at all. `ge=1` because rowids start at 1, so 0 and
+# negatives are equally impossible.
+SQLITE_MAX_INTEGER = 2**63 - 1
+RowId = Annotated[int, PathParam(ge=1, le=SQLITE_MAX_INTEGER)]
 
 VALID_KINDS = {"notation", "tab", "both", "unknown"}
 VALID_PRACTICED = {"recent", "neglected"}
@@ -141,6 +150,177 @@ def put_settings(patch: dict[str, str] = Body(...)):
     return get_settings()
 
 
+class InstrumentIn(BaseModel):
+    """A whole definition. Updates replace rather than patch: a tuning is only
+    coherent as a set (string_count and string_pitches have to agree, and
+    fret_count only exists at all when fretted), so accepting half of one and
+    keeping half of the old is how a five-string bass ends up with four
+    pitches."""
+
+    # Defaulted, so today's clients need not send it and tomorrow's kinds do not
+    # change the shape of this request. Only "string" is implemented - see
+    # instruments.VALID_KINDS.
+    kind: str = instruments.DEFAULT_KIND
+    # The raw ceiling, not the name rule: instruments.normalise strips control
+    # characters and collapses whitespace first, then applies MAX_NAME_CHARS to
+    # what will actually be stored.
+    name: str = Field(max_length=instruments.MAX_RAW_NAME_CHARS)
+    fretted: bool = True
+    string_count: int
+    string_pitches: list[str]
+    fret_count: int | None = None
+    capo: int | None = None
+    reference_pitch: float = instruments.DEFAULT_REFERENCE_HZ
+
+
+def _instrument_dict(row) -> dict:
+    d = dict(row)
+    d["fretted"] = bool(d["fretted"])
+    d["string_pitches"] = json.loads(d["string_pitches"])
+    # Derived, not stored: each string's nominal tuning and what it actually
+    # sounds under the capo. Sent so a client displaying a SAVED instrument has
+    # no reason to compute any of it - the browser's own copy of the arithmetic
+    # exists only for a draft the server has never seen. Unrounded, so exactly
+    # one place decides how a frequency is written.
+    d["strings"] = instruments.string_details(
+        d["string_pitches"], d["reference_pitch"], d["capo"]
+    )
+    return d
+
+
+def _instrument_row(conn, instrument_id: int):
+    row = conn.execute(
+        "SELECT * FROM instruments WHERE id = ? AND owner = ?",
+        (instrument_id, DEFAULT_OWNER),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "instrument not found")
+    return row
+
+
+def _normalise_instrument(body: InstrumentIn) -> dict:
+    try:
+        return instruments.normalise(
+            kind=body.kind,
+            name=body.name,
+            fretted=body.fretted,
+            string_count=body.string_count,
+            string_pitches=body.string_pitches,
+            fret_count=body.fret_count,
+            capo=body.capo,
+            reference_pitch=body.reference_pitch,
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+
+
+@router.get("/instruments")
+def list_instruments():
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM instruments WHERE owner = ? ORDER BY name COLLATE NOCASE, id",
+        (DEFAULT_OWNER,),
+    ).fetchall()
+    return [_instrument_dict(r) for r in rows]
+
+
+# Declared before /instruments/{instrument_id}: FastAPI matches in declaration
+# order, and the other way round "presets" would be tried as an int path
+# parameter and answered with a 422 about parsing rather than with the presets.
+@router.get("/instruments/presets")
+def list_instrument_presets():
+    return instruments.presets()
+
+
+@router.post("/instruments")
+def create_instrument(body: InstrumentIn):
+    fields = _normalise_instrument(body)
+    with write_tx() as conn:
+        cur = conn.execute(
+            """INSERT INTO instruments(owner, kind, name, fretted, string_count, string_pitches,
+                                       fret_count, capo, reference_pitch)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                DEFAULT_OWNER,
+                fields["kind"],
+                fields["name"],
+                int(fields["fretted"]),
+                fields["string_count"],
+                json.dumps(fields["string_pitches"]),
+                fields["fret_count"],
+                fields["capo"],
+                fields["reference_pitch"],
+            ),
+        )
+        instrument_id = cur.lastrowid
+    return get_instrument(instrument_id)
+
+
+@router.get("/instruments/{instrument_id}")
+def get_instrument(instrument_id: RowId):
+    conn = connect()
+    return _instrument_dict(_instrument_row(conn, instrument_id))
+
+
+@router.put("/instruments/{instrument_id}")
+def update_instrument(instrument_id: RowId, body: InstrumentIn):
+    """Replace a definition in place.
+
+    NOTE FOR WHATEVER FIRST CONSUMES scores.instrument_id: nothing here
+    revalidates the scores pointing at this instrument, so an edit can leave
+    one referring to something it no longer fits - a seven-string retuned down
+    to one string keeps every reference intact. That is harmless while the
+    reference is only stored, and a trap the moment anything derives positions,
+    tablature or playback from it: such a consumer must treat the instrument as
+    possibly having changed under the score since it was chosen, and check the
+    string count and range itself rather than trusting that the reference was
+    valid when it was made.
+    """
+    fields = _normalise_instrument(body)
+    with write_tx() as conn:
+        _instrument_row(conn, instrument_id)
+        conn.execute(
+            """UPDATE instruments SET kind = ?, name = ?, fretted = ?, string_count = ?,
+                   string_pitches = ?, fret_count = ?, capo = ?, reference_pitch = ?,
+                   updated_at = datetime('now')
+               WHERE id = ? AND owner = ?""",
+            (
+                fields["kind"],
+                fields["name"],
+                int(fields["fretted"]),
+                fields["string_count"],
+                json.dumps(fields["string_pitches"]),
+                fields["fret_count"],
+                fields["capo"],
+                fields["reference_pitch"],
+                instrument_id,
+                DEFAULT_OWNER,
+            ),
+        )
+    return get_instrument(instrument_id)
+
+
+@router.delete("/instruments/{instrument_id}")
+def delete_instrument(instrument_id: RowId):
+    """Forget an instrument the player no longer has. Scores that referenced it
+    keep their own rows - scores.instrument_id is ON DELETE SET NULL, so they
+    revert to naming no instrument rather than disappearing with it.
+
+    `scores_unlinked` is counted before the delete so a caller can say how many
+    scores stopped naming an instrument, rather than doing it silently.
+    """
+    with write_tx() as conn:
+        _instrument_row(conn, instrument_id)
+        unlinked = conn.execute(
+            "SELECT COUNT(*) AS n FROM scores WHERE instrument_id = ?", (instrument_id,)
+        ).fetchone()["n"]
+        conn.execute(
+            "DELETE FROM instruments WHERE id = ? AND owner = ?",
+            (instrument_id, DEFAULT_OWNER),
+        )
+    return {"deleted": instrument_id, "scores_unlinked": unlinked}
+
+
 @router.get("/scores")
 def list_scores(
     search: str = "",
@@ -227,7 +407,7 @@ def list_tags():
 
 
 @router.get("/scores/{score_id}")
-def get_score(score_id: int):
+def get_score(score_id: RowId):
     conn = connect()
     return _with_tags(conn, [_score_row(conn, score_id)])[0]
 
@@ -240,19 +420,30 @@ class ScorePatch(BaseModel):
     favorite: bool | None = None
     last_page: int | None = None
     tags: list[str] | None = None
+    # Which of the player's instruments this score is for. Explicit null clears
+    # it - see patch_score.
+    instrument_id: int | None = Field(default=None, ge=1, le=SQLITE_MAX_INTEGER)
 
 
 @router.patch("/scores/{score_id}")
-def patch_score(score_id: int, patch: ScorePatch):
+def patch_score(score_id: RowId, patch: ScorePatch):
     if patch.content_kind is not None and patch.content_kind not in VALID_KINDS:
         raise HTTPException(422, f"content_kind must be one of {sorted(VALID_KINDS)}")
-    with tx() as conn:
+    with write_tx() as conn:
         _score_row(conn, score_id)
+        if patch.instrument_id is not None:
+            _instrument_row(conn, patch.instrument_id)
         fields = {
             k: v
             for k, v in patch.model_dump(exclude_none=True).items()
-            if k != "tags"
+            if k not in ("tags", "instrument_id")
         }
+        # instrument_id is the one field where an explicit null is a request
+        # rather than an omission: "this score is for no particular instrument"
+        # has to be sayable, and the omit-nulls rule the other fields need
+        # (a title cannot be cleared - the column is NOT NULL) would swallow it.
+        if "instrument_id" in patch.model_fields_set:
+            fields["instrument_id"] = patch.instrument_id
         if "favorite" in fields:
             fields["favorite"] = int(fields["favorite"])
         if fields:
@@ -289,7 +480,7 @@ def _practice_totals(conn, score_id: int):
 
 
 @router.post("/scores/{score_id}/practice")
-def log_practice(score_id: int, body: PracticeIn):
+def log_practice(score_id: RowId, body: PracticeIn):
     if not 0 < body.seconds <= 86400:
         raise HTTPException(422, "seconds must be between 1 and 86400")
     with tx() as conn:
@@ -302,7 +493,7 @@ def log_practice(score_id: int, body: PracticeIn):
 
 
 @router.get("/scores/{score_id}/practice")
-def get_practice(score_id: int):
+def get_practice(score_id: RowId):
     conn = connect()
     _score_row(conn, score_id)
     sessions = conn.execute(
@@ -333,7 +524,7 @@ def practice_summary():
 
 
 @router.get("/scores/{score_id}/file")
-def get_file(score_id: int):
+def get_file(score_id: RowId):
     conn = connect()
     row = _score_row(conn, score_id)
     path = LIBRARY_DIR / row["path"]
@@ -344,7 +535,7 @@ def get_file(score_id: int):
 
 
 @router.get("/scores/{score_id}/thumb")
-def get_thumb(score_id: int):
+def get_thumb(score_id: RowId):
     conn = connect()
     row = _score_row(conn, score_id)
     path = thumb_path(row["hash"])
@@ -363,18 +554,49 @@ def _transcription_row(conn, score_id: int):
     ).fetchone()
 
 
+# Rule 8 conformance, as the top level of every transcription response.
+#
+# These are STATED on every response rather than included only when known,
+# and that is the whole point of them. A hand edit stores no confidence at
+# all, so on the omitting version of this a client that merged the PUT
+# response over the transcription it already held kept the figures from
+# BEFORE the edit - and went on reporting bars as defective after the edit
+# that fixed them, which is the one thing this project must never do. An
+# explicit "not recorded" overwrites such a merge; a missing key is silently
+# preserved by it.
+#
+# None means not recorded: a row stored before these were persisted, or a
+# hand edit, whose content nothing has measured. It does NOT mean zero -
+# zero would claim every bar was measured and every one of them added up,
+# which is a far stronger statement than either row can support. Anything
+# wanting real figures for edited content has to measure that content; it
+# cannot inherit them from the extraction it replaced.
+_BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured")
+
+
 def _transcription_dict(row) -> dict:
     d = dict(row)
+    blob = None
     if d.get("confidence"):
         try:
-            d["confidence"] = json.loads(d["confidence"])
+            blob = json.loads(d["confidence"])
         except (TypeError, ValueError):
-            pass
+            blob = None  # leave the column as the raw text it turned out to be
+        else:
+            d["confidence"] = blob
+    stored = blob if isinstance(blob, dict) else {}
+
+    warnings = stored.get("warnings")
+    d["warnings"] = warnings if isinstance(warnings, list) else []
+    for key in _BAR_KEYS:
+        value = stored.get(key)
+        # bool is a subclass of int and would otherwise pass as a count.
+        d[key] = value if isinstance(value, int) and not isinstance(value, bool) else None
     return d
 
 
 @router.get("/scores/{score_id}/transcription")
-def get_transcription(score_id: int):
+def get_transcription(score_id: RowId):
     conn = connect()
     _score_row(conn, score_id)
     row = _transcription_row(conn, score_id)
@@ -384,7 +606,7 @@ def get_transcription(score_id: int):
 
 
 @router.get("/scores/{score_id}/transcription/analysis")
-def get_transcription_analysis(score_id: int):
+def get_transcription_analysis(score_id: RowId):
     conn = connect()
     row = _score_row(conn, score_id)
     if row["file_type"] != "pdf":
@@ -423,7 +645,7 @@ def _validate_time_signature(ts: tuple[int, int]) -> None:
 
 
 @router.post("/scores/{score_id}/transcribe")
-def transcribe(score_id: int, body: TranscribeIn | None = Body(default=None)):
+def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
     conn = connect()
     row = _score_row(conn, score_id)
     if row["file_type"] != "pdf":
@@ -451,7 +673,25 @@ def transcribe(score_id: int, body: TranscribeIn | None = Body(default=None)):
     # written before this change keep rendering as the alphaTex they are, and
     # a hand-edited row stays in whichever format it was edited in until its
     # author edits it again.
-    confidence_json = json.dumps({"warnings": result.warnings, "confidence": result.confidence})
+    # The Rule 8 figures are STORED, not only echoed on this response, because
+    # they cannot be recovered later from the warning prose. A polyphonic bar
+    # can hold one voice over its meter and another under it, so it counts into
+    # both `overfull` and `short`: their sum double-counts such a bar and can
+    # exceed the number of bars measured. `defective` counts each wrong bar
+    # once and is the only figure safe to compare against `measured`, and no
+    # arithmetic over the two warning sentences recovers it. A reader that
+    # reloads a transcription and has only the prose can therefore either say
+    # nothing about bars or say something untrue - so it gets the numbers.
+    confidence_json = json.dumps(
+        {
+            "warnings": result.warnings,
+            "confidence": result.confidence,
+            "bars_overfull": result.bars_overfull,
+            "bars_short": result.bars_short,
+            "bars_defective": result.bars_defective,
+            "bars_measured": result.bars_measured,
+        }
+    )
     with tx() as tx_conn:
         tx_conn.execute(
             """INSERT INTO transcriptions(score_id, format, content, source, confidence, updated_at)
@@ -466,8 +706,12 @@ def transcribe(score_id: int, body: TranscribeIn | None = Body(default=None)):
     saved = conn.execute(
         "SELECT * FROM transcriptions WHERE score_id = ? AND source = 'extracted'", (score_id,)
     ).fetchone()
+    # `warnings` and the Rule 8 conformance figures are NOT set from `result`
+    # here. They come back out of the row that was just written, so that this
+    # response and a later GET of the same row are answered from one source
+    # rather than two that could drift. Everything below is extraction detail
+    # that is genuinely only available on this response.
     d = _transcription_dict(saved)
-    d["warnings"] = result.warnings
     d["bars"] = result.bars
     d["beats"] = result.beats
     d["notes"] = result.notes
@@ -478,12 +722,6 @@ def transcribe(score_id: int, body: TranscribeIn | None = Body(default=None)):
     d["time_signature_source"] = result.time_signature_source
     d["key_fifths"] = result.key_fifths
     d["key_signature_source"] = result.key_signature_source
-    # Rule 8 conformance as data, not only as prose in the warning list, so a
-    # caller can compare it against what its own MusicXML tooling reports.
-    d["bars_overfull"] = result.bars_overfull
-    d["bars_short"] = result.bars_short
-    d["bars_defective"] = result.bars_defective
-    d["bars_measured"] = result.bars_measured
     return d
 
 
@@ -514,7 +752,7 @@ def _sniff_transcription_format(content: str) -> str:
 
 
 @router.put("/scores/{score_id}/transcription")
-def save_transcription(score_id: int, body: TranscriptionEditIn):
+def save_transcription(score_id: RowId, body: TranscriptionEditIn):
     fmt = body.format or _sniff_transcription_format(body.content)
     if fmt not in VALID_TRANSCRIPTION_FORMATS:
         raise HTTPException(
@@ -537,7 +775,7 @@ def save_transcription(score_id: int, body: TranscriptionEditIn):
 
 
 @router.delete("/scores/{score_id}/transcription")
-def delete_transcription(score_id: int):
+def delete_transcription(score_id: RowId):
     """Discard a hand edit, reverting to the extracted transcription.
 
     Deletes only the source='edited' row - the source='extracted' row (if
