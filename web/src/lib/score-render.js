@@ -34,7 +34,7 @@ const STAVE_PROFILE = {
 // renderer's own lookup and factory list. Both are plain public static class
 // fields (`/** @internal */` only in the source, which is why they are
 // missing from the shipped .d.ts and easy to miss), so calling the real
-// canCreate() is possible and is what canDrawStaff below does - a
+// canCreate() is possible and is what canDraw below does - a
 // reimplementation of the rules can only ever be *consistent with* the
 // library, never *be* it, and would silently answer wrong the day a rule
 // changes underneath it. It also picks up canCreate's other terms for free,
@@ -42,8 +42,9 @@ const STAVE_PROFILE = {
 // having to know they exist.
 //
 // mirroredCanDraw is the fallback for when that internal shape moves or is
-// renamed - see environmentCanDraw below - kept as a hand-written second
-// opinion rather than deleted once the delegation was written.
+// renamed, or when calling the real canCreate() throws despite looking
+// right - see environmentCanDraw and canDraw below - kept as a hand-written
+// second opinion rather than deleted once the delegation was written.
 function mirroredCanDraw(_track, staff, profileKey) {
   const hasTab = staff.showTablature && staff.tuning.length > 0;
   switch (profileKey) {
@@ -59,12 +60,12 @@ function mirroredCanDraw(_track, staff, profileKey) {
 }
 
 /**
- * The real canDrawStaff(track, staff, profileKey), built from the renderer's
- * own internals - or null if they are not shaped the way this expects, so the
- * caller can fall back rather than trust a wrong answer. Checked once, at
- * module load: Environment's static fields are initialised when the class is
- * defined, which has already happened by the time this module's top-level
- * code runs the import above.
+ * The delegate for canDraw(track, staff, profileKey), built from the
+ * renderer's own internals - or null if they are not shaped the way this
+ * expects, so the caller can fall back rather than trust a wrong answer.
+ * Checked once, at module load: Environment's static fields are initialised
+ * when the class is defined, which has already happened by the time this
+ * module's top-level code runs the import above.
  */
 function environmentCanDraw() {
   const env = alphaTab.Environment;
@@ -80,6 +81,20 @@ function environmentCanDraw() {
   ) {
     return null;
   }
+  // The checks above only validate the *containers* - that staveProfiles is a
+  // Map of Sets and every factory exposes a staffId string and a canCreate
+  // function - never that the two collections still refer to the same
+  // things. A future alphaTab release could rename every staffId (in both
+  // places, consistently with itself) and pass every check above while
+  // staveProfiles' sets and defaultRenderers' ids no longer overlap at all -
+  // every profile would then match zero factories, and supportedProfiles()
+  // would silently answer "nothing is drawable" for every score in the
+  // library, with no warning, which is the exact failure this guard exists
+  // to catch. Require the two to actually agree: the union of every stave
+  // profile's staff ids has to intersect the renderers' ids somewhere.
+  const renderersStaffIds = new Set(renderers.map((f) => f.staffId));
+  const allProfileStaffIds = new Set(expectedStaveProfiles.flatMap((k) => [...staveProfiles.get(k)]));
+  if (![...allProfileStaffIds].some((id) => renderersStaffIds.has(id))) return null;
   return (track, staff, profileKey) => {
     // Map.get returns undefined for a key that was never registered - only
     // reachable here if profileKey is not one of SCORE_PROFILES.
@@ -89,8 +104,8 @@ function environmentCanDraw() {
   };
 }
 
-const canDrawStaff = environmentCanDraw();
-if (!canDrawStaff) {
+const delegatedCanDraw = environmentCanDraw();
+if (!delegatedCanDraw) {
   console.warn(
     "score-render: alphaTab's Environment.staveProfiles/defaultRenderers are not shaped as " +
       "expected (an internal API this file depends on has likely moved or been renamed) - " +
@@ -98,7 +113,31 @@ if (!canDrawStaff) {
       "the renderer's own rules after an upgrade. Update environmentCanDraw() in score-render.js.",
   );
 }
-const canDraw = canDrawStaff ?? mirroredCanDraw;
+// The shape guard above only checks that canCreate *is* a function, never
+// that calling it is actually safe - a changed parameter list or return
+// contract would pass the guard and then throw the first time it is
+// actually called. That throw is caught here rather than left to escape:
+// once caught, this permanently downgrades to mirroredCanDraw for the rest
+// of the session (a structural incompatibility like a changed signature
+// will not un-happen on the next call) and warns exactly once, rather than
+// warning - or crashing whatever called it - every time.
+let canDrawBroken = false;
+function canDraw(track, staff, profileKey) {
+  if (delegatedCanDraw && !canDrawBroken) {
+    try {
+      return delegatedCanDraw(track, staff, profileKey);
+    } catch (e) {
+      canDrawBroken = true;
+      console.warn(
+        "score-render: alphaTab's canCreate() threw when called, despite passing the shape guard " +
+          "(likely a changed parameter list or return contract) - falling back to the hand-mirrored " +
+          "profile-support check for the rest of this session.",
+        e,
+      );
+    }
+  }
+  return mirroredCanDraw(track, staff, profileKey);
+}
 
 /**
  * Which of SCORE_PROFILES the given tracks can actually be drawn with, in
@@ -120,13 +159,45 @@ const canDraw = canDrawStaff ?? mirroredCanDraw;
  * pair in the rendered set fails a profile's check - the renderer loops over
  * all of them building one staff system - so a profile is supported the
  * moment any single pair can draw it: this ORs canDraw across every pair, it
- * does not decide from one staff. A two-track score where only the second
- * track has tablature still has to offer "tab" - see multi-staff.musicxml in
- * web/test-fixtures for a fixture that reaches this specifically.
+ * does not decide from one staff. A score with two staves in the one track
+ * that gets rendered - one notation-only, one tab-only - still has to offer
+ * both "score" and "tab", each justified by only one of the two staves; see
+ * multi-staff.musicxml in web/test-fixtures for a fixture built to reach
+ * exactly this (deliberately one track, not two - only the first track
+ * renders by default, so a second track would never be part of the pairs
+ * this function is given at all, and would not exercise the OR here).
  */
 export function supportedProfiles(tracks) {
-  const pairs = (tracks ?? []).flatMap((t) => (t.staves ?? []).map((s) => [t, s]));
-  return SCORE_PROFILES.filter((p) => pairs.some(([t, s]) => canDraw(t, s, p)));
+  // The whole body is inside the try, not just the canDraw loop: a malformed
+  // track (a `.staves` access that itself throws, say) has to degrade the
+  // same way a throwing canCreate() does, not escape past this function
+  // entirely just because it happened one line earlier.
+  try {
+    const pairs = (tracks ?? []).flatMap((t) => (t?.staves ?? []).map((s) => [t, s]));
+    return SCORE_PROFILES.filter((p) => pairs.some(([t, s]) => canDraw(t, s, p)));
+  } catch (e) {
+    // canDraw's own try/catch already turns a throwing canCreate() into a
+    // permanent, warned-once fallback (see above) - this is a second, outer
+    // net for anything else that could go wrong here. Without it, a throw
+    // escapes all the way out of the scoreLoaded handler below, skipping
+    // publish() and onProfiles() entirely: profileOptions would stay null
+    // forever, showing neither buttons nor the unrenderable notice, and the
+    // renderer's own attempt to draw with whatever profile it already had
+    // would still run and surface its raw error - silence that then breaks
+    // into the exact failure mode this file exists to prevent, rather than
+    // degrading to a checked answer.
+    console.warn("score-render: supportedProfiles() failed unexpectedly - falling back to the mirrored check.", e);
+    try {
+      const pairs = (tracks ?? []).flatMap((t) => (t?.staves ?? []).map((s) => [t, s]));
+      return SCORE_PROFILES.filter((p) => pairs.some(([t, s]) => mirroredCanDraw(t, s, p)));
+    } catch {
+      // Even re-reading `tracks` failed both times - there is nothing left
+      // to answer from. Offering nothing is the safe direction to fail in
+      // (see "A score that draws nothing" in the spec): the caller shows its
+      // plain notice rather than a menu this function cannot vouch for.
+      return [];
+    }
+  }
 }
 
 /** Shown in place of the staff view when supportedProfiles() comes back empty. */
@@ -436,21 +507,33 @@ export function createScoreView(host, opts = {}) {
   } = opts;
 
   let profile = SCORE_PROFILES.includes(initialProfile) ? initialProfile : "scoretab";
+  // The profile a caller has most recently asked for - not necessarily the
+  // one on screen; see appliedProfile below for that. Read by reapply() to
+  // configure the next render attempt.
+  //
   // null until scoreLoaded fires below: nothing is known to be supported yet,
   // which is not the same thing as everything being supported. A caller
   // (TabViewer) reads null as "do not offer any profile button yet" rather
   // than showing every button and having to walk one back once the real
-  // answer arrives - see the note on the "score" prop / async fetch path in
+  // answer arrives - see "Async load timing" in
   // web/test-fixtures/tab-profile-selection.md for the bug that came from
   // treating "not yet known" as "everything works" here.
   let scoreProfiles = null;
+  // The profile a render has actually finished with, successfully - distinct
+  // from `profile` above, which only records what was last requested. Used
+  // as setProfile()'s de-duplication key instead of `profile`: keying on the
+  // request would make a failed profile switch permanently unretriable, since
+  // asking for the same (already "current" by request, but never actually
+  // drawn) profile again would look like a no-op change and skip reapply()
+  // entirely. Also what onProfileApplied reports.
+  let appliedProfile = null;
   // Set once scoreLoaded finds a score with nothing to draw under any
   // profile - see UNRENDERABLE_MESSAGE. The renderer's own automatic first
   // render cannot be cancelled from this handler (AlphaTabApi calls it
   // unconditionally right after scoreLoaded's listeners return), so it still
-  // runs and still throws inside addBars exactly as it always has - this
-  // flag is what lets the api.error handler below recognise that specific,
-  // predicted failure and swallow it instead of surfacing a TypeError.
+  // runs and can still throw inside addBars exactly as it always has - see
+  // the api.error handler below for how that specific, predicted failure is
+  // told apart from an unrelated one.
   let unrenderable = false;
   let preset = LAYOUT_PRESETS.includes(initialPreset) ? initialPreset : "desk";
   let theme = readScoreTheme(initialTheme);
@@ -473,13 +556,23 @@ export function createScoreView(host, opts = {}) {
   let renderStartedAt = 0;
   let lastRenderMs = null;
   let renderCount = 0;
+  // A snapshot of `profile` taken when the render that is now finishing
+  // began, not whatever `profile` has since become - profile can only
+  // actually change between a render starting and finishing today because
+  // every render path here is synchronous, so reading the live variable at
+  // finish time happens to agree with this snapshot now, but only by
+  // accident of that timing. Taking the snapshot is one line and does not
+  // depend on it.
+  let renderingProfile = profile;
   // Set on renderStarted, cleared on postRenderFinished - a render that
   // throws (see the error handler below) leaves this true, because
   // ScoreRenderer.renderScore's try/catch means postRenderFinished never
   // fires for a render that failed partway through. That makes this a
   // complete failed-render detector: "a render started and none finished
   // since" is exactly "the last render attempt failed", without needing to
-  // know why.
+  // know why. Used only for data-score-render-ok below - not for deciding
+  // whether to suppress an error (see the api.error handler for why that
+  // has to be keyed on the error itself instead).
   let renderInFlight = false;
   // Whether the most recently *attempted* render actually finished. Kept
   // distinct from renderCount/lastRenderMs, which only ever advance on
@@ -530,8 +623,16 @@ export function createScoreView(host, opts = {}) {
     host.dataset.scoreProfile = profile;
     // "" (not omitted) once scoreLoaded has run and found nothing to offer -
     // distinct from the attribute being altogether absent, which means no
-    // score has loaded yet at all.
+    // score has loaded yet at all. Explicitly deleted rather than just left
+    // unset in the null case: `host` is the same DOM element across a score
+    // switch (TabViewer's markup does not recreate it, only this closure),
+    // so without the delete, publish()'s very first call for a *new* score -
+    // called below before anything is known - would leave the *previous*
+    // score's dataset.scoreProfiles sitting there through the whole loading
+    // window, silently breaking the "absent means nothing has loaded yet"
+    // contract this attribute is documented to have.
     if (scoreProfiles != null) host.dataset.scoreProfiles = scoreProfiles.join(",");
+    else delete host.dataset.scoreProfiles;
     // Read this before trusting scoreRenderMs/scoreRenders: those only ever
     // advance on a successful render (see renderOk above), so after a failed
     // one they still hold the previous successful render's numbers.
@@ -602,6 +703,7 @@ export function createScoreView(host, opts = {}) {
   api.renderStarted.on(() => {
     renderStartedAt = performance.now();
     renderInFlight = true;
+    renderingProfile = profile;
     applyBrandingOverride(api);
   });
   api.postRenderFinished.on(() => {
@@ -609,12 +711,13 @@ export function createScoreView(host, opts = {}) {
     renderOk = true;
     lastRenderMs = performance.now() - renderStartedAt;
     renderCount += 1;
+    appliedProfile = renderingProfile;
     publish();
     growPaperToDrawing();
-    // The profile that just actually finished drawing - not the profile a
-    // caller most recently asked for, which may not be the same thing if a
-    // render is still in flight or the previous one failed. See onProfileApplied.
-    onProfileApplied(profile);
+    // The profile that just actually finished drawing, snapshotted at the
+    // moment this render started rather than read live off `profile` here -
+    // see renderingProfile's declaration.
+    onProfileApplied(renderingProfile);
   });
 
   // A profile carried over from a previous score, or the "scoretab" default,
@@ -641,23 +744,37 @@ export function createScoreView(host, opts = {}) {
   api.playerReady.on(() => onReady());
   api.playerStateChanged.on((e) => onPlaying(e.state === 1));
   api.error.on((e) => {
-    // renderStarted fired with no matching postRenderFinished since: this
-    // error came from the render throwing partway through, not from a load,
-    // soundfont, or MIDI failure - those never leave a render in flight.
-    const failedRender = renderInFlight;
-    if (failedRender) {
+    if (renderInFlight) {
       renderInFlight = false;
       renderOk = false;
       publish();
     }
-    if (unrenderable && failedRender) {
-      // The exact, predicted failure UNRENDERABLE_MESSAGE exists for: every
-      // (track, staff) pair failed every profile's check, so this render was
-      // never going to succeed no matter which profile was set, and the
-      // caller has already been told so via onProfiles(profiles, true).
-      // Surfacing the renderer's own TypeError here on top of that would put
-      // a developer's stack trace in front of a guitarist for a condition
-      // that isn't actually broken - it's a score with nothing to stage.
+    // Keyed on the error itself - not on "a render happened to be in flight"
+    // - because a render being in flight is not specific enough. alphaTab
+    // registers its own resize handling unconditionally (see the
+    // ResizeObserver below) and, on an unrenderable score, that path can
+    // start and fail a render this file never sees start: unlike
+    // renderScore(), ScoreRenderer.resizeRender()'s full-rerender branch
+    // calls render() with no try/catch around it and never reaches api.error
+    // at all for its own failure, but it does leave renderInFlight set (this
+    // file's renderStarted listener still fires) with nothing to ever clear
+    // it. An earlier version keyed suppression on that flag alone, and it
+    // stayed armed across such an invisible failure until the *next*
+    // api.error of any kind - a soundfont load failure, unrelated to any of
+    // this - which then got silently swallowed too. Checking the error's own
+    // stack for the specific crash this suppression exists for means an
+    // unrelated error is never at risk, regardless of what left renderInFlight
+    // set.
+    const isPredictedEmptyStaffSystemCrash =
+      unrenderable && typeof e?.stack === "string" && e.stack.includes("StaffSystem") && e.stack.includes("addBars");
+    if (isPredictedEmptyStaffSystemCrash) {
+      // Every (track, staff) pair failed every profile's check (see
+      // supportedProfiles), so this render was never going to succeed no
+      // matter which profile was set, and the caller has already been told
+      // so via onProfiles(profiles, true). Surfacing the renderer's own
+      // TypeError here on top of that would put a developer's stack trace in
+      // front of a guitarist for a condition that isn't actually broken -
+      // it's a score with nothing to stage.
       console.debug("score-render: suppressed the predicted render failure for an unrenderable score.", e);
       return;
     }
@@ -724,8 +841,16 @@ export function createScoreView(host, opts = {}) {
     // score is on screen, and unlike the load's own first render, this call
     // is entirely ours to skip - re-attempting a render already known to
     // find zero drawable staves would just repeat the same suppressed
-    // failure on every window resize for no benefit.
-    if (unrenderable) return;
+    // failure on every window resize for no benefit. publish() still has to
+    // run first, though: setTheme/setPreset already updated `theme`/`preset`
+    // before calling this, and skipping publish() along with the render
+    // would leave dataset.scoreTheme/scorePreset reporting the *previous*
+    // theme or preset - stale, even though nothing about the (still
+    // unrenderable) view visibly changes either way.
+    if (unrenderable) {
+      publish();
+      return;
+    }
     // before anything measures it: the host carries the previous layout's
     // width when that layout was horizontal
     resetSurfaceFit();
@@ -789,7 +914,14 @@ export function createScoreView(host, opts = {}) {
     },
 
     setProfile(next) {
-      if (!scoreProfiles?.includes(next) || next === profile) return;
+      // Keyed on appliedProfile, not profile: profile is set eagerly, right
+      // below, the moment a switch is requested, whether or not it ever
+      // renders successfully. Keying on it would make a failed switch
+      // permanently unretriable - asking for the same profile again would
+      // look like a no-op ("next === profile" already true from the failed
+      // attempt) and skip reapply() entirely, with no way back to that
+      // profile except detouring through a third one first.
+      if (!scoreProfiles?.includes(next) || next === appliedProfile) return;
       profile = next;
       reapply();
     },

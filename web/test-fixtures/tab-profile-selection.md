@@ -4,16 +4,20 @@ Written up because there is no frontend test runner in this repo yet (no
 `web/package.json` test script, no Playwright, no specs anywhere in the
 tree) - `feature/instruments` is bringing one, with a `Browser tests` CI
 job. This document is not itself a test - nothing executes it, so no
-assertion in it can fail on its own - it is the five scenarios that verified
-the fix in [#69](https://github.com/sirged/fermata/pull/69), broken into
-fixture / setup / action / assertion so porting onto that harness is
-mechanical rather than a re-investigation. Each was checked with Playwright
-against a real dev server + backend (not just a build); nothing below
-depends on Playwright specifically.
+assertion in it can fail on its own - it is the five numbered scenarios
+(plus a few narrower behaviors called out in their own sections: async load
+timing, retryability after a failed switch, and dataset staleness across a
+score switch) that verified the fix in
+[#69](https://github.com/sirged/fermata/pull/69), broken into fixture /
+setup / action / assertion so porting onto that harness is mechanical rather
+than a re-investigation. Each was checked with Playwright against a real
+dev server + backend (not just a build), except the delegation-guard cases
+in `environment-guard.mjs`, which are plain Node and check `score-render.js`
+directly; nothing below depends on Playwright specifically.
 
 ## Fixtures
 
-1. **`web/test-fixtures/notation-only.musicxml`** (this file, new). A
+1. **`web/test-fixtures/notation-only.musicxml`** (new in this PR). A
    minimal valid MusicXML 4.0 document: one part, one measure, G clef, four
    quarter notes with `<pitch>` and **no** `<notations><technical>` at all -
    no TAB clef, no `<staff-tuning>`. This is the exact repro condition from
@@ -35,15 +39,18 @@ depends on Playwright specifically.
    `docs/musicxml-tab-profile.md`).
 
 3. **No new fixture.** The bundled alphaTeX demo score is the `DEMO_TEX`
-   constant in `web/src/lib/TabViewer.svelte` (currently lines 68-76),
+   constant in `web/src/lib/TabViewer.svelte` (currently lines 75-83),
    reachable at the `#/demo` route (`web/src/App.svelte` routes
    `#/demo` to `<Viewer demo={true} />`, which passes `demo` through to
    `TabViewer`). alphaTeX's default staff has both `showStandardNotation`
-   and `showTablature` true, so this is the one fixture here that genuinely
-   supports all three profiles - no MusicXML fixture in this repo does,
-   since Fermata's own MusicXML tab profile deliberately never pairs a tab
-   staff with a notation staff (`docs/musicxml-tab-profile.md`, "Out of
-   scope").
+   and `showTablature` true on the *same* staff, so this is the one fixture
+   here where a single staff genuinely supports all three profiles by
+   itself. That is a narrower claim than "no fixture offers all three" -
+   fixture 4, below, also offers all three, but only by combining two
+   staves that each support one; no *single* staff in any MusicXML fixture
+   in this repo does, since Fermata's own MusicXML tab profile deliberately
+   never pairs a tab staff with a notation staff on one staff
+   (`docs/musicxml-tab-profile.md`, "Out of scope").
 
 4. **`web/test-fixtures/multi-staff.musicxml`** (new). One part, one
    measure, `<staves>2</staves>`: staff 1 is plain notation (G clef, no
@@ -96,14 +103,46 @@ or not shaped as expected (an upgrade moved or renamed them),
 kept-not-deleted hand-written version of the same per-staff rules this PR
 originally shipped with (`showStandardNotation` for "score", `showTablature
 && tuning.length > 0` for "tab", either of those plus
-`showSlash`/`showNumbered` for "scoretab"). **This fallback path is verified
-by code inspection, not exercised here** - forcing it would mean breaking
-`Environment`'s shape at runtime, which isn't worth the complexity for a
-path whose only job is "fail loudly and degrade to today's behaviour, don't
-answer wrong silently." A test harness with the room to monkeypatch
-`alphaTab.Environment` before importing `score-render.js` could exercise it
-directly - assert the warning fires, and that `supportedProfiles()` still
-returns the fixture 1/2/3 answers below off `mirroredCanDraw` alone.
+`showSlash`/`showNumbered` for "scoretab").
+
+The guard checks more than field types. A shape check that only confirms
+"`staveProfiles` is a `Map` of `Set`s" and "every factory has a string
+`staffId` and a function `canCreate`" passes even when those two collections
+have quietly stopped referring to the same things - a release that renames
+every `staffId` consistently with itself (in both collections' *shape*, but
+not their *content*) would satisfy every field-type check while every
+profile matched zero factories, and `supportedProfiles()` would silently
+answer "nothing is drawable" for every score in the library, with no
+warning. `environmentCanDraw()` additionally requires the union of every
+stave profile's staff ids to actually intersect the renderers' ids
+somewhere, which a rename like that fails.
+
+The guard also cannot check that calling `canCreate` is *safe*, only that it
+*is a function* - a changed parameter list or return contract would pass the
+guard and throw on first use. That throw is caught where `canDraw()` calls
+the delegate, which permanently downgrades to `mirroredCanDraw` for the rest
+of the session (a structural incompatibility will not un-happen on the next
+call) and warns exactly once. `supportedProfiles()` itself is wrapped a
+second time, around that whole loop: without it, anything else going wrong
+in there (a malformed track, say) would throw out of the `scoreLoaded`
+handler in `createScoreView` entirely, skipping `publish()` and
+`onProfiles()` - `profileOptions` would stay `null` forever, showing neither
+buttons nor the unrenderable notice, while the renderer's own attempt to
+draw with whatever profile it already had still ran and surfaced its raw
+error. Both catches degrade to a checked answer instead of silence.
+
+**All four of these are exercised, not just inspected** - see
+`web/test-fixtures/environment-guard.mjs` (`node
+test-fixtures/environment-guard.mjs` from `web/`), a small monkeypatching
+script run directly with Node's own ESM loader rather than a browser: it
+imports `score-render.js` fresh (a cache-busting query on each dynamic
+`import()`) against four different states of `alphaTab.Environment` in
+turn - untouched, renamed staff ids, a throwing `canCreate`, and a
+malformed track passed straight to `supportedProfiles()` - and checks the
+warning fires (or doesn't, for the healthy case) and the answer is still
+correct in every case. This only works outside a browser because
+`score-render.js`'s module-level code only touches `alphaTab.Environment` at
+import time; everything DOM-dependent is inside functions, called later.
 
 For MusicXML specifically, what actually drives `showStandardNotation` /
 `showTablature` is **`<staff-tuning>`, not the clef sign** - this is worth
@@ -124,11 +163,37 @@ but that gets overridden - see below):
   (`MusicXmlImporter._parseStaffTuning` in `@coderline/alphatab`'s bundle),
   regardless of what clef sign was declared.
 
-`<staff-tuning>`'s presence is the one thing driving both flags. This is why
-fixture 2 (TAB clef, `<staff-tuning>` present) offers only Tab/Both, never
-Notation - it is not a fixture bug, it is what a real Fermata transcription
-looks like today (a single tab staff, never paired with a separate notation
-staff), so the spec has to assert exactly that, not "all three."
+`<staff-tuning>`'s presence is what drives both flags for a non-percussion
+staff - not the *only* thing that can affect them (a percussion clef
+overrides `showTablature` back to `false` regardless of tuning; see fixture
+5), but the one relevant to fixtures 1-4. This is why fixture 2 (TAB clef,
+`<staff-tuning>` present) offers only Tab/Both, never Notation - it is not a
+fixture bug, it is what a real Fermata transcription looks like today (a
+single tab staff, never paired with a separate notation staff), so the spec
+has to assert exactly that, not "all three."
+
+## Async load timing (the `score` prop's fetch window)
+
+`profileOptions` in `TabViewer.svelte` starts `null`, not `SCORE_PROFILES`,
+and the reason is specific to the `score` prop's load path, not just
+tidiness. `source()` for a `score` prop resolves to `{kind: "file", url}`,
+and `score-render.js`'s `load()` fetches that URL and only calls `api.load()`
+once the fetch resolves - `createScoreView` itself, and the `view` it
+returns, exist synchronously well before that. If `profileOptions` started
+permissive (every button offered), there would be a real window - however
+short - between mount and the fetch actually landing during which a click on
+"Tab" would reach `view.setProfile("tab")` for a score whose actual content
+is not yet known. Before this round's fix that click did not crash (the
+renderer's own `score`/`tracks` are still unset at that point, so `render()`
+takes its early "nothing to draw" branch and no-ops harmlessly), but the
+*internal* `profile` variable in `score-render.js` was still set to `"tab"`
+regardless - and once the fetch resolved and `scoreLoaded` ran its real
+check, a notation-only score would correct it right back, moving the
+highlighted button out from under a still-hovering pointer with no warning.
+Starting `profileOptions` at `null` (and resetting it to `null`, not to the
+previous score's list, on every new load - see `TabViewer.svelte`'s
+`$effect`) closes the window entirely: no button is clickable until the real
+answer is already known, so there is nothing to walk back.
 
 ## A correctness bug to fix (caught before merge, not after)
 
@@ -168,32 +233,71 @@ draw, so `score-render.js` does not try to pick one. Instead:
   is visible inside it.
 - The renderer's own automatic first render, triggered by AlphaTabApi itself
   immediately after `scoreLoaded`, cannot be cancelled from the `scoreLoaded`
-  handler - so it still runs. What happens next depends on timing that this
-  document does not treat as guaranteed: if the `.score-scroll.hidden` class
-  has already been applied to the DOM by the time that render executes, the
-  host measures 0 width and the renderer's own `render()` logs
-  `"AlphaTab skipped rendering because of width=0"` and returns without ever
-  reaching `addBars` - no crash, no `error` event, nothing to suppress. If it
-  has not (or `.score-scroll` is not hidden, as forced in the verification
-  below to check the other path directly), the render proceeds and throws
-  exactly as it always has - alphaTab's own `Logger.error` still writes the
-  raw `TypeError` to devtools (that call is inside the library, unconditional,
-  and not something this file can suppress), and the library's `error` event
-  fires with it. `score-render.js`'s `api.error` handler recognises this
-  specific, predicted failure (`unrenderable` was already true, and
-  `renderInFlight` shows a render actually started and never finished) and
-  swallows it - `console.debug`, not `onError` - rather than forwarding the
-  raw message to `loadError`/the page's `.error` paragraph. **Both paths are
-  safe for the person looking at the page**: either way, nothing renders,
-  nothing crashes past the library's own already-existing try/catch, and the
-  only thing shown is the plain sentence. Only devtools output differs.
+  handler - so it still runs, and can still throw exactly as it always has.
+  **Which of two paths that render takes is a font-load race, not a browser
+  quirk** - an earlier version of this document attributed it to this
+  sandbox's particular Chromium, which is wrong and would mislead whoever
+  ports it. AlphaTabApi defers the whole render while its fonts are still
+  loading. On a cold cache that deferral outlasts Svelte's reactivity flush
+  of the `hidden` class onto `.score-scroll`, so by the time the deferred
+  render actually runs, the host measures 0 width and the renderer's own
+  `render()` logs `"AlphaTab skipped rendering because of width=0"` and
+  returns without ever reaching `addBars` - no crash, no `error` event,
+  nothing to suppress. On a **warm** cache (fonts already cached - the
+  common case for a shipped app after the first load) there is no deferral:
+  the render runs synchronously inside `load()`, before the `hidden` class
+  has had any chance to apply, and it throws exactly as it always has.
+  **The forced path below is therefore the normal path for a warm cache, not
+  an exotic one** - it is what a real user hits on essentially every load of
+  an unrenderable score once the app has been open a moment. Either way,
+  alphaTab's own `Logger.error` still writes the raw `TypeError` to devtools
+  when it does throw (that call is inside the library, unconditional, and
+  not something this file can suppress); what differs between the two paths
+  is only whether devtools shows that line at all, never what the page
+  itself shows.
+- `score-render.js`'s `api.error` handler has to tell this specific,
+  predicted failure apart from an unrelated one - a soundfont load failure,
+  say - and **it cannot do that from timing alone**. An earlier version keyed
+  suppression on "a render is currently in flight" (`renderStarted` fired,
+  no matching `postRenderFinished` yet), which is not specific enough:
+  alphaTab registers its own resize handling unconditionally in the
+  `AlphaTabApi` constructor (see the `ResizeObserver` note in
+  `score-render.js`), and on an unrenderable score that internal path can
+  start and fail a render this file never even sees start -
+  `ScoreRenderer.resizeRender()`'s full-rerender branch calls `render()`
+  directly, with no try/catch around it, so it never reaches `api.error` for
+  its own failure, but it does still fire this file's `renderStarted`
+  listener on the way in and leaves nothing to ever clear it afterwards. The
+  in-flight flag stayed set until the *next* `api.error` of any kind, which
+  then got silently swallowed regardless of what actually caused it - a
+  reviewer reproduced this by injecting unrelated soundfont errors through
+  the library's own emitter after a resize and watching them alternate
+  shown, swallowed, shown, swallowed, one swallow armed per resize. The fix
+  keys suppression on the error itself instead: `e.stack` has to contain
+  both `"StaffSystem"` and `"addBars"` - the exact frames in Scenario 1's
+  trace - before anything is swallowed, in addition to `unrenderable` being
+  true. An unrelated error's stack never matches, regardless of what
+  `renderInFlight` (kept only for `data-score-render-ok` now, see below) is
+  doing at the time. **A known, accepted limitation**: `resizeRender()`'s own
+  failure for an unrenderable score still never reaches `api.error` at all
+  (it becomes an uncaught exception at `window.onerror`, which
+  `score-render.js` does not listen to), so it is not suppressed *or*
+  double-counted - it simply stays invisible to this file, the same as it
+  was before this fix, on every resize of an unrenderable score whose
+  container is not `display:none` for some reason.
 - `renderStarted` with no matching `postRenderFinished` since is a complete
-  failed-render detector - `ScoreRenderer.renderScore`'s own try/catch means
-  `postRenderFinished` never fires for a render that threw partway through.
-  `data-score-render-ok` reflects this per attempt; `data-score-render-ms` /
-  `data-score-renders` only ever advance on success and are not safe to read
-  as "did the last attempt succeed" on their own - check
-  `data-score-render-ok` first.
+  failed-render detector, used for `data-score-render-ok` only (not for the
+  suppression decision above) - `ScoreRenderer.renderScore`'s own try/catch
+  means `postRenderFinished` never fires for a render that threw partway
+  through. `data-score-render-ms` / `data-score-renders` only ever advance on
+  success and are not safe to read as "did the last attempt succeed" on
+  their own - check `data-score-render-ok` first, **and** that
+  `data-score-renders` actually incremented from its previous value:
+  `data-score-render-ok` reads `"true"` in two states where nothing was
+  drawn - before the first render ever runs, and when a render request was
+  silently dropped at width 0 or deferred by font loading (the natural path
+  above) - so it means "the last render that *reached* the renderer did not
+  throw", not "the last requested render actually produced something."
 
 See Scenario 5 for the exact assertions, and both the natural and forced
 verification of the two paths above.
@@ -359,38 +463,106 @@ correctness bug to fix" above for why.
   distinct from the attribute being absent, which means no score has loaded
   at all yet).
 - Verified twice, to cover both paths described in "A score that draws
-  nothing" above:
-  - **Natural**: open the score and wait. In this sandbox's Chromium, the
-    `.score-scroll.hidden` class was already applied by the time the
-    renderer's automatic first render ran, so it logged
-    `"AlphaTab skipped rendering because of width=0"` and returned - no
+  nothing" above - which one a given run takes is a font cache state
+  (cold/warm), not something to assert on directly; assert the *outcome*
+  (buttons, notice, `.error`, `dataset.scoreRenderOk`) the same way either
+  time:
+  - **Natural (cold cache)**: open the score and wait, on the first load
+    after starting the dev server. The `.score-scroll.hidden` class is
+    applied before alphaTab's font-load-deferred render runs, so it logs
+    `"AlphaTab skipped rendering because of width=0"` and returns - no
     `error` event, no console error, `dataset.scoreRenderOk` stays at its
     initial `"true"` (no render attempt ever completed or failed to update
-    it). Forcing a real window resize afterwards changes nothing:
-    `reapply()` skips outright while `unrenderable` is true, by design (see
-    `score-render.js`), so this state is stable rather than one accidental
-    early return away from the crash reappearing.
-  - **Forced**: with a stylesheet override neutralising `.score-scroll.hidden`
-    (`display: flex !important`) injected *before* opening the score, so the
-    host keeps real dimensions, the renderer's first render does proceed and
-    does throw the exact `TypeError` from Scenario 1's stack trace. alphaTab's
-    own `Logger.error` still writes that to devtools (unsuppressable from
-    outside the library) and a `console:debug` line
-    ("score-render: suppressed the predicted render failure…") appears - but
-    `.error` stays empty, `.notice` still shows the plain sentence, and
-    `dataset.scoreRenderOk` flips to `"false"`. This is the path that proves
-    the `api.error` + `unrenderable` + `renderInFlight` handling in
-    `score-render.js` actually works, independent of whichever path a given
-    browser's timing happens to take.
+    it; do not read that as "something rendered" - see the note on
+    `data-score-renders` above). Reloading and reopening the same score
+    again *without* restarting the server - warm cache now - takes the
+    forced path below instead, without needing the stylesheet override; the
+    override exists to make that path reachable on the very first (cold)
+    load too, for a deterministic single-run check.
+  - **Forced (or warm cache)**: with a stylesheet override neutralising
+    `.score-scroll.hidden` (`display: flex !important`) injected *before*
+    opening the score, so the host keeps real dimensions, the renderer's
+    first render does proceed and does throw the exact `TypeError` from
+    Scenario 1's stack trace. alphaTab's own `Logger.error` still writes
+    that to devtools (unsuppressable from outside the library) and a
+    `console:debug` line ("score-render: suppressed the predicted render
+    failure…") appears - but `.error` stays empty, `.notice` still shows the
+    plain sentence, and `dataset.scoreRenderOk` flips to `"false"`. This is
+    the path that proves the `api.error` handler's stack-based check (see
+    "A score that draws nothing" above) actually recognises and swallows
+    the specific crash, rather than merely never encountering it.
+
+## A profile switch has to survive failing (retry, and clearing the error)
+
+A render that fails - for *any* reason, not only the unsupported-profile
+case above - used to leave two traps, both reachable without any error at
+all (see the next paragraph):
+
+- **Permanently inert.** `score-render.js`'s `setProfile()` used to
+  de-duplicate against `profile`, the *requested* profile, set eagerly the
+  moment a switch is asked for whether or not it ever renders. Clicking the
+  same profile again after a failed switch then looked like a no-op
+  (`next === profile` already true from the failed attempt) and skipped
+  `reapply()` entirely - the only way out was detouring through a third
+  profile first. Fixed by keying the de-duplication on `appliedProfile`
+  instead - the profile a render has actually *finished* with successfully,
+  updated only from `postRenderFinished` - so asking again for a profile
+  that never actually rendered is never mistaken for "no change requested."
+- **A stale `loadError`.** Nothing cleared `loadError` on a later, unrelated
+  render succeeding, so an error from one failed switch could keep showing
+  (and keep the `.error` paragraph occupying space) after the view had
+  since recovered via a different profile. Fixed by clearing it from
+  `TabViewer`'s `onProfileApplied` handler - the same signal that moves the
+  highlighted button, since both represent "trust what's on screen now, not
+  what went wrong before."
+
+**Reachable with no error at all**, which is what makes it a real bug rather
+than a hypothetical one: switching profiles while the stage measures 0
+width (e.g. a hidden pane, mid-layout) hits the same "render silently
+skipped, nothing ever fires" path used by the natural cold-cache case above
+- `profile` (old code) or nothing (fixed code) advances, but no
+`postRenderFinished` ever runs to confirm it. Verified directly: open the
+multi-staff score, force `.at-host { width: 0 }` via a stylesheet override,
+click "Tab" (the request silently drops - the highlighted button correctly
+stays on whatever last actually rendered, `dataset.scoreProfile` shows
+`"tab"` requested but `data-score-renders` does not advance), remove the
+override, click "Tab" again - it renders successfully and the highlight
+moves, proving the second click was not blocked by the first.
+
+## A switch between scores must not leak the previous one's dataset
+
+`host` (the `.at-host` element) is the same DOM node across a score switch -
+`TabViewer`'s markup does not recreate it, only `createScoreView`'s closure
+is torn down and rebuilt. `publish()` explicitly deletes
+`dataset.scoreProfiles` when `scoreProfiles` is `null` (rather than simply
+not setting it) specifically so its very first call for a *new* score - made
+before anything about that score is known - wipes whatever the *previous*
+score left there, rather than letting it sit through the whole loading
+window and falsely read as the new score's answer. Verified directly:
+open a tab-only score (`dataset.scoreProfiles` = `"tab,scoretab"`), navigate
+back to the library and open the notation-only one, and confirm
+`dataset.scoreProfiles` reads `"score,scoretab"` promptly rather than
+briefly (or permanently, if something regresses) showing the tab-only
+score's stale value.
+
+Similarly, a theme or preset change on an *unrenderable* score still has to
+publish `dataset.scoreTheme` / `dataset.scorePreset` - `reapply()`'s early
+return for `unrenderable` runs `publish()` before returning, not just
+`return` outright, because `setTheme`/`setPreset` already updated their own
+variables before calling `reapply()`, and skipping `publish()` along with
+the (correctly) skipped render would leave those two attributes reporting
+the *previous* theme/preset instead of the one actually now in effect.
+Verified directly: open the unrenderable score, switch the theme picker to
+"White on black", and confirm `dataset.scoreTheme` reads `"noir"` promptly.
 
 ## Notes for porting
 
 - Every assertion above was checked with Playwright's
   `page.locator(...).allTextContents()`,
   `page.locator(...).evaluate(el => ({...el.dataset}))`, `console` /
-  `pageerror` event listeners, `page.addStyleTag(...)` (Scenario 5's forced
-  path), and `page.setViewportSize(...)` (to trigger a real resize) - none of
-  it is Playwright-specific and should translate directly to whatever
+  `pageerror` event listeners, and `page.addStyleTag(...)` (Scenario 5's
+  forced path, and the retry check's width-0 override) - none of it is
+  Playwright-specific and should translate directly to whatever
   `feature/instruments` brings in.
 - `SCORE_PROFILES` and the button label order come from
   `web/src/lib/score-render.js` (`SCORE_PROFILES = ["score", "tab", "scoretab"]`)
@@ -403,6 +575,14 @@ correctness bug to fix" above for why.
   directly rather than parsing button text or guessing at render success -
   prefer them once the harness exists. `dataset.scoreRenderMs` /
   `dataset.scoreRenders` are not reset on a failed render and must not be
-  read without checking `dataset.scoreRenderOk` first.
+  read without checking `dataset.scoreRenderOk` **and** that
+  `dataset.scoreRenders` itself incremented from its prior value - see "A
+  score that draws nothing" above for why `scoreRenderOk` alone is not
+  enough.
 - `UNRENDERABLE_MESSAGE` is exported from `score-render.js` - import it
   rather than hardcoding the sentence in a test, so the two cannot drift.
+- `web/test-fixtures/environment-guard.mjs` covers the delegation-guard
+  cases (renamed staff ids, a throwing `canCreate`, an unrelated throw
+  inside `supportedProfiles()`) directly with Node's own ESM loader, not
+  Playwright - see "How profile support is actually decided" above. Run it
+  with `node test-fixtures/environment-guard.mjs` from `web/`.

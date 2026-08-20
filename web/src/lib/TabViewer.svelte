@@ -143,8 +143,15 @@
         // deliberately does not set `profile` itself, because a requested
         // profile that fails to render (or hasn't rendered yet) must not
         // move the highlight onto a staff that isn't the one on screen.
+        // loadError is cleared here too: a render succeeding means whatever
+        // problem it described is resolved, and it must not keep showing
+        // (or keep the .error paragraph occupying space) once the view has
+        // recovered - score-render.js's own setProfile() guard would
+        // otherwise never get a chance to retry a *different* profile
+        // switch while a stale error from an earlier one sat on screen.
         onProfileApplied: (p) => {
           profile = p;
+          loadError = "";
         },
       }),
     );
