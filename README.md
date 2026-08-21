@@ -57,6 +57,15 @@ them.
   a six-string guitar in standard tuning.
 - **Practice tracking** — a session timer per piece, with recently-practised
   and neglected views so the library reflects what you are actually working on.
+  A session can record what the work was: which bars or pages, at what tempo,
+  section work or a run-through, and how it went. Practice that is not a piece
+  at all — technique, ear training, simply playing — is recorded the same way
+  and in the same history ([the data model](docs/practice-data.md)).
+- **Weekly goals, and an honest review** — how many days you mean to practise
+  and for how long, on what. While the week runs it says where you stand so the
+  goal can still change it; afterwards it states plainly what happened and asks
+  whether the goal was realistic. No streaks, no comparison with a better week,
+  and nothing that grades you for a week that did not go to plan.
 - **Gig mode** — fullscreen, screen kept awake, oversized tap targets and
   half-page turns for a tablet on a music stand.
 - **Organize** — collections (from your folder layout), free-form tags,
@@ -159,7 +168,7 @@ demo*) if your library is PDF-only so far.
   accompany most freely-licensed sheet music you can download
 - **A fretboard trainer** — note finding, chord flash cards and reach drills,
   scoped to the strings and frets you are working on
-- Setlists and practice sessions with per-piece progress
+- Setlists, and recognition for what you have accomplished over time
 - Annotations on PDFs (fingerings, markings)
 - Reverse proxy authentication, then multi-user accounts
 - Splitting compilation books into individual pieces

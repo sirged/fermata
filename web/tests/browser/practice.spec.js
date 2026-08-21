@@ -1,0 +1,389 @@
+// The practice page, against the real backend and the real build.
+//
+// What these are for that a unit test cannot do: the phrasing helpers are
+// tested directly in tests/unit/practice.spec.js, but "a goal that was not
+// reached is not styled as an error" is a claim about computed CSS on a real
+// page, and "the week the interface offers is the week the server counts" is a
+// claim about two independent pieces of calendar arithmetic agreeing. Neither
+// survives being asserted against a mock.
+//
+// The assertions here are therefore about seams: the text that reaches the
+// screen, the colours it reaches it in, the values that survive a reload, and
+// the fact that a session logged from this page lands in the record the server
+// keeps.
+import { expect, test } from "@playwright/test";
+
+import { addDays, forbiddenWord, localDay, weekStart } from "../../src/lib/practice.js";
+
+const week = (page) => page.locator("section.week");
+const statements = (page) => page.locator("section.week .statement");
+const days = (page) => page.locator("section.week .strip .day");
+const sessionRows = (page) => page.locator(".session-list .session");
+const pastWeeks = (page) => page.locator(".past-week");
+// Shared so that every "nothing went wrong" assertion uses the SAME selector
+// one test proves can match something. A toHaveCount(0) built from an inline
+// literal is permanently true the moment the class is renamed.
+const notices = (page) => page.locator(".notice");
+
+const today = localDay();
+
+// A timezone whose calendar day is GUARANTEED not to be the UTC one, chosen
+// from the clock when this file is loaded. Kiritimati is UTC+14, so it is a day
+// ahead once UTC passes ten in the morning; Midway is UTC-11, so it is a day
+// behind until UTC reaches eleven. One of the two always differs, whatever hour
+// CI happens to run at - and a fixture that only sometimes differs is a fixture
+// that only sometimes tests anything.
+const SKEWED_ZONE = new Date().getUTCHours() < 11 ? "Pacific/Midway" : "Pacific/Kiritimati";
+
+async function reset(request) {
+  // The suite shares one database, and a goal is unique per week - so a test
+  // that left one behind would decide what the next test sees.
+  const goals = (await (await request.get(`/api/practice/goals?today=${today}`)).json()).goals;
+  for (const goal of goals) await request.delete(`/api/practice/goals/${goal.id}`);
+  const sessions = (
+    await (await request.get("/api/practice/sessions?limit=1000")).json()
+  ).sessions;
+  for (const session of sessions) await request.delete(`/api/practice/sessions/${session.id}`);
+  await request.put("/api/settings", { data: { week_starts_on: "monday" } });
+}
+
+async function logPractice(request, { day, minutes, activity = "technique", note = null }) {
+  const res = await request.post("/api/practice/sessions", {
+    data: { activity, seconds: minutes * 60, local_date: day, note },
+  });
+  expect(res.ok(), await res.text()).toBe(true);
+}
+
+test.beforeEach(async ({ page, request }) => {
+  // Refuses to touch anything that is not the throwaway instance this suite
+  // starts. The cleanup above DELETES practice sessions, and practice history
+  // is the one thing in this application that cannot be regenerated from the
+  // files on disk - so running these against a real install would destroy the
+  // very data the feature exists to keep.
+  const scores = await (await request.get("/api/scores")).json();
+  expect(
+    scores,
+    "refusing to run: this backend has scores in its library, so it is not the " +
+      "throwaway instance the suite creates - and these tests delete practice history",
+  ).toEqual([]);
+
+  await reset(request);
+  await page.goto("/#/practice");
+  await expect(week(page)).toBeVisible();
+});
+
+test("with no goal set, the week says so and shows seven empty days", async ({ page }) => {
+  const thisWeek = week(page).locator(".no-goal");
+  await expect(thisWeek).toContainText("No goal set for this week");
+  await expect(thisWeek).toContainText("No practice recorded this week");
+  await expect(days(page)).toHaveCount(7);
+  const fills = await days(page)
+    .locator(".bar")
+    .evaluateAll((bars) => bars.map((b) => b.style.height));
+  expect(fills).toEqual(Array(7).fill("0%"));
+  await expect(notices(page)).toHaveCount(0);
+});
+
+test("a fresh install is greeted rather than shown fourteen absences", async ({ page }) => {
+  // Nothing practised and nothing planned. Every section below the week would
+  // be a statement of absence - seven "No practice recorded" rows and seven
+  // "No goal was set" ones - which is a poor first impression for somebody who
+  // has simply not started yet.
+  await expect(page.locator(".nothing-yet")).toBeVisible();
+  await expect(page.locator(".nothing-yet")).toContainText("Nothing logged yet");
+  await expect(pastWeeks(page)).toHaveCount(0);
+  await expect(page.locator("section.review")).toHaveCount(0);
+  // The week itself, and the way to set a goal, are still there.
+  await expect(days(page)).toHaveCount(7);
+  await expect(page.locator(".edit-goal")).toBeVisible();
+});
+
+test("once there is practice, the review appears", async ({ page, request }) => {
+  // The other half of the test above: the greeting has to give way, or it is
+  // just a way of hiding the feature.
+  await logPractice(request, { day: weekStart(today, "monday"), minutes: 20 });
+  await page.reload();
+  await expect(page.locator(".nothing-yet")).toHaveCount(0);
+  await expect(page.locator("section.review")).toBeVisible();
+  await expect(pastWeeks(page)).toHaveCount(7);
+});
+
+test("a goal is set from this page and its progress is stated as counts", async ({
+  page,
+  request,
+}) => {
+  const monday = weekStart(today, "monday");
+  await logPractice(request, { day: monday, minutes: 30 });
+  await logPractice(request, { day: addDays(monday, 1), minutes: 30 });
+  await page.reload();
+
+  await page.locator(".edit-goal").click();
+  await page.locator(".days-target").selectOption("3");
+  await page.locator(".minutes-target").fill("120");
+  await page.locator(".intent-input").fill("the awkward middle section");
+  await page.locator(".save-goal").click();
+
+  await expect(statements(page)).toHaveCount(2);
+  await expect(page.locator('[data-statement="days"]')).toContainText("2 of 3 planned days");
+  await expect(page.locator('[data-statement="minutes"]')).toContainText("1h of 2h planned");
+  await expect(page.locator(".intent-text")).toContainText("the awkward middle section");
+  await expect(notices(page)).toHaveCount(0);
+
+  // And it is the server's answer, not the form's - a reload reads it back.
+  await page.reload();
+  await expect(page.locator('[data-statement="days"]')).toContainText("2 of 3 planned days");
+});
+
+test("a target not reached is drawn exactly like one that is", async ({ page, request }) => {
+  // The whole difference between accountable and shamed, as computed CSS. A
+  // goal not met is not an error condition and must not be coloured like one.
+  const monday = weekStart(today, "monday");
+  await logPractice(request, { day: monday, minutes: 200 });
+  await page.reload();
+
+  await page.locator(".edit-goal").click();
+  await page.locator(".days-target").selectOption("5");
+  await page.locator(".minutes-target").fill("60");
+  await page.locator(".save-goal").click();
+
+  const unmet = page.locator('[data-statement="days"]');
+  const met = page.locator('[data-statement="minutes"]');
+  await expect(unmet).toContainText("1 of 5 planned days");
+  await expect(met).toContainText("3h 20m of 1h planned");
+
+  const style = (locator) =>
+    locator.evaluate((el) => {
+      const computed = getComputedStyle(el);
+      const text = getComputedStyle(el.querySelector(".statement-text"));
+      return {
+        color: computed.color,
+        textColor: text.color,
+        weight: text.fontWeight,
+        background: computed.backgroundColor,
+        border: computed.borderColor,
+      };
+    });
+  const unmetStyle = await style(unmet);
+  const metStyle = await style(met);
+  expect(unmetStyle).toEqual(metStyle);
+
+  // Independent of the comparison above, which would also pass if BOTH were
+  // red: the danger colour this app uses for real errors must not appear.
+  const danger = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue("--danger").trim(),
+  );
+  expect(danger).not.toBe("");
+  const dangerRgb = await page.evaluate((hex) => {
+    const probe = document.createElement("span");
+    probe.style.color = hex;
+    document.body.appendChild(probe);
+    const value = getComputedStyle(probe).color;
+    probe.remove();
+    return value;
+  }, danger);
+  expect(unmetStyle.textColor).not.toBe(dangerRgb);
+
+  // The only difference is additive: a tick appears beside what was reached.
+  await expect(met.locator(".tick")).toHaveText("✓");
+  await expect(unmet.locator(".tick")).toHaveText("");
+});
+
+test("a running week says how many days are left and nothing about catching up", async ({
+  page,
+}) => {
+  await page.locator(".edit-goal").click();
+  await page.locator(".save-goal").click();
+  await expect(page.locator(".days-left")).toContainText(/\d+ days? left in this week/);
+  const text = await page.locator("section.week").innerText();
+  expect(text.toLowerCase()).not.toContain("catch up");
+  expect(text.toLowerCase()).not.toContain("per day");
+});
+
+test("practice that is not a piece is logged here and lands in the record", async ({ page }) => {
+  await page.locator(".other-activity").selectOption("ear_training");
+  await page.locator(".other-minutes").fill("20");
+  await page.locator(".other-note").fill("intervals, ascending only");
+  await page.locator(".log-other-button").click();
+
+  await expect(sessionRows(page)).toHaveCount(1);
+  await expect(sessionRows(page).first()).toContainText("Ear training");
+  await expect(sessionRows(page).first()).toContainText("20m");
+  await expect(sessionRows(page).first()).toContainText("intervals, ascending only");
+  await expect(sessionRows(page).first()).toContainText(today);
+  await expect(page.locator(".by-activity")).toContainText("Ear training");
+  await expect(notices(page)).toHaveCount(0);
+
+  // The day it was practised, as the browser's own date - a bar appears on
+  // today and nowhere else.
+  const withPractice = await days(page).evaluateAll((cells) =>
+    cells.filter((c) => Number(c.dataset.seconds) > 0).map((c) => c.dataset.day),
+  );
+  expect(withPractice).toEqual([today]);
+});
+
+test("a finished week asks whether the goal was realistic, and remembers the answer", async ({
+  page,
+  request,
+}) => {
+  const lastWeek = addDays(weekStart(today, "monday"), -7);
+  await logPractice(request, { day: lastWeek, minutes: 45 });
+  const created = await request.post(`/api/practice/goals?today=${today}`, {
+    data: { period_start: lastWeek, target_days: 4 },
+  });
+  expect(created.ok(), await created.text()).toBe(true);
+  await page.reload();
+
+  const card = page.locator(`.past-week[data-week="${lastWeek}"]`);
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("1 of 4 planned days");
+  // A question, not a verdict.
+  await expect(card.locator(".question")).toHaveText("Was this goal realistic?");
+
+  await card.locator('[data-answer="no"]').click();
+  await card.locator(".reflection-text").fill("away for three days");
+  await card.locator(".save-reflection").click();
+
+  await expect(notices(page)).toHaveCount(0);
+  await page.reload();
+  const again = page.locator(`.past-week[data-week="${lastWeek}"]`);
+  await expect(again.locator(".reflection-text")).toHaveValue("away for three days");
+  await expect(again.locator('[data-answer="no"]')).toHaveClass(/on/);
+});
+
+test("a week nobody set a goal for still appears with what happened in it", async ({
+  page,
+  request,
+}) => {
+  const lastWeek = addDays(weekStart(today, "monday"), -7);
+  await logPractice(request, { day: addDays(lastWeek, 2), minutes: 25 });
+  await page.reload();
+
+  const card = page.locator(`.past-week[data-week="${lastWeek}"]`);
+  await expect(card).toContainText("1 day, 25m");
+  await expect(card.locator(".no-goal")).toContainText("No goal was set for these days");
+  // Not "this week" - every past row used to say that, so a quiet spell in
+  // July rendered as three consecutive rows naming a week nowhere near them.
+  await expect(card).not.toContainText("this week");
+  // Every week in the window is listed, goal or no goal, so the review is not
+  // a list of judged weeks.
+  await expect(pastWeeks(page)).toHaveCount(7);
+});
+
+test("a past week with nothing in it does not call itself this week", async ({
+  page,
+  request,
+}) => {
+  // Rendered, not asserted on a string in isolation - which is how this got
+  // through: every past row said "this week", so a gap after a good run showed
+  // three consecutive rows naming a week nowhere near their own dates.
+  await logPractice(request, { day: today, minutes: 20 });
+  await page.reload();
+
+  const empty = pastWeeks(page).first();
+  await expect(empty).toContainText("No practice recorded");
+  await expect(empty).not.toContainText("this week");
+  // And the current week's panel still says it, where it is true.
+  await expect(week(page)).toContainText("this week");
+});
+
+test("the week this page offers is the week the server counts", async ({ page, request }) => {
+  await request.put("/api/settings", { data: { week_starts_on: "sunday" } });
+  await page.reload();
+
+  const offered = await week(page).getAttribute("data-week");
+  expect(offered).toBe(weekStart(today, "sunday"));
+
+  await page.locator(".edit-goal").click();
+  await page.locator(".save-goal").click();
+  const goals = (await (await request.get(`/api/practice/goals?today=${today}`)).json()).goals;
+  expect(goals).toHaveLength(1);
+  expect(goals[0].period_start).toBe(weekStart(today, "sunday"));
+});
+
+test("a goal can be adjusted mid-week, and removing it keeps the practice", async ({
+  page,
+  request,
+}) => {
+  await logPractice(request, { day: today, minutes: 20 });
+  await page.reload();
+
+  await page.locator(".edit-goal").click();
+  await page.locator(".days-target").selectOption("5");
+  await page.locator(".save-goal").click();
+  await expect(page.locator('[data-statement="days"]')).toContainText("1 of 5 planned days");
+
+  // Seeing where you stand is only useful if the goal can still change the
+  // week rather than only judge it afterwards.
+  await page.locator(".edit-goal").click();
+  await page.locator(".days-target").selectOption("1");
+  await page.locator(".save-goal").click();
+  await expect(page.locator('[data-statement="days"]')).toContainText("1 of 1 planned days");
+  await expect(page.locator('[data-statement="days"] .tick')).toHaveText("✓");
+  // Adjusting replaced the goal rather than adding a second one for the week.
+  const goals = (await (await request.get(`/api/practice/goals?today=${today}`)).json()).goals;
+  expect(goals).toHaveLength(1);
+
+  await page.locator(".edit-goal").click();
+  await page.locator(".remove-goal").click();
+  await expect(page.locator("section.week .no-goal")).toContainText("No goal set for this week");
+  await expect(sessionRows(page)).toHaveCount(1);
+});
+
+test.describe("in a timezone whose calendar day is not the UTC one", () => {
+  test.use({ timezoneId: SKEWED_ZONE });
+
+  test("a session is filed under the practiser's own day, not the server's", async ({
+    page,
+    request,
+  }) => {
+    // The reason local_date exists at all. The server stores UTC timestamps,
+    // so leaving the day to be derived there files an evening's practice on
+    // the wrong date - and at a week boundary in the wrong week, against a
+    // goal counting days.
+    const browserDay = await page.evaluate(() => {
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    });
+    const utcDay = new Date().toISOString().slice(0, 10);
+    expect(
+      browserDay,
+      `this test is only meaningful when the browser's day differs from UTC's (zone ${SKEWED_ZONE})`,
+    ).not.toBe(utcDay);
+
+    await page.locator(".other-activity").selectOption("technique");
+    await page.locator(".other-minutes").fill("18");
+    await page.locator(".log-other-button").click();
+    await expect(sessionRows(page)).toHaveCount(1);
+
+    const stored = (
+      await (await request.get("/api/practice/sessions?limit=10")).json()
+    ).sessions;
+    expect(stored).toHaveLength(1);
+    expect(stored[0].local_date).toBe(browserDay);
+    expect(stored[0].local_date_source).toBe("recorded");
+    // And the page agrees with what was stored, rather than each having its
+    // own idea of which day it was.
+    await expect(sessionRows(page).first()).toContainText(browserDay);
+  });
+});
+
+test("nothing on this page says anything that grades the person", async ({ page, request }) => {
+  // The page in its least flattering state: a goal nowhere near reached, a
+  // week with almost nothing in it, and a past week with no goal at all.
+  const monday = weekStart(today, "monday");
+  await logPractice(request, { day: monday, minutes: 2 });
+  const created = await request.post(`/api/practice/goals?today=${today}`, {
+    data: { period_start: monday, target_days: 7, target_minutes: 600 },
+  });
+  expect(created.ok(), await created.text()).toBe(true);
+  const lastWeek = addDays(monday, -7);
+  await request.post(`/api/practice/goals?today=${today}`, {
+    data: { period_start: lastWeek, target_days: 6 },
+  });
+  await page.reload();
+  await expect(statements(page)).toHaveCount(2);
+
+  const text = await page.locator("main").innerText();
+  expect(forbiddenWord(text), text).toBeNull();
+});

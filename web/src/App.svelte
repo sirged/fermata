@@ -2,12 +2,14 @@
   import Library from "./lib/Library.svelte";
   import Viewer from "./lib/Viewer.svelte";
   import Settings from "./lib/Settings.svelte";
+  import Practice from "./lib/Practice.svelte";
 
   function parse(hash) {
     const m = hash.match(/^#\/score\/(\d+)/);
     if (m) return { page: "score", id: Number(m[1]) };
     if (hash.startsWith("#/demo")) return { page: "demo" };
     if (hash.startsWith("#/settings")) return { page: "settings" };
+    if (hash.startsWith("#/practice")) return { page: "practice" };
     return { page: "library" };
   }
 
@@ -26,6 +28,8 @@
   <Viewer demo={true} />
 {:else if route.page === "settings"}
   <Settings />
+{:else if route.page === "practice"}
+  <Practice />
 {:else}
   <Library />
 {/if}
