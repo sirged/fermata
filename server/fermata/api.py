@@ -1,14 +1,22 @@
 import json
 import re
 import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Body, HTTPException, Path as PathParam, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    HTTPException,
+    Path as PathParam,
+    Query,
+    UploadFile,
+)
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import instruments, scanner
+from . import instruments, practice, scanner
 from .config import FILE_TYPES, LIBRARY_DIR
 from .db import DEFAULT_OWNER, connect, tx, write_tx
 from .glyph_rhythm import VALID_TS_DENOMINATORS
@@ -37,8 +45,19 @@ VALID_PRACTICED = {"recent", "neglected"}
 # web/src/lib/score-render.js - test_settings_api.py's
 # test_staff_theme_choices_match_the_frontends_score_themes parses that file
 # and fails if the two ever disagree.
-SETTINGS_DEFAULTS = {"staff_theme": "parchment"}
-SETTINGS_CHOICES = {"staff_theme": {"parchment", "noir", "print"}}
+#
+# week_starts_on decides which seven days "this week" means when a goal is set
+# without naming its period, and which weeks a review walks back through. It is
+# a preference and not a fact - half the world starts a week on Sunday - and a
+# goal counted over the wrong seven days is counted against days its owner did
+# not think were part of the week. It only ever decides a DEFAULT: a goal
+# stores the two dates it was actually set for, so changing this never moves a
+# goal that already exists.
+SETTINGS_DEFAULTS = {"staff_theme": "parchment", "week_starts_on": practice.DEFAULT_WEEK_START}
+SETTINGS_CHOICES = {
+    "staff_theme": {"parchment", "noir", "print"},
+    "week_starts_on": set(practice.WEEK_STARTS),
+}
 # MusicXML is a good deal more verbose than alphaTex for the same music: across
 # the sampled library it runs about 44x the characters, and the longest score
 # comes out around 660 KB. This leaves room for a compilation several times
@@ -464,9 +483,46 @@ def patch_score(score_id: RowId, patch: ScorePatch):
     return _with_tags(conn, [_score_row(conn, score_id)])[0]
 
 
-class PracticeIn(BaseModel):
-    seconds: int
-    note: str | None = Field(default=None, max_length=2000)
+# ---------------------------------------------------------------------------
+# Practice: sessions (what happened) and goals (what was intended).
+#
+# The rules live in fermata/practice.py, including why a session records the
+# practiser's own calendar day and why nothing stores whether a goal was met.
+# This layer does routing, ownership and 404s, and nothing else - so a session
+# logged from the per-score path and one logged from the general path are the
+# same row obeying the same rules.
+# ---------------------------------------------------------------------------
+
+
+def _server_today():
+    """Today as the server sees it, in UTC.
+
+    UTC and not the host's local time, because started_at is UTC and the two
+    disagreeing would mean a session recorded 'today' landing outside the
+    period a goal was told today was in. Every endpoint that needs a date
+    accepts `today` to override this - see _today().
+    """
+    return datetime.now(timezone.utc).date()
+
+
+def _today(today: str | None):
+    """The date an endpoint should treat as today.
+
+    Passed in by a client that knows its own timezone, because the server's UTC
+    date is not the practiser's date - and whether a period is still running is
+    exactly the sort of thing that must not be an hour-of-day accident. A
+    client that sends nothing gets the server's UTC date.
+    """
+    if not today:
+        return _server_today()
+    try:
+        return practice.parse_day(today, "today")
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+
+
+def _week_starts_on() -> str:
+    return get_settings()["week_starts_on"]
 
 
 def _practice_totals(conn, score_id: int):
@@ -479,17 +535,125 @@ def _practice_totals(conn, score_id: int):
     return dict(row)
 
 
+class PracticeIn(BaseModel):
+    """A session as logged against a score whose id is already in the path.
+
+    Everything but `seconds` is optional, and that is deliberate: the timer can
+    stop and store the one thing it knows, and the detail - how it felt, at
+    what tempo, which bars - can arrive afterwards through the PATCH below
+    rather than standing between a player and a stopped clock.
+    """
+
+    seconds: int
+    activity: str | None = None
+    mode: str | None = None
+    # The practiser's own calendar day. Omitted means "attribute this to the
+    # UTC day", which is what a client that does not know its timezone should
+    # say rather than guess.
+    local_date: str | None = None
+    from_bar: int | None = None
+    to_bar: int | None = None
+    from_page: int | None = None
+    to_page: int | None = None
+    tempo_bpm: int | None = None
+    target_tempo_bpm: int | None = None
+    rating: int | None = None
+    note: str | None = Field(default=None, max_length=practice.MAX_NOTE_CHARS)
+
+
+class SessionIn(PracticeIn):
+    """A session that names its own score, or names none at all."""
+
+    score_id: int | None = Field(default=None, ge=1, le=SQLITE_MAX_INTEGER)
+
+
+class SessionPatch(BaseModel):
+    """Detail added to, or corrected on, a session already stored.
+
+    Every field including `seconds` is optional, and an explicit null CLEARS
+    the field rather than being ignored - a rating entered by mistake has to be
+    removable. The merged record is then re-checked in full, so a patch cannot
+    reach a state a fresh log would have been refused.
+    """
+
+    seconds: int | None = None
+    activity: str | None = None
+    mode: str | None = None
+    local_date: str | None = None
+    from_bar: int | None = None
+    to_bar: int | None = None
+    from_page: int | None = None
+    to_page: int | None = None
+    tempo_bpm: int | None = None
+    target_tempo_bpm: int | None = None
+    rating: int | None = None
+    note: str | None = Field(default=None, max_length=practice.MAX_NOTE_CHARS)
+
+
+_SESSION_COLUMNS = (
+    "score_id",
+    "activity",
+    "mode",
+    "seconds",
+    "local_date",
+    "from_bar",
+    "to_bar",
+    "from_page",
+    "to_page",
+    "tempo_bpm",
+    "target_tempo_bpm",
+    "rating",
+    "note",
+)
+
+
+def _normalise_session(conn, fields: dict) -> dict:
+    if fields.get("score_id") is not None:
+        _score_row(conn, fields["score_id"])
+    try:
+        return practice.normalise_session(recorded_on=_server_today(), **fields)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+
+
+def _insert_session(conn, values: dict) -> int:
+    columns = ", ".join(_SESSION_COLUMNS)
+    placeholders = ", ".join("?" * len(_SESSION_COLUMNS))
+    cur = conn.execute(
+        f"""INSERT INTO practice_sessions(owner, started_at, {columns})
+            VALUES (?, datetime('now'), {placeholders})""",
+        [DEFAULT_OWNER, *(values[c] for c in _SESSION_COLUMNS)],
+    )
+    return cur.lastrowid
+
+
+def _session_row(conn, session_id: int):
+    row = conn.execute(
+        "SELECT * FROM practice_sessions WHERE id = ? AND owner = ?",
+        (session_id, DEFAULT_OWNER),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "practice session not found")
+    return row
+
+
 @router.post("/scores/{score_id}/practice")
 def log_practice(score_id: RowId, body: PracticeIn):
-    if not 0 < body.seconds <= 86400:
-        raise HTTPException(422, "seconds must be between 1 and 86400")
-    with tx() as conn:
+    with write_tx() as conn:
         _score_row(conn, score_id)
-        conn.execute(
-            "INSERT INTO practice_sessions(score_id, started_at, seconds, note) VALUES (?, datetime('now'), ?, ?)",
-            (score_id, body.seconds, body.note),
-        )
-    return get_practice(score_id)
+        fields = body.model_dump()
+        fields["score_id"] = score_id
+        values = _normalise_session(conn, fields)
+        session_id = _insert_session(conn, values)
+    # The stored row, read back, rather than the request echoed: the id is what
+    # a client needs to add detail to what it just logged, and the row is the
+    # only place the attributed practice day exists once the server has
+    # decided it.
+    conn = connect()
+    return {
+        "session": practice.session_dict(_session_row(conn, session_id)),
+        **get_practice(score_id),
+    }
 
 
 @router.get("/scores/{score_id}/practice")
@@ -500,7 +664,110 @@ def get_practice(score_id: RowId):
         "SELECT * FROM practice_sessions WHERE score_id = ? ORDER BY started_at DESC, id DESC LIMIT 50",
         (score_id,),
     ).fetchall()
-    return {"sessions": [dict(r) for r in sessions], **_practice_totals(conn, score_id)}
+    return {
+        "sessions": [practice.session_dict(r) for r in sessions],
+        **_practice_totals(conn, score_id),
+    }
+
+
+@router.post("/practice/sessions")
+def log_session(body: SessionIn):
+    """Log practice that is not necessarily against a piece.
+
+    The general form of the per-score endpoint above, and the one an exercise
+    or a stretch of unstructured playing uses: `score_id` may be omitted for
+    every activity except 'piece', which is defined by having one.
+    """
+    with write_tx() as conn:
+        values = _normalise_session(conn, body.model_dump())
+        session_id = _insert_session(conn, values)
+    conn = connect()
+    return practice.session_dict(_session_row(conn, session_id))
+
+
+@router.patch("/practice/sessions/{session_id}")
+def patch_session(session_id: RowId, patch: SessionPatch):
+    with write_tx() as conn:
+        row = _session_row(conn, session_id)
+        # The whole record is rebuilt and re-checked, not just the changed
+        # fields: `to_bar` alone is meaningless without the `from_bar` already
+        # stored, and validating a fragment would let a patch produce a row a
+        # fresh log could not have created.
+        fields = {c: row[c] for c in _SESSION_COLUMNS}
+        for name in patch.model_fields_set:
+            fields[name] = getattr(patch, name)
+        values = _normalise_session(conn, fields)
+        assignments = ", ".join(f"{c} = ?" for c in _SESSION_COLUMNS)
+        conn.execute(
+            f"UPDATE practice_sessions SET {assignments} WHERE id = ? AND owner = ?",
+            [*(values[c] for c in _SESSION_COLUMNS), session_id, DEFAULT_OWNER],
+        )
+    conn = connect()
+    return practice.session_dict(_session_row(conn, session_id))
+
+
+@router.delete("/practice/sessions/{session_id}")
+def delete_session(session_id: RowId):
+    """Remove a session that should not be in the record.
+
+    Practice history cannot be regenerated from anything on disk, so this is
+    the one destructive operation here and it exists only because a timer left
+    running by accident is otherwise permanent - and a record with an invented
+    two-hour session in it is not an honest record either.
+    """
+    with write_tx() as conn:
+        _session_row(conn, session_id)
+        conn.execute(
+            "DELETE FROM practice_sessions WHERE id = ? AND owner = ?",
+            (session_id, DEFAULT_OWNER),
+        )
+    return {"deleted": session_id}
+
+
+@router.get("/practice/sessions")
+def list_sessions(
+    start: str = "",
+    end: str = "",
+    score_id: Annotated[int | None, Query(ge=1, le=SQLITE_MAX_INTEGER)] = None,
+    activity: str = "",
+    limit: int = practice.DEFAULT_SESSION_LIMIT,
+):
+    """Sessions themselves, across every piece and every kind of practice.
+
+    The raw record, filtered by practice day: this is what answers "what did I
+    actually do this week" without a reader having to reconstruct it from
+    per-score endpoints one score at a time.
+    """
+    if not 1 <= limit <= practice.MAX_SESSION_LIMIT:
+        raise HTTPException(422, f"limit must be between 1 and {practice.MAX_SESSION_LIMIT}")
+    if activity and activity not in practice.ACTIVITIES:
+        raise HTTPException(422, f"activity must be one of {sorted(practice.ACTIVITIES)}")
+    where = ["p.owner = ?"]
+    params: list = [DEFAULT_OWNER]
+    for value, field, comparison in ((start, "start", ">="), (end, "end", "<=")):
+        if value:
+            try:
+                day = practice.parse_day(value, field)
+            except ValueError as e:
+                raise HTTPException(422, str(e)) from None
+            where.append(f"{practice.LOCAL_DATE_SQL} {comparison} ?")
+            params.append(day.isoformat())
+    if score_id is not None:
+        where.append("p.score_id = ?")
+        params.append(score_id)
+    if activity:
+        where.append("p.activity = ?")
+        params.append(activity)
+    conn = connect()
+    rows = conn.execute(
+        f"""SELECT p.*, s.title AS score_title
+              FROM practice_sessions p LEFT JOIN scores s ON s.id = p.score_id
+             WHERE {" AND ".join(where)}
+          ORDER BY {practice.LOCAL_DATE_SQL} DESC, p.started_at DESC, p.id DESC
+             LIMIT ?""",
+        [*params, limit],
+    ).fetchall()
+    return {"sessions": [practice.session_dict(r) for r in rows]}
 
 
 @router.get("/practice/summary")
@@ -521,6 +788,282 @@ def practice_summary():
         "week_sessions": week["session_count"],
         "top_scores": [dict(r) for r in top],
     }
+
+
+@router.get("/practice/history")
+def practice_history(days: int = practice.DEFAULT_HISTORY_DAYS, today: str | None = None):
+    """Where the time went over a stretch of days.
+
+    A day at a time, a piece at a time, and a kind of work at a time, over a
+    window as long as three months - which is the shape of question a reader
+    has otherwise had to reassemble score by score. It states totals and never
+    a trend, a streak, or a comparison between one stretch and another.
+    """
+    if not 1 <= days <= practice.MAX_HISTORY_DAYS:
+        raise HTTPException(422, f"days must be between 1 and {practice.MAX_HISTORY_DAYS}")
+    end = _today(today)
+    start = end - timedelta(days=days - 1)
+    conn = connect()
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        **practice.period_facts(conn, start.isoformat(), end.isoformat()),
+        **practice.time_spent(conn, start.isoformat(), end.isoformat()),
+    }
+
+
+class GoalIn(BaseModel):
+    """A whole goal. Replaces any goal already set for the same period.
+
+    `period_start` may be omitted, in which case the goal is for the week
+    containing `today` under the week_starts_on setting - which is what "set a
+    goal for this week" means and what saves a client doing calendar
+    arithmetic the server can do once.
+    """
+
+    period: str | None = None
+    period_start: str | None = None
+    target_days: int | None = None
+    target_minutes: int | None = None
+    scope: str | None = None
+    score_id: int | None = Field(default=None, ge=1, le=SQLITE_MAX_INTEGER)
+    activity: str | None = None
+    intent: str | None = Field(default=None, max_length=practice.MAX_INTENT_CHARS)
+
+
+class GoalPatch(BaseModel):
+    """A change to a goal already set.
+
+    Targets are editable while the period runs, on purpose: seeing where you
+    stand is only useful if the goal can still change the week rather than
+    only judge it afterwards. `reflection` and `realistic` are the person's
+    own account of how it went, and nothing else ever writes them.
+    """
+
+    target_days: int | None = None
+    target_minutes: int | None = None
+    scope: str | None = None
+    score_id: int | None = Field(default=None, ge=1, le=SQLITE_MAX_INTEGER)
+    activity: str | None = None
+    intent: str | None = Field(default=None, max_length=practice.MAX_INTENT_CHARS)
+    reflection: str | None = Field(default=None, max_length=practice.MAX_REFLECTION_CHARS)
+    realistic: str | None = None
+
+
+# What a caller may state about a goal, which is what practice.normalise_goal
+# takes. period_end is absent on purpose: it is derived from the start and the
+# period length, so it can never be given as something other than what the
+# period means.
+_GOAL_INPUT_FIELDS = (
+    "period",
+    "period_start",
+    "target_days",
+    "target_minutes",
+    "scope",
+    "score_id",
+    "activity",
+    "intent",
+)
+
+# The stored columns, which is the above plus the derived period_end.
+_GOAL_COLUMNS = (*_GOAL_INPUT_FIELDS, "period_end")
+
+
+def _goal_row(conn, goal_id: int):
+    row = conn.execute(
+        "SELECT * FROM practice_goals WHERE id = ? AND owner = ?",
+        (goal_id, DEFAULT_OWNER),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "goal not found")
+    return row
+
+
+def _normalise_goal(conn, fields: dict) -> dict:
+    if fields.get("score_id") is not None:
+        _score_row(conn, fields["score_id"])
+    try:
+        return practice.normalise_goal(**fields)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+
+
+@router.post("/practice/goals")
+def set_goal(body: GoalIn, today: str | None = None):
+    day = _today(today)
+    fields = body.model_dump()
+    if not fields.get("period_start"):
+        fields["period_start"] = practice.week_start(day, _week_starts_on()).isoformat()
+    with write_tx() as conn:
+        values = _normalise_goal(conn, fields)
+        # Setting a goal for a period that already has one REPLACES its
+        # targets rather than adding a second goal or refusing. Changing your
+        # mind about the week is the ordinary case, and a period with two
+        # goals in it is a scorecard.
+        columns = ", ".join(_GOAL_COLUMNS)
+        placeholders = ", ".join("?" * len(_GOAL_COLUMNS))
+        updates = ", ".join(f"{c} = excluded.{c}" for c in _GOAL_COLUMNS if c != "period_start")
+        conn.execute(
+            f"""INSERT INTO practice_goals(owner, {columns})
+                VALUES (?, {placeholders})
+                ON CONFLICT(owner, period_start) DO UPDATE SET
+                    {updates}, updated_at = datetime('now')""",
+            [DEFAULT_OWNER, *(values[c] for c in _GOAL_COLUMNS)],
+        )
+        row = conn.execute(
+            "SELECT * FROM practice_goals WHERE owner = ? AND period_start = ?",
+            (DEFAULT_OWNER, values["period_start"]),
+        ).fetchone()
+        goal_id = row["id"]
+    conn = connect()
+    return practice.goal_dict(conn, _goal_row(conn, goal_id), day)
+
+
+# Declared before the {goal_id} routes so "current" is not parsed as an id -
+# FastAPI matches in declaration order.
+@router.get("/practice/goals/current")
+def current_goal(today: str | None = None):
+    """The goal covering today, or nothing.
+
+    `goal: null` is an answer, not an error: having no goal set is an ordinary
+    state and a perfectly good week can happen inside it.
+    """
+    day = _today(today)
+    conn = connect()
+    row = conn.execute(
+        """SELECT * FROM practice_goals
+            WHERE owner = ? AND period_start <= ? AND period_end >= ?
+         ORDER BY period_start DESC LIMIT 1""",
+        (DEFAULT_OWNER, day.isoformat(), day.isoformat()),
+    ).fetchone()
+    week = practice.week_start(day, _week_starts_on())
+    return {
+        "goal": practice.goal_dict(conn, row, day) if row else None,
+        "today": day.isoformat(),
+        # What a goal set right now would be for, so a client offering to set
+        # one does not have to work out the week itself.
+        "week_starts_on": _week_starts_on(),
+        "week_start": week.isoformat(),
+        "week_end": (week + timedelta(days=6)).isoformat(),
+    }
+
+
+@router.get("/practice/goals")
+def list_goals(limit: int = practice.MAX_REVIEW_WEEKS, today: str | None = None):
+    day = _today(today)
+    if not 1 <= limit <= practice.MAX_REVIEW_WEEKS:
+        raise HTTPException(422, f"limit must be between 1 and {practice.MAX_REVIEW_WEEKS}")
+    conn = connect()
+    rows = conn.execute(
+        """SELECT * FROM practice_goals WHERE owner = ?
+        ORDER BY period_start DESC LIMIT ?""",
+        (DEFAULT_OWNER, limit),
+    ).fetchall()
+    return {"goals": [practice.goal_dict(conn, r, day) for r in rows]}
+
+
+@router.patch("/practice/goals/{goal_id}")
+def patch_goal(goal_id: RowId, patch: GoalPatch, today: str | None = None):
+    day = _today(today)
+    with write_tx() as conn:
+        row = _goal_row(conn, goal_id)
+        fields = {c: row[c] for c in _GOAL_INPUT_FIELDS}
+        for name in patch.model_fields_set:
+            if name in fields:
+                fields[name] = getattr(patch, name)
+        # period_start is not patchable: it is the goal's identity under the
+        # unique index, and moving it would silently re-point a goal at a
+        # different week's practice. Setting a goal for the other week is what
+        # POST does.
+        values = _normalise_goal(conn, fields)
+        try:
+            reflection = practice.normalise_reflection(
+                reflection=patch.reflection
+                if "reflection" in patch.model_fields_set
+                else row["reflection"],
+                realistic=patch.realistic
+                if "realistic" in patch.model_fields_set
+                else row["realistic"],
+            )
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
+        assignments = ", ".join(f"{c} = ?" for c in _GOAL_COLUMNS if c != "period_start")
+        conn.execute(
+            f"""UPDATE practice_goals
+                   SET {assignments}, reflection = ?, realistic = ?,
+                       updated_at = datetime('now')
+                 WHERE id = ? AND owner = ?""",
+            [
+                *(values[c] for c in _GOAL_COLUMNS if c != "period_start"),
+                reflection["reflection"],
+                reflection["realistic"],
+                goal_id,
+                DEFAULT_OWNER,
+            ],
+        )
+    conn = connect()
+    return practice.goal_dict(conn, _goal_row(conn, goal_id), day)
+
+
+@router.delete("/practice/goals/{goal_id}")
+def delete_goal(goal_id: RowId):
+    """Forget a goal.
+
+    Deleting a goal deletes an intention, never the practice: the sessions in
+    its period are untouched and the week still shows what was done. A goal
+    whose week has ended is NOT deleted by anything automatic - it stays with
+    whatever was written about it, because a record of what someone meant to do
+    is the only thing that makes the next goal a better one.
+    """
+    with write_tx() as conn:
+        _goal_row(conn, goal_id)
+        conn.execute(
+            "DELETE FROM practice_goals WHERE id = ? AND owner = ?", (goal_id, DEFAULT_OWNER)
+        )
+    return {"deleted": goal_id}
+
+
+@router.get("/practice/review")
+def practice_review(weeks: int = practice.DEFAULT_REVIEW_WEEKS, today: str | None = None):
+    """Recent weeks, each stating what happened in it.
+
+    Every week in the window appears, whether or not a goal was set for it -
+    a week with no goal is not a gap in a record, and a week whose goal was not
+    reached is reported with the same fields and in the same order as one whose
+    goal was. Nothing here compares one week to another, and nothing carries a
+    best or a run of anything: that is the machinery by which a good month
+    becomes the standard a bad month is punished against.
+    """
+    if not 1 <= weeks <= practice.MAX_REVIEW_WEEKS:
+        raise HTTPException(422, f"weeks must be between 1 and {practice.MAX_REVIEW_WEEKS}")
+    day = _today(today)
+    starts_on = _week_starts_on()
+    this_week = practice.week_start(day, starts_on)
+    conn = connect()
+    periods = []
+    for back in range(weeks):
+        start = this_week - timedelta(days=7 * back)
+        end = start + timedelta(days=6)
+        row = conn.execute(
+            "SELECT * FROM practice_goals WHERE owner = ? AND period_start = ?",
+            (DEFAULT_OWNER, start.isoformat()),
+        ).fetchone()
+        periods.append(
+            {
+                "period": "week",
+                "period_start": start.isoformat(),
+                "period_end": end.isoformat(),
+                "status": "running" if start <= day <= end else "past",
+                "goal": practice.goal_dict(conn, row, day) if row else None,
+                # The week's own facts, unscoped, even when the goal was about
+                # one piece: "I did not reach the goal but I practised four
+                # days" is true and is the sort of thing a scoped-only view
+                # hides.
+                "facts": practice.period_facts(conn, start.isoformat(), end.isoformat()),
+                **practice.time_spent(conn, start.isoformat(), end.isoformat()),
+            }
+        )
+    return {"today": day.isoformat(), "week_starts_on": starts_on, "weeks": periods}
 
 
 @router.get("/scores/{score_id}/file")

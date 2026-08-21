@@ -18,7 +18,7 @@
 // This is also read directly by scripts/run-browser-tests.mjs, which is the
 // OTHER half of this guard - see that file's own comment for why counting
 // here is not, by itself, enough. Keep the two numbers in sync.
-export const MINIMUM_TESTS = 97;
+export const MINIMUM_TESTS = 133;
 
 export default class MinimumTests {
   constructor() {

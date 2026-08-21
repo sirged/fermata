@@ -171,6 +171,7 @@
       <button onclick={triggerScan} disabled={scan?.scanning}>
         {scan?.scanning ? `Scanning ${scan.processed}/${scan.total}…` : "Scan library"}
       </button>
+      <a class="demo-link practice-link" href="#/practice">◴ Practice &amp; goals</a>
       <a class="demo-link" href="#/demo">Notation/tab demo →</a>
       <a class="demo-link" href="#/settings">⚙ Settings</a>
     </div>

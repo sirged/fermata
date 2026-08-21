@@ -1,5 +1,6 @@
 <script>
   import { api } from "./api.js";
+  import { formatDuration } from "./practice.js";
   import PdfViewer from "./PdfViewer.svelte";
   import TabViewer from "./TabViewer.svelte";
   import ScoreCompare from "./ScoreCompare.svelte";
@@ -141,6 +142,75 @@
   let practiceInterval;
   let practiceScoreId = null;
 
+  // The session just logged, if it is still worth adding detail to. The length
+  // is stored the moment the timer stops - see flushPractice - and this panel
+  // patches that stored row afterwards. That order matters: a form standing
+  // between a player and a stopped clock is a form that loses sessions, and a
+  // session abandoned at the form would be a session that never happened.
+  let lastSession = $state(null);
+  let detail = $state(null);
+  let savingDetail = $state(false);
+  let detailError = $state("");
+
+  function blankDetail() {
+    return { rating: null, mode: "", from_bar: "", to_bar: "", tempo_bpm: "", note: "" };
+  }
+
+  const RATING_LABELS = {
+    1: "rough",
+    2: "getting there",
+    3: "steady",
+    4: "solid",
+    5: "as I want it",
+  };
+
+  /** Today in the BROWSER's timezone, which is the day the practice actually
+   * happened on. The server stores UTC timestamps, and west of Greenwich the
+   * UTC date of an evening session is already tomorrow - so a goal counting
+   * days would put it in the wrong one, and at a week boundary in the wrong
+   * week. Sent explicitly rather than inferred there. */
+  function practiceDay() {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  }
+
+  function numberOrNull(value) {
+    const n = Number(value);
+    return value === "" || Number.isNaN(n) ? null : n;
+  }
+
+  async function saveDetail() {
+    if (!lastSession) return;
+    savingDetail = true;
+    detailError = "";
+    try {
+      await api.patchSession(lastSession.id, {
+        rating: detail.rating,
+        mode: detail.mode || null,
+        from_bar: numberOrNull(detail.from_bar),
+        to_bar: numberOrNull(detail.to_bar),
+        tempo_bpm: numberOrNull(detail.tempo_bpm),
+        note: detail.note.trim() || null,
+      });
+      lastSession = null;
+      detail = null;
+    } catch (e) {
+      detailError = e?.message ?? "Could not save that.";
+    } finally {
+      savingDetail = false;
+    }
+  }
+
+  function dismissDetail() {
+    // The session itself stays. Closing this only declines to say more about
+    // it, which is the ordinary case and must never read as losing the
+    // practice.
+    lastSession = null;
+    detail = null;
+    detailError = "";
+  }
+
   function formatElapsed(sec) {
     const m = Math.floor(sec / 60);
     const s = sec % 60;
@@ -171,7 +241,22 @@
     practiceElapsed = 0;
     practiceScoreId = null;
     if (seconds >= PRACTICE_MIN_SECONDS && scoreId != null) {
-      api.logPractice(scoreId, { seconds }).catch(() => {});
+      api
+        .logPractice(scoreId, {
+          seconds,
+          activity: "piece",
+          local_date: practiceDay(),
+        })
+        .then((result) => {
+          // Only offer the detail panel for the score still on screen. A flush
+          // triggered by navigating away has nowhere to show one, and the
+          // session is already safely stored either way.
+          if (result?.session && score?.id === scoreId) {
+            lastSession = result.session;
+            detail = blankDetail();
+          }
+        })
+        .catch(() => {});
     }
   }
 
@@ -261,6 +346,68 @@
         </div>
       {/if}
     </header>
+  {/if}
+
+  {#if lastSession && detail && !gigMode}
+    <!-- What that session was, in the player's own words. Every field is
+         optional and closing the panel keeps the session exactly as logged -
+         this asks for detail, it does not require it. -->
+    <section class="session-detail" data-session={lastSession.id}>
+      <div class="detail-head">
+        <span class="detail-title">
+          Logged {formatDuration(lastSession.seconds)} on {lastSession.local_date}
+        </span>
+        <button class="ghost close-detail" onclick={dismissDetail} title="Close">✕</button>
+      </div>
+
+      <div class="detail-row">
+        <span class="detail-label">How it went</span>
+        {#each [1, 2, 3, 4, 5] as value}
+          <button
+            class="rating"
+            class:on={detail.rating === value}
+            data-rating={value}
+            title={RATING_LABELS[value]}
+            onclick={() => (detail.rating = detail.rating === value ? null : value)}
+          >
+            {value}
+          </button>
+        {/each}
+        <span class="detail-hint">
+          {detail.rating ? RATING_LABELS[detail.rating] : "optional"}
+        </span>
+      </div>
+
+      <div class="detail-row">
+        <select bind:value={detail.mode} class="detail-mode" title="What kind of work">
+          <option value="">unstated</option>
+          <option value="section">section work</option>
+          <option value="run_through">run-through</option>
+        </select>
+        <span class="detail-label">bars</span>
+        <input class="detail-bar" type="number" min="1" placeholder="from" bind:value={detail.from_bar} />
+        <input class="detail-bar" type="number" min="1" placeholder="to" bind:value={detail.to_bar} />
+        <span class="detail-label">tempo</span>
+        <input class="detail-tempo" type="number" min="20" max="400" placeholder="bpm" bind:value={detail.tempo_bpm} />
+      </div>
+
+      <div class="detail-row">
+        <input
+          class="detail-note"
+          type="text"
+          maxlength="2000"
+          placeholder="what to pick up next time"
+          bind:value={detail.note}
+        />
+        <button class="save-detail" onclick={saveDetail} disabled={savingDetail}>
+          {savingDetail ? "Saving…" : "Save"}
+        </button>
+      </div>
+
+      {#if detailError}
+        <p class="detail-hint">{detailError}</p>
+      {/if}
+    </section>
   {/if}
 
   {#if error}
@@ -356,6 +503,64 @@
 
   .tags-input {
     width: 220px;
+  }
+
+  /* Not styled as an alert of any kind: nothing here went wrong, a session was
+     recorded. It sits under the header rather than over the score so it never
+     covers the music. */
+  .session-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 16px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-raised);
+  }
+
+  .detail-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .detail-title {
+    font-size: 14px;
+    color: var(--brass-bright);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .detail-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .detail-label,
+  .detail-hint {
+    font-size: 13px;
+    color: var(--ink-dim);
+  }
+
+  .rating {
+    width: 32px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rating.on {
+    border-color: var(--brass);
+    color: var(--brass-bright);
+  }
+
+  .detail-bar,
+  .detail-tempo {
+    width: 76px;
+  }
+
+  .detail-note {
+    flex: 1;
+    min-width: 200px;
   }
 
   .error {

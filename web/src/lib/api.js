@@ -69,6 +69,55 @@ export const api = {
       body: JSON.stringify(body),
     }).then(j),
   practiceSummary: () => fetch("/api/practice/summary").then(j),
+  // Detail added to a session already logged. The timer stores the length the
+  // moment it stops and this fills in how it went, so a stopped clock is never
+  // waiting on a form and a session is never lost to an abandoned one. An
+  // explicit null clears a field - which is how a rating entered by mistake
+  // comes off again.
+  patchSession: (id, body) =>
+    fetch(`/api/practice/sessions/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(j),
+  deleteSession: (id) => fetch(`/api/practice/sessions/${id}`, { method: "DELETE" }).then(j),
+  // Practice that is not against a piece at all - an exercise, or simply
+  // playing. `score_id` is optional for every activity except "piece".
+  logSession: (body) =>
+    fetch("/api/practice/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(j),
+  sessions: (params = {}) => {
+    const q = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== "")),
+    );
+    return fetch(`/api/practice/sessions?${q}`).then(j);
+  },
+  practiceHistory: (days, today) =>
+    fetch(`/api/practice/history?days=${days}&today=${today}`).then(j),
+  // `today` is the BROWSER's date on every one of these. The server's own date
+  // is UTC, and whether a week is still running must not be an accident of the
+  // hour - west of Greenwich the UTC date is already tomorrow while somebody
+  // still has their evening to practise in.
+  currentGoal: (today) => fetch(`/api/practice/goals/current?today=${today}`).then(j),
+  goals: (today) => fetch(`/api/practice/goals?today=${today}`).then(j),
+  setGoal: (body, today) =>
+    fetch(`/api/practice/goals?today=${today}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(j),
+  patchGoal: (id, body, today) =>
+    fetch(`/api/practice/goals/${id}?today=${today}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(j),
+  deleteGoal: (id) => fetch(`/api/practice/goals/${id}`, { method: "DELETE" }).then(j),
+  practiceReview: (weeks, today) =>
+    fetch(`/api/practice/review?weeks=${weeks}&today=${today}`).then(j),
   scan: () => fetch("/api/scan", { method: "POST" }).then(j),
   scanStatus: () => fetch("/api/scan/status").then(j),
   upload: (file, folder = "Uploads") => {

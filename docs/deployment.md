@@ -167,9 +167,11 @@ docker compose up --build -d
 ```
 
 Fermata's database applies its own schema changes automatically on startup —
-new tables or columns an upgrade needs are created the first time the new
-version starts, and so far this has never required a manual step. You do not
-need to run a migration command.
+new tables and columns an upgrade needs are created the first time the new
+version starts, and a change too large for that (rebuilding a table to carry
+its rows into a new shape) runs then too, once, inside a single transaction. It
+has never required a manual step, and you do not need to run a migration
+command.
 
 That said, take a backup first anyway, the same way you would before any
 software upgrade you can't easily undo:
@@ -192,8 +194,8 @@ recognises — but if the newer version changed the schema, the older one refuse
 to start rather than write to a database it does not understand, and says so:
 
 ```
-RuntimeError: this database is at schema version 2, but this version of
-Fermata understands 1. It was written by a newer release - upgrade, or
+RuntimeError: this database is at schema version 3, but this version of
+Fermata understands 2. It was written by a newer release - upgrade, or
 restore a backup taken before it.
 ```
 

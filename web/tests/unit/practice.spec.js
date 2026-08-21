@@ -1,0 +1,346 @@
+// How practice is put into words, and the calendar arithmetic behind it.
+//
+// These are the assertions that matter most in the whole practice feature, and
+// not because the arithmetic is hard. The wording IS the feature: an interface
+// that reports the same numbers as "you missed a day" instead of "3 of 4
+// planned days" has failed at the one thing it was asked to do, and no amount
+// of correct counting fixes it. So the strings are pinned character for
+// character, and the vocabulary is checked against a list.
+//
+// No browser is needed for any of it - practice.js has no runes and no imports
+// precisely so this can import it.
+import { expect, test } from "@playwright/test";
+
+import {
+  ACTIVITY_LABELS,
+  FORBIDDEN_WORDS,
+  WEEK_STARTS,
+  forbiddenWord,
+  activityLabel,
+  addDays,
+  dayBars,
+  formatDuration,
+  formatMinutes,
+  goalScopeLabel,
+  goalStatements,
+  localDay,
+  periodLabel,
+  periodStatement,
+  rangeLabel,
+  shortDayName,
+  tempoLabel,
+  timeLeftStatement,
+  weekStart,
+} from "../../src/lib/practice.js";
+
+const goal = (over = {}) => ({
+  target_days: 4,
+  target_minutes: null,
+  scope: "all",
+  score_title: null,
+  activity: null,
+  progress: {
+    status: "past",
+    days_practised: 3,
+    minutes: 90,
+    seconds: 5400,
+    days_left: 0,
+    met_days: false,
+    met_minutes: null,
+    met: false,
+  },
+  ...over,
+});
+
+// --------------------------------------------------------------- the calendar
+
+test("the practice day is the browser's own day, not the UTC one", () => {
+  // 23:30 local on 17 August is, in any timezone east of about UTC+1, already
+  // the 18th in UTC - and toISOString().slice(0,10) would say so. The day the
+  // practice happened on is the local one.
+  const late = new Date(2026, 7, 17, 23, 30);
+  expect(localDay(late)).toBe("2026-08-17");
+  const early = new Date(2026, 7, 17, 0, 15);
+  expect(localDay(early)).toBe("2026-08-17");
+  // Months and days are zero-padded, because the server compares these as
+  // text: "2026-8-7" sorts and ranges wrongly against "2026-08-17".
+  expect(localDay(new Date(2026, 0, 5))).toBe("2026-01-05");
+});
+
+test("a monday-start week runs monday to sunday", () => {
+  for (const day of ["2026-08-17", "2026-08-19", "2026-08-23"]) {
+    expect(weekStart(day, "monday"), day).toBe("2026-08-17");
+  }
+  expect(weekStart("2026-08-16", "monday")).toBe("2026-08-10");
+});
+
+test("a sunday-start week runs sunday to saturday", () => {
+  expect(weekStart("2026-08-17", "sunday")).toBe("2026-08-16");
+  expect(weekStart("2026-08-16", "sunday")).toBe("2026-08-16");
+  expect(weekStart("2026-08-22", "sunday")).toBe("2026-08-16");
+  expect(weekStart("2026-08-23", "sunday")).toBe("2026-08-23");
+});
+
+test("every day of a year falls in exactly one week, under either setting", () => {
+  // Not a restatement of the two tests above: this walks a whole year, across
+  // month ends and a daylight-saving change in most timezones, and checks the
+  // window actually contains the day - which is what an off-by-one in the
+  // modulo breaks and a handful of spot checks can miss.
+  for (const startsOn of WEEK_STARTS) {
+    for (let d = new Date(2026, 0, 1); d.getFullYear() === 2026; d.setDate(d.getDate() + 1)) {
+      const day = localDay(d);
+      const start = weekStart(day, startsOn);
+      const end = addDays(start, 6);
+      expect(start <= day && day <= end, `${day} in ${start}..${end}`).toBe(true);
+      expect(shortDayName(start), `${startsOn} week starts on`).toBe(
+        startsOn === "monday" ? "Mon" : "Sun",
+      );
+    }
+  }
+});
+
+test("adding days crosses a month, a year and a daylight-saving boundary", () => {
+  expect(addDays("2026-08-31", 1)).toBe("2026-09-01");
+  expect(addDays("2026-12-31", 1)).toBe("2027-01-01");
+  expect(addDays("2026-01-01", -1)).toBe("2025-12-31");
+  // Spring forward in most of Europe and North America. Parsing a day at
+  // midnight instead of midday is what makes this land on the wrong date.
+  expect(addDays("2026-03-28", 1)).toBe("2026-03-29");
+  expect(addDays("2026-03-29", 1)).toBe("2026-03-30");
+  expect(addDays("2026-11-01", 1)).toBe("2026-11-02");
+});
+
+test("a period reads as a range, and says the month once when it can", () => {
+  expect(periodLabel("2026-08-17", "2026-08-23")).toBe("17-23 Aug");
+  expect(periodLabel("2026-09-28", "2026-10-04")).toBe("28 Sep - 4 Oct");
+});
+
+// ---------------------------------------------------------------- the lengths
+
+test("a length of practice reads the way a person says it", () => {
+  expect(formatDuration(0)).toBe("none");
+  expect(formatDuration(30)).toBe("under a minute");
+  expect(formatDuration(60)).toBe("1m");
+  expect(formatDuration(2700)).toBe("45m");
+  expect(formatDuration(3600)).toBe("1h");
+  expect(formatDuration(5400)).toBe("1h 30m");
+  expect(formatDuration(7500)).toBe("2h 5m");
+  expect(formatMinutes(150)).toBe("2h 30m");
+  expect(formatMinutes(0)).toBe("none");
+});
+
+test("a length is never rounded up into time that was not practised", () => {
+  expect(formatDuration(119)).toBe("1m");
+  expect(formatDuration(3599)).toBe("59m");
+});
+
+test("nonsense in gives none out rather than NaN", () => {
+  for (const bad of [null, undefined, "", NaN, -50, {}]) {
+    expect(formatDuration(bad), String(bad)).toBe("none");
+  }
+});
+
+// ------------------------------------------------------------- the vocabulary
+
+test("the forbidden vocabulary is matched as whole words", () => {
+  expect(forbiddenWord("you missed a day")).toBe("missed");
+  expect(forbiddenWord("your best week so far")).toBe("best");
+  expect(forbiddenWord("you should practise more")).toBe("should");
+  // The plain statements this feature is built on have to survive the check,
+  // or the check is the thing that gets deleted.
+  expect(forbiddenWord("No practice recorded this week")).toBeNull();
+  expect(forbiddenWord("3 of 4 planned days")).toBeNull();
+  expect(forbiddenWord("1h 30m of 2h 30m planned")).toBeNull();
+  expect(forbiddenWord("5 days left in this week")).toBeNull();
+  for (const word of FORBIDDEN_WORDS) {
+    expect(forbiddenWord(`a sentence with ${word} in it`), word).toBe(word);
+  }
+  // The list itself, pinned - the vocabulary is the rule, so quietly emptying
+  // it would switch every check above off while leaving them green.
+  for (const required of ["missed", "failed", "streak", "best", "should", "only"]) {
+    expect(FORBIDDEN_WORDS, required).toContain(required);
+  }
+});
+
+// ------------------------------------------------------------- the statements
+
+test("a partly met goal states both numbers and reaches no verdict", () => {
+  const [days] = goalStatements(goal());
+  expect(days.text).toBe("3 of 4 planned days");
+  expect(days.met).toBe(false);
+});
+
+test("a met goal is marked as reached and worded identically otherwise", () => {
+  const [days] = goalStatements(
+    goal({ progress: { ...goal().progress, days_practised: 4, met_days: true } }),
+  );
+  expect(days.text).toBe("4 of 4 planned days");
+  expect(days.met).toBe(true);
+});
+
+test("both targets produce one statement each, in the order they were set", () => {
+  const statements = goalStatements(
+    goal({
+      target_minutes: 150,
+      progress: { ...goal().progress, minutes: 90, met_minutes: false },
+    }),
+  );
+  expect(statements.map((s) => s.key)).toEqual(["days", "minutes"]);
+  expect(statements[1].text).toBe("1h 30m of 2h 30m planned");
+});
+
+test("a target that was not set produces no statement at all", () => {
+  // Not "0 of 0 minutes", which would read as a target nobody chose and could
+  // be marked unmet.
+  expect(goalStatements(goal({ target_days: null, target_minutes: null }))).toEqual([]);
+  const minutesOnly = goalStatements(
+    goal({ target_days: null, target_minutes: 60, progress: { ...goal().progress, minutes: 60, met_minutes: true } }),
+  );
+  expect(minutesOnly.map((s) => s.key)).toEqual(["minutes"]);
+});
+
+test("nothing said about a goal uses a word that grades the person", () => {
+  const cases = [
+    goal(),
+    goal({ progress: { ...goal().progress, days_practised: 0 } }),
+    goal({ target_minutes: 600, progress: { ...goal().progress, minutes: 5 } }),
+    goal({ target_days: 7, progress: { ...goal().progress, days_practised: 7, met_days: true } }),
+  ];
+  for (const g of cases) {
+    const words = goalStatements(g)
+      .map((s) => s.text)
+      .join(" ");
+    expect(forbiddenWord(words), words).toBeNull();
+  }
+});
+
+test("a running week says how much of it is left and nothing about pace", () => {
+  const running = { status: "running", days_left: 5 };
+  expect(timeLeftStatement(running)).toBe("5 days left in this week");
+  expect(timeLeftStatement({ status: "running", days_left: 1 })).toBe("1 day left in this week");
+  // Nothing at all once it has ended - a finished week has no time left to
+  // report, and saying "0 days left" about it is a shape of nagging.
+  expect(timeLeftStatement({ status: "past", days_left: 0 })).toBe("");
+  expect(timeLeftStatement({ status: "running", days_left: 0 })).toBe("");
+  expect(timeLeftStatement(null)).toBe("");
+});
+
+test("a week states its days and its total, or says plainly there was none", () => {
+  expect(periodStatement({ days_practised: 4, seconds: 12000 })).toBe("4 days, 3h 20m");
+  expect(periodStatement({ days_practised: 1, seconds: 600 })).toBe("1 day, 10m");
+  expect(periodStatement({ days_practised: 0, seconds: 0 })).toBe(
+    "No practice recorded this week",
+  );
+  expect(periodStatement(null)).toBe("No practice recorded this week");
+});
+
+test("nothing said about a week compares it to another week", () => {
+  const said = [
+    periodStatement({ days_practised: 0, seconds: 0 }),
+    periodStatement({ days_practised: 7, seconds: 40000 }),
+    timeLeftStatement({ status: "running", days_left: 3 }),
+  ].join(" ");
+  expect(forbiddenWord(said), said).toBeNull();
+});
+
+test("a goal says what it is about", () => {
+  expect(goalScopeLabel(goal())).toBe("any practice");
+  expect(goalScopeLabel(goal({ scope: "score", score_title: "Study in C" }))).toBe("Study in C");
+  expect(goalScopeLabel(goal({ scope: "activity", activity: "ear_training" }))).toBe(
+    "ear training",
+  );
+  // A piece whose row has gone still has a goal to describe.
+  expect(goalScopeLabel(goal({ scope: "score", score_title: null }))).toBe("one piece");
+});
+
+// ------------------------------------------------------------------- the bars
+
+test("a week's bars are scaled inside that week and never against another", () => {
+  const bars = dayBars([
+    { date: "2026-08-17", seconds: 1800, sessions: 1 },
+    { date: "2026-08-18", seconds: 3600, sessions: 2 },
+    { date: "2026-08-19", seconds: 0, sessions: 0 },
+  ]);
+  expect(bars.map((b) => b.label)).toEqual(["Mon", "Tue", "Wed"]);
+  expect(bars[1].fill).toBe(1);
+  expect(bars[0].fill).toBe(0.5);
+  expect(bars[2].fill).toBe(0);
+
+  // The same shape of week at ten times the scale draws identically. If these
+  // were scaled against anything outside the week - a personal best, a
+  // rolling maximum - a quiet week would render as flat next to a busy one,
+  // which is a comparison drawn in pixels.
+  const tenfold = dayBars([
+    { date: "2026-08-17", seconds: 18000, sessions: 1 },
+    { date: "2026-08-18", seconds: 36000, sessions: 2 },
+    { date: "2026-08-19", seconds: 0, sessions: 0 },
+  ]);
+  expect(tenfold.map((b) => b.fill)).toEqual(bars.map((b) => b.fill));
+});
+
+test("a day with a little practice still shows something", () => {
+  const bars = dayBars([
+    { date: "2026-08-17", seconds: 36000, sessions: 4 },
+    { date: "2026-08-18", seconds: 60, sessions: 1 },
+  ]);
+  expect(bars[1].seconds).toBe(60);
+  expect(bars[1].fill).toBeGreaterThan(0);
+});
+
+test("a week with no practice draws seven empty bars, not seven full ones", () => {
+  const week = Array.from({ length: 7 }, (_, i) => ({
+    date: addDays("2026-08-17", i),
+    seconds: 0,
+    sessions: 0,
+  }));
+  const bars = dayBars(week);
+  expect(bars).toHaveLength(7);
+  expect(bars.every((b) => b.fill === 0)).toBe(true);
+});
+
+// --------------------------------------------------------- a session's detail
+
+test("a worked range reads as bars and pages, singular when it is one", () => {
+  expect(rangeLabel({ from_bar: 17, to_bar: 32 })).toBe("bars 17-32");
+  expect(rangeLabel({ from_bar: 17, to_bar: 17 })).toBe("bar 17");
+  expect(rangeLabel({ from_bar: 17, to_bar: null })).toBe("bar 17");
+  expect(rangeLabel({ from_page: 2, to_page: 3 })).toBe("pages 2-3");
+  expect(rangeLabel({ from_bar: 1, to_bar: 8, from_page: 1, to_page: 1 })).toBe(
+    "bars 1-8, page 1",
+  );
+  expect(rangeLabel({})).toBe("");
+  expect(rangeLabel(null)).toBe("");
+});
+
+test("a tempo says it reached the target only when it did", () => {
+  expect(tempoLabel({ tempo_bpm: 120, target_tempo_bpm: 120, reached_target: true })).toBe(
+    "120 bpm, reached the 120 target",
+  );
+  // Short of the target: both numbers, and nothing about the gap.
+  expect(tempoLabel({ tempo_bpm: 88, target_tempo_bpm: 120, reached_target: false })).toBe(
+    "88 bpm, aiming at 120",
+  );
+  expect(tempoLabel({ tempo_bpm: 88, target_tempo_bpm: null })).toBe("88 bpm");
+  // Two numbers with no verdict attached to them - an older or newer server,
+  // or a session assembled by something that did not compute the comparison.
+  // Claiming the target was reached because nothing said it was not is the one
+  // answer this must never give: it is the only field here that could tell a
+  // player they are further on than they are.
+  expect(tempoLabel({ tempo_bpm: 88, target_tempo_bpm: 120 })).toBe("88 bpm, aiming at 120");
+  expect(tempoLabel({ tempo_bpm: 88, target_tempo_bpm: 120, reached_target: null })).toBe(
+    "88 bpm, aiming at 120",
+  );
+  expect(tempoLabel({ tempo_bpm: null, target_tempo_bpm: 120 })).toBe("");
+  expect(tempoLabel(null)).toBe("");
+});
+
+test("every activity has a label, and an unknown one still reads as practice", () => {
+  for (const key of Object.keys(ACTIVITY_LABELS)) {
+    expect(activityLabel(key), key).toBe(ACTIVITY_LABELS[key]);
+    expect(ACTIVITY_LABELS[key].length).toBeGreaterThan(0);
+  }
+  // A kind of practice this build has never heard of - a newer server, an
+  // exercise added later - must not render as "undefined" beside a real one.
+  expect(activityLabel("time_travel")).toBe("Practice");
+  expect(activityLabel(undefined)).toBe("Practice");
+});
