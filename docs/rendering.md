@@ -98,9 +98,12 @@ presets, themes — not the renderer's.
 (`"score"`, `"tab"`, `"scoretab"`), sources (`{kind:"alphatex"}`,
 `{kind:"musicxml"}`, `{kind:"file", url}`), transport state, fonts, colours and
 layout all flow through it. The view it returns exposes `setProfile`,
-`setPreset`, `setTheme`, `setSpeed`, `setLooping`, `setMetronome`, `setCountIn`,
+`setPreset`, `setTheme`, `setSpeed`, `setLooping`, `setMetronome`,
+`setMetronomeMode`, `setMetronomeProportion`, `setMetronomeBpm`, `setCountIn`,
 `playPause`, `stop` and `destroy`, and reports `layout`, `theme`, `profile`,
-`supportedProfiles`, `preset` and `lastRenderMs`.
+`supportedProfiles`, `preset` and `lastRenderMs` (`onMetronomeTempo` reports
+the practice metronome's own live value - see below, since it changes on its
+own while playing rather than only when asked for).
 
 Which profiles a caller may ask for is score-dependent, not fixed: a score
 does not necessarily support all of `SCORE_PROFILES`, and `createScoreView`
@@ -111,6 +114,44 @@ subset it can actually be drawn under (possibly empty - see
 render with that profile has actually finished, which is what a caller
 should wait for before treating a profile switch as visible on screen rather
 than merely requested.
+
+### The practice metronome is not alphaTab's
+
+alphaTab has its own metronome (`api.metronomeVolume`), and this layer never
+turns it on. It stays permanently muted, set once at construction. The reason
+is structural, not a style choice: the renderer generates its metronome as a
+track in the same MIDI file as the notes, ticking at the score's own tempo and
+scaled by `playbackSpeed` exactly like every other event in that file. There is
+no setting anywhere in alphaTab's public API that lets the click run at a
+different tempo than the notes beside it - the two are the same timeline. That
+is fine until practice wants them to disagree, which is normal and constant: a
+click at full tempo over a passage slowed to 70% for a hard bar, or a fixed BPM
+that has nothing to do with what the score happens to declare.
+
+So `createScoreView`'s metronome (`setMetronome`, `setMetronomeMode`,
+`setMetronomeProportion`, `setMetronomeBpm`) is a second, wholly independent
+audio path: a plain Web Audio oscillator click, scheduled off its own clock via
+the standard lookahead pattern (queue whatever falls within the next ~120ms of
+audio-clock time, on a 25ms poll), rather than a setting on alphaTab's player.
+It never touches alphaTab's synthesiser, its generated MIDI, or its notion of
+tempo. Two modes:
+
+- `"proportion"` (the default) clicks a proportion of the score's own tempo
+  *at the playhead*, read from `playerPositionChanged`'s `originalTempo` -
+  the tempo alphaTab is internally playing at before `playbackSpeed` is
+  applied - so a piece that changes tempo mid-stream is tracked continuously
+  rather than resolved once when playback starts.
+- `"bpm"` clicks a number set directly and ignores the score.
+
+Time signature (for subdivision and which click is accented) comes from a
+flat tick-ordered index built from `score.masterBars` once per load, looked up
+against `api.tickPosition` on every scheduled click - not from alphaTab's own
+metronome MIDI events, which exist (`MidiEventType.AlphaTabMetronome`) but are
+timed on the same speed-scaled timeline this feature exists to get away from.
+
+The count-in (`setCountIn`) is untouched by any of this - a separate,
+pre-roll-only feature that still uses alphaTab's own click at the score's
+tempo, scaled by `playbackSpeed`, exactly as before.
 
 ### Responsive layout
 
@@ -392,9 +433,12 @@ source of truth. So:
   stave-profile constant. Themes are token names.
 - Loading is expressed as a source shape (`alphatex`, `musicxml`, `file`), not as
   the byte-loader call the library happens to want.
-- The transport is `setSpeed` / `setLooping` / `setMetronome` / `setCountIn` /
-  `playPause` / `stop`, not volume fields and boolean properties on a live api
-  object.
+- The transport is `setSpeed` / `setLooping` / `setMetronome` /
+  `setMetronomeMode` / `setMetronomeProportion` / `setMetronomeBpm` /
+  `setCountIn` / `playPause` / `stop`, not volume fields and boolean
+  properties on a live api object - and the practice metronome's click is not
+  even one of those properties (see "The practice metronome is not
+  alphaTab's" above); it is a second audio path this file owns outright.
 - The renderer's event names, enums, settings tree, colour objects, font objects
   and prototype quirks all stop at this file.
 

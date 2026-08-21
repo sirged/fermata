@@ -14,7 +14,7 @@
 // is one of the cases this exists to catch, so a filter cannot be the thing that
 // switches the check off. Narrowing a run on purpose is what the escape hatch is
 // for, and CI never sets it.
-const MINIMUM_TESTS = 36;
+const MINIMUM_TESTS = 78;
 
 export default class MinimumTests {
   onBegin(_config, suite) {
