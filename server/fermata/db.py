@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -5,6 +6,11 @@ from contextlib import contextmanager
 from .config import DB_PATH
 
 _local = threading.local()
+
+# Startup is the one place in this application that has something to say and no
+# person watching, so it says it through the logger uvicorn has already
+# configured rather than into a response nobody asked for.
+log = logging.getLogger("fermata.db")
 
 # The only owner that exists until real accounts do. Kept as a named constant
 # rather than the literal 'local' scattered wherever a write means "this
@@ -44,10 +50,31 @@ DEFAULT_OWNER = "local"
 # Whether a tempo ladder reached its target is NOT stored: it is
 # tempo_bpm >= target_tempo_bpm, and a stored answer is one that can end up
 # contradicting the two numbers it was computed from.
+#
+# ON DELETE SET NULL, AND WHY IT IS NOT CASCADE. Deleting a score means the
+# file has left the library. It does not mean the hours were not spent. The
+# practice happened, and the record of it is a property of the person's
+# history rather than of a file on disk - which is the entire premise of this
+# feature and the reason these rows are the one thing here that cannot be
+# regenerated. Cascade also made this project inconsistent with itself: the
+# scanner goes to real lengths to re-link a renamed file to its existing score
+# row by content hash SPECIFICALLY so that a rename does not destroy practice
+# history through this reference, and score management is an explicit upcoming
+# feature (#56), so a person deleting a score while tidying up is not
+# hypothetical. Protecting history from a rename while surrendering it to a
+# delete is not a position worth holding.
+#
+# A session that outlives its score keeps activity='piece' with no score_id,
+# and that pair is exactly what identifies it: every other activity may
+# legitimately have no score, and a 'piece' session cannot be CREATED without
+# one (see practice.normalise_session). Nothing filters these rows out - they
+# carry their day, their length, their tempo, their bars and their note, which
+# is enough to be practice that happened. See practice.session_dict's
+# `score_missing`.
 _PRACTICE_SESSIONS_COLUMNS = """(
     id INTEGER PRIMARY KEY,
     owner TEXT NOT NULL DEFAULT 'local',
-    score_id INTEGER REFERENCES scores(id) ON DELETE CASCADE,
+    score_id INTEGER REFERENCES scores(id) ON DELETE SET NULL,
     activity TEXT NOT NULL DEFAULT 'piece',
     mode TEXT,
     started_at TEXT NOT NULL,
@@ -66,9 +93,21 @@ _PRACTICE_SESSIONS_COLUMNS = """(
 # Kept as separate statements rather than one script so SCHEMA can be
 # assembled from them, and so a future migration that needs to build this table
 # under another name has the index set to hand without restating it.
+#
+# idx_practice_day is an index on the EXPRESSION every day-based query filters
+# and groups by, not on the column - because the column alone cannot serve
+# them. A row written before local_date existed is attributed to its UTC day,
+# so every such query reads COALESCE(local_date, date(started_at)) (see
+# practice.LOCAL_DATE_SQL), and a plain index on local_date cannot be used for
+# a wrapped column: SQLite would scan the owner's entire practice history to
+# answer a question about seven days of it. The expression here must stay
+# character-identical to LOCAL_DATE_SQL apart from the table alias, or the
+# planner silently stops using it - test_practice_model.py checks the query
+# plan rather than trusting that.
 _PRACTICE_SESSIONS_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_practice_score ON practice_sessions(score_id)",
-    "CREATE INDEX IF NOT EXISTS idx_practice_day ON practice_sessions(owner, local_date)",
+    "CREATE INDEX IF NOT EXISTS idx_practice_day ON practice_sessions"
+    "(owner, COALESCE(local_date, date(started_at)))",
     "CREATE INDEX IF NOT EXISTS idx_practice_started ON practice_sessions(started_at)",
     "CREATE INDEX IF NOT EXISTS idx_practice_activity ON practice_sessions(owner, activity)",
 )
@@ -98,11 +137,16 @@ _PRACTICE_SESSIONS_INDEXES = (
 # deleted, and a plain INTEGER PRIMARY KEY hands a deleted row's id to the
 # next one, so a reflection typed into an open tab could land on a different
 # goal than the one on screen.
-_PRACTICE_SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS practice_sessions " + _PRACTICE_SESSIONS_COLUMNS + ";\n"
-    + "".join(f"{statement};\n" for statement in _PRACTICE_SESSIONS_INDEXES)
-    + """
-CREATE TABLE IF NOT EXISTS practice_goals (
+#
+# ON DELETE SET NULL on score_id, for the same reason the session table has it.
+# A goal is a record of an intention, and tidying a file out of the library is
+# not a reason to forget having formed one. What it CANNOT do is go on being
+# counted: the sessions that were about that piece are still in the history but
+# no longer identifiable as being about it, so the goal becomes uncountable
+# rather than unmet - see practice.goal_progress's `countable`, which exists so
+# that a goal already reached cannot be turned into a shortfall by a file being
+# deleted afterwards.
+_PRACTICE_GOALS_COLUMNS = """(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL DEFAULT 'local',
     period TEXT NOT NULL DEFAULT 'week',
@@ -111,17 +155,25 @@ CREATE TABLE IF NOT EXISTS practice_goals (
     target_days INTEGER,
     target_minutes INTEGER,
     scope TEXT NOT NULL DEFAULT 'all',
-    score_id INTEGER REFERENCES scores(id) ON DELETE CASCADE,
+    score_id INTEGER REFERENCES scores(id) ON DELETE SET NULL,
     activity TEXT,
     intent TEXT,
     reflection TEXT,
     realistic TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_practice_goals_period
-    ON practice_goals(owner, period_start);
-"""
+)"""
+
+_PRACTICE_GOALS_INDEXES = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_practice_goals_period"
+    " ON practice_goals(owner, period_start)",
+)
+
+_PRACTICE_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS practice_sessions " + _PRACTICE_SESSIONS_COLUMNS + ";\n"
+    + "".join(f"{statement};\n" for statement in _PRACTICE_SESSIONS_INDEXES)
+    + "CREATE TABLE IF NOT EXISTS practice_goals " + _PRACTICE_GOALS_COLUMNS + ";\n"
+    + "".join(f"{statement};\n" for statement in _PRACTICE_GOALS_INDEXES)
 )
 
 SCHEMA = """
@@ -252,7 +304,7 @@ CREATE INDEX IF NOT EXISTS idx_instruments_owner ON instruments(owner);
 #
 # Version 2 is the first change this file's ADD COLUMN mechanism could not
 # express, which is what the stamp was recorded for - see MIGRATIONS.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Columns added to a table that had already shipped. CREATE TABLE IF NOT EXISTS
 # does nothing at all to a table that exists, so SCHEMA alone reaches only fresh
@@ -362,9 +414,164 @@ def _migrate_to_2_any_practice(conn) -> None:
     # one's in test_practice_migration.py either way.
 
 
+def _table_exists(conn, table: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+        ).fetchone()
+        is not None
+    )
+
+
+def _on_delete_action(conn, table: str, column: str) -> str | None:
+    """What SQLite will do to this column when the row it points at is deleted.
+
+    PRAGMA foreign_key_list is the only way to read it back - the action is not
+    in table_info - and reading it is what lets a migration check its own work
+    instead of assuming it. None means the column carries no foreign key at all.
+    """
+    for row in conn.execute(f"PRAGMA foreign_key_list({table})"):
+        if row["from"] == column:
+            return row["on_delete"]
+    return None
+
+
+def _rebuild_carrying_rows(conn, table: str, columns: str) -> None:
+    """Rebuild one table from `columns`, carrying every existing row across.
+
+    SQLite cannot alter a constraint in place, so this is the documented
+    table-rebuild recipe: a new table under a temporary name, the rows copied,
+    the old table dropped, the new one renamed into its place. It runs inside
+    the caller's transaction, so it either lands completely or not at all.
+
+    The columns carried are the ones the two tables have IN COMMON, worked out
+    by name from PRAGMA table_info on both - never a positional copy, and never
+    SELECT *. A column the old table did not have takes its default; a column
+    it had and the new definition does not is dropped, which is the only way a
+    rebuild can remove one. Discovering the list rather than restating it is
+    what stops this from silently dropping a column that was added between the
+    step being written and the step being run.
+
+    Indexes are NOT recreated here. init_db runs SCHEMA immediately after the
+    migrations, and SCHEMA's CREATE INDEX IF NOT EXISTS statements are the one
+    place they are defined; the index set an upgraded install ends up with is
+    asserted against a fresh one's in test_practice_migration.py.
+
+    CALLERS MUST HAVE FOREIGN KEYS DISABLED. _run_migrations does that, and it
+    is not optional: with them on, a single practice row whose score_id no
+    longer matches a score - which the sqlite3 command line, whose default is
+    foreign_keys OFF, will happily leave behind - is rejected on the copy, and
+    the application then fails to start on every boot with no way out but hand
+    SQL or deleting the rows this migration exists to protect. SQLite's own
+    table-rebuild recipe opens by saying to turn them off for this reason.
+    _repair_dangling_practice_references is what then puts such a row right
+    instead of refusing to carry it.
+    """
+    temp = f"{table}_rebuilt"
+    conn.execute(f"CREATE TABLE {temp} {columns}")
+    old = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    carried = [
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({temp})")
+        if row["name"] in old
+    ]
+    names = ", ".join(carried)
+    conn.execute(f"INSERT INTO {temp} ({names}) SELECT {names} FROM {table}")
+    conn.execute(f"DROP TABLE {table}")
+    conn.execute(f"ALTER TABLE {temp} RENAME TO {table}")
+
+
+def _repair_dangling_practice_references(conn) -> int:
+    """Point a practice row at nothing rather than at a score that is not there.
+
+    A row whose score_id names a missing score is not something this
+    application can produce - the reference has always been enforced - but it
+    is something the sqlite3 command line produces trivially, because its
+    default is foreign_keys OFF. Before this schema such a row was inert. Now
+    that a rebuild has to copy it, it has to be dealt with, and there are only
+    three options: refuse to start, drop the row, or put it right.
+
+    Putting it right means NULL, which is exactly what the reference's own ON
+    DELETE SET NULL would have done had the deletion gone through the database
+    in the first place. The practice is kept, the database is left consistent,
+    and the change is announced rather than made quietly - it is somebody's
+    history, and a row that stops naming a piece is a visible difference.
+    """
+    repaired = 0
+    for table in ("practice_sessions", "practice_goals"):
+        if not _table_exists(conn, table):
+            # A fresh install, where SCHEMA has not run yet. Nothing to repair,
+            # and nothing to raise about either.
+            continue
+        cur = conn.execute(
+            f"""UPDATE {table} SET score_id = NULL
+                 WHERE score_id IS NOT NULL
+                   AND score_id NOT IN (SELECT id FROM scores)"""
+        )
+        if cur.rowcount > 0:
+            repaired += cur.rowcount
+            log.warning(
+                "%s row(s) in %s referred to a score that is no longer in the database, "
+                "which normal use cannot produce - most likely the file was edited by "
+                "hand with foreign keys off. The practice itself is kept; those rows now "
+                "record practice with no piece named, which is what deleting the score "
+                "through Fermata would have done.",
+                cur.rowcount,
+                table,
+            )
+    return repaired
+
+
+def _migrate_to_3_keep_practice_when_a_score_goes(conn) -> None:
+    """Stop deleting a score from deleting the evidence somebody practised it.
+
+    Both practice tables referenced scores(id) ON DELETE CASCADE. Removing one
+    score therefore removed every session against it - hours of somebody's own
+    record of their own work, and the one thing in this application that cannot
+    be rebuilt from the files on disk. This makes both references ON DELETE SET
+    NULL. See _PRACTICE_SESSIONS_COLUMNS and _PRACTICE_GOALS_COLUMNS for why
+    that is the right trade and what an orphaned row then means.
+
+    WHY THIS IS A SEPARATE STEP FROM 2, when 2 has never shipped. Migration 2
+    builds practice_sessions from the shared column definition, which now says
+    SET NULL - so a database arriving from version 0 or 1 gets the right table
+    from that step alone and this one finds nothing to do. What this step is
+    for is a database already stamped 2: the branch that introduced both ran in
+    other people's working copies before the cascade was reversed, and a
+    database stamped 2 can never be re-offered step 2. Folding the fix into
+    step 2 silently would leave those databases cascading for ever.
+
+    That is also the general rule for a step here: a step brings a database to
+    the CURRENT definition, and its guard checks the one property it owns. So
+    an earlier step may well already satisfy a later one, and every step is
+    safe to reach in any order that respects the stamps.
+    """
+    for table, columns in (
+        ("practice_sessions", _PRACTICE_SESSIONS_COLUMNS),
+        ("practice_goals", _PRACTICE_GOALS_COLUMNS),
+    ):
+        info = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        if not info:
+            continue  # SCHEMA is about to create it in its current shape
+        if _on_delete_action(conn, table, "score_id") == "SET NULL":
+            continue  # already carries the reference this step is here to fix
+        _rebuild_carrying_rows(conn, table, columns)
+
+
 # The real migration runner the ADD COLUMN mechanism above deliberately is not:
 # ordered steps, each taking a database from the version below its key to that
 # key, run once and then stamped.
+#
+# ORDERING, WHICH A STEP AUTHOR HAS TO KNOW. init_db runs these BEFORE the
+# SCHEMA script and before _add_missing_columns, so a step sees the database
+# exactly as the previous version left it: no table SCHEMA would have created,
+# and NO COLUMN COLUMN_ADDITIONS WOULD HAVE ADDED. On a version 0 database,
+# step 2 therefore runs against a `scores` table with no instrument_id at all -
+# which is fine because it does not touch it, and would not be fine for a step
+# that did. A step needing a column from COLUMN_ADDITIONS has to add it itself,
+# or be written not to need it. This is exactly the trap the version stamp
+# exists to prevent: such a step works on the author's already-upgraded
+# database and fails on a genuinely old one.
 #
 # A step may do anything SQLite can do - rebuild a table, backfill, drop a
 # column - because unlike COLUMN_ADDITIONS it is NOT re-run on every startup,
@@ -382,6 +589,7 @@ def _migrate_to_2_any_practice(conn) -> None:
 # Backups section of docs/deployment.md.
 MIGRATIONS = {
     2: _migrate_to_2_any_practice,
+    3: _migrate_to_3_keep_practice_when_a_score_goes,
 }
 
 
@@ -390,7 +598,27 @@ def connect() -> sqlite3.Connection:
     if conn is None:
         conn = sqlite3.connect(DB_PATH, timeout=30)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            # WAL is a write to the database header, so this is the first thing
+            # that touches a read-only file - and "attempt to write a readonly
+            # database" from a pragma is not a diagnosis anybody can act on.
+            # Read-only is a real deployment mistake: a config volume mounted
+            # :ro, or a file owned by another user after a container's user id
+            # changed.
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError as exc:
+            raise RuntimeError(
+                f"Fermata cannot start: its database at {DB_PATH} cannot be written to "
+                f"({exc}).\n"
+                "\n"
+                "Fermata needs write access to the config folder - it keeps your library "
+                "index, your practice history and your settings there. Check that the "
+                "folder is not mounted read-only, and that the user Fermata runs as owns "
+                "it. In Docker that is the volume mapped to /config; see "
+                "docs/deployment.md.\n"
+                "\n"
+                "Your sheet music is not affected: the library folder is only ever read."
+            ) from None
         conn.execute("PRAGMA foreign_keys=ON")
         _local.conn = conn
     return conn
@@ -463,24 +691,60 @@ def _run_migrations(conn) -> None:
     """
     if not any(version > _stored_version(conn) for version in MIGRATIONS):
         return
-    conn.execute("BEGIN IMMEDIATE")
+    # Off for the duration, and restored afterwards whatever happens. A step
+    # may rebuild a table, and a rebuild copies rows - so an existing row whose
+    # reference is already dangling would be REJECTED with them on, taking
+    # startup down permanently rather than being carried across and put right.
+    # The pragma is a no-op inside a transaction, so it has to be set here,
+    # outside the BEGIN. Consistency is not taken on trust in exchange: it is
+    # checked below, before the commit.
+    conn.execute("PRAGMA foreign_keys=OFF")
     try:
-        # Re-read inside the lock: another instance starting at the same moment
-        # may have applied these already, and applying a rebuild twice would
-        # not be a no-op if the step's own guard were the only thing stopping
-        # it. Re-checked for a newer writer too, for the same reason init_db
-        # checks twice.
-        _check_schema_version(conn)
-        stored = _stored_version(conn)
-        for version in sorted(MIGRATIONS):
-            if version <= stored:
-                continue
-            MIGRATIONS[version](conn)
-            conn.execute(f"PRAGMA user_version = {version}")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Re-read inside the lock: another instance starting at the same
+            # moment may have applied these already, and applying a rebuild
+            # twice would not be a no-op if the step's own guard were the only
+            # thing stopping it. Re-checked for a newer writer too, for the
+            # same reason init_db checks twice.
+            _check_schema_version(conn)
+            stored = _stored_version(conn)
+            for version in sorted(MIGRATIONS):
+                if version <= stored:
+                    continue
+                MIGRATIONS[version](conn)
+                conn.execute(f"PRAGMA user_version = {version}")
+            _repair_dangling_practice_references(conn)
+            _report_remaining_violations(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _report_remaining_violations(conn) -> None:
+    """Say so if the database is still inconsistent after a migration.
+
+    The rebuilds above run with foreign keys off, so nothing is checking them
+    while they work. This is the check - not to refuse the upgrade, which would
+    strand somebody on an unstartable application over rows they cannot see,
+    but so that a real inconsistency is stated once, plainly, in the log rather
+    than surfacing later as a query that quietly returns the wrong thing.
+    """
+    violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if not violations:
+        return
+    tables = sorted({row[0] for row in violations})
+    log.warning(
+        "after the schema upgrade, %s reference(s) in %s still point at rows that are "
+        "not there. Fermata will start and your practice history is intact, but this is "
+        "not a state normal use produces - please report it, with the version you "
+        "upgraded from.",
+        len(violations),
+        ", ".join(tables),
+    )
 
 
 def init_db() -> None:
@@ -496,7 +760,31 @@ def init_db() -> None:
     # the INDEX exists - against the pre-migration table it would not skip, it
     # would fail on an unknown column and take startup down with it.
     _run_migrations(conn)
-    conn.executescript(SCHEMA)
+    try:
+        conn.executescript(SCHEMA)
+    except sqlite3.OperationalError as exc:
+        # Reachable only if the recorded version and the actual tables disagree
+        # - a database stamped as upgraded whose tables were not, which is what
+        # a hand-edited PRAGMA user_version or a restored mismatched pair of
+        # files produces. The migrations above are skipped on the strength of
+        # the stamp, and SCHEMA then meets a table it does not fit. Without
+        # this, that is "no such column: local_date" on every boot.
+        raise RuntimeError(
+            f"Fermata cannot start: its database says it is at schema version "
+            f"{_stored_version(conn)}, but its tables are not the ones that version has "
+            f"({exc}).\n"
+            "\n"
+            "This cannot happen through normal use or through any upgrade. It means the "
+            "recorded version and the actual tables have come apart - by a hand-edited "
+            "PRAGMA user_version, or by restoring a database file over a different one.\n"
+            "\n"
+            "Restoring your config folder from a backup is the reliable way back - see "
+            "the Backups section of docs/deployment.md. Your sheet music is not affected; "
+            "only the database in the config folder is.\n"
+            "\n"
+            "If you have no backup, we would like to hear about it either way: please open "
+            "an issue with the lines above and the version you upgraded from."
+        ) from None
     conn.commit()
     # BEGIN IMMEDIATE takes the write lock before the read below rather than on
     # the first write after it. Two processes starting at once - a second

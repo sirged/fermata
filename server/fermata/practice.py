@@ -119,6 +119,18 @@ MAX_TARGET_MINUTES = 7 * 24 * 60
 MAX_BACKDATE_DAYS = 400
 MAX_FUTURE_DAYS = 1
 
+# The window a client's idea of "today" may fall in, relative to the server's
+# date: exactly the window a practice day may name. A date outside it cannot be
+# about any period this instance could hold practice for, so answering it means
+# returning a confident, plausible, empty week - the worst kind of wrong answer,
+# being one nothing in the response marks as suspect.
+#
+# Deliberately as wide as the back-dating window rather than as narrow as a
+# timezone. A browser is never more than a day from UTC, but reasoning about a
+# period that has already ended is a legitimate use of this parameter and the
+# thing that makes every period rule here testable without waiting for the
+# calendar.
+
 # How far back a review looks by default. Long enough to show a pattern
 # including a couple of unusual weeks; short enough that opening it is not a
 # wall of past periods to scroll through. Nothing accumulates beyond what is
@@ -140,6 +152,16 @@ MAX_SESSION_LIMIT = 1_000
 LOCAL_DATE_SQL = "COALESCE(p.local_date, date(p.started_at))"
 
 
+# The range a date is allowed to name. Not a judgement about anybody's
+# practice: it is what keeps the arithmetic downstream inside date's own bounds.
+# Every caller adds or subtracts up to a year - a review reaches 52 weeks back,
+# a history window 366 days - and date.min/date.max are hard walls that raise
+# OverflowError from inside a subtraction, which reaches a client as a 500 for
+# what is only ever a typo. Both ends leave a century of headroom.
+MIN_DAY = date(1900, 1, 1)
+MAX_DAY = date(2200, 1, 1)
+
+
 def parse_day(value, field: str = "date") -> date:
     """A YYYY-MM-DD string as a date, or a ValueError naming the field.
 
@@ -152,9 +174,14 @@ def parse_day(value, field: str = "date") -> date:
     if len(text) != 10 or text[4] != "-" or text[7] != "-":
         raise ValueError(f"{field} must be a date written YYYY-MM-DD")
     try:
-        return date.fromisoformat(text)
+        day = date.fromisoformat(text)
     except ValueError:
         raise ValueError(f"{field} must be a date written YYYY-MM-DD") from None
+    if not MIN_DAY <= day <= MAX_DAY:
+        raise ValueError(
+            f"{field} must be between {MIN_DAY.isoformat()} and {MAX_DAY.isoformat()}"
+        )
+    return day
 
 
 def week_start(day: date, starts_on: str = DEFAULT_WEEK_START) -> date:
@@ -232,6 +259,8 @@ def normalise_session(
     target_tempo_bpm=None,
     rating=None,
     note=None,
+    allow_missing_score=False,
+    check_day_window=True,
 ) -> dict:
     """Check a session and return the values to store.
 
@@ -243,6 +272,19 @@ def normalise_session(
     `recorded_on` is today's date as the SERVER sees it, and exists so the
     bound on how far a practice day may sit from it is testable without
     waiting for the calendar.
+
+    `allow_missing_score` is for a row that is ALREADY stored as work on a
+    piece the library no longer has - see is_orphaned. Such a row is a true
+    record and must stay editable: refusing to let somebody add a note to it
+    because the piece has since been deleted would turn a rule about creating
+    an honest claim into a rule about keeping one.
+
+    `check_day_window` is False when the practice day is not what is being
+    written. How far back a NEW date may be is a rule about what somebody may
+    claim now; applied to a date already stored it becomes a rule that makes a
+    session permanently uneditable once it is old enough - so a note or a
+    rating on last year's practice could not be corrected, for reasons that
+    have nothing to do with either.
     """
     activity = activity or DEFAULT_ACTIVITY
     if activity not in ACTIVITIES:
@@ -256,7 +298,7 @@ def normalise_session(
     if not 0 < seconds <= MAX_SESSION_SECONDS:
         raise ValueError(f"seconds must be between 1 and {MAX_SESSION_SECONDS}")
 
-    if activity == DEFAULT_ACTIVITY and score_id is None:
+    if activity == DEFAULT_ACTIVITY and score_id is None and not allow_missing_score:
         # Every other activity is practice that may well have no piece behind
         # it. This one is defined by having one, and a 'piece' session with no
         # piece would sit in the history saying nothing about what was worked.
@@ -265,10 +307,11 @@ def normalise_session(
     day = None
     if local_date is not None:
         day = parse_day(local_date, "local_date")
-        if day > recorded_on + timedelta(days=MAX_FUTURE_DAYS):
-            raise ValueError("local_date is in the future")
-        if day < recorded_on - timedelta(days=MAX_BACKDATE_DAYS):
-            raise ValueError(f"local_date is more than {MAX_BACKDATE_DAYS} days ago")
+        if check_day_window:
+            if day > recorded_on + timedelta(days=MAX_FUTURE_DAYS):
+                raise ValueError("local_date is in the future")
+            if day < recorded_on - timedelta(days=MAX_BACKDATE_DAYS):
+                raise ValueError(f"local_date is more than {MAX_BACKDATE_DAYS} days ago")
 
     from_bar, to_bar = _range(from_bar, to_bar, "from_bar", "to_bar", MAX_BAR)
     from_page, to_page = _range(from_page, to_page, "from_page", "to_page", MAX_PAGE)
@@ -302,6 +345,7 @@ def normalise_goal(
     score_id,
     activity,
     intent,
+    allow_missing_score=False,
 ) -> dict:
     """Check a goal and return the values to store.
 
@@ -309,6 +353,11 @@ def normalise_goal(
     whole point of setting one - so at least one target is required. Both are
     allowed together, and mean what they say: this many days, and this much
     time in total across them.
+
+    `allow_missing_score` is for a goal ALREADY stored against a piece the
+    library no longer has: the goal cannot be counted any more (see
+    goal_progress) but the reflection on it can still be written, and refusing
+    the edit would mean a deleted file silently locking a record of intent.
     """
     period = period or "week"
     if period not in GOAL_PERIODS:
@@ -330,7 +379,7 @@ def normalise_goal(
     # goal carrying a score_id it does not use would read as a goal about that
     # piece while being counted over everything.
     if scope == "score":
-        if score_id is None:
+        if score_id is None and not allow_missing_score:
             raise ValueError("a goal for one piece needs a score_id")
         activity = None
     elif scope == "activity":
@@ -369,6 +418,95 @@ def normalise_reflection(*, reflection, realistic) -> dict:
     }
 
 
+def overlapping_goal(conn, owner: str, start: str, end: str, ignore_start: str | None = None):
+    """A stored goal whose period shares a day with [start, end], if any.
+
+    Overlap and not equality, because equality is what the unique index on
+    (owner, period_start) already covers and it is not the property that
+    matters. Two goals sharing days is how the same practice ends up counted
+    against two intentions and how two panels of one page come to disagree
+    about which goal "this week" has - and it becomes reachable the moment the
+    week-start preference changes, because the new grid's weeks are offset from
+    the old grid's by a few days rather than being different weeks.
+
+    `ignore_start` is the period being written, which is a replacement rather
+    than an overlap.
+    """
+    sql = """SELECT * FROM practice_goals
+              WHERE owner = ? AND period_start <= ? AND period_end >= ?"""
+    params = [owner, end, start]
+    if ignore_start is not None:
+        sql += " AND period_start != ?"
+        params.append(ignore_start)
+    return conn.execute(sql + " ORDER BY period_start LIMIT 1", params).fetchone()
+
+
+def review_periods(conn, owner: str, grid_start: date, weeks: int, starts_on: str) -> list[dict]:
+    """The periods a review covers, most recent first.
+
+    A GOAL CONTRIBUTES ITS OWN PERIOD, not a slot on today's grid. Matching
+    goals to grid weeks by their start date was wrong in a way that mattered:
+    change the week-start preference and every existing goal stops matching,
+    so a past week carrying somebody's own intent and reflection rendered as
+    "no goal was set for this week" - a false statement about their own record,
+    made by the one feature whose whole premise is that its statements are
+    true. The dates a goal was set for are stored, so history is sliced the way
+    it was lived and a later preference cannot re-slice it.
+
+    The timeline is then walked BACKWARDS from the end of the current week, a
+    period at a time, and each step asks the same question: is there a goal
+    covering this day? If so the period is that goal's own; if not it is the
+    canonical week containing the day. Either way the next step resumes the day
+    before whatever was emitted.
+
+    Walking rather than intersecting two lists is what makes the result
+    contiguous and non-overlapping whatever the two grids do. Listing every
+    goal period AND every canonical week would report the same day twice after
+    a preference change; dropping a canonical week because a goal overlapped it
+    would leave the days on the far side of that goal in no period at all, and
+    a review that quietly stops mentioning a day somebody practised on is the
+    one failure this whole feature cannot afford.
+    """
+    window_end = grid_start + timedelta(days=PERIOD_DAYS["week"] - 1)
+    earliest = grid_start - timedelta(days=7 * (weeks - 1))
+    goals = conn.execute(
+        """SELECT * FROM practice_goals
+            WHERE owner = ? AND period_end >= ? AND period_start <= ?
+         ORDER BY period_start DESC""",
+        (owner, earliest.isoformat(), window_end.isoformat()),
+    ).fetchall()
+
+    def covering(day: date):
+        stamp = day.isoformat()
+        for goal in goals:
+            if goal["period_start"] <= stamp <= goal["period_end"]:
+                return goal
+        return None
+
+    periods = []
+    cursor = window_end
+    # Every step moves the cursor back by at least one day and normally by a
+    # week, so this terminates; the bound is belt to that braces, and it is
+    # generous enough that a shorter period type arriving later cannot silently
+    # truncate the answer.
+    while cursor >= earliest and len(periods) <= weeks * PERIOD_DAYS["week"]:
+        goal = covering(cursor)
+        if goal is not None:
+            start, end = parse_day(goal["period_start"]), parse_day(goal["period_end"])
+        else:
+            start = week_start(cursor, starts_on)
+            end = start + timedelta(days=PERIOD_DAYS["week"] - 1)
+        periods.append(
+            {
+                "period_start": start.isoformat(),
+                "period_end": end.isoformat(),
+                "goal": goal,
+            }
+        )
+        cursor = start - timedelta(days=1)
+    return periods
+
+
 def _scope_filter(scope: str, score_id, activity, params: list) -> str:
     """The extra WHERE this goal's scope adds, appending its parameters."""
     if scope == "score":
@@ -380,17 +518,31 @@ def _scope_filter(scope: str, score_id, activity, params: list) -> str:
     return ""
 
 
+def is_orphaned(activity, score_id) -> bool:
+    """Whether this session is work on a piece that is no longer in the library.
+
+    A 'piece' session cannot be CREATED without a score (see
+    normalise_session), and every other activity may legitimately have none -
+    so this one pair of values says, without a column of its own, that a score
+    row went away from underneath a session. Deleting a score sets score_id to
+    NULL rather than deleting the practice; see db._PRACTICE_SESSIONS_COLUMNS.
+    """
+    return activity == DEFAULT_ACTIVITY and score_id is None
+
+
 def session_dict(row) -> dict:
     """One session as the API presents it.
 
-    Two things are derived here rather than stored. `local_date` is the day the
-    practice is attributed to, with `local_date_source` saying whether that day
-    was recorded ('recorded') or taken from the UTC timestamp because the row
-    predates the column ('utc_date') - a reader that treats an inferred day as
-    a recorded one is the reason the distinction is on the response at all.
-    And `reached_target` is the tempo comparison, computed so it can never
+    Three things are derived here rather than stored. `local_date` is the day
+    the practice is attributed to, with `local_date_source` saying whether that
+    day was recorded ('recorded') or taken from the UTC timestamp because the
+    row predates the column ('utc_date') - a reader that treats an inferred day
+    as a recorded one is the reason the distinction is on the response at all.
+    `reached_target` is the tempo comparison, computed so it can never
     contradict the two numbers it comes from; None means one of them is
-    missing, which is not the same as "did not reach it".
+    missing, which is not the same as "did not reach it". And `score_missing`
+    says the work was on a piece that has since left the library, so a reader
+    can name it as that rather than showing a blank where a title goes.
     """
     d = dict(row)
     recorded = d.get("local_date")
@@ -398,18 +550,34 @@ def session_dict(row) -> dict:
     d["local_date_source"] = "recorded" if recorded else "utc_date"
     tempo, target = d.get("tempo_bpm"), d.get("target_tempo_bpm")
     d["reached_target"] = None if tempo is None or target is None else tempo >= target
+    d["score_missing"] = is_orphaned(d.get("activity"), d.get("score_id"))
     return d
 
 
 def day_totals(conn, owner: str, start: str, end: str, extra: str = "", params=()) -> dict:
-    """Seconds and session count per practice day, for the days that have any."""
+    """Seconds and session count per practice day, for the days that have any.
+
+    `inferred` counts the sessions in that day's total whose day was NOT
+    recorded - rows from before local_date existed, attributed to their UTC
+    day. A single session says which it is; a total said nothing, so over a
+    long window two different kinds of day were being added up with nothing
+    marking the join. See period_facts's `sessions_inferred`.
+    """
     sql = f"""SELECT {LOCAL_DATE_SQL} AS day,
-                     SUM(p.seconds) AS seconds, COUNT(*) AS sessions
+                     SUM(p.seconds) AS seconds, COUNT(*) AS sessions,
+                     SUM(CASE WHEN p.local_date IS NULL THEN 1 ELSE 0 END) AS inferred
                 FROM practice_sessions p
                WHERE p.owner = ? AND {LOCAL_DATE_SQL} BETWEEN ? AND ?{extra}
             GROUP BY day ORDER BY day"""
     rows = conn.execute(sql, [owner, start, end, *params]).fetchall()
-    return {r["day"]: {"seconds": r["seconds"], "sessions": r["sessions"]} for r in rows}
+    return {
+        r["day"]: {
+            "seconds": r["seconds"],
+            "sessions": r["sessions"],
+            "inferred": r["inferred"],
+        }
+        for r in rows
+    }
 
 
 def period_facts(
@@ -437,6 +605,7 @@ def period_facts(
             "date": day.isoformat(),
             "seconds": totals.get(day.isoformat(), {}).get("seconds", 0),
             "sessions": totals.get(day.isoformat(), {}).get("sessions", 0),
+            "inferred": totals.get(day.isoformat(), {}).get("inferred", 0),
         }
         for day in days_between(parse_day(start), parse_day(end))
     ]
@@ -448,10 +617,33 @@ def period_facts(
         "minutes": seconds // 60,
         "days_practised": sum(1 for d in days if d["sessions"]),
         "sessions": sum(d["sessions"] for d in days),
+        # How much of the above rests on a day nobody recorded. A single
+        # session says whether its day was recorded or taken from its UTC
+        # timestamp; a total said nothing, so a window spanning the upgrade
+        # quietly added two kinds of day together. Zero on any install that has
+        # only ever run this version, which is the point: it is silent when
+        # there is nothing to disclose.
+        "sessions_inferred": sum(d["inferred"] for d in days),
     }
 
 
-def goal_progress(conn, goal, today: date) -> dict:
+def _period_status(goal, today: date) -> tuple[str, int]:
+    """Where the period sits relative to today, and how much of it is left.
+
+    Says nothing about how the period went - a goal not reached and a goal
+    reached are both 'past' once the week is over. `days_left` counts today
+    itself, because a day somebody still has is a day they can practise in.
+    """
+    start = parse_day(goal["period_start"])
+    end = parse_day(goal["period_end"])
+    if today < start:
+        return "upcoming", (end - start).days + 1
+    if today > end:
+        return "past", 0
+    return "running", (end - today).days + 1
+
+
+def goal_progress(conn, goal, today: date, facts: dict | None = None) -> dict:
     """Where a goal stands: the counts, the targets, and nothing else.
 
     `met_days` and `met_minutes` are None when that target was not set, which
@@ -463,25 +655,55 @@ def goal_progress(conn, goal, today: date) -> dict:
     period still running is reported with `days_left` so the goal can still
     change the week rather than only judge it - and deliberately without any
     per-day rate needed "to catch up", which is a verdict wearing arithmetic.
-    """
-    facts = period_facts(
-        conn,
-        goal["period_start"],
-        goal["period_end"],
-        owner=goal["owner"],
-        scope=goal["scope"],
-        score_id=goal["score_id"],
-        activity=goal["activity"],
-    )
-    start = parse_day(goal["period_start"])
-    end = parse_day(goal["period_end"])
-    if today < start:
-        status, days_left = "upcoming", (end - start).days + 1
-    elif today > end:
-        status, days_left = "past", 0
-    else:
-        status, days_left = "running", (end - today).days + 1
 
+    `countable` is False for a goal about a piece the library no longer has.
+    The practice is still there, but nothing now says which of it was about
+    that piece, so the goal cannot be counted - and reporting that is the only
+    honest option. Reporting zero days instead would turn a week somebody
+    practised into a shortfall, and a goal that was reached into one that was
+    not, because a file was deleted afterwards.
+    """
+    status, days_left = _period_status(goal, today)
+    countable = not (goal["scope"] == "score" and goal["score_id"] is None)
+    if not countable:
+        return {
+            "days": [
+                {"date": day.isoformat(), "seconds": 0, "sessions": 0}
+                for day in days_between(
+                    parse_day(goal["period_start"]), parse_day(goal["period_end"])
+                )
+            ],
+            "seconds": 0,
+            "minutes": 0,
+            "days_practised": 0,
+            "sessions": 0,
+            "status": status,
+            "days_left": days_left,
+            "countable": False,
+            # None and not False: nothing here is a shortfall. There is simply
+            # no answer to be had, and a reader must say so rather than draw
+            # one from the zeros above - which are here only so the shape of
+            # this object never changes.
+            "met_days": None,
+            "met_minutes": None,
+            "met": None,
+        }
+    # `facts` may be supplied by a caller that has already counted exactly this
+    # period with exactly this scope - the review, whose week facts and a
+    # scope='all' goal's progress are the same question. Only ever an
+    # optimisation: passing facts for a different period or scope would make
+    # this report something it did not measure, which is why the review passes
+    # them only for scope='all'.
+    if facts is None:
+        facts = period_facts(
+            conn,
+            goal["period_start"],
+            goal["period_end"],
+            owner=goal["owner"],
+            scope=goal["scope"],
+            score_id=goal["score_id"],
+            activity=goal["activity"],
+        )
     target_days = goal["target_days"]
     target_minutes = goal["target_minutes"]
     met_days = None if target_days is None else facts["days_practised"] >= target_days
@@ -490,6 +712,7 @@ def goal_progress(conn, goal, today: date) -> dict:
         **facts,
         "status": status,
         "days_left": days_left,
+        "countable": True,
         "met_days": met_days,
         "met_minutes": met_minutes,
         # True only when every target that was set has been reached. None of
@@ -501,7 +724,7 @@ def goal_progress(conn, goal, today: date) -> dict:
     }
 
 
-def goal_dict(conn, row, today: date) -> dict:
+def goal_dict(conn, row, today: date, facts: dict | None = None) -> dict:
     """A goal with its progress attached, and its piece named if it has one."""
     d = dict(row)
     d["score_title"] = None
@@ -510,7 +733,7 @@ def goal_dict(conn, row, today: date) -> dict:
             "SELECT title FROM scores WHERE id = ?", (d["score_id"],)
         ).fetchone()
         d["score_title"] = title["title"] if title else None
-    d["progress"] = goal_progress(conn, row, today)
+    d["progress"] = goal_progress(conn, row, today, facts=facts)
     return d
 
 
@@ -535,6 +758,16 @@ def time_spent(
           GROUP BY p.score_id ORDER BY seconds DESC, s.title LIMIT ?""",
         (owner, start, end, limit),
     ).fetchall()
+    # How many pieces were worked on, not how many are listed. Without this a
+    # by-piece breakdown that stopped at the limit read as a complete account
+    # of where the time went, and its numbers did not add up to the total
+    # beside it with nothing saying why.
+    scores_worked = conn.execute(
+        f"""SELECT COUNT(DISTINCT p.score_id) AS n FROM practice_sessions p
+             WHERE p.owner = ? AND p.score_id IS NOT NULL
+               AND {LOCAL_DATE_SQL} BETWEEN ? AND ?""",
+        (owner, start, end),
+    ).fetchone()["n"]
     by_activity = conn.execute(
         f"""SELECT p.activity, SUM(p.seconds) AS seconds, COUNT(*) AS sessions
               FROM practice_sessions p
@@ -545,4 +778,6 @@ def time_spent(
     return {
         "by_score": [dict(r) for r in by_score],
         "by_activity": [dict(r) for r in by_activity],
+        "scores_worked": scores_worked,
+        "by_score_truncated": scores_worked > len(by_score),
     }

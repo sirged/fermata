@@ -28,10 +28,13 @@
     goalStatements,
     localDay,
     periodLabel,
+    formatDays,
     periodStatement,
     rangeLabel,
+    sessionSubject,
     tempoLabel,
     timeLeftStatement,
+    uncountableStatement,
   } from "./practice.js";
 
   const REVIEW_WEEKS = 8;
@@ -97,11 +100,15 @@
       // it - the server decides which seven days "this week" is, from the
       // week-start preference, and asking for a week the client worked out
       // itself is how the two quietly disagree.
+      const shown = nextCurrent.goal ?? nextCurrent;
       sessions = (
-        await api.sessions({ start: nextCurrent.week_start, end: nextCurrent.week_end })
+        await api.sessions({
+          start: shown.period_start ?? nextCurrent.week_start,
+          end: shown.period_end ?? nextCurrent.week_end,
+        })
       ).sessions;
     } catch (e) {
-      error = e?.message ?? "Could not load your practice record.";
+      error = e?.message ?? "Could not load your practice history.";
     } finally {
       loading = false;
     }
@@ -113,10 +120,25 @@
 
   let goal = $derived(current?.goal ?? null);
   let statements = $derived(goalStatements(goal));
+  // The period on screen is the GOAL's when there is one, and the canonical
+  // week from the preference only when there is not. A goal stores the dates it
+  // was set for, so after the week-start preference changes the two differ -
+  // and showing the canonical week while displaying that goal's counts had the
+  // header, the day strip and the Adjust button each talking about a different
+  // seven days.
+  let periodStart = $derived(goal?.period_start ?? current?.week_start);
+  let periodEnd = $derived(goal?.period_end ?? current?.week_end);
   // The review's first entry is always the week containing today, which is
   // where a week with no goal gets its facts from.
   let thisWeek = $derived(review?.weeks?.[0] ?? null);
   let pastWeeks = $derived((review?.weeks ?? []).slice(1));
+  // Nothing has been practised and nothing has been planned. Without this the
+  // first thing a new install shows is fourteen statements of absence - seven
+  // empty days and seven weeks that had no goal - which is a poor greeting for
+  // somebody who has simply not started yet.
+  let nothingYet = $derived(
+    !!review && !goal && !history?.sessions && !(review.weeks ?? []).some((w) => w.goal),
+  );
   // A scoped goal's own days when there is one, so the strip shows the
   // practice the goal is actually counted against; the week's whole practice
   // otherwise.
@@ -152,9 +174,9 @@
       // and no way to end up with two goals for one week.
       await api.setGoal(
         {
-          period_start: current?.week_start,
-          target_days: form.use_days ? Number(form.target_days) : null,
-          target_minutes: form.use_minutes ? Number(form.target_minutes) : null,
+          period_start: periodStart,
+          target_days: form.use_days ? Math.round(Number(form.target_days)) : null,
+          target_minutes: form.use_minutes ? Math.round(Number(form.target_minutes)) : null,
           scope: form.scope,
           score_id: form.scope === "score" ? Number(form.score_id) || null : null,
           activity: form.scope === "activity" ? form.activity : null,
@@ -166,6 +188,19 @@
       await refresh();
     } catch (e) {
       error = e?.message ?? "Could not save that goal.";
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function removePastGoal(week) {
+    saving = true;
+    error = "";
+    try {
+      await api.deleteGoal(week.goal.id);
+      await refresh();
+    } catch (e) {
+      error = e?.message ?? "Could not remove that goal.";
     } finally {
       saving = false;
     }
@@ -250,12 +285,21 @@
 
     {#if loading}
       <p class="quiet">Loading…</p>
+    {:else if !current || !review || !history}
+      <!-- The load failed, and the message above says why. Everything below
+           reads from these three answers, and rendering it without them put
+           "NaN undefined" on screen where the week should be - a page that
+           looks broken rather than one that says what happened. -->
+      <p class="quiet">
+        Your practice history could not be loaded, so nothing below is shown rather than
+        shown wrongly. Reload to try again.
+      </p>
     {:else}
       <!-- ------------------------------------------------ this week -->
-      <section class="week" data-week={current?.week_start}>
+      <section class="week" data-week={periodStart}>
         <div class="section-head">
           <h2>This week</h2>
-          <span class="quiet">{periodLabel(current?.week_start, current?.week_end)}</span>
+          <span class="quiet">{periodLabel(periodStart, periodEnd)}</span>
         </div>
 
         {#if goal && !editing}
@@ -264,21 +308,25 @@
             {#if goal.intent}<span class="intent-text">— {goal.intent}</span>{/if}
           </p>
 
-          <ul class="statements">
-            {#each statements as statement (statement.key)}
-              <li class="statement" class:reached={statement.met} data-statement={statement.key}>
-                <span class="tick" aria-hidden="true">{statement.met ? "✓" : ""}</span>
-                <span class="statement-text">{statement.text}</span>
-              </li>
-            {/each}
-          </ul>
+          {#if uncountableStatement(goal)}
+            <p class="statement-text uncountable">{uncountableStatement(goal)}</p>
+          {:else}
+            <ul class="statements">
+              {#each statements as statement (statement.key)}
+                <li class="statement" class:reached={statement.met} data-statement={statement.key}>
+                  <span class="tick" aria-hidden="true">{statement.met ? "✓" : ""}</span>
+                  <span class="statement-text">{statement.text}</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
 
           {#if timeLeftStatement(goal.progress)}
             <p class="quiet days-left">{timeLeftStatement(goal.progress)}</p>
           {/if}
         {:else if !editing}
           <p class="statement-text no-goal">
-            No goal set for this week. {periodStatement(thisWeek?.facts)}.
+            No goal set for this week. {periodStatement(thisWeek?.facts, true)}.
           </p>
         {/if}
 
@@ -408,6 +456,19 @@
         </div>
       </section>
 
+      {#if nothingYet}
+        <!-- Nothing practised and nothing planned. Everything below this point
+             would be a statement of absence, and a page that opens with
+             fourteen of them is not a good greeting for somebody who has
+             simply not started yet. -->
+        <section class="nothing-yet">
+          <p class="statement-text">
+            Nothing logged yet. Open a score and start the practice timer, or log a stretch
+            of technique above — this page fills in as you go, and the weeks below it will
+            show what you did against what you meant to do.
+          </p>
+        </section>
+      {:else}
       <!-- ----------------------------------------------------- the review -->
       <section class="review">
         <div class="section-head">
@@ -420,18 +481,22 @@
             <li class="past-week" data-week={week.period_start}>
               <div class="week-head">
                 <span class="week-label">{periodLabel(week.period_start, week.period_end)}</span>
-                <span class="week-facts">{periodStatement(week.facts)}</span>
+                <span class="week-facts">{periodStatement(week.facts, false)}</span>
               </div>
 
               {#if week.goal}
-                <ul class="statements compact">
-                  {#each goalStatements(week.goal) as statement (statement.key)}
-                    <li class="statement" class:reached={statement.met}>
-                      <span class="tick" aria-hidden="true">{statement.met ? "✓" : ""}</span>
-                      <span class="statement-text">{statement.text}</span>
-                    </li>
-                  {/each}
-                </ul>
+                {#if uncountableStatement(week.goal)}
+                  <p class="statement-text uncountable">{uncountableStatement(week.goal)}</p>
+                {:else}
+                  <ul class="statements compact">
+                    {#each goalStatements(week.goal) as statement (statement.key)}
+                      <li class="statement" class:reached={statement.met}>
+                        <span class="tick" aria-hidden="true">{statement.met ? "✓" : ""}</span>
+                        <span class="statement-text">{statement.text}</span>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
 
                 <div class="reflection">
                   <p class="question">Was this goal realistic?</p>
@@ -455,12 +520,22 @@
                     value={draft(week).reflection}
                     oninput={(e) => setDraft(week, { reflection: e.target.value })}
                   ></textarea>
-                  <button class="save-reflection" onclick={() => saveReflection(week)} disabled={saving}>
-                    Save
-                  </button>
+                  <div class="row">
+                    <button class="save-reflection" onclick={() => saveReflection(week)} disabled={saving}>
+                      Save
+                    </button>
+                    <button
+                      class="ghost remove-past-goal"
+                      onclick={() => removePastGoal(week)}
+                      disabled={saving}
+                      title="Forget this goal. The practice stays."
+                    >
+                      Remove goal
+                    </button>
+                  </div>
                 </div>
               {:else}
-                <p class="quiet no-goal">No goal was set for this week.</p>
+                <p class="quiet no-goal">No goal was set for these days.</p>
               {/if}
             </li>
           {/each}
@@ -475,7 +550,7 @@
         </div>
 
         <p class="statement-text totals">
-          {history?.days_practised ?? 0} days of practice, {formatDuration(history?.seconds)} in
+          {formatDays(history?.days_practised)} of practice, {formatDuration(history?.seconds)} in
           total.
         </p>
 
@@ -523,15 +598,15 @@
             {#each sessions as session (session.id)}
               <li class="session" data-session={session.id}>
                 <span class="session-day">{session.local_date}</span>
-                <span class="session-what">
+                <span class="session-what" class:orphaned={session.score_missing}>
                   {#if session.score_title}
                     <a href={"#/score/" + session.score_id}>{session.score_title}</a>
                   {:else}
-                    {activityLabel(session.activity)}
+                    {sessionSubject(session)}
                   {/if}
                 </span>
                 <span class="session-length">{formatDuration(session.seconds)}</span>
-                <span class="quiet session-detail">
+                <span class="quiet session-extra">
                   {[rangeLabel(session), tempoLabel(session), session.note]
                     .filter(Boolean)
                     .join(" · ")}
@@ -540,9 +615,10 @@
             {/each}
           </ul>
         {:else}
-          <p class="quiet">Nothing logged this week yet.</p>
+          <p class="quiet">Nothing logged in this period yet.</p>
         {/if}
       </section>
+      {/if}
     {/if}
   </main>
 </div>
@@ -665,6 +741,12 @@
     color: var(--brass-bright);
   }
 
+  /* Deliberately the colour it already inherits, which makes this rule a
+     no-op - and it is meant to be. It exists so that "what does a reached
+     target look like" has an answer in one place, and so that the answer is
+     recorded as "the same as an unreached one" rather than looking like an
+     oversight somebody should helpfully fill in with a green. The tick is the
+     whole difference, and it is additive. */
   .statement.reached .statement-text {
     color: var(--ink);
   }
@@ -884,6 +966,12 @@
     margin: 0 0 14px;
   }
 
+  .nothing-yet .statement-text {
+    color: var(--ink-dim);
+    max-width: 56ch;
+    line-height: 1.6;
+  }
+
   .session-list {
     list-style: none;
     padding: 0;
@@ -910,7 +998,23 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .session-detail {
+  /* NOT .session-detail: that is the post-session panel in the viewer, and two
+     components sharing a class name meant a test looking for the panel matched
+     these rows instead - a locator that passed for the wrong reason. */
+  .session-extra {
     grid-column: 2 / -1;
+  }
+
+  /* Dimmer than a title because there is no piece to click through to, and
+     deliberately not otherwise different: this is practice that happened, not
+     a row with something wrong with it. */
+  .session-what.orphaned,
+  .uncountable {
+    color: var(--ink-dim);
+  }
+
+  .uncountable {
+    margin: 0 0 12px;
+    max-width: 52ch;
   }
 </style>

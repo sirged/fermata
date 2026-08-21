@@ -194,8 +194,8 @@ recognises — but if the newer version changed the schema, the older one refuse
 to start rather than write to a database it does not understand, and says so:
 
 ```
-RuntimeError: this database is at schema version 3, but this version of
-Fermata understands 2. It was written by a newer release - upgrade, or
+RuntimeError: this database is at schema version 4, but this version of
+Fermata understands 3. It was written by a newer release - upgrade, or
 restore a backup taken before it.
 ```
 

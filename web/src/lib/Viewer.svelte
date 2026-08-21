@@ -151,9 +151,20 @@
   let detail = $state(null);
   let savingDetail = $state(false);
   let detailError = $state("");
+  // A session the server would not take. Shown until dismissed, because the
+  // alternative is a stopwatch that ran and a record that does not mention it.
+  let practiceError = $state("");
 
   function blankDetail() {
-    return { rating: null, mode: "", from_bar: "", to_bar: "", tempo_bpm: "", note: "" };
+    return {
+      rating: null,
+      mode: "",
+      from_bar: "",
+      to_bar: "",
+      tempo_bpm: "",
+      target_tempo_bpm: "",
+      note: "",
+    };
   }
 
   const RATING_LABELS = {
@@ -164,20 +175,37 @@
     5: "as I want it",
   };
 
-  /** Today in the BROWSER's timezone, which is the day the practice actually
-   * happened on. The server stores UTC timestamps, and west of Greenwich the
-   * UTC date of an evening session is already tomorrow - so a goal counting
-   * days would put it in the wrong one, and at a week boundary in the wrong
-   * week. Sent explicitly rather than inferred there. */
-  function practiceDay() {
-    const now = new Date();
+  /** The day a session is filed under: the BROWSER's calendar day at the
+   * moment the timer STARTED.
+   *
+   * The start and not the stop. A session from 23:40 to 00:20 is practice done
+   * on the earlier day - that is when they sat down - and taking the day from
+   * the clock at flush time filed the whole thing on the following one, which
+   * at a week boundary counted it towards the next week's goal rather than the
+   * one it was practised for. This is the single field the entire feature
+   * counts, so which day it picks is chosen rather than incidental.
+   *
+   * Local and not UTC for the same reason: the server stores UTC timestamps,
+   * and west of Greenwich the UTC date of an evening session is already
+   * tomorrow. */
+  function practiceDay(startedAt) {
+    const when = new Date(startedAt ?? Date.now());
     const pad = (n) => String(n).padStart(2, "0");
-    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
   }
 
   function numberOrNull(value) {
+    // An empty field means UNSET, and never zero. Svelte's bind:value on a
+    // number input hands back null when the box is cleared, and Number(null)
+    // is 0 - so clearing a tempo sent 0, which the server refuses, and the
+    // whole save failed with a message about a field the person had just
+    // emptied. Same shape of bug as the reference-pitch one in the instruments
+    // editor, and the same rule fixes it.
+    if (value === "" || value == null) return null;
     const n = Number(value);
-    return value === "" || Number.isNaN(n) ? null : n;
+    // Rounded, because the server takes whole numbers and nothing that merely
+    // converts to one - a number input hands back "76.5" if it is typed.
+    return Number.isNaN(n) ? null : Math.round(n);
   }
 
   async function saveDetail() {
@@ -191,6 +219,7 @@
         from_bar: numberOrNull(detail.from_bar),
         to_bar: numberOrNull(detail.to_bar),
         tempo_bpm: numberOrNull(detail.tempo_bpm),
+        target_tempo_bpm: numberOrNull(detail.target_tempo_bpm),
         note: detail.note.trim() || null,
       });
       lastSession = null;
@@ -232,44 +261,98 @@
   // away off-screen - the gig HUDs in both viewers surface this
   let practiceLabel = $derived(practiceStart != null ? formatElapsed(practiceElapsed) : null);
 
-  function flushPractice() {
+  /** Store a stopped session.
+   *
+   * `leaving` is true when the page itself is going away. A normal fetch is
+   * routinely CANCELLED by the browser once a page starts unloading, which
+   * would silently drop the session - and this is the write path for the data
+   * every goal is counted from, so losing one is losing part of somebody's
+   * record. sendBeacon exists for exactly this: the browser takes ownership of
+   * the request and completes it after the page is gone. Nothing can be read
+   * back from it, so the detail panel is not offered in that case; the session
+   * is stored either way, which is the part that matters.
+   */
+  function storePractice(scoreId, body, leaving) {
+    const url = `/api/scores/${scoreId}/practice`;
+    if (leaving && navigator.sendBeacon) {
+      navigator.sendBeacon(url, new Blob([JSON.stringify(body)], { type: "application/json" }));
+      return;
+    }
+    api
+      .logPractice(scoreId, body)
+      .then((result) => {
+        // Only offer the detail panel for the score still on screen. A flush
+        // triggered by navigating to another score has nowhere to show one,
+        // and the session is already stored either way.
+        if (result?.session && score?.id === scoreId) {
+          lastSession = result.session;
+          detail = blankDetail();
+        }
+      })
+      .catch((e) => {
+        // Said out loud rather than swallowed. A timer that appears to stop and
+        // stores nothing is the worst failure this feature has, because nothing
+        // else in the app would ever show the gap.
+        practiceError =
+          `That session (${formatDuration(body.seconds)}) could not be saved: ` +
+          `${e?.message ?? "the server did not answer"}.`;
+      });
+  }
+
+  /** Stop the timer and store what it measured.
+   *
+   * `leaving` says the page itself is going away, which changes HOW the write
+   * is sent - see storePractice. Every caller therefore has to pass it
+   * deliberately: wired straight to an onclick, the DOM event arrives here as
+   * the first argument and every ordinary stop took the page-unload path,
+   * which cannot read the response back and so never offered the detail panel.
+   */
+  function flushPractice(leaving = false) {
     if (practiceStart == null) return;
-    const seconds = Math.floor((Date.now() - practiceStart) / 1000);
+    const startedAt = practiceStart;
+    const seconds = Math.floor((Date.now() - startedAt) / 1000);
     const scoreId = practiceScoreId;
     clearInterval(practiceInterval);
     practiceStart = null;
     practiceElapsed = 0;
     practiceScoreId = null;
     if (seconds >= PRACTICE_MIN_SECONDS && scoreId != null) {
-      api
-        .logPractice(scoreId, {
-          seconds,
-          activity: "piece",
-          local_date: practiceDay(),
-        })
-        .then((result) => {
-          // Only offer the detail panel for the score still on screen. A flush
-          // triggered by navigating away has nowhere to show one, and the
-          // session is already safely stored either way.
-          if (result?.session && score?.id === scoreId) {
-            lastSession = result.session;
-            detail = blankDetail();
-          }
-        })
-        .catch(() => {});
+      practiceError = "";
+      storePractice(
+        scoreId,
+        { seconds, activity: "piece", local_date: practiceDay(startedAt) },
+        leaving,
+      );
     }
   }
 
   // Flushes on switching to a different score too: the route swaps `id` on
   // this same component instance rather than remounting it.
+  //
+  // The detail panel is dismissed at the same time, and that is a correctness
+  // fix rather than tidying: it survived the navigation, so a rating or a note
+  // typed into it afterwards was PATCHed onto the previous score's session -
+  // writing an opinion against practice that did not happen. The session it
+  // belonged to is already stored; only the offer to say more about it ends.
   $effect(() => {
     void id;
-    return () => flushPractice();
+    return () => {
+      flushPractice();
+      dismissDetail();
+    };
   });
 
   $effect(() => {
-    window.addEventListener("beforeunload", flushPractice);
-    return () => window.removeEventListener("beforeunload", flushPractice);
+    const onLeave = () => flushPractice(true);
+    window.addEventListener("beforeunload", onLeave);
+    // pagehide as well as beforeunload: a mobile browser backgrounding a tab
+    // fires only this one, and a timer left running on a phone is an ordinary
+    // way for a session to end.
+    window.addEventListener("pagehide", onLeave);
+    return () => {
+      window.removeEventListener("beforeunload", onLeave);
+      window.removeEventListener("pagehide", onLeave);
+    };
   });
 
   async function setKind(ev) {
@@ -334,7 +417,7 @@
           <button
             class="ghost timer"
             class:on={practiceStart != null}
-            onclick={practiceStart != null ? flushPractice : startPractice}
+            onclick={() => (practiceStart != null ? flushPractice() : startPractice())}
             title={practiceStart != null ? "Stop practice timer" : "Start practice timer"}
           >
             {practiceStart != null ? `■ ${formatElapsed(practiceElapsed)}` : "▶ Practice"}
@@ -346,6 +429,13 @@
         </div>
       {/if}
     </header>
+  {/if}
+
+  {#if practiceError && !gigMode}
+    <p class="practice-error" role="status">
+      {practiceError}
+      <button class="ghost" onclick={() => (practiceError = "")}>Dismiss</button>
+    </p>
   {/if}
 
   {#if lastSession && detail && !gigMode}
@@ -389,6 +479,15 @@
         <input class="detail-bar" type="number" min="1" placeholder="to" bind:value={detail.to_bar} />
         <span class="detail-label">tempo</span>
         <input class="detail-tempo" type="number" min="20" max="400" placeholder="bpm" bind:value={detail.tempo_bpm} />
+        <span class="detail-label">aiming at</span>
+        <input
+          class="detail-target-tempo"
+          type="number"
+          min="20"
+          max="400"
+          placeholder="bpm"
+          bind:value={detail.target_tempo_bpm}
+        />
       </div>
 
       <div class="detail-row">
@@ -416,9 +515,9 @@
     <TabViewer demo={true} {gigMode} onToggleGig={toggleGigMode} />
   {:else if score}
     {#if score.file_type === "pdf"}
-      <ScoreCompare {score} {gigMode} onToggleGig={toggleGigMode} {practiceLabel} onStopPractice={flushPractice} />
+      <ScoreCompare {score} {gigMode} onToggleGig={toggleGigMode} {practiceLabel} onStopPractice={() => flushPractice()} />
     {:else}
-      <TabViewer {score} {gigMode} onToggleGig={toggleGigMode} {practiceLabel} onStopPractice={flushPractice} />
+      <TabViewer {score} {gigMode} onToggleGig={toggleGigMode} {practiceLabel} onStopPractice={() => flushPractice()} />
     {/if}
   {/if}
 </div>
@@ -554,8 +653,23 @@
   }
 
   .detail-bar,
-  .detail-tempo {
+  .detail-tempo,
+  .detail-target-tempo {
     width: 76px;
+  }
+
+  /* This one IS a failure - a session that did not save - so unlike anything on
+     the practice page it is allowed to look like one. */
+  .practice-error {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0;
+    padding: 8px 16px;
+    font-size: 14px;
+    color: var(--danger);
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-raised);
   }
 
   .detail-note {

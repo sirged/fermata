@@ -780,7 +780,7 @@ def test_a_column_present_without_its_foreign_key_stops_startup(app_env):
 
 def test_the_schema_version_is_stamped(app_env):
     conn = db.connect()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 3
 
 
 def test_a_database_from_a_newer_release_stops_startup(app_env):

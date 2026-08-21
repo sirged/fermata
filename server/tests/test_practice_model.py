@@ -65,6 +65,40 @@ def test_a_practice_day_must_be_a_plain_calendar_date():
             practice.parse_day(bad)
 
 
+def test_a_date_outside_the_plausible_range_is_refused():
+    """Not a judgement about anybody's practice - it is what keeps the
+    arithmetic downstream inside date's own bounds. Every caller adds or
+    subtracts up to a year, and date.min/date.max raise OverflowError from
+    inside a subtraction, which reaches a client as a 500 for a typo."""
+    for bad in ["0001-01-01", "1899-12-31", "9999-12-31", "2200-01-02"]:
+        with pytest.raises(ValueError, match="between"):
+            practice.parse_day(bad)
+    for good in ["1900-01-01", "2026-08-17", "2200-01-01"]:
+        assert practice.parse_day(good).isoformat() == good
+
+
+def test_the_day_index_is_the_one_every_day_query_can_actually_use(conn):
+    """The index is on the EXPRESSION these queries filter by, not on the
+    column, because a plain index on local_date cannot serve a wrapped one -
+    SQLite would scan the owner's whole practice history to answer a question
+    about seven days of it. Asserted through the query planner rather than by
+    reading the DDL, because the expression has to match character for
+    character and nothing else would notice when it stops."""
+    plan = " ".join(
+        str(row[3])
+        for row in conn.execute(
+            f"""EXPLAIN QUERY PLAN
+                SELECT {practice.LOCAL_DATE_SQL} AS day, SUM(p.seconds)
+                  FROM practice_sessions p
+                 WHERE p.owner = ? AND {practice.LOCAL_DATE_SQL} BETWEEN ? AND ?
+              GROUP BY day""",
+            ("local", "2026-08-17", "2026-08-23"),
+        )
+    )
+    assert "idx_practice_day" in plan, plan
+    assert "SCAN" not in plan, plan
+
+
 def test_a_monday_start_week_runs_monday_to_sunday():
     # 2026-08-17 is a Monday.
     for day in ("2026-08-17", "2026-08-19", "2026-08-23"):
@@ -297,6 +331,9 @@ def test_each_scope_names_only_the_thing_it_is_scoped_to():
 def test_a_scoped_goal_needs_the_thing_it_is_scoped_to():
     with pytest.raises(ValueError, match="score_id"):
         _goal(scope="score", score_id=None)
+    # Unless it is already stored that way, because its piece has since been
+    # deleted - such a goal can no longer be counted but must stay writable.
+    assert _goal(scope="score", score_id=None, allow_missing_score=True)["score_id"] is None
     with pytest.raises(ValueError, match="activity"):
         _goal(scope="activity", activity=None)
     with pytest.raises(ValueError, match="activity"):
@@ -487,6 +524,100 @@ def test_a_running_period_says_how_much_of_it_is_left_and_nothing_about_pace(con
 
     before = practice.goal_progress(conn, goal, date(2026, 8, 10))
     assert (before["status"], before["days_left"]) == ("upcoming", 7)
+
+
+def test_a_goal_about_a_piece_that_is_gone_is_uncountable_rather_than_unmet(conn):
+    """A goal scoped to a score that no longer exists reports that it cannot be
+    counted. Zeros with met=False would say the person did not practise, when
+    what actually happened is that the link between their practice and that
+    piece went with the file."""
+    piece = _score(conn)
+    for day in ("2026-08-17", "2026-08-18", "2026-08-19"):
+        _log(conn, day=day, seconds=1800, score_id=piece)
+    goal = _stored_goal(conn, scope="score", score_id=piece, target_days=3)
+    assert practice.goal_progress(conn, goal, date(2026, 8, 24))["met"] is True
+
+    conn.execute("DELETE FROM scores WHERE id = ?", (piece,))
+    conn.commit()
+    orphaned = conn.execute("SELECT * FROM practice_goals WHERE id = ?", (goal["id"],)).fetchone()
+    progress = practice.goal_progress(conn, orphaned, date(2026, 8, 24))
+    assert progress["countable"] is False
+    assert progress["met"] is None
+    assert progress["met_days"] is None
+    assert progress["met_minutes"] is None
+    # The shape is unchanged, so no reader has to test for missing keys - and
+    # the period is still described, because when it was is still known.
+    assert progress["status"] == "past"
+    assert len(progress["days"]) == 7
+
+
+def test_an_uncountable_goal_still_says_where_its_period_sits(conn):
+    piece = _score(conn)
+    goal = _stored_goal(conn, scope="score", score_id=piece, target_days=3)
+    conn.execute("DELETE FROM scores WHERE id = ?", (piece,))
+    conn.commit()
+    orphaned = conn.execute("SELECT * FROM practice_goals WHERE id = ?", (goal["id"],)).fetchone()
+    running = practice.goal_progress(conn, orphaned, date(2026, 8, 19))
+    assert (running["status"], running["days_left"]) == ("running", 5)
+
+
+def test_a_countable_goal_says_so(conn):
+    """The flag has to be present and True on an ordinary goal, or a reader
+    that branches on it would treat every goal as uncountable."""
+    goal = _stored_goal(conn, target_days=3)
+    assert practice.goal_progress(conn, goal, date(2026, 8, 19))["countable"] is True
+
+
+def test_a_session_that_outlives_its_score_is_still_piece_practice(conn):
+    """Deleting a score sets the reference to NULL rather than deleting the
+    practice. The row keeps everything else it recorded, and the pair
+    (activity='piece', score_id IS NULL) is what identifies it - a 'piece'
+    session cannot be created without a score, so nothing else produces it."""
+    piece = _score(conn)
+    conn.execute(
+        """INSERT INTO practice_sessions
+               (owner, score_id, activity, started_at, local_date, seconds, rating, note)
+           VALUES (?, ?, 'piece', '2026-08-18 02:00:00', '2026-08-17', 1800, 4, 'nearly there')""",
+        (db.DEFAULT_OWNER, piece),
+    )
+    conn.commit()
+    conn.execute("DELETE FROM scores WHERE id = ?", (piece,))
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM practice_sessions").fetchone()
+    presented = practice.session_dict(row)
+    assert presented["score_id"] is None
+    assert presented["score_missing"] is True
+    assert (presented["seconds"], presented["rating"], presented["note"]) == (
+        1800,
+        4,
+        "nearly there",
+    )
+    assert presented["local_date"] == "2026-08-17"
+
+    # And it is still counted: the hours were spent.
+    facts = practice.period_facts(conn, "2026-08-17", "2026-08-23")
+    assert (facts["days_practised"], facts["seconds"]) == (1, 1800)
+
+
+def test_practice_that_never_had_a_piece_is_not_reported_as_a_missing_one(conn):
+    """The other half of the same signal. Ear training has no score and never
+    did, and calling that a piece no longer in the library would be a lie about
+    what the person did."""
+    _log(conn, day="2026-08-17", seconds=600, score_id=None, activity="ear_training")
+    row = conn.execute("SELECT * FROM practice_sessions").fetchone()
+    assert practice.session_dict(row)["score_missing"] is False
+    assert practice.is_orphaned("ear_training", None) is False
+    assert practice.is_orphaned("piece", None) is True
+    assert practice.is_orphaned("piece", 4) is False
+
+
+def test_an_orphaned_session_can_be_revalidated_but_one_cannot_be_created(conn):
+    """The allowance exists for a row that is already stored in that state, so
+    a note can be added to it. It must not make the state creatable."""
+    with pytest.raises(ValueError, match="score_id"):
+        _session(score_id=None)
+    assert _session(score_id=None, allow_missing_score=True)["score_id"] is None
 
 
 def test_a_scoped_goal_is_counted_against_only_its_own_scope(conn):

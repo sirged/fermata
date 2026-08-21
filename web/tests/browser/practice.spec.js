@@ -84,6 +84,30 @@ test("with no goal set, the week says so and shows seven empty days", async ({ p
   await expect(notices(page)).toHaveCount(0);
 });
 
+test("a fresh install is greeted rather than shown fourteen absences", async ({ page }) => {
+  // Nothing practised and nothing planned. Every section below the week would
+  // be a statement of absence - seven "No practice recorded" rows and seven
+  // "No goal was set" ones - which is a poor first impression for somebody who
+  // has simply not started yet.
+  await expect(page.locator(".nothing-yet")).toBeVisible();
+  await expect(page.locator(".nothing-yet")).toContainText("Nothing logged yet");
+  await expect(pastWeeks(page)).toHaveCount(0);
+  await expect(page.locator("section.review")).toHaveCount(0);
+  // The week itself, and the way to set a goal, are still there.
+  await expect(days(page)).toHaveCount(7);
+  await expect(page.locator(".edit-goal")).toBeVisible();
+});
+
+test("once there is practice, the review appears", async ({ page, request }) => {
+  // The other half of the test above: the greeting has to give way, or it is
+  // just a way of hiding the feature.
+  await logPractice(request, { day: weekStart(today, "monday"), minutes: 20 });
+  await page.reload();
+  await expect(page.locator(".nothing-yet")).toHaveCount(0);
+  await expect(page.locator("section.review")).toBeVisible();
+  await expect(pastWeeks(page)).toHaveCount(7);
+});
+
 test("a goal is set from this page and its progress is stated as counts", async ({
   page,
   request,
@@ -236,10 +260,30 @@ test("a week nobody set a goal for still appears with what happened in it", asyn
 
   const card = page.locator(`.past-week[data-week="${lastWeek}"]`);
   await expect(card).toContainText("1 day, 25m");
-  await expect(card.locator(".no-goal")).toContainText("No goal was set for this week");
+  await expect(card.locator(".no-goal")).toContainText("No goal was set for these days");
+  // Not "this week" - every past row used to say that, so a quiet spell in
+  // July rendered as three consecutive rows naming a week nowhere near them.
+  await expect(card).not.toContainText("this week");
   // Every week in the window is listed, goal or no goal, so the review is not
   // a list of judged weeks.
   await expect(pastWeeks(page)).toHaveCount(7);
+});
+
+test("a past week with nothing in it does not call itself this week", async ({
+  page,
+  request,
+}) => {
+  // Rendered, not asserted on a string in isolation - which is how this got
+  // through: every past row said "this week", so a gap after a good run showed
+  // three consecutive rows naming a week nowhere near their own dates.
+  await logPractice(request, { day: today, minutes: 20 });
+  await page.reload();
+
+  const empty = pastWeeks(page).first();
+  await expect(empty).toContainText("No practice recorded");
+  await expect(empty).not.toContainText("this week");
+  // And the current week's panel still says it, where it is true.
+  await expect(week(page)).toContainText("this week");
 });
 
 test("the week this page offers is the week the server counts", async ({ page, request }) => {

@@ -91,6 +91,24 @@ export function activityLabel(activity) {
   return ACTIVITY_LABELS[activity] ?? "Practice";
 }
 
+/** What a piece that has left the library is called where its title would go.
+ *
+ * Deleting a score no longer deletes the practice against it, so a session can
+ * outlive the piece it was about. It is still practice that happened and it
+ * still has its day, its length and whatever was written about it - so it says
+ * what it is, plainly, rather than showing a blank or reading as a broken row.
+ */
+export const MISSING_PIECE_LABEL = "A piece no longer in your library";
+
+/** What a session is about, in words: the piece's title, or the fact that the
+ * piece has gone, or the kind of work it was. */
+export function sessionSubject(session) {
+  if (!session) return "";
+  if (session.score_title) return session.score_title;
+  if (session.score_missing) return MISSING_PIECE_LABEL;
+  return activityLabel(session.activity);
+}
+
 /** Today's date in the BROWSER's timezone, as YYYY-MM-DD.
  *
  * Not toISOString().slice(0, 10), which is the UTC date: west of Greenwich
@@ -171,6 +189,25 @@ export function formatMinutes(minutes) {
   return formatDuration(Math.max(0, Math.floor(Number(minutes) || 0)) * 60);
 }
 
+/** A count where zero is a word rather than a nought.
+ *
+ * The same rule formatDuration already applies to a length of none, applied to
+ * the other target: "0 of 5 planned days" beside "none of 5h planned" is the
+ * rule kept in one place and dropped in the other, and a bare nought beside a
+ * target reads like a mark out of five.
+ */
+export function countOrNone(count) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  return n ? String(n) : "none";
+}
+
+/** A number of days, as a person says it: "no days", "1 day", "4 days". */
+export function formatDays(days) {
+  const count = Math.max(0, Math.floor(Number(days) || 0));
+  if (!count) return "no days";
+  return `${count} ${count === 1 ? "day" : "days"}`;
+}
+
 /** What a goal's targets came to, one statement per target that was set.
  *
  * Each is `{ key, text, met }`. `met` is there so a caller can mark what was
@@ -183,11 +220,17 @@ export function formatMinutes(minutes) {
 export function goalStatements(goal) {
   if (!goal) return [];
   const progress = goal.progress ?? {};
+  // A goal about a piece that has left the library cannot be counted at all -
+  // the practice is still in the history but nothing says which of it was
+  // about that piece. Reporting "0 of 3 planned days" would say the person did
+  // not practise, which is both untrue and the exact thing this feature must
+  // never say. uncountableStatement is what a caller shows instead.
+  if (progress.countable === false) return [];
   const out = [];
   if (goal.target_days != null) {
     out.push({
       key: "days",
-      text: `${progress.days_practised ?? 0} of ${goal.target_days} planned days`,
+      text: `${countOrNone(progress.days_practised)} of ${goal.target_days} planned days`,
       met: progress.met_days === true,
     });
   }
@@ -205,9 +248,24 @@ export function goalStatements(goal) {
  * "ear training". */
 export function goalScopeLabel(goal) {
   if (!goal) return "";
-  if (goal.scope === "score") return goal.score_title ?? "one piece";
+  if (goal.scope === "score") {
+    if (goal.score_title) return goal.score_title;
+    return goal.score_id == null ? MISSING_PIECE_LABEL.toLowerCase() : "one piece";
+  }
   if (goal.scope === "activity") return activityLabel(goal.activity).toLowerCase();
   return "any practice";
+}
+
+/** Why a goal has no counts, when it has none. Empty for an ordinary goal.
+ *
+ * States the situation and stops. It does not apologise, does not suggest the
+ * goal was wasted, and does not offer to delete anything - the intention was
+ * genuinely formed and the practice genuinely happened; only the link between
+ * them went with the file.
+ */
+export function uncountableStatement(goal) {
+  if (!goal || goal.progress?.countable !== false) return "";
+  return "This goal was about a piece that is no longer in your library, so there is nothing left to count it against. The practice itself is still in your history.";
 }
 
 /** How much of a running period is left, or nothing at all once it has ended.
@@ -224,11 +282,20 @@ export function timeLeftStatement(progress) {
   return `${left} days left in this week`;
 }
 
-/** What a period came to, whether or not a goal was set for it. */
-export function periodStatement(facts) {
-  if (!facts || !facts.days_practised) return "No practice recorded this week";
-  const days = facts.days_practised;
-  return `${days} ${days === 1 ? "day" : "days"}, ${formatDuration(facts.seconds)}`;
+/** What a period came to, whether or not a goal was set for it.
+ *
+ * `current` says whether this is the week in progress, and it is a parameter
+ * rather than a constant because it was a constant: every past week in the
+ * review said "this week", so a quiet spell in July rendered as three
+ * consecutive rows reading "No practice recorded this week" beside dates
+ * nowhere near it. The dates are already on the row; the sentence does not
+ * need to name the week, only to avoid naming the wrong one.
+ */
+export function periodStatement(facts, current = true) {
+  if (!facts || !facts.days_practised) {
+    return current ? "No practice recorded this week" : "No practice recorded";
+  }
+  return `${formatDays(facts.days_practised)}, ${formatDuration(facts.seconds)}`;
 }
 
 /** The bars of a week's per-day strip, scaled against the busiest day IN THAT

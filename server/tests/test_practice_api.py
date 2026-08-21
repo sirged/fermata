@@ -577,6 +577,227 @@ def test_a_goals_period_cannot_be_moved_onto_a_different_week(client, score):
 
 
 # ---------------------------------------------------------------------------
+# A preference must not re-slice history
+# ---------------------------------------------------------------------------
+
+
+def test_changing_the_week_start_does_not_change_what_a_past_week_reports(client, score):
+    """The same history has to report the same result. A goal stores the dates
+    it was set for, and the review has to read them - matching goals to slots
+    on today's grid meant flipping this preference turned three days and not
+    met into four days and met, on data nobody had touched."""
+    for day in (MONDAY, D(1), D(2)):
+        log(client, day=day, seconds=1800, score_id=score)
+    log(client, day=D(-1), seconds=1800, score_id=score)  # the Sunday before
+    goal = set_goal(client, today=MONDAY, target_days=4)
+
+    def reported():
+        weeks = client.get(f"/api/practice/review?weeks=4&today={D(9)}").json()["weeks"]
+        hosting = [w for w in weeks if w["goal"] and w["goal"]["id"] == goal["id"]]
+        assert len(hosting) == 1, "the goal is listed exactly once"
+        return hosting[0]
+
+    before = reported()
+    assert before["goal"]["progress"]["days_practised"] == 3
+    assert before["goal"]["progress"]["met"] is False
+    assert (before["period_start"], before["period_end"]) == (MONDAY, SUNDAY)
+
+    client.put("/api/settings", json={"week_starts_on": "sunday"})
+    after = reported()
+    assert after["goal"]["progress"]["days_practised"] == 3
+    assert after["goal"]["progress"]["met"] is False
+    assert (after["period_start"], after["period_end"]) == (MONDAY, SUNDAY)
+
+
+def test_a_past_goal_is_never_reported_as_no_goal_at_all(client, score):
+    """The specific false statement. A week carrying somebody's own intent and
+    reflection rendered as "no goal was set for this week" after the preference
+    changed - a lie about their own record, from the one feature whose premise
+    is that its statements are true."""
+    log(client, day=MONDAY, seconds=1800, score_id=score)
+    goal = set_goal(client, today=MONDAY, target_days=4, intent="the awkward bars")
+    client.patch(
+        f"/api/practice/goals/{goal['id']}?today={D(9)}",
+        json={"reflection": "away for three days", "realistic": "no"},
+    )
+    client.put("/api/settings", json={"week_starts_on": "sunday"})
+
+    weeks = client.get(f"/api/practice/review?weeks=4&today={D(9)}").json()["weeks"]
+    found = [w["goal"] for w in weeks if w["goal"]]
+    assert len(found) == 1
+    assert found[0]["intent"] == "the awkward bars"
+    assert found[0]["reflection"] == "away for three days"
+
+
+def test_every_day_in_the_window_is_still_reported_after_a_flip(client, score):
+    """Dropping a canonical week because a goal overlapped it would take real
+    practice out of the review. Each day of the window appears in at least one
+    listed period."""
+    client.put("/api/settings", json={"week_starts_on": "monday"})
+    set_goal(client, today=MONDAY, target_days=4)
+    client.put("/api/settings", json={"week_starts_on": "sunday"})
+
+    weeks = client.get(f"/api/practice/review?weeks=4&today={D(9)}").json()["weeks"]
+    covered = set()
+    for w in weeks:
+        for day in w["facts"]["days"]:
+            covered.add(day["date"])
+    for offset in range(-14, 10):
+        assert D(offset) in covered, f"{D(offset)} is in no listed period"
+
+
+def test_two_goals_cannot_share_a_day(client):
+    """Overlapping goals are how the same practice gets counted against two
+    intentions, and how two panels of one page come to disagree about which
+    goal this week has. Reachable through the ordinary interface the moment the
+    preference changes, so it is refused rather than documented."""
+    set_goal(client, today=MONDAY, target_days=4)
+    res = client.post(
+        f"/api/practice/goals?today={MONDAY}",
+        json={"period_start": D(-1), "target_days": 2},  # Sunday-start, overlaps by six days
+    )
+    assert res.status_code == 409
+    assert MONDAY in res.text and SUNDAY in res.text
+    assert len(client.get(f"/api/practice/goals?today={MONDAY}").json()["goals"]) == 1
+
+    # A period that merely abuts is fine.
+    ok = client.post(
+        f"/api/practice/goals?today={MONDAY}", json={"period_start": D(7), "target_days": 2}
+    )
+    assert ok.status_code == 200, ok.text
+
+
+def test_replacing_a_goal_clears_the_reflection_written_about_the_old_one(client, score):
+    """The review asks whether a goal was realistic. Answering with words
+    written about a different intention is worse than not asking."""
+    goal = set_goal(client, today=MONDAY, target_days=4)
+    client.patch(
+        f"/api/practice/goals/{goal['id']}?today={D(9)}",
+        json={"reflection": "too much on", "realistic": "no"},
+    )
+    replaced = set_goal(client, today=MONDAY, target_days=2)
+    assert replaced["id"] == goal["id"]
+    assert replaced["reflection"] is None
+    assert replaced["realistic"] is None
+
+
+# ---------------------------------------------------------------------------
+# Dates a client can send
+# ---------------------------------------------------------------------------
+
+
+def test_a_date_at_the_edge_of_the_calendar_is_refused_not_a_crash(client):
+    """Every one of these does arithmetic on the date it is given - a review
+    reaches 52 weeks back, a history window 366 days - and date's own bounds
+    raise OverflowError from inside a subtraction, which reaches a client as a
+    500 for what is only ever a typo."""
+    for url in (
+        "/api/practice/goals/current?today=0001-01-01",
+        "/api/practice/review?weeks=52&today=0001-01-01",
+        "/api/practice/history?days=366&today=0001-01-01",
+        "/api/practice/goals/current?today=9999-12-31",
+        "/api/practice/review?weeks=52&today=9999-12-31",
+        "/api/practice/history?days=366&today=9999-12-31",
+    ):
+        assert client.get(url).status_code == 422, url
+    for body in ({"period_start": "0001-01-01", "target_days": 2},
+                 {"period_start": "9999-12-31", "target_days": 2}):
+        assert client.post(f"/api/practice/goals?today={MONDAY}", json=body).status_code == 422
+
+
+def test_a_today_nowhere_near_the_servers_date_is_refused(client):
+    """A perfectly well-formed date that is nonetheless not a day this instance
+    could hold practice for. Unbounded, `today=2099-01-01` was answered with a
+    plausible-looking empty week - the worst kind of wrong answer, because
+    nothing in the response marks it as suspect."""
+    for far in ("2099-01-01", "1975-06-01"):
+        for url in (
+            f"/api/practice/goals/current?today={far}",
+            f"/api/practice/review?weeks=4&today={far}",
+            f"/api/practice/history?days=30&today={far}",
+            f"/api/practice/goals?today={far}",
+        ):
+            res = client.get(url)
+            assert res.status_code == 422, (url, res.text)
+        assert (
+            client.post(f"/api/practice/goals?today={far}", json={"target_days": 2}).status_code
+            == 422
+        )
+    # A date the practiser's own timezone can actually produce is accepted, and
+    # so is one a week ago - reasoning about a period that has ended is what
+    # this parameter is for.
+    for near in (MONDAY, D(7), date.today().isoformat()):
+        assert client.get(f"/api/practice/goals/current?today={near}").status_code == 200
+
+
+def test_a_boolean_is_not_a_number_of_days(client):
+    """Pydantic's default mode coerces before any validator runs, so `true`
+    arrived as 1 and set a one-day goal past a guard written to reject bools."""
+    res = client.post(f"/api/practice/goals?today={MONDAY}", json={"target_days": True})
+    assert res.status_code == 422
+    assert client.post(
+        f"/api/practice/sessions", json={"seconds": True, "activity": "free"}
+    ).status_code == 422
+
+
+def test_a_session_can_still_be_corrected_when_it_is_old(client, score):
+    """How far back a NEW practice day may be is a rule about what somebody may
+    claim now. Applied to a date already stored it made every session
+    permanently uneditable once it was old enough."""
+    session = log(client, day=MONDAY, seconds=600, score_id=score)
+    ancient = (date.today() - timedelta(days=1000)).isoformat()
+    conn = db.connect()
+    conn.execute(
+        "UPDATE practice_sessions SET local_date = ? WHERE id = ?", (ancient, session["id"])
+    )
+    conn.commit()
+
+    res = client.patch(f"/api/practice/sessions/{session['id']}", json={"rating": 5})
+    assert res.status_code == 200, res.text
+    assert res.json()["rating"] == 5
+    assert res.json()["local_date"] == ancient
+    # Moving the date itself is still bounded, because that IS a new claim.
+    moved = client.patch(
+        f"/api/practice/sessions/{session['id']}", json={"local_date": ancient}
+    )
+    assert moved.status_code == 422
+    assert "days ago" in moved.text
+
+
+# ---------------------------------------------------------------------------
+# Saying what was left out
+# ---------------------------------------------------------------------------
+
+
+def test_a_truncated_session_list_says_how_many_there_were(client, score):
+    for n in range(5):
+        log(client, day=D(n), seconds=600, score_id=score)
+    full = client.get("/api/practice/sessions").json()
+    assert (full["total"], full["truncated"]) == (5, False)
+    capped = client.get("/api/practice/sessions?limit=2").json()
+    assert len(capped["sessions"]) == 2
+    assert (capped["total"], capped["truncated"]) == (5, True)
+
+
+def test_a_truncated_by_piece_breakdown_says_how_many_pieces_there_were(client):
+    conn = db.connect()
+    for n in range(4):
+        conn.execute(
+            """INSERT INTO scores(title, path, file_type, hash, size, mtime)
+               VALUES (?, ?, 'pdf', 'deadbeef', 1, 0.0)""",
+            (f"Piece {n}", f"a/{n}.pdf"),
+        )
+    conn.commit()
+    ids = [r["id"] for r in conn.execute("SELECT id FROM scores")]
+    for score_id in ids:
+        log(client, day=MONDAY, seconds=600, score_id=score_id)
+
+    history = client.get(f"/api/practice/history?days=30&today={D(6)}").json()
+    assert history["scores_worked"] == len(ids)
+    assert history["by_score_truncated"] is False
+
+
+# ---------------------------------------------------------------------------
 # The rest of the app still sees practice the way it did
 # ---------------------------------------------------------------------------
 
@@ -598,6 +819,87 @@ def test_the_recently_practised_and_neglected_views_still_work(client, score, ot
     assert [s["id"] for s in neglected] == [other_score]
 
 
+def test_the_library_views_go_by_the_practice_day_not_the_timestamp(client, score, other_score):
+    """A session entered late says which day it happened on, and the library
+    has to believe it. Windowing on the UTC timestamp instead would call a
+    piece last touched two months ago "recently practised" because the row was
+    typed in this morning - and the library is the view a person sees first, so
+    it must not disagree with the practice page about when they last played
+    something."""
+    long_ago = (date.today() - timedelta(days=60)).isoformat()
+    log(client, day=long_ago, seconds=1800, score_id=score)
+
+    assert client.get("/api/scores?practiced=recent").json() == []
+    neglected = {s["id"] for s in client.get("/api/scores?practiced=neglected").json()}
+    assert neglected == {score, other_score}
+    # And the day it reports is that day, not today.
+    listed = {s["id"]: s for s in client.get("/api/scores").json()}
+    assert listed[score]["last_practiced"] == long_ago
+
+
+def test_an_orphaned_session_does_not_empty_the_neglected_view(client, score, other_score):
+    """SQL's NOT IN against a set containing NULL is never true. Now that a
+    session can have no score, one orphaned row anywhere used to be enough to
+    make "needs attention" list nothing at all - including scores that have
+    never been practised, which is exactly what that view is for."""
+    log(client, day=MONDAY, seconds=600, score_id=score)
+    _delete_score(score)
+    neglected = client.get("/api/scores?practiced=neglected").json()
+    assert [s["id"] for s in neglected] == [other_score]
+
+
+def test_every_practice_query_counts_only_this_owner(client, score):
+    """Dead today - there is one owner - and checked anyway, because the day
+    accounts arrive the failure is somebody else's practice appearing in this
+    person's totals, and the schema's comments ask these sites to stay
+    consistent and greppable rather than correct by accident. /practice/summary
+    was the one that had no owner filter at all.
+
+    The score-scoped totals are deliberately NOT filtered: a score has no owner
+    column, so "this owner's practice on this score" is not a question the
+    schema can answer yet, and pretending otherwise would be a filter that
+    looks like a guarantee and is not.
+    """
+    today = date.today().isoformat()
+    log(client, day=today, seconds=600, score_id=score)
+    conn = db.connect()
+    conn.execute(
+        """INSERT INTO practice_sessions(owner, score_id, activity, started_at, local_date, seconds)
+           VALUES ('someone_else', ?, 'piece', datetime('now'), ?, 9999)""",
+        (score, today),
+    )
+    conn.execute(
+        """INSERT INTO practice_goals(owner, period_start, period_end, target_days, scope)
+           VALUES ('someone_else', ?, ?, 7, 'all')""",
+        (MONDAY, SUNDAY),
+    )
+    conn.commit()
+
+    assert client.get("/api/practice/summary").json()["week_seconds"] == 600
+    history = client.get(f"/api/practice/history?days=30&today={today}").json()
+    assert history["seconds"] == 600
+    assert client.get("/api/practice/sessions").json()["total"] == 1
+    assert client.get(f"/api/practice/goals?today={today}").json()["goals"] == []
+    week = client.get(f"/api/practice/review?weeks=1&today={today}").json()["weeks"][0]
+    assert week["facts"]["seconds"] == 600
+    assert week["goal"] is None
+
+
+def test_the_weekly_summary_counts_practice_days(client, score):
+    """Seven calendar days, so this and the practice page cannot disagree about
+    what "this week" held. A session back-dated well outside the window does
+    not count towards it however recently it was typed in."""
+    today = date.today().isoformat()
+    log(client, day=today, seconds=1800, score_id=score)
+    log(client, day=(date.today() - timedelta(days=30)).isoformat(), seconds=3600, score_id=score)
+    summary = client.get("/api/practice/summary").json()
+    assert summary["week_seconds"] == 1800
+    assert summary["week_sessions"] == 1
+    assert [(s["title"], s["practice_seconds"]) for s in summary["top_scores"]] == [
+        ("Study in C", 1800)
+    ]
+
+
 def test_the_weekly_summary_still_answers(client, score):
     client.post(f"/api/scores/{score}/practice", json={"seconds": 1800})
     summary = client.get("/api/practice/summary").json()
@@ -605,17 +907,136 @@ def test_the_weekly_summary_still_answers(client, score):
     assert [s["title"] for s in summary["top_scores"]] == ["Study in C"]
 
 
-def test_deleting_a_score_takes_its_practice_and_its_goal_with_it(client, score):
-    """Documented, and checked here so it stays deliberate: a score row goes
-    only when its file has left the library, and a goal about a piece that is
-    no longer there could not be reviewed against anything."""
-    log(client, day=MONDAY, seconds=1800, score_id=score)
-    set_goal(client, today=MONDAY, target_days=3, scope="score", score_id=score)
+def _delete_score(score_id: int) -> None:
+    """Remove a score row the way the scanner does when its file has gone.
+
+    There is no delete endpoint yet (#56), and going through the database is
+    the honest stand-in: what matters is what the foreign key does, not which
+    code path asked.
+    """
     conn = db.connect()
-    conn.execute("DELETE FROM scores WHERE id = ?", (score,))
+    conn.execute("DELETE FROM scores WHERE id = ?", (score_id,))
     conn.commit()
-    assert client.get("/api/practice/sessions").json()["sessions"] == []
-    assert client.get("/api/practice/goals").json()["goals"] == []
+
+
+def test_deleting_a_score_keeps_the_practice(client, score, other_score):
+    """The hours were spent whether or not the file is still on disk, and the
+    record of them is a property of the person's history rather than of the
+    file. Every session survives, naming no piece."""
+    log(client, day=MONDAY, seconds=1800, score_id=score, rating=4, note="better today")
+    log(client, day=D(1), seconds=600, score_id=other_score)
+    _delete_score(score)
+
+    sessions = client.get("/api/practice/sessions").json()["sessions"]
+    assert len(sessions) == 2
+    orphan = next(s for s in sessions if s["score_id"] is None)
+    assert orphan["seconds"] == 1800
+    assert orphan["rating"] == 4
+    assert orphan["note"] == "better today"
+    assert orphan["local_date"] == MONDAY
+    # Named as what it is, not left as a blank where a title goes.
+    assert orphan["activity"] == "piece"
+    assert orphan["score_missing"] is True
+    # The other piece is untouched, so the delete took only what it should.
+    assert next(s for s in sessions if s["score_id"] == other_score)["score_missing"] is False
+
+
+def test_a_goal_already_reached_stays_reached_when_a_score_is_deleted(client, score):
+    """The failure this has to rule out. A week's goal counted over any
+    practice must not become unmet because a file was tidied away afterwards."""
+    for day in (MONDAY, D(1), D(2)):
+        log(client, day=day, seconds=1800, score_id=score)
+    goal = set_goal(client, today=D(7), period_start=MONDAY, target_days=3, target_minutes=60)
+    assert goal["progress"]["met"] is True
+
+    _delete_score(score)
+    after = client.get(f"/api/practice/goals?today={D(7)}").json()["goals"][0]
+    assert after["progress"]["met"] is True
+    assert after["progress"]["days_practised"] == 3
+    assert after["progress"]["minutes"] == 90
+    assert after["progress"]["countable"] is True
+
+
+def test_orphaned_practice_still_appears_everywhere_practice_is_counted(client, score):
+    """Not filtered out anywhere. The history, the review and a week's facts
+    all have to keep it, or "where did my time go" starts losing hours to
+    library tidying."""
+    log(client, day=MONDAY, seconds=1800, score_id=score)
+    _delete_score(score)
+
+    history = client.get(f"/api/practice/history?days=30&today={D(6)}").json()
+    assert history["seconds"] == 1800
+    assert history["days_practised"] == 1
+    # by_score can no longer name it - there is no piece to name - so the time
+    # is accounted for under the kind of work it was.
+    assert history["by_score"] == []
+    assert [(r["activity"], r["seconds"]) for r in history["by_activity"]] == [("piece", 1800)]
+
+    week = client.get(f"/api/practice/review?weeks=1&today={D(6)}").json()["weeks"][0]
+    assert week["facts"]["seconds"] == 1800
+    assert week["facts"]["days_practised"] == 1
+
+
+def test_a_goal_about_a_deleted_piece_says_it_cannot_be_counted(client, score):
+    """Its sessions are still in the history but no longer identifiable as
+    being about that piece. So it reports that, rather than reporting zero days
+    - which would read as a week nobody practised."""
+    log(client, day=MONDAY, seconds=1800, score_id=score)
+    goal = set_goal(
+        client, today=D(7), period_start=MONDAY, target_days=1, scope="score", score_id=score
+    )
+    assert goal["progress"]["met"] is True
+
+    _delete_score(score)
+    after = client.get(f"/api/practice/goals?today={D(7)}").json()["goals"][0]
+    assert after["id"] == goal["id"]
+    assert after["scope"] == "score"
+    assert after["score_id"] is None
+    assert after["progress"]["countable"] is False
+    assert after["progress"]["met"] is None
+    assert after["progress"]["met_days"] is None
+
+
+def test_an_orphaned_session_can_still_be_annotated(client, score):
+    """A true record has to stay editable. Refusing a note because the piece
+    was deleted would turn a rule about making an honest claim into a rule
+    about keeping one."""
+    session = log(client, day=MONDAY, seconds=1800, score_id=score)
+    _delete_score(score)
+    res = client.patch(
+        f"/api/practice/sessions/{session['id']}", json={"note": "the one I gave up on"}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["note"] == "the one I gave up on"
+    assert res.json()["score_missing"] is True
+
+
+def test_a_goal_about_a_deleted_piece_can_still_be_reflected_on(client, score):
+    log(client, day=MONDAY, seconds=1800, score_id=score)
+    goal = set_goal(client, today=MONDAY, target_days=3, scope="score", score_id=score)
+    _delete_score(score)
+    res = client.patch(
+        f"/api/practice/goals/{goal['id']}?today={D(7)}",
+        json={"reflection": "gave that piece up", "realistic": "no"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["reflection"] == "gave that piece up"
+
+
+def test_a_session_on_a_piece_still_cannot_be_created_without_one(client, score):
+    """The allowance is granted from the STORED row, so it cannot be used to
+    reach that state deliberately: creating a piece session with no piece is
+    still refused, and which piece a session is against is not patchable at
+    all - a session cannot be detached from its score, only outlive it."""
+    assert (
+        client.post("/api/practice/sessions", json={"seconds": 600, "activity": "piece"}).status_code
+        == 422
+    )
+    session = log(client, day=MONDAY, seconds=600, score_id=score)
+    res = client.patch(f"/api/practice/sessions/{session['id']}", json={"score_id": None})
+    assert res.status_code == 200, res.text
+    assert res.json()["score_id"] == score
+    assert res.json()["score_missing"] is False
 
 
 def test_practice_recorded_before_this_change_is_still_counted(client, score):

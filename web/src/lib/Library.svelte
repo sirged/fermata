@@ -95,14 +95,21 @@
 
   function practicedAgo(lastPracticed) {
     if (!lastPracticed) return "";
-    const iso = lastPracticed.replace(" ", "T") + "Z";
-    const then = new Date(iso);
+    // A practice DAY (YYYY-MM-DD), which is the day in the practiser's own
+    // time - not the UTC timestamp this used to be handed. That mattered
+    // because the answer here is a count of calendar days: reading it off a
+    // UTC instant put an evening's practice on the next day for anyone west of
+    // Greenwich, so "practised today" became "practised 1d ago" at nine at
+    // night. The slice also tolerates a timestamp, so an older server (or a
+    // row read through some other path) still reads sensibly rather than
+    // showing nothing.
+    const [year, month, day] = String(lastPracticed).slice(0, 10).split("-").map(Number);
+    if (!year || !month || !day) return "";
+    const then = new Date(year, month - 1, day);
     if (!Number.isFinite(then.getTime())) return "";
-    // Compare calendar dates (in local time), not raw elapsed milliseconds,
-    // so e.g. 23:00 yesterday reads as 1 day ago rather than "today".
     const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
     const days = Math.round((startOfDay(new Date()) - startOfDay(then)) / 86400000);
-    if (days <= 0) return "practiced <24h ago";
+    if (days <= 0) return "practiced today";
     if (days === 1) return "practiced 1d ago";
     return `practiced ${days}d ago`;
   }

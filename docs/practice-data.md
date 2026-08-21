@@ -72,13 +72,28 @@ so a reader is never handed an inferred day as though it were a recorded one.
 
 ### What deletes a session
 
-`score_id` is `ON DELETE CASCADE`, so removing a score removes its practice.
-That is deliberate and narrower than it sounds: the scanner re-links a renamed
-or moved file to its existing score row by content hash precisely so a rename
-never reaches this cascade, and a score row that genuinely goes means the file
-has left the library. `DELETE /api/practice/sessions/{id}` is the only other
-way, and exists because a timer left running by accident is otherwise
-permanent.
+Almost nothing. `score_id` is `ON DELETE SET NULL`: removing a score forgets
+which piece the practice was about and keeps the practice. The hours were spent
+whether or not the file is still on disk, and the record of them belongs to the
+person rather than to the file - which is the whole premise of this feature and
+the reason these rows are the one thing here that cannot be regenerated.
+
+A session that outlives its score keeps `activity = 'piece'` with no
+`score_id`, and that pair is what identifies it: every other activity may
+legitimately have no score, and a `piece` session cannot be *created* without
+one. Every session response carries `score_missing` for exactly this, so a
+reader can name it as practice on a piece that has gone rather than showing a
+blank where a title belongs. Nothing filters these rows out of any total, any
+day count or any goal.
+
+`DELETE /api/practice/sessions/{id}` is the only way to remove a session, and
+exists because a timer left running by accident is otherwise permanent.
+
+A dangling `score_id` - a reference to a score that is not in the table, which
+this application cannot produce but the `sqlite3` command line produces
+trivially, since its default is `foreign_keys` off - is repaired to `NULL` on
+the next startup and announced in the log. That is what the reference's own `ON
+DELETE SET NULL` would have done had the deletion gone through the database.
 
 ## Goals
 
@@ -98,14 +113,35 @@ piece or one kind of work.
 | `reflection`, `realistic` | Written afterwards, by them, and by nothing else. |
 
 At least one target is required: a goal has to be concrete enough to be either
-met or missed, which is the point of setting one. There is **one goal per
-period per owner** - setting another for the same week replaces it, because
-changing your mind about the week is the ordinary case and a period with two
-goals in it is a scorecard.
+met or missed, which is the point of setting one. Setting another goal for the
+same period replaces it - changing your mind about the week is the ordinary
+case, and a period with two goals in it is a scorecard. The reflection is
+cleared when that happens: it was written about the intention being replaced,
+and carrying it over would have the review ask whether a goal was realistic and
+answer with words about a different one.
 
-The period is stored as its two dates rather than as a week number, so a goal
-keeps meaning exactly what it meant when it was set even after the
-`week_starts_on` preference changes underneath it.
+**No two goals may share a day.** Not merely no two with the same start date:
+overlap is refused with a 409 naming the period that clashes. Overlapping goals
+are how the same practice gets counted against two intentions, and it becomes
+reachable through the ordinary interface the moment `week_starts_on` changes,
+because the new grid's weeks are offset from the old grid's rather than being
+different weeks.
+
+The period is stored as its two dates rather than as a week number, and those
+dates are what everything reads. A goal therefore keeps meaning exactly what it
+meant when it was set, and changing `week_starts_on` afterwards cannot re-slice
+it: the review lists each goal's **own** period rather than matching goals to
+slots on today's grid. Matching by grid slot meant the same history reported a
+different result after a preference change, and a past week carrying somebody's
+own intent and reflection rendered as "no goal was set" - a false statement
+about their own record.
+
+A goal about a piece that has since left the library reports
+`progress.countable = false` with `met` as `null`. Its sessions are still in the
+history but no longer identifiable as being about that piece, so it cannot be
+counted - and saying so is the only honest answer. Reporting zero days would
+turn a week somebody practised into a shortfall, and a goal already reached into
+one that was not.
 
 **There is no column recording whether a goal was met, and there will not be
 one.** Progress is counted from the sessions inside the period every time it is
@@ -154,7 +190,11 @@ the questions rather than around the tables.
 - `DELETE /api/practice/sessions/{id}`
 - `GET /api/practice/sessions?start=&end=&score_id=&activity=&limit=` - the raw
   record across every piece and every kind of work, filtered by practice day.
-  *What did I actually do this week.*
+  *What did I actually do this week.* Returns `total` and `truncated` beside the
+  rows: a list that stops at the limit and says nothing looks identical to a
+  complete one, and a reader totalling it would report less practice than there
+  was. `/practice/history` does the same for its by-piece breakdown, with
+  `scores_worked` and `by_score_truncated`.
 
 ### Aggregates
 
@@ -162,9 +202,11 @@ the questions rather than around the tables.
   and per-activity totals over a window of up to a year. *Where has the time
   gone over three months.*
 - `GET /api/scores?practiced=recent|neglected` - the library's own views.
-  *Which pieces have I neglected.* These use rolling windows over `started_at`
-  rather than the practice day, because "in the last 14 days" is a question
-  about elapsed time rather than about calendar days.
+  *Which pieces have I neglected.* Windowed on the practice day, like
+  everything else: the library is the view a person sees first, so it must not
+  disagree with the practice page about when they last played something, and a
+  back-dated session counts from the day it says it happened. `last_practiced`
+  on a score is that day, not a timestamp.
 - `GET /api/practice/summary` - the last seven days, for the library header.
 
 ### Goals and the review
@@ -189,12 +231,27 @@ an accident of the hour: west of Greenwich the UTC date is already tomorrow
 while somebody still has their evening. So a client passes its own date as
 `today`, and a client that passes nothing gets the server's UTC date.
 
+It is bounded to the same window a practice day may name - roughly a year back
+and a day forward. Unbounded, `today=2099-01-01` was answered with a
+plausible-looking empty week, which is the worst kind of wrong answer because
+nothing in the response marks it as suspect. The window is deliberately as wide
+as the back-dating window rather than as narrow as a timezone: reasoning about a
+period that has already ended is a legitimate use of the parameter, and the
+thing that makes every period rule here testable without waiting for the
+calendar.
+
 ### Progress, as reported
 
 `progress` on a goal carries `days_practised`, `minutes`, `seconds`,
 `sessions`, a `days` array covering **every** day in the period including the
-empty ones, `status` (`upcoming`, `running` or `past`), `days_left`, and
-`met_days` / `met_minutes` / `met`.
+empty ones, `status` (`upcoming`, `running` or `past`), `days_left`,
+`countable`, and `met_days` / `met_minutes` / `met`.
+
+It also carries `sessions_inferred`: how many of the sessions behind those
+totals had no recorded practice day and were attributed to their UTC one. A
+single session already says which it is; a total said nothing, so a window
+spanning the upgrade quietly added two kinds of day together. Zero on any
+install that has only ever run this version.
 
 A `met_*` value is `null` when that target was not set, which is not the same
 as unmet - a goal with no minutes target has nothing to say about minutes, and
@@ -215,13 +272,28 @@ All pending steps share one transaction and each stamps its own version as it
 completes, so an interrupted upgrade resumes from the last step that actually
 landed, and the work and its stamp cannot disagree.
 
-Version 2 is the first step: it rebuilds `practice_sessions` so `score_id` can
-be `NULL`, which SQLite cannot express as an alteration in place. Every
-existing row is carried across with its id intact.
-`server/tests/test_practice_migration.py` builds a real version 0 and version 1
-database, with real practice rows in them, and checks the rows survive - and
-compares the upgraded table against a freshly created one so the two
-definitions cannot drift apart.
+Steps run **before** the schema script and before `COLUMN_ADDITIONS`, so a step
+sees the database exactly as the previous version left it: no table `SCHEMA`
+would have created, and no column `COLUMN_ADDITIONS` would have added. A step
+that needs such a column has to add it itself. The order matters the other way
+too: `SCHEMA` creates indexes over columns that only exist once a rebuild has
+happened.
+
+A step that rebuilds a table runs with foreign keys **off**, as SQLite's own
+table-rebuild recipe says to. With them on, one pre-existing row whose reference
+had come loose would be rejected on the copy and take startup down on every
+subsequent boot. Consistency is checked rather than assumed: dangling practice
+references are repaired to `NULL`, anything else remaining is reported, and both
+are announced in the log.
+
+Version 2 rebuilds `practice_sessions` so `score_id` can be `NULL`; version 3
+rebuilds both practice tables so a deleted score sets that reference to `NULL`
+rather than cascading the practice away. Every existing row is carried across
+with its id intact, by name rather than by position.
+`server/tests/test_practice_migration.py` builds real version 0, 1 and 2
+databases with real practice rows in them - including a hand-edited one with a
+dangling reference - and checks the rows survive, then compares each upgraded
+table against a freshly created one so the two definitions cannot drift apart.
 
 There is no down direction. A database written by a newer release is refused
 outright at startup rather than written to blind; restoring a backup is the way

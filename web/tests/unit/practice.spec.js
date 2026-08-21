@@ -9,16 +9,24 @@
 //
 // No browser is needed for any of it - practice.js has no runes and no imports
 // precisely so this can import it.
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { expect, test } from "@playwright/test";
 
 import {
   ACTIVITY_LABELS,
   FORBIDDEN_WORDS,
+  MISSING_PIECE_LABEL,
   WEEK_STARTS,
   forbiddenWord,
+  sessionSubject,
+  uncountableStatement,
   activityLabel,
   addDays,
   dayBars,
+  formatDays,
   formatDuration,
   formatMinutes,
   goalScopeLabel,
@@ -162,6 +170,55 @@ test("the forbidden vocabulary is matched as whole words", () => {
   }
 });
 
+// The user-facing text in the components, which the vocabulary check did not
+// reach. practice.js owns the phrases it generates, but the pages carry
+// literals of their own - and one of them ("your practice record") failed this
+// on the whole word "record", in a file whose header says the words are the
+// feature.
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const COMPONENTS = ["Practice.svelte", "Viewer.svelte", "Library.svelte"];
+
+// The attributes a person actually reads. Every other attribute value is
+// dropped before the check, because they are machine vocabulary and collide
+// with it: loading="lazy" is a standard HTML value, and weakening the word list
+// to accommodate it would be exactly the wrong way round.
+const READ_BY_A_PERSON = /^(placeholder|title|aria-label|alt)=/;
+
+/** A component's text with everything that is not shown to a person removed:
+ * comments in all three syntaxes, the style block, and attribute values nobody
+ * reads. */
+function visibleText(source) {
+  return source
+    .replace(/<style[\s\S]*?<\/style>/g, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/^\s*\/\/.*$/gm, " ")
+    .replace(/[\w-]+="[^"]*"/g, (attr) => (READ_BY_A_PERSON.test(attr) ? attr : " "));
+}
+
+test("the practice interface's own words pass the same vocabulary check", () => {
+  for (const name of COMPONENTS) {
+    const source = fs.readFileSync(path.join(HERE, "..", "..", "src", "lib", name), "utf8");
+    const found = forbiddenWord(visibleText(source));
+    expect(found, `${name} contains the word ${found}`).toBeNull();
+  }
+});
+
+test("the vocabulary check would notice if one of those files slipped", () => {
+  // The check above is worth nothing unless it can fail on the files it reads,
+  // and a comment-stripper is exactly the sort of thing that quietly stops
+  // matching anything.
+  expect(forbiddenWord(visibleText('<p>you missed a day</p>'))).toBe("missed");
+  expect(forbiddenWord(visibleText('<script>const s = "your best week";</script>'))).toBe("best");
+  // ...and that it is the stripping, not luck, that lets the real files pass.
+  expect(forbiddenWord(visibleText("<!-- a comment mentioning your best week -->"))).toBeNull();
+  expect(forbiddenWord(visibleText("<style>.missed { color: red }</style>"))).toBeNull();
+  expect(forbiddenWord(visibleText('<img loading="lazy" alt="" />'))).toBeNull();
+  // An attribute a person DOES read is still checked.
+  expect(forbiddenWord(visibleText('<input placeholder="you missed a day" />'))).toBe("missed");
+  expect(forbiddenWord(visibleText('<button title="your best week">x</button>'))).toBe("best");
+});
+
 // ------------------------------------------------------------- the statements
 
 test("a partly met goal states both numbers and reaches no verdict", () => {
@@ -187,6 +244,31 @@ test("both targets produce one statement each, in the order they were set", () =
   );
   expect(statements.map((s) => s.key)).toEqual(["days", "minutes"]);
   expect(statements[1].text).toBe("1h 30m of 2h 30m planned");
+});
+
+test("a week with no practice in it says none, not nought", () => {
+  // The rule formatDuration already applies to a length, applied to the other
+  // target. "0 of 5 planned days" beside "none of 5h planned" is the rule kept
+  // in one place and dropped in the other, and a bare nought beside a target
+  // reads like a mark out of five.
+  const statements = goalStatements(
+    goal({
+      target_days: 5,
+      target_minutes: 300,
+      progress: {
+        ...goal().progress,
+        days_practised: 0,
+        minutes: 0,
+        met_days: false,
+        met_minutes: false,
+      },
+    }),
+  );
+  expect(statements[0].text).toBe("none of 5 planned days");
+  expect(statements[1].text).toBe("none of 5h planned");
+  expect(formatDays(0)).toBe("no days");
+  expect(formatDays(1)).toBe("1 day");
+  expect(formatDays(4)).toBe("4 days");
 });
 
 test("a target that was not set produces no statement at all", () => {
@@ -234,6 +316,20 @@ test("a week states its days and its total, or says plainly there was none", () 
   expect(periodStatement(null)).toBe("No practice recorded this week");
 });
 
+test("a past week does not call itself this week", () => {
+  // It did, for every row in the review - so a quiet spell in July rendered as
+  // three consecutive rows reading "No practice recorded this week" beside
+  // dates nowhere near the current one. The row already carries its dates; the
+  // sentence does not need to name the week, only to avoid naming the wrong
+  // one.
+  expect(periodStatement({ days_practised: 0, seconds: 0 }, false)).toBe("No practice recorded");
+  expect(periodStatement(null, false)).toBe("No practice recorded");
+  expect(periodStatement({ days_practised: 2, seconds: 600 }, false)).toBe("2 days, 10m");
+  for (const facts of [null, { days_practised: 0, seconds: 0 }, { days_practised: 3, seconds: 1 }]) {
+    expect(periodStatement(facts, false)).not.toContain("this week");
+  }
+});
+
 test("nothing said about a week compares it to another week", () => {
   const said = [
     periodStatement({ days_practised: 0, seconds: 0 }),
@@ -249,8 +345,15 @@ test("a goal says what it is about", () => {
   expect(goalScopeLabel(goal({ scope: "activity", activity: "ear_training" }))).toBe(
     "ear training",
   );
-  // A piece whose row has gone still has a goal to describe.
-  expect(goalScopeLabel(goal({ scope: "score", score_title: null }))).toBe("one piece");
+  // A title that did not come back, but the piece is still there.
+  expect(goalScopeLabel(goal({ scope: "score", score_id: 4, score_title: null }))).toBe(
+    "one piece",
+  );
+  // A piece that has left the library says so, rather than showing a blank
+  // where a title goes.
+  expect(goalScopeLabel(goal({ scope: "score", score_id: null, score_title: null }))).toBe(
+    MISSING_PIECE_LABEL.toLowerCase(),
+  );
 });
 
 // ------------------------------------------------------------------- the bars
