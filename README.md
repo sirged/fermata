@@ -44,7 +44,17 @@ them.
   stems do not separate still do not add up — that is now a stated conformance
   rule of the profile, so any MusicXML tool finds those bars too, and the count
   is reported either way. Scanned PDFs have nothing to read and are not
-  transcribed.
+  transcribed. Harmonics are currently dropped rather than read — a gap worth
+  knowing about separately, because a note that is missing does not announce
+  itself the way a note read wrongly does.
+- **Instruments** — define what you actually play: any number of strings, any
+  tuning including reentrant ones, a capo, and a reference pitch other than
+  A440. Each string shows the note and frequency it sounds and can be played,
+  because choosing between two positions for the same written note is done by
+  ear, and on an unfretted instrument a heard pitch is the reference rather
+  than a convenience. Presets cover guitars, basses, ukulele, violin, viola and
+  cello. Transcription does not yet use a score's instrument — it still assumes
+  a six-string guitar in standard tuning.
 - **Practice tracking** — a session timer per piece, with recently-practised
   and neglected views so the library reflects what you are actually working on.
 - **Gig mode** — fullscreen, screen kept awake, oversized tap targets and
@@ -134,9 +144,15 @@ demo*) if your library is PDF-only so far.
 
 ## Roadmap
 
+- **Harmonics when transcribing** — currently dropped entirely, which leaves a
+  hole in the music rather than a mistake in it, and shortens the bar they
+  belonged to
 - **Tuplets and ties when transcribing** — the largest remaining gap between a
   transcription and a score you could practise from, and the reason bars still
   overfill once voices have been separated
+- **Instrument-aware transcription** — reading a score against the instrument it
+  is written for, instead of assuming standard six-string tuning whatever the
+  score says
 - **Score creation and editing** — build a staff from scratch in the browser,
   instrument-agnostic with first-class guitar tablature support
 - **More import formats** — MIDI and plain-text tab in particular, since those
