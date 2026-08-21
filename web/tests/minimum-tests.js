@@ -14,21 +14,40 @@
 // is one of the cases this exists to catch, so a filter cannot be the thing that
 // switches the check off. Narrowing a run on purpose is what the escape hatch is
 // for, and CI never sets it.
-const MINIMUM_TESTS = 78;
+//
+// This is also read directly by scripts/run-browser-tests.mjs, which is the
+// OTHER half of this guard - see that file's own comment for why counting
+// here is not, by itself, enough. Keep the two numbers in sync.
+export const MINIMUM_TESTS = 97;
 
 export default class MinimumTests {
-  onBegin(_config, suite) {
-    this.found = suite.allTests().length;
+  constructor() {
+    // Tests that actually ran and were not skipped - NOT suite.allTests()'s
+    // count, which was this class's original approach and has a real hole:
+    // it counts a test.skip()'d test exactly the same as one that passed, so
+    // an entire spec silently marked skip (the same class of failure as a
+    // stray --grep, just spelled differently) sailed straight through this
+    // guard. onTestEnd only fires for a test Playwright actually attempted,
+    // so a --grep-filtered-out test is excluded automatically, same as
+    // before - but now a skipped one is excluded too. Counted regardless of
+    // pass/fail/flaky: a legitimately failing suite must not ALSO report
+    // "tests have gone missing" on top of its real failure, which is exactly
+    // how a guard teaches people to stop reading it.
+    this.executed = 0;
+  }
+
+  onTestEnd(_test, result) {
+    if (result.status !== "skipped") this.executed += 1;
   }
 
   async onEnd(result) {
     if (process.env.PLAYWRIGHT_ALLOW_PARTIAL) return;
-    if (this.found >= MINIMUM_TESTS) return;
+    if (this.executed >= MINIMUM_TESTS) return;
     console.error(
-      `\nExpected at least ${MINIMUM_TESTS} tests, collected ${this.found}. ` +
-        "Tests have gone missing, or the floor in web/tests/minimum-tests.js " +
-        "needs raising on purpose. To run a deliberate subset, set " +
-        "PLAYWRIGHT_ALLOW_PARTIAL=1.",
+      `\nExpected at least ${MINIMUM_TESTS} tests to run, only ${this.executed} did. ` +
+        "Tests have gone missing (skipped, filtered, or deleted), or the floor in " +
+        "web/tests/minimum-tests.js needs raising on purpose. To run a deliberate " +
+        "subset, set PLAYWRIGHT_ALLOW_PARTIAL=1.",
     );
     return { status: result.status === "passed" ? "failed" : result.status };
   }

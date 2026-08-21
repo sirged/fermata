@@ -10,7 +10,16 @@
 
 /** A click slower than this stops being a metronome and starts being a wait. */
 export const MIN_METRONOME_BPM = 20;
-/** A click faster than this is not a tempo practice happens at. */
+// A click faster than this is not a tempo practice happens at - and, just as
+// importantly, keeps the period between clicks (60_000 / this, in ms) safely
+// above METRONOME_CLICK_SECONDS in score-render.js: at 400 that is a 150ms
+// period against a ~70ms envelope, comfortably clear of one click's tail
+// overlapping the next one's attack. This bounds the CLICK RATE itself
+// (clicks per minute - what is displayed and what is scheduled, always the
+// same number - see effectiveClickRate), not a quarter-note tempo prior to
+// any per-meter conversion: clamping before that conversion let an extreme
+// meter (4/128, or even a plain 6/8) push the actual rate far past what
+// either this constant or the envelope could survive.
 export const MAX_METRONOME_BPM = 400;
 /** Where a fixed-BPM click starts before a player has chosen otherwise. */
 export const DEFAULT_METRONOME_BPM = 120;
@@ -22,32 +31,54 @@ export const DEFAULT_METRONOME_BPM = 120;
 // rather than being a special case this file invents its own rule for.
 export const FALLBACK_SCORE_TEMPO = 120;
 
+/**
+ * Pulled into the countable range, whatever was handed in - including a
+ * value that is not usably a number at all. Guarded here, at the definition,
+ * rather than trusted to every caller: `clampBpm(NaN)` propagating NaN
+ * through Math.min/Math.max is one call site away from an unterminating
+ * scheduler loop (secondsPerClick(NaN) is NaN, and `while (next < ...)` never
+ * becomes false against NaN).
+ */
 export function clampBpm(bpm) {
-  return Math.min(MAX_METRONOME_BPM, Math.max(MIN_METRONOME_BPM, bpm));
+  const n = Number(bpm);
+  if (!Number.isFinite(n)) return MIN_METRONOME_BPM;
+  return Math.min(MAX_METRONOME_BPM, Math.max(MIN_METRONOME_BPM, n));
 }
 
 /**
- * The tempo the practice metronome should click at right now.
+ * The click RATE - clicks per minute, full stop - the practice metronome
+ * should sound right now. This is deliberately the one number both scheduled
+ * and displayed: a caller that reports something else (a quarter-note tempo
+ * a listener would have to convert in their head to match what they are
+ * actually hearing) is exactly the "displayed and sounded disagree" failure
+ * this function exists to rule out by construction.
  *
- * `mode: "bpm"` ignores the score entirely - a number set directly, for when
- * the marking is wrong, aspirational, or simply not the speed this passage
- * is being worked at.
+ * `mode: "bpm"` ignores the score AND the meter entirely - the typed number
+ * IS the rate, in every time signature, which is what a physical
+ * metronome's dial means and what the issue asks for: a tempo set directly,
+ * regardless of what the score says.
  *
  * `mode: "proportion"` takes `proportion` of `scoreTempo` - the score's OWN
- * tempo at the playhead, never the playback speed a caller may have set
- * separately. Call this again as `scoreTempo` moves (a piece that changes
- * tempo internally) and the answer moves with it; nothing here resolves it
- * once and remembers.
+ * quarter-note tempo at the playhead, never the playback speed a caller may
+ * have set separately - and converts THAT onto `unit` (the meter's own click
+ * unit, `unit/4`: an eighth-note meter clicks twice per quarter, a
+ * half-note meter once every two). Call this again as `scoreTempo` or `unit`
+ * move - a piece that changes tempo or time signature internally - and the
+ * answer moves with it; nothing here resolves it once and remembers.
  *
- * Always clamped to a countable range - see MIN/MAX_METRONOME_BPM.
+ * The conversion happens BEFORE clamping, not after: clamping the
+ * quarter-note value first and converting second would let a compound or
+ * unusually-fast meter push the actual clicked rate past MAX_METRONOME_BPM
+ * without ever tripping it.
  */
-export function effectiveMetronomeBpm({ mode, bpm, proportion, scoreTempo }) {
+export function effectiveClickRate({ mode, bpm, proportion, scoreTempo, unit }) {
   if (mode === "bpm") {
     return clampBpm(Number.isFinite(bpm) && bpm > 0 ? bpm : DEFAULT_METRONOME_BPM);
   }
   const base = Number.isFinite(scoreTempo) && scoreTempo > 0 ? scoreTempo : FALLBACK_SCORE_TEMPO;
   const ratio = Number.isFinite(proportion) && proportion > 0 ? proportion : 1;
-  return clampBpm(base * ratio);
+  const u = Number.isInteger(unit) && unit > 0 ? unit : 4;
+  return clampBpm(base * ratio * (u / 4));
 }
 
 /**
@@ -55,15 +86,23 @@ export function effectiveMetronomeBpm({ mode, bpm, proportion, scoreTempo }) {
  * ticks, one per `unit` (a denominator-valued note - an eighth for .../8),
  * with a tick accented every `accentEvery` ticks starting from the first.
  *
- * Compound meters (6/8, 9/8, 12/8, ...) click the subdivision rather than the
- * notated beat, because a bare click on the dotted-quarter pulse leaves the
- * two or three eighth notes inside it to guesswork - exactly the "hard to
- * place in compound meters" a bare click fails at. The grouping comes back
- * as the accent instead: every third click is a main pulse (1, 4, 7, ...),
- * the two between it are subdivision only.
+ * Compound meters (6/8, 9/8, 12/8, ..., and the same grouping written in
+ * sixteenths - 9/16, 12/16, ...) click the subdivision rather than the
+ * notated beat, because a bare click on the dotted pulse leaves the two or
+ * three notes inside it to guesswork - exactly the "hard to place in
+ * compound meters" a bare click fails at. The grouping comes back as the
+ * accent instead: every third click is a main pulse (1, 4, 7, ...), the two
+ * between it are subdivision only.
  *
- * 3/8 asks the same "numerator a multiple of 3, denominator 8" question the
- * compound branch below answers, and lands there too rather than needing a
+ * x/4 meters are deliberately left simple, even a numerator divisible by
+ * three (6/4): unlike 6/8, which is unambiguously two dotted-quarter pulses
+ * of three eighths, 6/4 is genuinely ambiguous between two dotted-half
+ * pulses and six plain quarter-note ones, with no single notational
+ * convention to default to - so it clicks as six plain quarters rather than
+ * guessing which reading a given piece meant.
+ *
+ * 3/8 (and 3/16) ask the same "numerator a multiple of 3" question the
+ * compound branch below answers, and land there too rather than needing a
  * carve-out: a single group of three IS the whole bar, so accenting "every
  * third click starting from the first" and "only the first click" are the
  * same instruction when there are only three clicks to begin with. Nothing
@@ -73,7 +112,7 @@ export function effectiveMetronomeBpm({ mode, bpm, proportion, scoreTempo }) {
 export function metronomePattern(numerator, denominator) {
   const n = Number.isInteger(numerator) && numerator > 0 ? numerator : 4;
   const d = Number.isInteger(denominator) && denominator > 0 ? denominator : 4;
-  const isCompound = d === 8 && n % 3 === 0;
+  const isCompound = (d === 8 || d === 16) && n % 3 === 0;
   return {
     clicksPerBar: n,
     accentEvery: isCompound ? 3 : n,
@@ -81,27 +120,37 @@ export function metronomePattern(numerator, denominator) {
   };
 }
 
-/**
- * Seconds between one click and the next, at `bpm` - always a quarter-note
- * tempo, the same convention MIDI and MusicXML tempo markings already use
- * regardless of the notated meter - for a click on a `unit`-valued note.
- */
-export function secondsPerClick(bpm, unit) {
-  return (60 / bpm) * (4 / unit);
+/** Seconds between one click and the next, at a click RATE already in clicks
+ * per minute (see effectiveClickRate) - there is no meter or mode left to
+ * convert here, which is deliberate: the rate handed in is already the
+ * exact number of clicks a minute that both sounds and gets displayed. */
+export function secondsPerClick(clickRate) {
+  return 60 / clickRate;
 }
 
 /**
- * Which time signature is active at `tick`, from a flat, tick-ordered list of
- * `{startTick, numerator, denominator}` - not the renderer's own bar model,
- * so this has no reason to import it (score-render.js builds the list from
- * that model once, when a score loads). Binary search: a long score can run
- * into the thousands of bars and this runs on every scheduled click.
+ * Which bar (of a flat, tick-ordered list) is active at `tick`. `bars` is
+ * `{startTick, endTick, numerator, denominator}[]`, in tick order - not the
+ * renderer's own model, so this has no reason to import it.
  *
- * Defaults to 4/4 for an empty list - there is no time signature to be wrong
- * about before any score has loaded.
+ * score-render.js builds this list from alphaTab's OWN generated-midi-
+ * timeline lookup (`api.tickCache.masterBars`), never by summing notated bar
+ * durations itself: `tick` lives on the generated MIDI's timeline, which
+ * expands repeats and skips unplayed alternate endings, so the notated bar
+ * order and the played tick order are different timelines the moment a
+ * score has so much as one repeat sign in it. Only the renderer's own lookup
+ * knows which bar is actually sounding at a given tick; a hand-summed index
+ * would silently answer with the wrong bar - and therefore the wrong meter -
+ * for every bar after the first repeat.
+ *
+ * Binary search: a long score can run into the thousands of bars and this
+ * runs on every scheduled click.
+ *
+ * Returns null for an empty list - there is no bar to be wrong about before
+ * anything has loaded.
  */
-export function timeSignatureAtTick(bars, tick) {
-  if (!bars || bars.length === 0) return { numerator: 4, denominator: 4 };
+export function barAtTick(bars, tick) {
+  if (!bars || bars.length === 0) return null;
   let lo = 0;
   let hi = bars.length - 1;
   let found = bars[0];
@@ -114,5 +163,46 @@ export function timeSignatureAtTick(bars, tick) {
       hi = mid - 1;
     }
   }
-  return { numerator: found.numerator, denominator: found.denominator };
+  return found;
+}
+
+/**
+ * Which of a bar's `clicksPerBar` slots `tick` falls in - 0 for the first,
+ * up to `clicksPerBar - 1` for the last.
+ *
+ * Derived fresh from the bar's own tick span every time this is called, not
+ * carried forward as running state. A persistent counter that only resets
+ * when the scheduler starts drifts out of alignment the moment any of these
+ * happen: the metronome is switched on mid-bar; the transport seeks; a loop
+ * whose length is not a whole number of click periods wraps back to its
+ * start; or the meter changes mid-score, carrying the old count into a new
+ * modulus. All four are just "the playhead is somewhere this counter didn't
+ * expect" - recomputing from the playhead instead means every one of them is
+ * the same ordinary case, not a special one to detect and handle.
+ *
+ * One consequence worth knowing: when the click's own rate does not evenly
+ * divide the bar's real duration (a fixed BPM, or a proportion other than
+ * 100%), the accented click will not recur at an even spacing measured in
+ * clicks - it recurs at an even spacing measured in the music's OWN bars,
+ * landing on or just after each real downbeat regardless of how the click's
+ * own tempo relates to it. That is the point: the accent marks where the
+ * bar actually starts, not a beat this function invented independently of
+ * it.
+ *
+ * `tick` is clamped to the bar's own span, so a click scheduled slightly
+ * ahead of the audio clock (see METRONOME_SCHEDULE_AHEAD_S in
+ * score-render.js) landing a few ticks past where the playhead has reached
+ * so far still answers with the bar's last slot rather than spilling into
+ * one that doesn't belong to it.
+ *
+ * Returns 0 - the downbeat - when `bar` is null (nothing loaded yet) or
+ * degenerate, rather than propagating NaN into a modulus.
+ */
+export function clickPhaseInBar(tick, bar, clicksPerBar) {
+  if (!bar || !(clicksPerBar > 0)) return 0;
+  const barTicks = bar.endTick - bar.startTick;
+  if (!(barTicks > 0)) return 0;
+  const ticksPerClick = barTicks / clicksPerBar;
+  const ticksIntoBar = Math.min(Math.max(tick - bar.startTick, 0), barTicks - 1e-6);
+  return Math.floor(ticksIntoBar / ticksPerClick) % clicksPerBar;
 }

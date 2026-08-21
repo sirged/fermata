@@ -254,13 +254,25 @@
     // Generous but bounded - the audio layer clamps to a countable range
     // regardless, this just keeps the number in the field sane before it
     // gets there.
-    metronomeProportion = clamp(Number(ev.target.value), 10, 300);
-    view?.setMetronomeProportion(metronomeProportion / 100);
+    const clamped = clamp(Number(ev.target.value), 10, 300);
+    metronomeProportion = clamped;
+    // Forced onto the field directly, not left to Svelte's own value={...}
+    // binding: when the clamp lands on the SAME number the state already
+    // held (typing 400 while already at 300), the state does not change, so
+    // nothing re-renders the input - and the box would go on showing the 400
+    // that was typed while the click kept running at 300. This project has
+    // already shipped the same mismatch once (a tuner showing one pitch
+    // while the synthesiser sounded another); displayed and actual have to
+    // agree unconditionally, not just on the changes Svelte happens to see.
+    ev.target.value = String(clamped);
+    view?.setMetronomeProportion(clamped / 100);
   }
 
   function setMetronomeBpm(ev) {
-    metronomeBpm = clamp(Number(ev.target.value), MIN_METRONOME_BPM, MAX_METRONOME_BPM);
-    view?.setMetronomeBpm(metronomeBpm);
+    const clamped = clamp(Number(ev.target.value), MIN_METRONOME_BPM, MAX_METRONOME_BPM);
+    metronomeBpm = clamped;
+    ev.target.value = String(clamped); // see setMetronomeProportion above
+    view?.setMetronomeBpm(clamped);
   }
 
   function toggleCountIn() {
@@ -315,7 +327,7 @@
         has to hold at a music stand, though, so the readout comes along even
         though its controls stay behind in the full toolbar, set up before
         stepping into gig mode. -->
-        <span class="metronome-indicator" title="Metronome">♩ {metronomeTempo}</span>
+        <span class="metronome-indicator" title="Metronome, clicks per minute">♩ {metronomeTempo}</span>
       {/if}
       {#if practiceLabel}
         <button class="practice-indicator" onclick={onStopPractice} title="Stop practice timer">
@@ -365,7 +377,7 @@
           <button class:on={metronome} onclick={toggleMetronome} title="Metronome click during playback">
             Metronome
             {#if metronome && metronomeTempo != null}
-              <span class="metronome-readout">{metronomeTempo}</span>
+              <span class="metronome-readout" title="clicks per minute">{metronomeTempo}</span>
             {/if}
           </button>
           {#if metronome}

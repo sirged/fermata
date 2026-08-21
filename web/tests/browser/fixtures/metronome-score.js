@@ -1,6 +1,6 @@
 // Fixture data + route stubs for tests/browser/metronome.spec.js.
 //
-// A real MusicXML document, not a stub of TabViewer's internals - the same
+// Real MusicXML documents, not a stub of TabViewer's internals - the same
 // reasoning as SCORE/SAMPLE_TEX in fixtures/transcription-warnings.js: the
 // interesting part of this feature is whether a genuine alphaTab render and
 // a genuine Web Audio click actually happen, which nothing short of the real
@@ -10,114 +10,198 @@
 // part that renders under the "score" profile without a tab staff.
 //
 // 6/8 at a declared tempo of 96 BPM (always quarter-note BPM - see
-// metronome.js's secondsPerClick) is the one fact these tests are built
+// metronome.js's secondsPerClick) is the fact most of these tests are built
 // around: it is a compound meter (six eighth-note clicks per bar, accented
 // on the 1st and 4th - see metronomePattern), and 96 is a base the
-// proportion tests below multiply and divide by round numbers.
-//
-// MEASURE_COUNT repeats of the one bar, not one - the slow end of these
-// tests (a click every 600ms+, several of them, sometimes under a halved
-// playback speed) needs several real seconds of audio playing, and a single
-// 1.875s bar would demand the tests lean on looping across many passes to
-// get there. Enough measures that the piece's own natural length already
-// covers every test's collection window keeps looping a belt-and-braces
-// safety net rather than something the timing math depends on.
-const MEASURE_COUNT = 8;
+// proportion tests multiply and divide by round numbers.
+const DIVISIONS = 480; // ticks per quarter note
+const PITCHES = ["C", "D", "E", "F", "G", "A", "B", "C"];
 
-const PITCHES = ["C", "D", "E", "F", "G", "A"];
-
-function measure(number) {
-  const attributes =
-    number === 1
-      ? `
+function timeAndTempoBlock(numerator, denominator, tempo) {
+  return `
       <attributes>
-        <divisions>480</divisions>
-        <key>
-          <fifths>0</fifths>
-        </key>
+        <divisions>${DIVISIONS}</divisions>
+        <key><fifths>0</fifths></key>
         <time>
-          <beats>6</beats>
-          <beat-type>8</beat-type>
+          <beats>${numerator}</beats>
+          <beat-type>${denominator}</beat-type>
         </time>
-        <clef>
-          <sign>G</sign>
-          <line>2</line>
-        </clef>
+        <clef><sign>G</sign><line>2</line></clef>
       </attributes>
       <direction placement="above">
         <direction-type>
-          <metronome>
-            <beat-unit>quarter</beat-unit>
-            <per-minute>96</per-minute>
-          </metronome>
+          <metronome><beat-unit>quarter</beat-unit><per-minute>${tempo}</per-minute></metronome>
         </direction-type>
-        <sound tempo="96" />
-      </direction>`
-      : "";
-  const notes = PITCHES.map(
-    (step) => `
-      <note>
-        <pitch><step>${step}</step><octave>4</octave></pitch>
-        <duration>240</duration>
-        <voice>1</voice>
-        <type>eighth</type>
-      </note>`,
-  ).join("");
-  return `    <measure number="${number}">${attributes}${notes}
-    </measure>`;
+        <sound tempo="${tempo}" />
+      </direction>`;
 }
 
-export const METRONOME_MUSICXML = `<?xml version="1.0" encoding="UTF-8"?>
+function notesForBar(numerator, denominator) {
+  // One note per click unit (an eighth for .../8, a quarter for .../4),
+  // filling the bar exactly - the fixture only needs to render and hold the
+  // declared duration, never to be musically interesting.
+  const unitDuration = DIVISIONS * (4 / denominator);
+  const type = denominator === 8 ? "eighth" : "quarter";
+  return Array.from({ length: numerator }, (_, i) => {
+    const step = PITCHES[i % PITCHES.length];
+    return `
+      <note>
+        <pitch><step>${step}</step><octave>4</octave></pitch>
+        <duration>${unitDuration}</duration>
+        <voice>1</voice>
+        <type>${type}</type>
+      </note>`;
+  }).join("");
+}
+
+/**
+ * Builds a score-partwise document of `measures` bars, all in one time
+ * signature/tempo (declared once, on the first bar) unless `change` names a
+ * later bar to switch at. `repeatAfter` puts a backward-repeat barline at
+ * the end of that 1-based bar number, repeating from the start of the piece
+ * (no forward repeat needed - the piece's own start is where a backward
+ * repeat with nothing preceding it returns to).
+ */
+function buildMusicXml({ measures, numerator, denominator, tempo, repeatAfter = null, change = null }) {
+  const bars = [];
+  let curNum = numerator;
+  let curDen = denominator;
+  for (let i = 1; i <= measures; i++) {
+    const isFirst = i === 1;
+    const isChange = change && i === change.at;
+    if (isChange) {
+      curNum = change.numerator;
+      curDen = change.denominator;
+    }
+    const attrs = isFirst
+      ? timeAndTempoBlock(curNum, curDen, tempo)
+      : isChange
+        ? `
+      <attributes>
+        <time><beats>${curNum}</beats><beat-type>${curDen}</beat-type></time>
+      </attributes>`
+        : "";
+    const barline =
+      repeatAfter === i
+        ? `
+      <barline location="right">
+        <bar-style>light-heavy</bar-style>
+        <repeat direction="backward"/>
+      </barline>`
+        : "";
+    bars.push(`    <measure number="${i}">${attrs}${notesForBar(curNum, curDen)}${barline}
+    </measure>`);
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <score-partwise version="4.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.musicxml.org/xsd/musicxml.xsd">
-  <work>
-    <work-title>Metronome test fixture</work-title>
-  </work>
+  <work><work-title>Metronome test fixture</work-title></work>
   <identification>
-    <encoding>
-      <software>Fermata test fixture</software>
-      <encoding-date>2026-08-20</encoding-date>
-    </encoding>
+    <encoding><software>Fermata test fixture</software><encoding-date>2026-08-20</encoding-date></encoding>
   </identification>
   <part-list>
     <score-part id="P1">
       <part-name>Piano</part-name>
-      <score-instrument id="P1-I1">
-        <instrument-name>Piano</instrument-name>
-      </score-instrument>
-      <midi-instrument id="P1-I1">
-        <midi-channel>1</midi-channel>
-        <midi-program>1</midi-program>
-      </midi-instrument>
+      <score-instrument id="P1-I1"><instrument-name>Piano</instrument-name></score-instrument>
+      <midi-instrument id="P1-I1"><midi-channel>1</midi-channel><midi-program>1</midi-program></midi-instrument>
     </score-part>
   </part-list>
   <part id="P1">
-${Array.from({ length: MEASURE_COUNT }, (_, i) => measure(i + 1)).join("\n")}
+${bars.join("\n")}
   </part>
 </score-partwise>
 `;
+}
 
-// file_type not "pdf" is what routes Viewer.svelte to TabViewer directly
-// (see Viewer.svelte) rather than through ScoreCompare/PdfViewer.
-export const METRONOME_SCORE = {
-  id: 1,
-  title: "Metronome test fixture",
-  composer: "",
-  source: "",
-  file_type: "musicxml",
-  has_transcription: false,
-  favorite: false,
-  content_kind: "notation",
-  tags: [],
-};
+// The main fixture: 8 measures of 6/8 at 96 BPM, no repeats. Eight rather
+// than one - the slow end of these tests (a click every 600ms+, several of
+// them, sometimes under a halved playback speed) needs several real seconds
+// of audio playing, and a single 1.875s bar would demand leaning on looping
+// across many passes to get there. Enough measures that the piece's own
+// natural length already covers every test's collection window keeps
+// looping a belt-and-braces safety net rather than something the timing
+// math depends on.
+export const METRONOME_MUSICXML = buildMusicXml({ measures: 8, numerator: 6, denominator: 8, tempo: 96 });
 
-/** Stubs the /api routes TabViewer/Viewer touch for score id 1, serving
- * METRONOME_MUSICXML as the file content. */
-export async function stubMetronomeScore(page) {
-  await page.route("**/api/scores/1", (route) => route.fulfill({ json: METRONOME_SCORE }));
-  await page.route("**/api/scores/1/file", (route) =>
-    route.fulfill({ body: METRONOME_MUSICXML, contentType: "application/vnd.recordare.musicxml+xml" }),
+// A short loop, deliberately: 2 measures of 6/8 at 96 BPM whose own real
+// playback length (2 * 1.875s = 3.75s) does NOT divide evenly by the click
+// period a 70%-proportion metronome runs at (~0.446s) - see the loop-wrap
+// test, which relies on that mismatch to tell "phase derived from the
+// playhead" apart from "phase carried as a counter that only resets when
+// the scheduler starts".
+export const METRONOME_MUSICXML_SHORT_LOOP = buildMusicXml({
+  measures: 2,
+  numerator: 6,
+  denominator: 8,
+  tempo: 96,
+});
+
+// Two bars of 4/4 at 120 BPM, repeated once (a backward-repeat barline on
+// bar 2), followed by one bar of 6/8 - three NOTATED bars that play as five
+// (4/4, 4/4, 4/4, 4/4, 6/8). A tick->meter index built by summing NOTATED
+// bar durations would place the 6/8 bar right after the first pass of bar 2
+// - i.e. DURING the repeat's second pass - and misreport the meter (and
+// therefore the click rate) for the whole rest of the repeated section. See
+// the "a repeat sign must not desync the click's meter" test.
+export const METRONOME_MUSICXML_REPEAT = buildMusicXml({
+  measures: 3,
+  numerator: 4,
+  denominator: 4,
+  tempo: 120,
+  repeatAfter: 2,
+  change: { at: 3, numerator: 6, denominator: 8 },
+});
+
+// A second, plainly different score (140 BPM, 4/4) - used only to prove the
+// metronome's own dataset state resets when a mounted TabViewer switches to
+// a DIFFERENT score, rather than a fresh view inheriting whatever a
+// previous score's clicks left sitting on the shared host element.
+export const METRONOME_MUSICXML_OTHER = buildMusicXml({ measures: 4, numerator: 4, denominator: 4, tempo: 140 });
+
+function scoreMeta(id, title) {
+  // file_type not "pdf" is what routes Viewer.svelte to TabViewer directly
+  // (see Viewer.svelte) rather than through ScoreCompare/PdfViewer.
+  return {
+    id,
+    title,
+    composer: "",
+    source: "",
+    file_type: "musicxml",
+    has_transcription: false,
+    favorite: false,
+    content_kind: "notation",
+    tags: [],
+  };
+}
+
+async function stubOneScore(page, id, meta, xml) {
+  await page.route(`**/api/scores/${id}`, (route) => route.fulfill({ json: meta }));
+  await page.route(`**/api/scores/${id}/file`, (route) =>
+    route.fulfill({ body: xml, contentType: "application/vnd.recordare.musicxml+xml" }),
   );
-  await page.route("**/api/scores/1/practice", (route) =>
+  await page.route(`**/api/scores/${id}/practice`, (route) =>
     route.fulfill({ json: { total_seconds: 0, sessions: [] } }),
   );
+}
+
+/** Stubs the /api routes TabViewer/Viewer touch for score id 1 (the main,
+ * 8-measure 6/8 fixture). */
+export async function stubMetronomeScore(page) {
+  await stubOneScore(page, 1, scoreMeta(1, "Metronome test fixture"), METRONOME_MUSICXML);
+}
+
+/** Score id 2: the second, plainly different score used for the
+ * dataset-reset-on-switch test. */
+export async function stubMetronomeScoreOther(page) {
+  await stubOneScore(page, 2, scoreMeta(2, "A different metronome fixture"), METRONOME_MUSICXML_OTHER);
+}
+
+/** Score id 3: the short 2-measure loop used for the loop-wrap phase test. */
+export async function stubMetronomeScoreShortLoop(page) {
+  await stubOneScore(page, 3, scoreMeta(3, "Short loop metronome fixture"), METRONOME_MUSICXML_SHORT_LOOP);
+}
+
+/** Score id 4: the 4/4-repeat-then-6/8 fixture used for the repeat-desync
+ * regression test. */
+export async function stubMetronomeScoreRepeat(page) {
+  await stubOneScore(page, 4, scoreMeta(4, "Repeat metronome fixture"), METRONOME_MUSICXML_REPEAT);
 }
