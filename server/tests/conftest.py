@@ -33,10 +33,17 @@ _FIXTURE_RELATIVE_PATHS = {
     "claire_de_lune": "Favorites/ClairDeLuneGuitar.pdf",
 }
 
-# Every skip that means "no sheet music library here" carries this phrase, so
-# the end-of-run summary can tell those apart from a skip for a missing
-# optional tool (node, an XSD) which says nothing about extraction coverage.
-LIBRARY_SKIP_PHRASE = "FERMATA_TEST_LIBRARY not set"
+# Skips for want of a library are COUNTED HERE as they happen, rather than
+# recognised afterwards by matching text in the skip reason. Matching text
+# would quietly stop counting the day someone worded a new skip differently,
+# and an undercount here reads as "everything ran" - the exact failure this
+# summary exists to prevent.
+_library_skips = []
+
+
+def skip_without_library(reason: str):
+    _library_skips.append(reason)
+    pytest.skip(reason)
 
 
 def engraved_pdf(name: str) -> Path:
@@ -77,17 +84,15 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     local run by hand, which is why 36 skipped extraction tests sat
     unnoticed. A count that has to be read off the screen is not a
     guarantee, but silence was not one either."""
-    skipped = terminalreporter.stats.get("skipped", [])
-    library = [r for r in skipped if LIBRARY_SKIP_PHRASE in str(getattr(r, "longrepr", ""))]
-    if not library:
-        if os.environ.get("FERMATA_TEST_LIBRARY"):
+    if not _library_skips:
+        if _library_root() is not None:
             terminalreporter.write_sep(
                 "=", "real-library tests all ran (FERMATA_TEST_LIBRARY is set)", green=True)
         return
     terminalreporter.write_sep(
         "=",
-        f"{len(library)} test(s) skipped for want of a sheet music library - this run "
-        "did NOT exercise extraction against real engraved scores; set "
+        f"{len(_library_skips)} test(s) skipped for want of a sheet music library - this "
+        "run did NOT exercise extraction against real engraved scores; set "
         "FERMATA_TEST_LIBRARY to a library root to run them",
         yellow=True,
         bold=True,
@@ -114,7 +119,7 @@ def _fixture_path(name: str) -> Path | None:
 def zanarkand_pdf() -> Path:
     p = _fixture_path("zanarkand")
     if p is None:
-        pytest.skip("FERMATA_TEST_LIBRARY not set (or missing 'To Zanarkand' fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing 'To Zanarkand' fixture)")
     return p
 
 
@@ -122,7 +127,7 @@ def zanarkand_pdf() -> Path:
 def tarrega_pdf() -> Path:
     p = _fixture_path("tarrega")
     if p is None:
-        pytest.skip("FERMATA_TEST_LIBRARY not set (or missing Tarrega fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Tarrega fixture)")
     return p
 
 
@@ -130,7 +135,7 @@ def tarrega_pdf() -> Path:
 def claire_de_lune_pdf() -> Path:
     p = _fixture_path("claire_de_lune")
     if p is None:
-        pytest.skip("FERMATA_TEST_LIBRARY not set (or missing Clair de Lune fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Clair de Lune fixture)")
     return p
 
 

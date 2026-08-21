@@ -26,7 +26,14 @@ coverage and is not is worse than none:
     exercise it with.
   * Raster pages beyond a refusal: the rasterised fixture proves extraction
     declines a scan, not that anything reads one.
-  * Diamond/harmonic noteheads, which are deliberately not in the SMuFL map.
+  * READING a diamond/harmonic notehead. Those codepoints are deliberately
+    not in the SMuFL map; harmonics_dense covers the reporting of that gap,
+    not its closure.
+  * A repeat bracket welded into a phantom staff line. This engraver leaves
+    a visible gap in an ending bracket where Finale's abut exactly, so that
+    geometry is covered by a synthetic page built here instead - see
+    test_abutting_furniture_below_a_staff_is_not_welded_into_a_line - and
+    the real examples live only in the maintainer's library.
   * Scale. The library's reference score is 50 bars of real two-voice
     fingerstyle writing; the fixture with two voices is eight contrived bars.
     A regression that only shows up in density will still only show up
@@ -240,51 +247,111 @@ def test_a_smufl_font_is_recognised_from_the_codepoints_it_draws(engraved):
     on the codepoints means one calibration covers all of them - and it has
     to, because the embedded subset has its glyph names stripped and its
     glyph order minted per file, so neither of the other two keys exists."""
-    page = fitz.open(engraved("notation_and_tab"))[0]
+    doc = fitz.open(engraved("notation_and_tab"))
+    page = doc[0]
     trace = page.get_texttrace()
-    assert glyph_rhythm._smufl_font_names(trace) == {"Leland"}
+    assert glyph_rhythm._smufl_music_fonts(doc, page, trace) == {"Leland"}
     # the text fonts on the same page are not music fonts
     drawn = {s.get("font", "").split("+")[-1] for s in trace}
     assert "Edwin-Roman" in drawn or "FreeSans" in drawn
 
 
+def _fake_smufl_page(codes, name="Mystery", embedded=True, gid_offset=None):
+    """A page drawing `codes` in one font, with control over the two things a
+    codepoint cannot vouch for on its own: whether the PDF carries a font
+    program at all, and whether the mapping is the synthetic identity."""
+
+    class _Doc:
+        def extract_font(self, _xref):
+            return b"a font program" if embedded else b""
+
+    class _Page:
+        parent = _Doc()
+
+        def get_fonts(self, full=False):
+            return [(1, "ttf" if embedded else "n/a", "Type0", name, "F1", "Identity-H", 0)]
+
+        def get_texttrace(self):
+            chars = []
+            for i, code in enumerate(codes):
+                gid = code - 0xE000 if gid_offset == "identity" else i + 1
+                chars.append((code, gid, (0.0, 0.0), (float(i), 0.0, float(i) + 1, 1.0)))
+            return [{"font": name, "chars": chars}]
+
+    page = _Page()
+    return page.parent, page, page.get_texttrace()
+
+
+def test_a_codepoint_is_a_claim_the_producer_wrote_not_a_credential():
+    """The hole an earlier version of this left open, and the test that used
+    to pin it open by asserting a font named "Mystery" drawing four copies of
+    one codepoint WAS a music font.
+
+    A SMuFL codepoint reaches us through the PDF's own ToUnicode CMap. It is
+    what the producer said, so on its own it cannot be the whole basis for
+    reading a page as engraved music - a page whose "music font" was an
+    unembedded text font drawing the letters A-F decoded as a staff at high
+    confidence. Each requirement below is aimed at a specific way that goes
+    wrong; see _smufl_music_fonts."""
+    noteheads = [0xE0A4] * 6
+
+    # the honest case: embedded, real mapping, noteheads among the glyphs
+    assert glyph_rhythm._smufl_music_fonts(*_fake_smufl_page(noteheads)) == {"Mystery"}
+
+    # 1. no font program in the PDF - a reader-supplied substitute cannot be
+    #    the font whose glyphs were calibrated
+    assert glyph_rhythm._smufl_music_fonts(
+        *_fake_smufl_page(noteheads, embedded=False)) == set()
+
+    # 2. the synthetic identity mapping a producer emits when it had no cmap
+    #    to read: `U+E000 + glyph id` lands on this table's keys by arithmetic
+    assert glyph_rhythm._smufl_music_fonts(
+        *_fake_smufl_page(noteheads, gid_offset="identity")) == set()
+
+    # 3. no noteheads: a notation staff without them is not one, and there
+    #    would be nothing here to decode. Ordinary ASCII under the identity
+    #    mapping above lands only on clefs, never on a notehead.
+    clefs_and_meters = [0xE050, 0xE052, 0xE062, 0xE084, 0xE084, 0xE08A]
+    assert all(glyph_rhythm.smufl_unknown_kind(c) != "notehead" for c in clefs_and_meters)
+    assert glyph_rhythm._smufl_music_fonts(*_fake_smufl_page(clefs_and_meters)) == set()
+
+    # and it still takes several recognised codepoints, not one or two
+    assert glyph_rhythm._smufl_music_fonts(*_fake_smufl_page([0xE0A4] * 3)) == set()
+
+
 def test_a_font_using_the_private_use_area_for_something_else_is_not_music():
-    """The guard that makes the codepoint key safe: landing in SMuFL's range
-    is not enough, the codepoints have to BE calibrated music symbols, and
-    several of them. Sibelius's Opus draws at U+F0xx and an icon font can
-    draw anywhere in the private use area; either would be read as an
-    engraved staff if presence in the range were the test."""
-    opus_like = [{"font": "Opus", "chars": [(0xF0CF, 1, (0, 0), (0, 0, 1, 1))] * 40}]
-    assert glyph_rhythm._smufl_font_names(opus_like) == set()
-    # and a font drawing a couple of real SMuFL codepoints is still not one:
-    # it takes SMUFL_MIN_MAPPED_GLYPHS of them
-    barely = [{"font": "Mystery", "chars": [(0xE0A4, 1, (0, 0), (0, 0, 1, 1))] * 3}]
-    assert glyph_rhythm._smufl_font_names(barely) == set()
-    enough = [{"font": "Mystery",
-               "chars": [(0xE0A4, 1, (0, 0), (0, 0, 1, 1))] * glyph_rhythm.SMUFL_MIN_MAPPED_GLYPHS}]
-    assert glyph_rhythm._smufl_font_names(enough) == {"Mystery"}
+    """Landing in SMuFL's range is not enough - the codepoints have to BE
+    calibrated music symbols. Sibelius's Opus draws at U+F0xx and an icon
+    font can draw anywhere in the private use area; either would be read as
+    an engraved staff if presence in the range were the test."""
+    assert glyph_rhythm._smufl_music_fonts(
+        *_fake_smufl_page([0xF0CF] * 40, name="Opus")) == set()
 
 
-class _TracePage:
-    """A page that draws exactly the characters a test hands it.
+def test_a_page_whose_music_font_is_a_text_font_is_refused(engraved):
+    """The same thing again as a whole PDF rather than a stubbed page: a
+    committed fixture whose only music credential is a ToUnicode CMap saying
+    that the letters A-H are noteheads, a clef, a meter digit and a dot.
 
-    Nothing in the committed fixtures makes a music font draw a plain text
-    character, so the rule that keeps those out of the decode has no engraved
-    example - and an untested rule is the same as no rule. This supplies one
-    without pretending to be a real page."""
+    Verified to decode as rhythm-from-glyphs before the corroboration
+    requirements went in - `rhythm_provenance` came back {'glyphs': 1} for
+    this exact file - and to be refused by the version this branch started
+    from. It has to keep being refused."""
+    result = tabextract.extract(engraved("fake_music_font"))
+    assert result.rhythm_provenance == {tabextract.PROV_SPACING: 1}
+    assert result.confidence["rhythm"].startswith("low")
+    assert result.time_signature_source.startswith("not detected")
+    assert result.key_signature_source.startswith("not detected")
+    assert any("no readable music-font note glyphs" in w for w in result.warnings)
 
-    parent = None
-
-    def __init__(self, font, codes):
-        self._spans = [{"font": font,
-                        "chars": [(code, i + 1, (0.0, 0.0), (float(i), 0.0, float(i) + 1, 1.0))
-                                  for i, code in enumerate(codes)]}]
-
-    def get_fonts(self, full=False):
-        return []
-
-    def get_texttrace(self):
-        return self._spans
+    doc = fitz.open(engraved("fake_music_font"))
+    page = doc[0]
+    trace = page.get_texttrace()
+    assert glyph_rhythm._smufl_music_fonts(doc, page, trace) == set()
+    # the claim really is in the file - this fixture would be pointless if the
+    # codepoints it advertises were not there to be believed
+    claimed = {c[0] for span in trace for c in span["chars"]}
+    assert claimed & set(glyph_rhythm.SMUFL_CODE_MAP), claimed
 
 
 def test_a_music_font_may_also_draw_text_and_that_text_is_not_a_glyph_event():
@@ -293,16 +360,19 @@ def test_a_music_font_may_also_draw_text_and_that_text_is_not_a_glyph_event():
     take a perfectly good decode to the spacing fallback; counting them as
     UNKNOWN music symbols would be worse, because the unknown ratio is what
     decides that. So codepoints outside SMuFL's range are ignored outright,
-    while an unrecognised codepoint INSIDE it is kept and reported."""
+    while an unrecognised codepoint INSIDE it is kept and reported - including
+    one from the optional block above U+F3FF, which used to be dropped
+    silently, leaving a note at its base duration with a clean report."""
     glyph_rhythm.clear_caches()
-    page = _TracePage("Leland", [
-        0xE0A4, 0xE0A4, 0xE0A4, 0xE0A4,   # enough noteheads to be a music font
+    _doc, page, _trace = _fake_smufl_page([
+        0xE0A4, 0xE0A4, 0xE0A4, 0xE0A4,   # enough noteheads to qualify the font
         ord("A"), ord("3"),               # ...plus text, which is not a symbol
-        0xE0D9,                           # ...plus a diamond notehead, deliberately uncalibrated
-    ])
+        0xE0D9,                           # ...a diamond notehead, deliberately uncalibrated
+        0xF500,                           # ...and something from SMuFL's optional block
+    ], name="Leland")
     glyphs = glyph_rhythm.extract_glyph_events(page)
-    assert [e.code for e in glyphs.events] == [0xE0A4] * 4 + [0xE0D9]
-    assert [e.calibration_key for e in glyphs.unknown] == ["U+E0D9"]
+    assert [e.code for e in glyphs.events] == [0xE0A4] * 4 + [0xE0D9, 0xF500]
+    assert [e.calibration_key for e in glyphs.unknown] == ["U+E0D9", "U+F500"]
     assert all(e.smufl for e in glyphs.events)
 
 
@@ -330,6 +400,150 @@ def test_the_engraved_vocabulary_is_fully_calibrated(engraved):
 # ---------------------------------------------------------------------------
 # Staff lines broken at every barline
 # ---------------------------------------------------------------------------
+
+
+def _lines_pdf(path, rows, width=612.0, height=792.0, digits=()):
+    """A page of horizontal rules - {y: [(x0, x1), ...]} - and optionally some
+    fret digits, for the cases that have to get as far as a transcription."""
+    doc = fitz.open()
+    page = doc.new_page(width=width, height=height)
+    for y, spans in rows.items():
+        for x0, x1 in spans:
+            page.draw_line((x0, y), (x1, y), width=0.5)
+    for text, x, y in digits:
+        page.insert_text((x, y), text, fontsize=7, fontname="helv")
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def test_abutting_furniture_below_a_staff_is_not_welded_into_a_line(tmp_path):
+    """The regression that joining collinear pieces caused, in its exact
+    geometry - which no engraved fixture here can reproduce, because
+    MuseScore leaves a visible gap in a repeat bracket while Finale does not.
+
+    Finale draws a "1." / "2." repeat bracket below the tab staff as two
+    strokes meeting at a barline with a measured gap of 0.0000pt - the same
+    gap as between the pieces of a broken staff line, so no tolerance can
+    separate them. Welded, the bracket cleared the length floor and landed
+    inside the cluster gap below the staff, making a 6-line group into a
+    7-line group that was discarded whole. Six library scores lost 33 bars
+    and 264 notes between them, and the loss IMPROVED their bar-conformance
+    figures, because the bars that disappeared were the ones that did not
+    add up.
+
+    What rejects it is not the gap but the company it keeps: a run assembled
+    from more than one piece has to have siblings at its own extent, and a
+    bracket has none."""
+    staff = {180.0 + i * 7.4: [(60.0, 300.0), (300.0, 560.0)] for i in range(6)}
+    bracket_y = 180.0 + 5 * 7.4 + 10.0     # inside the 15pt cluster gap
+    rows = dict(staff)
+    rows[bracket_y] = [(375.0, 478.8), (478.8, 572.9)]   # abutting, 0.0pt gap
+    pdf = _lines_pdf(tmp_path / "volta_weld.pdf", rows)
+
+    page = fitz.open(pdf)[0]
+    kept = tabextract._long_horizontal_segments(page)
+    assert len(kept) == 6, kept
+    assert all(abs(x1 - x0 - 500.0) < 1.0 for _y, x0, x1 in kept), kept
+    assert not any(abs(y - bracket_y) < 0.05 for y, _x0, _x1 in kept), (
+        "the repeat bracket was welded into a staff line")
+
+    staves, anomalies = tabextract._detect_staves(page)
+    assert [s.kind for s in staves] == ["tab"]
+    assert anomalies == [], "and the tab staff was not discarded as a 7-line group"
+
+
+def test_the_evidence_a_joined_run_needs_is_four_siblings_at_its_own_extent(tmp_path):
+    """The two numbers the containment rests on, each measured rather than
+    merely present - a constant no test can feel is a constant nobody can
+    change safely.
+
+    Both hostile rows here are drawn in abutting pieces at the same 0.0pt gap
+    as a broken staff line, so nothing about the join itself separates them:
+    one row has a single companion at its own extent (a bracket with a
+    second stroke, or a box), and one spans nearly the same width as the
+    staff. Neither is a staff line, and it takes both the count and the
+    tightness of the extent match to say so."""
+    rows = {180.0 + i * 7.4: [(60.0, 300.0), (300.0, 560.0)] for i in range(6)}
+    # a pair of furniture rows sharing one extent: one sibling each, not four
+    for y in (180.0 + 5 * 7.4 + 8.0, 180.0 + 5 * 7.4 + 12.0):
+        rows[y] = [(375.0, 478.8), (478.8, 572.9)]
+    # and one nearly as wide as the staff, but not within the match tolerance
+    rows[180.0 - 10.0] = [(100.0, 300.0), (300.0, 520.0)]
+    pdf = _lines_pdf(tmp_path / "near_miss.pdf", rows)
+
+    page = fitz.open(pdf)[0]
+    kept = tabextract._long_horizontal_segments(page)
+    assert len(kept) == 6, kept
+    assert all((round(x0), round(x1)) == (60, 560) for _y, x0, x1 in kept), kept
+    staves, anomalies = tabextract._detect_staves(page)
+    assert [s.kind for s in staves] == ["tab"], "the staff survived all three"
+    assert anomalies == []
+
+
+def test_a_discarded_staff_sized_group_says_music_is_missing(tmp_path):
+    """Whatever caused it, throwing away a group of staff lines has to be
+    LOUD - because the loss makes the score look better, not worse.
+
+    A discarded group used to be reported as "1 staff-line group(s) with an
+    unexpected line count were ignored" with every confidence still high,
+    while a whole system's bars and notes were absent from the
+    transcription. Worse, the bars that vanish are as likely as any to be
+    the ones that did not add up, so the defective-bar count IMPROVES when
+    music disappears. A number that gets better when notes go missing is
+    worse than no number at all."""
+    rows = {180.0 + i * 7.4: [(60.0, 560.0)] for i in range(6)}
+    rows[180.0 + 6 * 7.4] = [(60.0, 560.0)]   # a seventh line: not a staff any more
+    rows[400.0] = [(60.0, 560.0)]             # ...and a lone rule elsewhere
+    for i in range(6):
+        rows[500.0 + i * 7.4] = [(60.0, 560.0)]   # a real tab staff, so there IS a result
+    pdf = _lines_pdf(tmp_path / "discarded.pdf", rows,
+                     digits=[("3", 100.0, 505.0), ("5", 200.0, 512.4)])
+
+    _staves, anomalies = tabextract._detect_staves(fitz.open(pdf)[0])
+    assert sorted(a["line_count"] for a in anomalies) == [1, 7]
+
+    result = tabextract.extract(pdf)
+    missing = [w for w in result.warnings if "MISSING from this transcription" in w]
+    assert len(missing) == 1, result.warnings
+    assert "1 of the ignored group(s) had at least 5 lines" in missing[0]
+    assert any("line counts: [1, 7]" in w for w in result.warnings)
+    assert result.confidence["frets"].startswith("medium"), (
+        "a whole system's digits may be absent, which is a claim about the frets")
+
+    # the same page without the stray groups keeps the plain high claim
+    clean = _lines_pdf(tmp_path / "clean.pdf",
+                       {500.0 + i * 7.4: [(60.0, 560.0)] for i in range(6)},
+                       digits=[("3", 100.0, 505.0), ("5", 200.0, 512.4)])
+    clean_result = tabextract.extract(clean)
+    assert clean_result.extractable
+    assert clean_result.confidence["frets"].startswith("high")
+    assert not any("ignored" in w for w in clean_result.warnings)
+
+
+def test_a_page_cropped_to_its_content_keeps_its_staff_lines(tmp_path):
+    """A staff line as wide as the page is still a staff line. Refusing one
+    for being too long is a claim about engraving, not about PDFs: anything
+    cropped to its content - pdfcrop, a tablet reader's trim-margins,
+    borderless print - has staff lines running the full width, and throwing
+    them away refused a perfectly readable tab score while reporting that it
+    held no tablature at all.
+
+    What is page furniture is a rule drawn ON the page boundary, which is a
+    test of position."""
+    rows = {180.0 + i * 7.4: [(0.0, 300.0), (300.0, 612.0)] for i in range(6)}
+    rows[0.0] = [(0.0, 612.0)]        # the page's own top edge
+    rows[792.0] = [(0.0, 612.0)]      # ...and its bottom
+    pdf = _lines_pdf(tmp_path / "cropped.pdf", rows)
+
+    page = fitz.open(pdf)[0]
+    kept = tabextract._long_horizontal_segments(page)
+    assert len(kept) == 6, kept
+    assert all(abs(x0) < 0.01 and abs(x1 - 612.0) < 0.01 for _y, x0, x1 in kept), kept
+
+    staves, anomalies = tabextract._detect_staves(page)
+    assert [s.kind for s in staves] == ["tab"]
+    assert anomalies == [], "the page-edge rules are not staff groups"
 
 
 def test_a_staff_line_drawn_in_pieces_is_still_one_staff(engraved):
@@ -400,6 +614,142 @@ def test_the_rest_fixture_matches_the_score_it_was_engraved_from(engraved):
     assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
 
 
+def test_a_repeat_with_ending_brackets_leaves_its_staves_alone(engraved):
+    """An engraved repeat with "1." / "2." brackets, which is what the
+    library files that regressed actually contain. This engraver leaves a
+    visible gap in the bracket, so it does not reproduce the weld itself
+    (see test_abutting_furniture_below_a_staff_is_not_welded_into_a_line for
+    that geometry) - what it does check is that a bracket sitting close under
+    a staff disturbs neither the staff nor the group it belongs to."""
+    pdf = engraved("volta")
+    doc = fitz.open(pdf)
+    for page in doc:
+        staves, anomalies = tabextract._detect_staves(page)
+        assert [s.kind for s in staves] == ["standard", "tab", "standard", "tab"]
+        assert anomalies == [], "no group was discarded"
+
+    result = tabextract.extract(pdf)
+    assert result.tab_staff_count == 2
+    assert result.rhythm_provenance == {tabextract.PROV_GLYPHS: 2}
+    # The repeat's thick-thin barline is read as two barlines, so an empty bar
+    # appears between the two halves. That is an artifact and it is pinned as
+    # one rather than left to be discovered: nine bars for eight written, the
+    # extra one a whole rest.
+    bars = emitted_bars(result.alphatex)
+    assert len(bars) == 9
+    assert bars[4][0] == [(4.0, [])], bars[4]
+    assert [len(v[0]) for v in bars] == [4, 4, 4, 4, 1, 4, 4, 4, 4]
+
+
+# ---------------------------------------------------------------------------
+# An unrecognised notehead, at a density no ratio can see
+# ---------------------------------------------------------------------------
+
+
+def test_an_unrecognised_notehead_is_reported_however_few_there_are(engraved):
+    """The honesty gate that a ratio could not be. Diamond noteheads -
+    harmonics - are deliberately not calibrated, and on a sparse system two
+    of them are a fifth of the glyphs and degrade confidence on the ratio
+    alone. On a dense two-voice system the same two are three percent, and
+    before this they reported NOTHING: no warning, no defective bar,
+    confidence "high", while the voice above them lost beats to an invented
+    rest and their tab digits were attached to the voice below.
+
+    So this fixture is dense on purpose, and the assertion that matters is
+    that the ratio is *under* the threshold while the decode is degraded
+    anyway - density is not evidence about a notehead."""
+    result = tabextract.extract(engraved("harmonics_dense"))
+    assert result.extractable
+    # the system carrying the two harmonics is degraded; the other is not
+    assert result.rhythm_provenance == {tabextract.PROV_GLYPHS_DEGRADED: 1,
+                                        tabextract.PROV_GLYPHS: 1}
+    assert not result.confidence["rhythm"].startswith("high")
+    assert any("not been calibrated" in w for w in result.warnings)
+    assert any("U+E0DB" in w for w in result.warnings), (
+        "the unrecognised codepoint is named, so it can be calibrated later")
+    # ...and the bars all add up, so nothing else on the page would have said
+    # a word about it
+    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
+
+    doc = fitz.open(engraved("harmonics_dense"))
+    degraded = 0
+    for page in doc:
+        for staff in tabextract._detect_staves(page)[0]:
+            if staff.kind != "standard":
+                continue
+            _notes, stats = glyph_rhythm.decode_note_events(
+                page, staff.top, staff.bottom, staff.x0, staff.x1,
+                staff.line_ys, staff.spacing)
+            if not stats["unknown_noteheads"]:
+                continue
+            degraded += 1
+            assert stats["unknown_ratio"] < tabextract._UNKNOWN_RATIO_WARN, (
+                "if the ratio could see this, the gate would not be needed")
+            assert stats["unknown_at_flag_position"] == 0
+    assert degraded == 1
+
+
+def test_expression_marks_are_not_read_as_incomprehension():
+    """The same ratio failed in the other direction too. An accent, a
+    fermata, a dynamic or a repeat dot says nothing about a note's duration,
+    and a score was being downgraded to medium over two repeat dots while
+    two unrecognised harmonics on a dense system triggered nothing. What the
+    decoder could not read has to be separated from what it needed."""
+    assert glyph_rhythm.smufl_unknown_kind(0xE0DB) == "notehead"
+    assert glyph_rhythm.smufl_unknown_kind(0xE244) == "duration"       # a flag
+    assert glyph_rhythm.smufl_unknown_kind(0xE4E9) == "duration"       # a rest
+    assert glyph_rhythm.smufl_unknown_kind(0xE4A0) == "furniture"      # accent
+    assert glyph_rhythm.smufl_unknown_kind(0xE4C0) == "furniture"      # fermata
+    assert glyph_rhythm.smufl_unknown_kind(0xE520) == "furniture"      # dynamic
+    assert glyph_rhythm.smufl_unknown_kind(0xE044) == "furniture"      # repeat dots
+    # a codepoint in a block this decoder has no opinion about counts as
+    # duration-bearing, which is the fail-safe direction
+    assert glyph_rhythm.smufl_unknown_kind(0xF500) == "duration"
+
+
+def test_furniture_alone_does_not_degrade_a_clean_decode():
+    glyph_rhythm.clear_caches()
+    _doc, page, _trace = _fake_smufl_page(
+        [0xE0A4] * 8 + [0xE4A0, 0xE4C0, 0xE044], name="Leland")
+    glyphs = glyph_rhythm.extract_glyph_events(page)
+    assert len(glyphs.unknown) == 3, "they are still seen"
+    kinds = {glyph_rhythm.smufl_unknown_kind(e.code) for e in glyphs.unknown}
+    assert kinds == {"furniture"}
+
+
+def test_a_second_font_supplying_one_glyph_is_still_accounted_for():
+    """An engraver falls back to another font for symbols its main one lacks,
+    and one library page draws its single harmonic notehead that way -
+    Bravura, one glyph, on a Leland page. Excluding that font for drawing too
+    little to qualify on its own meant the notehead was neither read nor
+    reported: it simply was not there, and the honesty stats were spotless."""
+    glyph_rhythm.clear_caches()
+
+    class _Doc:
+        def extract_font(self, _xref):
+            return b"a font program"
+
+    class _Page:
+        parent = _Doc()
+
+        def get_fonts(self, full=False):
+            return [(1, "ttf", "Type0", "Leland", "F1", "Identity-H", 0),
+                    (2, "ttf", "Type0", "Bravura", "F2", "Identity-H", 0)]
+
+        def get_texttrace(self):
+            return [
+                {"font": "Leland",
+                 "chars": [(0xE0A4, i + 1, (0.0, 0.0), (float(i), 0.0, float(i) + 1, 1.0))
+                           for i in range(8)]},
+                # one glyph only, from the fallback font: a real harmonic
+                {"font": "Bravura", "chars": [(0xE0E2, 1, (0.0, 0.0), (9.0, 0.0, 10.0, 1.0))]},
+            ]
+
+    glyphs = glyph_rhythm.extract_glyph_events(_Page())
+    assert [e.code for e in glyphs.unknown] == [0xE0E2]
+    assert glyph_rhythm.smufl_unknown_kind(0xE0E2) == "notehead"
+
+
 # ---------------------------------------------------------------------------
 # Tablature with no notation staff beside it
 # ---------------------------------------------------------------------------
@@ -421,6 +771,25 @@ def test_tablature_alone_falls_back_to_spacing_and_says_which(engraved):
     assert any("own system" in w for w in result.warnings)
     assert any("inferred from horizontal spacing" in w for w in result.warnings)
     assert result.time_signature_source.startswith("not detected")
+
+
+def test_a_final_system_too_short_to_detect_loses_its_bars(engraved):
+    """A known limitation, engraved so that it is a tripwire rather than a
+    sentence in a README.
+
+    A staff is found by the length of its lines, and an engraver does not
+    stretch a final system that is only part full - so a two-bar last system
+    has lines under the length floor and is not detected at all. This fixture
+    writes eight bars and six are read. The silence is the part worth
+    knowing: `tab_only` is twelve bars precisely to avoid this, and if that
+    had been the only fixture nothing here would say it happens."""
+    assert len(source_beats("tab_only_short_last_system")) == 8
+    result = tabextract.extract(engraved("tab_only_short_last_system"))
+    assert result.extractable
+    assert result.bars == 6, "six of the eight bars engraved"
+    assert result.tab_staff_count == 1, "the second system was not found at all"
+    assert not any("were not detected" in w for w in result.warnings), (
+        "and nothing reports the two missing bars - which is the defect")
 
 
 # ---------------------------------------------------------------------------
@@ -591,13 +960,18 @@ def test_a_short_voice_beside_an_overfull_one_is_padded_not_reported_short(engra
     """The bar the library has no example of: five quarters in the upper voice
     against three in the lower, wrong in both directions at once.
 
-    It is engraved here, and what actually happens is worth knowing rather
-    than asserting away - the short voice is padded to the meter with
-    inferred silence (which is what stops voices drifting against each
-    other), so the bar is reported overfull and NOT short. The padding is
-    announced. `_bar_conformance` counts a both-directions bar once and there
-    is a unit test for that shape, but this is why extraction has not so far
-    produced one."""
+    It is engraved here, and what these assertions record is a DEFECT being
+    pinned, not a behaviour being endorsed. The short voice is padded to the
+    meter with inferred silence - which is what stops voices drifting against
+    each other - so the bar is reported overfull and NOT short, and the rest
+    that fills it is written into the transcription indistinguishably from
+    one the engraver printed. That the padding is announced at all is the
+    only thing keeping it honest, and it is a weaker guarantee than the
+    figures beside it suggest.
+
+    `_bar_conformance` counts a both-directions bar once and has a unit test
+    for that shape; this is why extraction has not so far produced one, and
+    the reason is the padding rather than anything about the score."""
     result = tabextract.extract(engraved("defective_bars"))
     both = emitted_bars(result.alphatex)[2]
     assert len(both) == 2, both
@@ -650,12 +1024,14 @@ def test_a_rasterised_score_is_refused_as_a_scan(engraved):
 
 
 ENGRAVED_NAMES = (
-    "notation_and_tab", "rests_and_flags", "tab_only", "two_voices",
-    "tuplet_and_tie", "drop_d", "defective_bars", "notation_only", "raster_scan",
+    "notation_and_tab", "rests_and_flags", "tab_only", "tab_only_short_last_system",
+    "two_voices", "tuplet_and_tie", "drop_d", "defective_bars", "volta",
+    "harmonics_dense", "notation_only",
 )
+SYNTHESISED_NAMES = ("raster_scan", "fake_music_font")
 
 
-@pytest.mark.parametrize("name", ENGRAVED_NAMES)
+@pytest.mark.parametrize("name", ENGRAVED_NAMES + SYNTHESISED_NAMES)
 def test_every_engraved_fixture_is_committed(name, engraved):
     """A test suite that goes quiet when its fixtures vanish is how this
     whole gap started. These are committed, so a missing one fails here
@@ -663,7 +1039,28 @@ def test_every_engraved_fixture_is_committed(name, engraved):
     assert engraved(name).stat().st_size > 0
 
 
-@pytest.mark.parametrize("name", [n for n in ENGRAVED_NAMES if n != "raster_scan"])
+@pytest.mark.parametrize("name", ENGRAVED_NAMES + SYNTHESISED_NAMES)
+def test_every_fixture_says_which_tool_made_it(name, engraved):
+    """These assertions measure coordinates, and a fixture re-engraved by a
+    different version of the engraver lands different ones - so the version
+    has to be part of what is checked, not only written down in a README.
+    The MusicXML has a stronger guard of its own: it is regenerated from the
+    script and compared byte for byte."""
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "tools" / "tab_extract" / "engrave_fixtures.py"
+    spec = importlib.util.spec_from_file_location("engrave_fixtures", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    creator = fitz.open(engraved(name)).metadata["creator"]
+    expected = (module.SYNTHESISED_CREATOR if name in SYNTHESISED_NAMES
+                else module.ENGRAVER_CREATOR)
+    assert creator == expected, f"{name}.pdf was made by {creator!r}"
+
+
+@pytest.mark.parametrize("name", ENGRAVED_NAMES)
 def test_every_engraved_fixture_keeps_the_musicxml_it_came_from(name):
     """The PDF is only regenerable if the engraver's input is here beside it,
     and only trustworthy if that input is what produced it."""
@@ -701,49 +1098,58 @@ def test_a_missing_engraved_fixture_fails_rather_than_skipping():
 class _FakeReporter:
     """Enough of pytest's terminal reporter to see what the summary wrote."""
 
-    def __init__(self, skipped):
-        self.stats = {"skipped": skipped}
+    def __init__(self):
+        self.stats = {}
         self.lines = []
 
     def write_sep(self, _char, text, **_kw):
         self.lines.append(text)
 
 
-class _FakeReport:
-    def __init__(self, reason):
-        self.longrepr = ("tests/test_x.py", 1, f"Skipped: {reason}")
+def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(monkeypatch, tmp_path):
+    """The loud skip. A suite that skipped a third of itself said so only by
+    a number nobody compared against anything, which is exactly how 36
+    skipped extraction tests went unnoticed. A count on the screen is not a
+    guarantee, but silence was not one either.
 
-
-def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(monkeypatch):
-    """The loud skip. Today a suite that skipped a third of itself said so
-    only by a number nobody compared against anything - which is exactly how
-    36 skipped extraction tests went unnoticed. A count on the screen is not
-    a guarantee, but silence was not one either.
-
-    An optional-tool skip must not be counted into it: "node not available"
-    says nothing about whether extraction was exercised."""
+    The count comes from a counter the library fixtures increment as they
+    skip, NOT from matching text in skip reasons afterwards. Text matching
+    would quietly stop counting the day someone worded a new skip
+    differently - and an undercount here reads as "everything ran", which is
+    the one thing this must never say by accident."""
     import conftest
 
+    monkeypatch.setattr(conftest, "_library_skips", [])
     monkeypatch.delenv("FERMATA_TEST_LIBRARY", raising=False)
-    reporter = _FakeReporter([
-        _FakeReport("FERMATA_TEST_LIBRARY not set (or missing 'To Zanarkand' fixture)"),
-        _FakeReport("FERMATA_TEST_LIBRARY not set (or missing Tarrega fixture)"),
-        _FakeReport("node not available"),
-    ])
+
+    # nothing skipped and no library configured: no claim either way
+    reporter = _FakeReporter()
+    conftest.pytest_terminal_summary(reporter, 0, None)
+    assert reporter.lines == []
+
+    # a library fixture skipping is what feeds the count - by calling the
+    # helper, not by the words it happens to use
+    for reason in ("no library here", "a differently worded reason"):
+        with pytest.raises(BaseException):
+            conftest.skip_without_library(reason)
+    assert len(conftest._library_skips) == 2
+
+    reporter = _FakeReporter()
     conftest.pytest_terminal_summary(reporter, 0, None)
     assert len(reporter.lines) == 1
     assert "2 test(s) skipped for want of a sheet music library" in reporter.lines[0]
     assert "did NOT exercise extraction" in reporter.lines[0]
 
-    # nothing library-shaped skipped, and the library was there: say so
-    reporter = _FakeReporter([_FakeReport("node not available")])
-    monkeypatch.setenv("FERMATA_TEST_LIBRARY", "/somewhere")
+    # a real library present and nothing skipped for want of one: say so
+    monkeypatch.setattr(conftest, "_library_skips", [])
+    monkeypatch.setenv("FERMATA_TEST_LIBRARY", str(tmp_path))
+    reporter = _FakeReporter()
     conftest.pytest_terminal_summary(reporter, 0, None)
     assert reporter.lines == ["real-library tests all ran (FERMATA_TEST_LIBRARY is set)"]
 
-    # ...and with no library set and nothing skipped for it, no claim either way
-    reporter = _FakeReporter([])
-    monkeypatch.delenv("FERMATA_TEST_LIBRARY", raising=False)
+    # ...and a path that is not a library does NOT earn the reassuring line
+    monkeypatch.setenv("FERMATA_TEST_LIBRARY", str(tmp_path / "nope"))
+    reporter = _FakeReporter()
     conftest.pytest_terminal_summary(reporter, 0, None)
     assert reporter.lines == []
 

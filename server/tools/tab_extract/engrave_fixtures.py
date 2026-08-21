@@ -64,7 +64,7 @@ def rest(typ, dots=0, staff=1, voice=1):
 
 
 def note(pitch, typ, dots=0, staff=1, voice=1, chord=False, tie=None,
-         tuplet=None, notations=()):
+         tuplet=None, head=None, notations=()):
     step, octave = pitch[0], pitch[1]
     # An accidental has to be spelled out even when the key signature would
     # imply it: MusicXML pitch is absolute, so an F in D major with no
@@ -86,6 +86,8 @@ def note(pitch, typ, dots=0, staff=1, voice=1, chord=False, tie=None,
     if tuplet:
         out.append(f"<time-modification><actual-notes>{tuplet[0]}</actual-notes>"
                    f"<normal-notes>{tuplet[1]}</normal-notes></time-modification>")
+    if head:
+        out.append(f"<notehead>{head}</notehead>")
     out.append(f"<staff>{staff}</staff>")
     marks = list(notations)
     if tie:
@@ -277,6 +279,66 @@ def fixture_defective_bars():
     return score("Guitar", [attributes() + measures[0]] + measures[1:] + measures)
 
 
+def fixture_volta():
+    """A repeat with "1." / "2." ending brackets under the staff.
+
+    This is the shape that made joining collinear pieces dangerous: the
+    bracket is drawn as two strokes meeting exactly at a barline, each one
+    short enough that it only becomes a candidate staff line once they are
+    welded, and it lands close enough below the staff to fall inside the
+    cluster gap - turning a 6-line group into a 7-line group that was then
+    discarded whole, taking its system's music with it."""
+    bar = _bar([note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+                note(("G", 4), "quarter"), note(("A", 4), "quarter")], 4.0)
+    first = ('<barline location="left"><ending number="1" type="start"/></barline>' + bar
+             + '<barline location="right"><bar-style>light-heavy</bar-style>'
+               '<ending number="1" type="stop"/><repeat direction="backward"/></barline>')
+    second = ('<barline location="left"><ending number="2" type="start"/></barline>' + bar
+              + '<barline location="right"><ending number="2" type="stop"/></barline>')
+    return score("Guitar", [attributes() + bar, bar, bar, first, second, bar, bar, bar])
+
+
+def fixture_harmonics_dense():
+    """Diamond noteheads - harmonics - on a densely written two-voice system.
+
+    SMUFL_CODE_MAP deliberately does not carry the diamond noteheads, so
+    these are unrecognised, and that is the point: on a sparse system two of
+    them are a fifth of the glyphs and degrade confidence through the
+    unknown ratio, while on a system this dense they are three percent and a
+    ratio cannot see them at all. What actually happens to the music is
+    worse than the missing warning - the voice above loses beats to an
+    invented rest and the harmonics' own tab digits are attached to the
+    voice below - so an unrecognised notehead has to be reported however few
+    of them there are."""
+    def system(harmonics):
+        upper = [note(("E", 5), "eighth", voice=1) for _ in range(8)]
+        for index in harmonics:
+            upper[index] = note(("E", 5), "eighth", voice=1, head="diamond")
+        lower = [note(("E", 4), "quarter", voice=2) for _ in range(4)]
+        body = "".join(upper) + backup(4.0) + "".join(lower)
+        return body + backup(4.0) + mirror_to_tab(body)
+
+    plain = system(())
+    # TWO harmonics in the whole score, not two per bar: the point is a
+    # density at which the unknown-glyph ratio stays under its threshold and
+    # says nothing, so there have to be few of them among many.
+    return score("Guitar", [attributes() + system((3, 6))] + [plain] * 7)
+
+
+def fixture_tab_only_short_last_system():
+    """Eight bars of tablature, which MuseScore lays out as six bars and
+    then two - and a two-bar system is not stretched to the page width, so
+    its staff lines fall under the length floor and the system is not
+    detected at all. Two bars of music are lost with nothing said.
+
+    This is a real limitation of detecting a staff by the length of its
+    lines, and it is engraved here so that fixing it, or making it worse,
+    changes something. `tab_only` is twelve bars precisely to avoid it."""
+    bar = "".join([note(("E", 4), "quarter", staff=1), note(("F", 4), "eighth", staff=1),
+                   note(("G", 4), "eighth", staff=1), note(("A", 4), "half", staff=1)])
+    return score("Guitar", [attributes(staves=1) + bar] + [bar] * 7)
+
+
 def fixture_notation_only():
     """Standard notation with no tablature, on a plain treble clef. Not
     extractable, and the reason matters: fingering numbers on a notation
@@ -316,10 +378,13 @@ FIXTURES = {
     "notation_and_tab": fixture_notation_and_tab,
     "rests_and_flags": fixture_rests_and_flags,
     "tab_only": fixture_tab_only,
+    "tab_only_short_last_system": fixture_tab_only_short_last_system,
     "two_voices": fixture_two_voices,
     "tuplet_and_tie": fixture_tuplet_and_tie,
     "drop_d": fixture_drop_d,
     "defective_bars": fixture_defective_bars,
+    "volta": fixture_volta,
+    "harmonics_dense": fixture_harmonics_dense,
     "notation_only": fixture_notation_only,
 }
 
@@ -329,6 +394,26 @@ FIXTURES = {
 RASTER_FROM = "notation_and_tab"
 RASTER_NAME = "raster_scan"
 RASTER_DPI = 96
+
+# Synthesised rather than engraved, because no engraver produces it on
+# purpose: a page whose "music font" is an unembedded text font drawing the
+# letters A-H, with a ToUnicode CMap claiming they are SMuFL music symbols
+# as its only qualification. Decoding from a codepoint means trusting a
+# number the producer wrote, so there has to be a page that abuses exactly
+# that, and it has to keep being refused. Confirmed to decode as
+# rhythm-from-glyphs before the corroboration requirements went in.
+FAKE_FONT_NAME = "fake_music_font"
+FAKE_FONT_CODES = (0xE0A4, 0xE0A3, 0xE052, 0xE084, 0xE0A4, 0xE0A4, 0xE0A4, 0xE1E7)
+FAKE_FONT_LETTERS = "ABCDEFGH"
+
+# Which tool made each committed PDF, asserted by a test. A fixture
+# re-engraved by a DIFFERENT version lands different coordinates, and the
+# assertions here measure coordinates - so the version has to be part of what
+# is checked, not only written down in the README. The MusicXML has its own,
+# stronger guard: it is regenerated and compared byte for byte.
+ENGRAVER_CREATOR = "MuseScore Studio Version: 4.6.3"
+SYNTHESISED_CREATOR = "fermata engrave_fixtures.py"
+SYNTHESISED = (RASTER_NAME, FAKE_FONT_NAME)
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +469,58 @@ def engrave(musescore):
         print(f"  engraved {pdf.name} ({pdf.stat().st_size} bytes)")
 
 
+def synthesise_fake_music_font():
+    """Draw a plausible-looking staff whose only music credential is a lie."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    xs = (90, 140, 215, 265, 340, 390, 465, 515)
+    for i in range(5):
+        page.draw_line((60, 120 + i * 5.125), (560, 120 + i * 5.125), width=0.5)
+    for i in range(6):
+        page.draw_line((60, 180 + i * 7.4), (560, 180 + i * 7.4), width=0.5)
+    for x in (60, 185, 310, 435, 560):
+        page.draw_line((x, 120), (x, 120 + 4 * 5.125), width=0.6)
+        page.draw_line((x, 180), (x, 180 + 5 * 7.4), width=0.6)
+    for i, x in enumerate(xs):
+        page.insert_text((x, 180 + (i % 6) * 7.4 + 2.5), str(i % 5), fontsize=7, fontname="helv")
+    for letter, x in zip(FAKE_FONT_LETTERS, xs):
+        page.insert_text((x, 130), letter, fontsize=18, fontname="tiro")
+    raw = FIXTURE_DIR / f"{FAKE_FONT_NAME}.raw.pdf"
+    doc.save(raw)
+    doc.close()
+
+    doc = fitz.open(raw)
+    entries = "\n".join(f"<{ord(l):04X}> <{c:04X}>"
+                        for l, c in zip(FAKE_FONT_LETTERS, FAKE_FONT_CODES))
+    cmap = (
+        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n"
+        "/CMapName /Fake-UCS def\n/CMapType 2 def\n"
+        "1 begincodespacerange\n<0000> <00FF>\nendcodespacerange\n"
+        f"{len(FAKE_FONT_CODES)} beginbfchar\n{entries}\nendbfchar\nendcmap\nend\nend\n"
+    ).encode()
+    cm_xref = doc.get_new_xref()
+    doc.update_object(cm_xref, f"<</Length {len(cmap)}>>")
+    doc.update_stream(cm_xref, cmap)
+
+    patched = 0
+    for xref in range(1, doc.xref_length()):
+        obj = doc.xref_object(xref, compressed=True)
+        if "/Type/Font" in obj.replace(" ", "") and "Times" in obj:
+            doc.update_object(xref, obj.rstrip()[:-2] + f"/ToUnicode {cm_xref} 0 R>>")
+            patched += 1
+    if patched != 1:
+        raise SystemExit(f"expected one text font to patch, found {patched}")
+    path = FIXTURE_DIR / f"{FAKE_FONT_NAME}.pdf"
+    doc.set_metadata({"creator": SYNTHESISED_CREATOR,
+                      "title": "a text font claiming its letters are music symbols"})
+    doc.save(path)
+    doc.close()
+    raw.unlink(missing_ok=True)
+    print(f"  synthesised {path.name} ({path.stat().st_size} bytes)")
+
+
 def rasterise():
     """Flatten one engraved fixture to a page-sized image in a PDF wrapper."""
     import fitz
@@ -395,6 +532,8 @@ def rasterise():
         new = out.new_page(width=page.rect.width, height=page.rect.height)
         new.insert_image(new.rect, pixmap=pix)
     path = FIXTURE_DIR / f"{RASTER_NAME}.pdf"
+    out.set_metadata({"creator": SYNTHESISED_CREATOR,
+                      "title": f"{RASTER_FROM} rasterised at {RASTER_DPI} dpi"})
     out.save(path, deflate=True)
     print(f"  rasterised {path.name} ({path.stat().st_size} bytes)")
 
@@ -452,6 +591,7 @@ def main():
     print(f"engraving with {musescore}:")
     engrave(musescore)
     rasterise()
+    synthesise_fake_music_font()
     if args.report:
         report()
 

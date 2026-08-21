@@ -34,13 +34,25 @@ gap this directory exists to close was created.
 | fixture | shape it covers |
 | --- | --- |
 | `notation_and_tab` | notation over tablature, two pages, D major, a dotted note, beamed sixteenths, a whole-note chord; every bar adds up |
+| `rests_and_flags` | every rest value and every flag hook the SMuFL map calibrates, including 32nds |
 | `tab_only` | tablature with no notation staff — the honest fall back to spacing-inferred rhythm |
+| `tab_only_short_last_system` | eight bars of which six are read: an unstretched final system falls under the length floor and is lost silently |
 | `two_voices` | a melody stems-up over an accompaniment stems-down in one bar |
 | `tuplet_and_tie` | a triplet (not detected, so its bar is reported overfull) and a tie across a barline |
 | `drop_d` | a non-standard tuning named in the score's text, and a metronome mark |
 | `defective_bars` | bars over their meter, bars under it, and a bar wrong in both directions at once |
+| `volta` | a repeat with "1." / "2." ending brackets close under the staff |
+| `harmonics_dense` | two uncalibrated harmonic noteheads on a system dense enough that the unknown-glyph ratio cannot see them |
 | `notation_only` | standard notation with no tablature — refused, with the reason |
+
+Two fixtures are **synthesised** rather than engraved, because no engraver
+produces them on purpose. The script builds both, and their `/Creator` says
+so.
+
+| fixture | shape it covers |
+| --- | --- |
 | `raster_scan` | `notation_and_tab` flattened to an image — refused as a scan |
+| `fake_music_font` | a page whose "music font" is an unembedded text font drawing the letters A–H, with a ToUnicode CMap claiming they are SMuFL music symbols as its only credential — refused |
 
 ## What they cannot cover
 
@@ -57,8 +69,15 @@ looks like coverage and is not is worse than none:
   with.
 - **Reading a raster page.** The rasterised fixture proves extraction
   declines a scan, not that anything reads one.
-- **Diamond and harmonic noteheads**, deliberately absent from the SMuFL map
-  because which codepoint means which was not established.
+- **Reading a diamond or harmonic notehead.** Those codepoints are
+  deliberately absent from the SMuFL map, because which one means which was
+  not established. `harmonics_dense` covers the *reporting* of that gap, not
+  its closure — a score with harmonics still loses their durations.
+- **A repeat bracket welded into a phantom staff line.** The engraver used
+  here leaves a visible gap in an ending bracket, whereas Finale's abut
+  exactly; that geometry is covered by a synthetic page built inside
+  `test_engraved_fixtures.py` instead, and the real examples are in the
+  maintainer's library.
 - **Scale.** The library's reference score is 50 bars of real two-voice
   fingerstyle writing. The fixture with two voices is eight contrived bars,
   and a regression that only appears in density will still only appear
