@@ -6,6 +6,8 @@
     STAFF_THEMES,
     STAFF_THEME_LABELS,
     STAFF_THEME_TOKEN_PREFIX,
+    WEEK_STARTS,
+    WEEK_START_LABELS,
   } from "./settings.svelte.js";
 
   const settings = getSettings();
@@ -17,6 +19,21 @@
   // silently doing nothing.
   let pending = $state(null);
   let error = $state("");
+
+  let weekPending = $state(false);
+
+  async function chooseWeekStart(day) {
+    if (day === settings.week_starts_on || weekPending) return;
+    weekPending = true;
+    error = "";
+    try {
+      await setSetting("week_starts_on", day);
+    } catch (e) {
+      error = e?.message ?? "Could not save that.";
+    } finally {
+      weekPending = false;
+    }
+  }
 
   async function chooseTheme(theme) {
     if (theme === settings.staff_theme || pending) return;
@@ -72,6 +89,30 @@
       {#if error}
         <p class="error">{error}</p>
       {/if}
+    </section>
+
+    <section class="week-start">
+      <h2>A week starts on</h2>
+      <p class="hint">
+        Which seven days a practice goal is counted over. Changing this decides the week a
+        <em>new</em> goal is for; a goal already set keeps the dates it was set for.
+      </p>
+      <div class="row">
+        {#each WEEK_STARTS as day}
+          <button
+            class="week-option"
+            class:on={settings.week_starts_on === day}
+            data-week-start={day}
+            disabled={weekPending}
+            onclick={() => chooseWeekStart(day)}
+          >
+            {WEEK_START_LABELS[day]}
+          </button>
+        {/each}
+      </div>
+      <p class="hint goals-link">
+        <a href="#/practice">Practice &amp; goals →</a>
+      </p>
     </section>
 
     <Instruments />
@@ -159,6 +200,21 @@
 
   .theme-card.saving {
     opacity: 0.6;
+  }
+
+  .row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .week-option.on {
+    border-color: var(--brass);
+    color: var(--brass-bright);
+  }
+
+  .goals-link {
+    margin: 14px 0 0;
   }
 
   .theme-card:disabled {

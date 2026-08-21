@@ -26,7 +26,17 @@ export const STAFF_THEME_TOKEN_PREFIX = {
   print: "--score-print",
 };
 
-const DEFAULTS = { staff_theme: STAFF_THEMES[0] };
+// Which day a week starts on decides the seven days a practice goal is
+// counted over, so it is a real preference rather than a cosmetic one. Kept
+// in step with SETTINGS_CHOICES["week_starts_on"] in server/fermata/api.py.
+export const WEEK_STARTS = ["monday", "sunday"];
+
+export const WEEK_START_LABELS = {
+  monday: "Monday",
+  sunday: "Sunday",
+};
+
+const DEFAULTS = { staff_theme: STAFF_THEMES[0], week_starts_on: WEEK_STARTS[0] };
 
 const settings = $state({ ...DEFAULTS });
 

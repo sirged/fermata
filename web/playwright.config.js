@@ -18,7 +18,21 @@ if (!fs.existsSync(path.join(here, "dist", "index.html"))) {
 
 // A throwaway library and config per run, so the suite never sees a previous
 // run's rows and never touches a real install's database.
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "fermata-browser-"));
+// Created once per RUN, not once per process. This file is evaluated again in
+// every worker, so an unconditional mkdtemp gave the worker a different scratch
+// directory from the one the server was started with - which is invisible until
+// a spec needs the real path, and then quietly does nothing. The runner
+// evaluates this before it spawns any worker, so the variable is inherited.
+const scratch =
+  process.env.FERMATA_TEST_SCRATCH ??
+  fs.mkdtempSync(path.join(os.tmpdir(), "fermata-browser-"));
+process.env.FERMATA_TEST_SCRATCH = scratch;
+// Published to the specs, so a test that needs a real score can put a file in
+// the library and take it out again afterwards. Without a path, the only way to
+// cover anything score-shaped was to weaken the guard that stops this suite
+// running against a real install - and that guard is the reason it is safe to
+// delete practice history in here at all.
+process.env.FERMATA_TEST_LIBRARY_DIR = path.join(scratch, "library");
 // Not 8080, and not a port anything else here uses. The suite starts its own
 // server and never adopts one (see reuseExistingServer below), so a collision
 // should fail loudly rather than quietly point these tests at whatever is
