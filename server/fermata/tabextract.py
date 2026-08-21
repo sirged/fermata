@@ -214,23 +214,61 @@ class _Staff:
         return best_i + 1
 
 
-def _long_horizontal_segments(page, min_len_ratio=0.25):
+STAFF_LINE_JOIN_GAP = 1.0
+
+
+def _long_horizontal_segments(page, min_len_ratio=0.25, max_len_ratio=0.98):
     """Near-horizontal vector primitives long enough to plausibly be staff
-    lines, as opposed to beams, ledger lines, or stems."""
+    lines, as opposed to beams, ledger lines, or stems.
+
+    Collinear pieces are joined before the length test, because whether a
+    staff line arrives as ONE primitive per system is an exporter's choice,
+    not a property of staves: Finale and Sibelius draw one line across the
+    system, MuseScore draws a separate piece per measure - abutting exactly,
+    measured at a 0.0pt gap - so a system of six narrow bars presented six
+    pieces of which none was a quarter of the page wide, and the whole
+    system was invisible here. Detection then depended on a score happening
+    to have wide enough bars, which is how a tab staff could be found on one
+    system of a page and not the next.
+
+    The join tolerance is deliberately sub-point (see STAFF_LINE_JOIN_GAP):
+    the pieces of one broken line touch, whereas the other repeated
+    horizontals at a shared y - ledger lines, several to a system at the
+    same pitch - sit points apart (7.7pt at the closest measured here) and
+    so are never welded into a line that was not drawn.
+
+    Segments spanning essentially the whole page are dropped: a staff always
+    leaves margins, so a full-bleed horizontal is page furniture (MuseScore
+    draws one at each page edge) and counting it produced a phantom
+    one-line "staff group" in every anomaly report.
+    """
     min_len = page.rect.width * min_len_ratio
-    segs = []
+    max_len = page.rect.width * max_len_ratio
+    rows = collections.defaultdict(list)
     for d in glyph.page_drawings(page):
         for item in d.get("items", []):
             if item[0] == "l":
                 p1, p2 = item[1], item[2]
-                if abs(p1.y - p2.y) < 0.08 and abs(p1.x - p2.x) >= min_len:
-                    y = (p1.y + p2.y) / 2
-                    segs.append((y, min(p1.x, p2.x), max(p1.x, p2.x)))
+                if abs(p1.y - p2.y) < 0.08:
+                    rows[round((p1.y + p2.y) / 2, 1)].append((min(p1.x, p2.x), max(p1.x, p2.x)))
             elif item[0] == "re":
                 r = item[1]
-                if r.height < 1.0 and r.width >= min_len:
-                    y = (r.y0 + r.y1) / 2
-                    segs.append((y, r.x0, r.x1))
+                if r.height < 1.0:
+                    rows[round((r.y0 + r.y1) / 2, 1)].append((r.x0, r.x1))
+
+    segs = []
+    for y, spans in rows.items():
+        spans.sort()
+        run_x0, run_x1 = spans[0]
+        for x0, x1 in spans[1:]:
+            if x0 - run_x1 <= STAFF_LINE_JOIN_GAP:
+                run_x1 = max(run_x1, x1)
+                continue
+            if min_len <= run_x1 - run_x0 <= max_len:
+                segs.append((y, run_x0, run_x1))
+            run_x0, run_x1 = x0, x1
+        if min_len <= run_x1 - run_x0 <= max_len:
+            segs.append((y, run_x0, run_x1))
     return segs
 
 

@@ -5,10 +5,24 @@ dots and time-signature digits - instead of guessing from x-spacing.
 
 Used by tabextract.extract() as the primary rhythm/time-signature source
 when a tab staff is paired with a standard-notation staff drawn in a
-recognised, TrueType-embedded music font; tabextract falls back to its own
-spacing heuristic when that isn't the case (raster pages, CFF-flavor font
-embeddings, an unrecognised font family, or a recognised family whose glyph
-outlines don't match the calibrated fingerprint - see MAESTRO_GLYF_DIGESTS).
+recognised music font; tabextract falls back to its own spacing heuristic
+when that isn't the case (raster pages, a CFF-flavour embedding of Maestro
+or Opus, an unrecognised font, or a recognised family whose glyph outlines
+don't match the calibrated fingerprint - see MAESTRO_GLYF_DIGESTS).
+
+There are THREE calibrations here, because there are three different things
+a PDF can leave behind to identify a glyph by, and which one survives is the
+exporter's choice, not ours:
+
+  * Finale's "Maestro" keeps a stable glyph ID order -> MAESTRO_GID_MAP,
+    guarded by an outline fingerprint because a GID means something only by
+    convention of one export pipeline.
+  * Sibelius's "Opus" keeps glyph NAMES (as PUA labels) -> OPUS_NAME_MAP.
+    Names travel with the outline, so no fingerprint is needed.
+  * A SMuFL font - MuseScore's Leland, Dorico's Bravura, any conforming
+    font - keeps neither: names stripped, glyph order minted per file. What
+    survives is the PDF's ToUnicode CMap, and for a SMuFL font the codepoint
+    it maps to IS the glyph's published meaning -> SMUFL_CODE_MAP.
 
 How this works (full validation detail):
 
@@ -241,6 +255,88 @@ OPUS_SPECIAL_NAME_MAP = {
     "uniF0E4": "string4", "uniF0E5": "string5", "uniF0E6": "string6",
 }
 
+# SMuFL fonts ("Standard Music Font Layout"): keyed by the SMuFL CODEPOINT,
+# which is neither a glyph ID nor a font-specific name but a number fixed by
+# a published specification - so one table serves every conforming font.
+#
+# WHY A THIRD KEY. Free engravers use SMuFL fonts (MuseScore draws with
+# Leland and falls back to Bravura for glyphs Leland omits; Dorico uses
+# Bravura). Their PDF embeds are subsets with the `post` table dropped AND a
+# glyph order minted per file - the worst of both the families above: no
+# names to key on like Opus, and no stable GID order to key on like Maestro.
+# What does survive is the PDF's own ToUnicode CMap, which maps each CID
+# back to the codepoint the engraver drew, and pymupdf resolves it for us
+# (GlyphEvent.code). For a SMuFL font that codepoint IS the glyph's
+# published meaning.
+#
+# WHY THIS NEEDS NO FINGERPRINT. MAESTRO_GLYF_DIGESTS exists because a GID
+# is only a meaning by convention of one export pipeline, so a font wearing
+# the same family name can silently mean something else. A SMuFL codepoint
+# is a meaning by specification, and it is carried by the PDF rather than
+# inferred from the font's internals, so there is no equivalent
+# same-name-different-meaning hazard to guard against. What IS guarded is
+# whether a font is a SMuFL music font at all - see _smufl_font_names.
+#
+# A consequence worth knowing: nothing on this path opens the embedded font
+# at all - no fontTools, no `glyf` table, no outline flavour check - because
+# there is no outline to compare against. The two conditions the other
+# families fail on (a CFF-flavour embedding, a missing glyph order) simply do
+# not arise here.
+#
+# HOW THIS TABLE WAS DERIVED: by engraving scores that request each symbol
+# explicitly and reading back which codepoint appeared. That is a stronger
+# check than reading a rendered outline, because the input says which symbol
+# was asked for: a bar of unbeamed 32nds yields exactly four flag32
+# codepoints, ten one-bar meters yield each time-signature digit once, and
+# so on. Every entry below was observed that way; nothing is here by
+# analogy. Deliberately absent: the diamond noteheads MuseScore draws for
+# harmonics (two distinct codepoints turned up for a half and a quarter
+# diamond and this table will not guess which is which), and the notehead
+# Bravura supplies for a half-value X head. Both stay unmapped, so a score
+# using them is counted as partly unrecognised and degrades honestly rather
+# than decoding at a duration nobody verified.
+SMUFL_CODE_MAP = {
+    0xE000: "brace",
+    0xE050: "clef",            # gClef
+    0xE052: "clef",            # gClef8vb - the octave-transposing guitar clef
+    0xE062: "clef",            # fClef
+    0xE06D: "clef",            # 6stringTabClef
+    0xE080: "digit0", 0xE081: "digit1", 0xE082: "digit2", 0xE083: "digit3",
+    0xE084: "digit4", 0xE085: "digit5", 0xE086: "digit6", 0xE087: "digit7",
+    0xE088: "digit8", 0xE089: "digit9",
+    0xE08A: "common_time", 0xE08B: "cut_time",
+    0xE0A2: "notehead_whole",
+    0xE0A3: "notehead_half",
+    0xE0A4: "notehead_filled",
+    0xE0A9: "notehead_x",
+    0xE1E7: "dot",             # augmentationDot
+    0xE240: "flag8", 0xE241: "flag8",
+    0xE242: "flag16", 0xE243: "flag16",
+    0xE244: "flag32", 0xE245: "flag32",
+    0xE260: "flat", 0xE261: "natural", 0xE262: "sharp",
+    0xE4E3: "rest_whole",
+    0xE4E4: "rest_half",
+    0xE4E5: "rest_quarter",
+    0xE4E6: "rest8",
+    0xE4E7: "rest16",
+    0xE4E8: "rest32",
+}
+
+# The codepoint span the SMuFL specification reserves for music symbols.
+# Codes a SMuFL font draws inside it but that SMUFL_CODE_MAP does not know
+# are honest decode gaps and are counted as such; codes OUTSIDE it drawn by
+# the same font are not music symbols at all (a music font can carry plain
+# text characters) and are ignored rather than counted against the decode.
+SMUFL_RANGE = (0xE000, 0xF3FF)
+
+# How many recognised SMuFL codepoints a font must draw on a page before it
+# is treated as that page's music font. One or two PUA codepoints could
+# collide with anything; a handful landing on calibrated music symbols is
+# what a real engraved staff looks like (the smallest single-system fixture
+# here draws 9). Mirrors MAESTRO_FINGERPRINT_MIN_GLYPHS: enough to be
+# evidence, low enough to clear every genuine case.
+SMUFL_MIN_MAPPED_GLYPHS = 4
+
 DIGIT_CATS = {f"digit{d}": d for d in range(10)}
 
 NOTEHEAD_CATS = {"notehead_filled", "notehead_half", "notehead_whole", "notehead_x", "notehead_diamond"}
@@ -252,9 +348,16 @@ NOTEHEAD_CATS = {"notehead_filled", "notehead_half", "notehead_whole", "notehead
 # here nothing would ever actually count it - every unbeamed Sibelius eighth
 # would decode as a quarter. Its presence here is safe because
 # _flag_count_near only counts a glyph sitting at a stem's FREE end.
-FLAG_HOOKS = {"flag8": 1, "flag16": 2, "flag8_or_rest_quarter": 1}
+FLAG_HOOKS = {"flag8": 1, "flag16": 2, "flag32": 3, "flag8_or_rest_quarter": 1}
 FLAG_CATS = set(FLAG_HOOKS)
-REST_CATS = {"rest8", "rest_quarter", "rest_half_whole", "flag8_or_rest_quarter"}
+# Maestro and Opus both draw the half and whole rest with ONE glyph, told
+# apart by which staff line it hangs from ("rest_half_whole"). SMuFL gives
+# them separate codepoints, so where the engraving says which it is outright
+# there is no need to infer it from position - hence the exact categories
+# beside the ambiguous one.
+REST_VALUES = {"rest_whole": 4.0, "rest_half": 2.0, "rest_quarter": 1.0,
+               "rest8": 0.5, "rest16": 0.25, "rest32": 0.125}
+REST_CATS = set(REST_VALUES) | {"rest_half_whole", "flag8_or_rest_quarter"}
 DOT_CATS = {"dot"}
 
 
@@ -588,14 +691,23 @@ def load_music_fonts(doc, page):
 # ---------------------------------------------------------------------------
 
 class GlyphEvent:
-    __slots__ = ("family", "gid", "category", "x0", "y0", "x1", "y1", "code")
+    __slots__ = ("family", "gid", "category", "x0", "y0", "x1", "y1", "code", "smufl")
 
-    def __init__(self, family, gid, category, bbox, code):
+    def __init__(self, family, gid, category, bbox, code, smufl=False):
         self.family = family
         self.gid = gid
         self.category = category
         self.x0, self.y0, self.x1, self.y1 = bbox
         self.code = code
+        self.smufl = smufl
+
+    @property
+    def calibration_key(self):
+        """What a calibration table for this glyph's font would be keyed on -
+        the codepoint for a SMuFL font, the glyph ID otherwise. Reported for
+        unrecognised glyphs so the gap can actually be looked up later; a
+        SMuFL subset's glyph ID is minted per file and would name nothing."""
+        return f"U+{self.code:04X}" if self.smufl else self.gid
 
     @property
     def xc(self):
@@ -673,6 +785,35 @@ def page_drawings(page):
     return cached
 
 
+def _smufl_font_names(trace):
+    """Which fonts on this page are SMuFL music fonts?
+
+    Answered from what they actually drew rather than from their name: a
+    font is this page's music font if it drew at least
+    SMUFL_MIN_MAPPED_GLYPHS characters at codepoints SMUFL_CODE_MAP knows.
+    Keying on the name instead would need an allowlist of every SMuFL font
+    anyone might engrave with (Leland, Bravura, Petaluma, MuseJazz, ...) and
+    would still miss the next one, while the codepoints are fixed by the
+    specification for all of them. A page can hand back more than one name:
+    MuseScore draws with Leland and falls back to Bravura for glyphs Leland
+    does not carry, and both are decoded by the same table.
+
+    Requiring a handful of RECOGNISED codepoints, not merely codepoints in
+    SMuFL's range, is what keeps an unrelated font that happens to use the
+    private use area (an icon font, Sibelius's Opus) from being read as
+    music: it has to land on calibrated music symbols, repeatedly."""
+    hits = collections.Counter()
+    for span in trace:
+        chars = span.get("chars")
+        if not chars:
+            continue
+        name = span.get("font", "").split("+")[-1]
+        for ch in chars:
+            if ch[0] in SMUFL_CODE_MAP:
+                hits[name] += 1
+    return {n for n, c in hits.items() if c >= SMUFL_MIN_MAPPED_GLYPHS}
+
+
 def extract_glyph_events(page):
     """Walk page.get_texttrace() and classify every char drawn in a known
     music font into a semantic category (category is None if the glyph
@@ -683,18 +824,23 @@ def extract_glyph_events(page):
         return cached
 
     fonts, warnings = load_music_fonts(page.parent, page)
-    if not fonts:
+    try:
+        trace = page.get_texttrace()
+    except Exception:
+        trace = []
+        warnings = warnings + ["page text trace could not be read"]
+    # A SMuFL font is recognised from the trace itself, not from the font
+    # table, so this has to come after the trace is in hand - and the early
+    # exit has to consider both kinds of font or a MuseScore page (which has
+    # no Maestro/Opus resource at all) would report no music glyphs.
+    smufl_names = _smufl_font_names(trace)
+    if not fonts and not smufl_names:
         result = PageGlyphs([], fonts, [], warnings)
         _GLYPH_EVENTS_CACHE[page] = result
         return result
 
     events = []
     unknown = []
-    try:
-        trace = page.get_texttrace()
-    except Exception:
-        trace = []
-        warnings = warnings + ["page text trace could not be read"]
     for span in trace:
         # get_texttrace()'s "font" is normally already subset-tag-stripped,
         # but strip defensively - a raw "ABCDEF+Family" would otherwise
@@ -703,6 +849,19 @@ def extract_glyph_events(page):
         fname = span.get("font", "").split("+")[-1]
         candidates = fonts.get(fname)
         if not candidates:
+            if fname not in smufl_names:
+                continue
+            for ch in span.get("chars", []):
+                code, gid, _origin, bbox = ch
+                if not SMUFL_RANGE[0] <= code <= SMUFL_RANGE[1]:
+                    # a music font can also carry plain text characters
+                    # (rehearsal marks, fingerings); those are not music
+                    # symbols and must not count as unrecognised ones.
+                    continue
+                ev = GlyphEvent(fname, gid, SMUFL_CODE_MAP.get(code), bbox, code, smufl=True)
+                events.append(ev)
+                if ev.category is None:
+                    unknown.append(ev)
             continue
         for ch in span.get("chars", []):
             code, gid, origin, bbox = ch
@@ -1370,10 +1529,10 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
                 # sits on the middle (3rd) line - use nearest line index
                 nearest_idx = min(range(len(line_ys)), key=lambda i: abs(line_ys[i] - ev.yc))
                 base = 4.0 if nearest_idx <= 1 else 2.0
-            elif cat == "rest8":
-                base = 0.5
             else:
-                base = 1.0
+                # A font that spells the rest's value in the glyph itself
+                # (see REST_VALUES) needs no positional guess.
+                base = REST_VALUES.get(cat, 1.0)
             notes.append(NoteEvent(ev.xc, ev.yc, base, 0, min(dot_counts.get(id(ev), 0), 2),
                                    True, cat))
 
@@ -1399,7 +1558,8 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         "unknown_glyphs": len(unknown_in_band),
         "unknown_ratio": (len(unknown_in_band) / len(staff_events)) if staff_events else 0.0,
         "unknown_at_flag_position": suspect,
-        "unknown_gid_or_name_sample": sorted({(u.family, u.gid) for u in unknown_in_band})[:20],
+        "unknown_gid_or_name_sample": sorted(
+            {(u.family, u.calibration_key) for u in unknown_in_band}, key=repr)[:20],
         "band_glyphs": len(staff_events),
         "note_events": len(notes),
         "stem_count": len(stems),

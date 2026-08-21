@@ -17,14 +17,30 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
       - name: Install
         working-directory: server
         run: pip install -e ".[dev]"
-      # Tests that need a sheet music library read it from FERMATA_TEST_LIBRARY
-      # and skip when it is unset, so this runs the rest without one.
+      # An extracted transcription is stored to be rendered, so the tests
+      # check it parses with the real alphaTab importer the player uses -
+      # which is a runtime dependency of the web project. Installing it here
+      # (runtime only: this needs the importer, not playwright) is what makes
+      # that check run instead of skip.
+      - name: Install alphaTab
+        working-directory: web
+        run: npm ci --omit=dev
+      # Extraction is exercised against the engraved fixtures committed under
+      # server/tests/fixtures/engraved. The tests that need the maintainer's
+      # own sheet music read it from FERMATA_TEST_LIBRARY and skip when it is
+      # unset - the run prints how many did, so a green log cannot be
+      # mistaken for a complete one.
       - name: Test
         working-directory: server
-        run: python -m pytest -q
+        run: python -m pytest -q -rs
 
   web:
     name: Frontend build

@@ -4,6 +4,11 @@ config/
 *.pdf
 *.zip
 
+# ...except the engraved test fixtures, which exist precisely so the
+# extraction tests do not need anybody's personal library. They are engraved
+# from the MusicXML beside them by server/tools/tab_extract/engrave_fixtures.py.
+!server/tests/fixtures/engraved/*.pdf
+
 # python
 __pycache__/
 *.pyc

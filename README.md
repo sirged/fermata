@@ -35,10 +35,14 @@ them.
 - **Tab out of a PDF** — engraved guitar PDFs carry their tab as real text and
   their rhythm in the music font's own glyphs, so Fermata reads both directly
   instead of guessing at pixels, and renders the result as a playable,
-  editable staff beside the original page. The transcription is written as
-  **MusicXML**, so it opens in other notation software rather than only here —
-  see [the tab profile](docs/musicxml-tab-profile.md) for exactly what is
-  written. Fret numbers, strings and chords come out reliably; how much of the
+  editable staff beside the original page. Three music-font vocabularies are
+  calibrated: Finale's Maestro, Sibelius's Opus, and any font following the
+  SMuFL standard, which covers what free engravers such as MuseScore produce.
+  A score drawn in something else still gives up its fret numbers, with the
+  rhythm estimated from note spacing and labelled as such. The transcription
+  is written as **MusicXML**, so it opens in other notation software rather
+  than only here — see [the tab profile](docs/musicxml-tab-profile.md) for
+  exactly what is written. Fret numbers, strings and chords come out reliably; how much of the
   rhythm survives depends on the engraving, and whatever stayed uncertain is
   listed with the staff rather than hidden. Bars whose voices the engraved
   stems do not separate still do not add up — that is now a stated conformance
