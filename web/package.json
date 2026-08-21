@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build && node scripts/check-assets.mjs && node scripts/check-warning-patterns.mjs",
     "preview": "vite preview",
-    "test:browser": "playwright test"
+    "test:browser": "node scripts/run-browser-tests.mjs"
   },
   "devDependencies": {
     "@coderline/alphatab-vite": "^1.8.4",

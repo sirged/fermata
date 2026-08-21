@@ -6,6 +6,14 @@
 // (VexFlow was the runner-up, and our model lives on the server as MusicXML)
 // should mean rewriting this file and nothing else - see docs/rendering.md.
 import * as alphaTab from "@coderline/alphatab";
+import {
+  DEFAULT_METRONOME_BPM,
+  barAtTick,
+  clickPhaseInBar,
+  effectiveClickRate,
+  metronomePattern,
+  secondsPerClick,
+} from "./metronome.js";
 
 // ---------------------------------------------------------------- profiles
 
@@ -651,6 +659,407 @@ export async function playPitch(midi) {
   return noteOn ? noteOn.noteKey : key;
 }
 
+// ------------------------------------------------- the practice metronome
+//
+// alphaTab's own metronome is baked into the generated MIDI at the score's
+// declared tempo and scaled by playbackSpeed exactly like every other note -
+// api.metronomeVolume only changes how loud that existing click is, never
+// what tempo it counts. There is no setting anywhere in the public API that
+// lets its click run at a different tempo than the notes beside it, which is
+// exactly what practice keeps wanting: a click at full tempo over a passage
+// slowed to 70%, or a fixed BPM the score's own marking has nothing to do
+// with. So this is not a setting on the renderer's player - it can't be -
+// it is a second, wholly independent audio path: a plain Web Audio
+// oscillator click, scheduled off its own clock, that never touches
+// alphaTab's synthesiser or its notion of tempo.
+//
+// alphaTab's built-in metronome is left permanently muted (metronomeVolume
+// stays 0, set once below and never touched again) so the two never sound
+// at once - but that only covers alphaTab's REGULAR metronome. Its count-in
+// is a separate feature with its own, un-muted volume (countInVolume), and
+// alphaTab raises playerStateChanged to Playing before the count-in even
+// starts - so this click cannot simply start on that event either, or it
+// sounds a second, differently-paced click underneath the count-in,
+// defeating the reason a count-in exists. See setPlaying below for the
+// state machine that keeps this click out of the count-in entirely.
+//
+// The scheduler is the standard "lookahead" pattern for Web Audio timing:
+// every METRONOME_LOOKAHEAD_MS a queue is topped up with whatever clicks now
+// fall within the next METRONOME_SCHEDULE_AHEAD_S of audio-clock time,
+// scheduled by handing the audio node the exact time to start rather than by
+// firing it now. A metronome built from one setTimeout per click drifts
+// under any main-thread load - exactly the load a page with a soundfont and
+// a renderer on it has - and a click that drifts is worse than none, since it
+// stops being the thing a player can trust over their own sense of tempo.
+
+const METRONOME_LOOKAHEAD_MS = 25;
+const METRONOME_SCHEDULE_AHEAD_S = 0.12;
+const METRONOME_CLICK_SECONDS = 0.05;
+// Accent is both higher-pitched and louder than a plain subdivision tick -
+// pitch alone survives a quiet room or a cheap speaker better than volume
+// alone does, so the two are stacked rather than picking one. Gains are
+// sized so the two can never clip even in the pathological case of one
+// click's tail overlapping the next one's attack: 0.6 + 0.35 = 0.95, under
+// unity with headroom to spare. MAX_METRONOME_BPM keeps that overlap from
+// ever actually happening in practice - see its own comment in metronome.js.
+const METRONOME_ACCENT_HZ = 1500;
+const METRONOME_TICK_HZ = 950;
+const METRONOME_ACCENT_GAIN = 0.6;
+const METRONOME_TICK_GAIN = 0.35;
+
+/**
+ * The independent click described above, bound to one AlphaTabApi instance.
+ *
+ * `onTempo(rate)` fires whenever the click RATE it would report changes -
+ * clicks per minute, the same number that is actually scheduled, never a
+ * quarter-note tempo a listener would have to convert in their head - on a
+ * setting change, the score's own tempo moving under a proportion, or the
+ * meter itself changing mid-piece (which changes the rate even when neither
+ * of those two do, in proportion mode - see effectiveClickRate). It never
+ * fires before `scoreLoaded` has run once: reporting a value (even the
+ * correct one) before a score exists to be a proportion OF would show a
+ * caller a number that has nothing behind it yet.
+ *
+ * `onClick(accent, numerator, denominator, phase)` fires once per click ONLY
+ * from inside the real scheduling call that creates its oscillator - not
+ * merely alongside it - so deleting that function's body silences this too;
+ * nothing downstream of it can report a click that scheduleClick never
+ * actually attempted. `phase` is the bar-relative slot the click landed in
+ * (see clickPhaseInBar in metronome.js) - exposed separately from `accent`
+ * so a caller can tell the phase is really being derived from the playhead
+ * each time, not merely incrementing.
+ */
+function createPracticeMetronome(api, onTempo, onClick) {
+  let enabled = false;
+  let mode = "proportion";
+  let proportion = 1;
+  let bpm = DEFAULT_METRONOME_BPM;
+  // The score's own tempo at the playhead - null until a score has loaded,
+  // updated continuously while playing (see positionChanged below) rather
+  // than resolved once, which is what lets a proportion track a tempo change
+  // written mid-piece instead of freezing at whatever was true at bar one.
+  let scoreTempo = null;
+  // The first bar's own declared denominator - a reasonable assumption for
+  // the click rate to display before api.tickCache exists to ask (it is
+  // built during rendering, not necessarily by the instant scoreLoaded
+  // fires). Once a real bar lookup is available it always wins; this is only
+  // ever read when one is not.
+  let fallbackUnit = 4;
+  // Guards report(): false until scoreLoaded() has actually run once. Without
+  // this, the transport-initialisation calls in createScoreView (setMode /
+  // setProportion / setBpm, before any score exists) would report the
+  // FALLBACK_SCORE_TEMPO-derived value immediately, overwriting the null a
+  // caller is documented to see before anything is known.
+  let hasScore = false;
+  // True only once REAL playback is under way - never during a count-in, see
+  // setPlaying below for why alphaTab's own Playing state is not the same
+  // question.
+  let playing = false;
+  // True from the moment a play() with a count-in configured is detected
+  // until the count-in finishes - see setPlaying.
+  let countInPending = false;
+
+  let audioCtx = null;
+  let timer = null;
+  let nextClickTime = 0;
+  let lastReportedRate = null;
+  // Oscillators already scheduled but not yet finished. Tracked so stop()
+  // can cut them off - otherwise up to METRONOME_SCHEDULE_AHEAD_S of clicks
+  // already queued keep sounding after pausing or switching the click off.
+  let pendingOscillators = [];
+
+  // api.tickCache is rebuilt by the renderer on each render, and mapping it
+  // into the plain shape barAtTick wants is wasted work on every one of the
+  // ~40 scheduling checks a second the timer performs - so this is done once
+  // per tickCache instance, not once per click.
+  let cachedTickCache = null;
+  let cachedBars = [];
+
+  function currentBars() {
+    const cache = api.tickCache;
+    if (cache !== cachedTickCache) {
+      cachedTickCache = cache;
+      // MasterBarTickLookup.start/end are on the GENERATED MIDI's timeline -
+      // the same timeline api.tickPosition reports on - which is exactly why
+      // this is read from here rather than summed from MasterBar durations:
+      // a repeat or an unplayed alternate ending makes the notated bar order
+      // and the played tick order different timelines, and only alphaTab's
+      // own lookup, built from the actual generated MIDI, knows which bar is
+      // really sounding at a given tick.
+      cachedBars = (cache?.masterBars ?? []).map((mb) => ({
+        startTick: mb.start,
+        endTick: mb.end,
+        numerator: mb.masterBar.timeSignatureNumerator,
+        denominator: mb.masterBar.timeSignatureDenominator,
+      }));
+    }
+    return cachedBars;
+  }
+
+  // The bar the playhead is in right now, or null before anything is known.
+  function currentBar() {
+    return barAtTick(currentBars(), api.tickPosition ?? 0);
+  }
+
+  // The click rate - clicks per minute - for `bar` (or the fallback unit if
+  // `bar` is null), rounded ONCE here. Both tick() and report() call this
+  // and use exactly its return value, unrounded nowhere else: a display
+  // that rounds separately from what the scheduler consumes is exactly the
+  // "shows one number, sounds another" mismatch this function exists to
+  // rule out - 120.6 must never display 121 while clicking 120.6 a minute.
+  function currentClickRate(bar) {
+    const unit = bar?.denominator ?? fallbackUnit;
+    return Math.round(effectiveClickRate({ mode, bpm, proportion, scoreTempo, unit }));
+  }
+
+  function report(bar) {
+    if (!hasScore) return;
+    const rate = currentClickRate(bar ?? currentBar());
+    if (rate === lastReportedRate) return;
+    lastReportedRate = rate;
+    onTempo(rate);
+  }
+
+  function shouldRun() {
+    return enabled && playing;
+  }
+
+  // Fires onClick from INSIDE the call that actually creates and starts the
+  // oscillator - not as a separate, sibling call a caller could satisfy by
+  // deleting this function's body and leaving the notification behind. A
+  // click that gets reported without a real audio node behind it is exactly
+  // the failure this project has shipped before: a test - or a player - that
+  // trusts a value the interface merely intended to produce.
+  function scheduleClick(time, accent, numerator, denominator, phase) {
+    const ctx = audioCtx;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.frequency.value = accent ? METRONOME_ACCENT_HZ : METRONOME_TICK_HZ;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const peak = accent ? METRONOME_ACCENT_GAIN : METRONOME_TICK_GAIN;
+    // A short percussive envelope, not a sustained tone: near-instant attack
+    // so the click reads as a transient a note can be placed against, then an
+    // exponential decay - linear ramps to silence read as a cut-off, not a
+    // click's natural decay.
+    gain.gain.setValueAtTime(0, time);
+    gain.gain.linearRampToValueAtTime(peak, time + 0.001);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + METRONOME_CLICK_SECONDS);
+    // Reported before start() is actually called, not after: a caller
+    // hooking start() itself to observe the real scheduling (as this
+    // project's own test suite does) needs the click already announced by
+    // the time that hook runs, or a snapshot taken there reads the
+    // PREVIOUS click's state instead of this one's. Still only reachable by
+    // way of this function actually running - createOscillator, the gain
+    // envelope and this call all have to happen first - so deleting
+    // scheduleClick's body still silences onClick exactly as intended.
+    onClick(accent, numerator, denominator, phase);
+    osc.start(time);
+    osc.stop(time + METRONOME_CLICK_SECONDS + 0.02);
+    pendingOscillators.push(osc);
+    osc.onended = () => {
+      const i = pendingOscillators.indexOf(osc);
+      if (i !== -1) pendingOscillators.splice(i, 1);
+    };
+  }
+
+  function tick() {
+    if (!audioCtx) return;
+    // A stall longer than the lookahead window - a garbage collection pause,
+    // a profile switch re-rendering mid-playback, a backgrounded tab whose
+    // timers get throttled to once a second while its AudioContext keeps
+    // running - leaves nextClickTime sitting in the past. The while loop
+    // below would otherwise schedule every missed click at whatever instant
+    // it is now already past due, and Web Audio fires a whole burst of them
+    // at once: audible, alarming, and not a metronome recovering, just
+    // catching up. The right answer is to drop what was missed and resume
+    // from now - there is no "correct" time left to play a click that was
+    // due half a second ago.
+    if (nextClickTime < audioCtx.currentTime) {
+      nextClickTime = audioCtx.currentTime + METRONOME_LOOKAHEAD_MS / 1000;
+    }
+    while (nextClickTime < audioCtx.currentTime + METRONOME_SCHEDULE_AHEAD_S) {
+      // api.tickPosition answers "where is the playhead RIGHT NOW", not
+      // "where will it be when this click, scheduled up to
+      // METRONOME_SCHEDULE_AHEAD_S from now, actually sounds" - a real but
+      // bounded and self-correcting imprecision, worth stating plainly
+      // rather than quietly living with: when the click's own rate does not
+      // match the music's (any proportion other than 100%, or a fixed BPM),
+      // a single click landing close to a bar or beat boundary can read one
+      // slot early. It never accumulates - the very next click reads the
+      // playhead fresh again - so the cost is an occasional single click's
+      // accent placed a slot off near a boundary, not a drift that persists.
+      const tickPosition = api.tickPosition ?? 0;
+      const bar = barAtTick(currentBars(), tickPosition);
+      const numerator = bar?.numerator ?? 4;
+      const denominator = bar?.denominator ?? 4;
+      const pattern = metronomePattern(numerator, denominator);
+      const phase = clickPhaseInBar(tickPosition, bar, pattern.clicksPerBar);
+      const accent = phase % pattern.accentEvery === 0;
+      const rate = currentClickRate(bar);
+      scheduleClick(nextClickTime, accent, numerator, denominator, phase);
+      nextClickTime += secondsPerClick(rate);
+    }
+    // The meter (and therefore, in proportion mode, the rate) can change
+    // between one tick() and the next without any of report()'s other
+    // triggers firing - a bar boundary crossed mid-playback is not a setting
+    // change, a position update carrying a new scoreTempo, or a fresh score
+    // load. report()'s own de-duplication makes this a no-op the other
+    // ~39 times a second nothing has actually changed.
+    report();
+  }
+
+  function ensureAudioCtx() {
+    if (audioCtx) return audioCtx;
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (e) {
+      // Safari and iOS still enforce a hard cap on live AudioContexts and
+      // throw once it is reached. Swallowed here rather than left to
+      // propagate: prime() is called from inside playPause(), synchronously
+      // before api.playPause() runs, and an uncaught throw there would stop
+      // the Play button from ever reaching the renderer at all - silencing
+      // the metronome is the right failure, silencing playback is not.
+      console.warn("practice metronome: could not create an AudioContext - the click will stay silent.", e);
+      audioCtx = null;
+    }
+    return audioCtx;
+  }
+
+  function start() {
+    if (timer) return;
+    const ctx = ensureAudioCtx();
+    if (!ctx) return;
+    nextClickTime = ctx.currentTime + 0.05;
+    timer = setInterval(tick, METRONOME_LOOKAHEAD_MS);
+  }
+
+  function stop() {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    const ctx = audioCtx;
+    if (ctx) {
+      const now = ctx.currentTime;
+      for (const osc of pendingOscillators.splice(0)) {
+        try {
+          osc.stop(now);
+        } catch {
+          // already stopped/ended between the splice and this call
+        }
+      }
+    }
+  }
+
+  function sync() {
+    if (shouldRun()) start();
+    else stop();
+  }
+
+  return {
+    // Called from the view's playPause() below, synchronously inside the
+    // click handler that triggered it and before api.playPause() runs -
+    // browser autoplay policy grants audio to a user gesture's own call
+    // stack, not to whatever async chain api.playPause() goes through to
+    // actually start the transport (a soundfont may still be decoding).
+    // Priming here means the context already exists and is already resumed
+    // by the time playerStateChanged fires and setPlaying(true) starts the
+    // scheduler for real - there is nothing left for that later, async start
+    // to be denied. Skipped entirely when the click is switched off, so a
+    // view whose player gets used without the metronome ever touched does
+    // not hold an AudioContext open for its whole lifetime for nothing.
+    prime() {
+      if (!enabled) return;
+      ensureAudioCtx()?.resume().catch(() => {});
+    },
+    scoreLoaded(loadedScore) {
+      scoreTempo = loadedScore?.tempo ?? null;
+      fallbackUnit = loadedScore?.masterBars?.[0]?.timeSignatureDenominator ?? 4;
+      hasScore = true;
+      // Forces the next report() through even if the new score's rate
+      // happens to match a stale report already announced - relevant if this
+      // view is ever handed a second score to load, which nothing in this
+      // codebase does today but nothing here should assume.
+      lastReportedRate = null;
+      report();
+    },
+    // originalTempo is the score's OWN tempo at the playhead, unaffected by
+    // playbackSpeed (see PositionChangedEventArgs in alphaTab's typings, and
+    // modifiedTempo beside it for the one that does track speed). Called on
+    // every position update while playing, which is the continuous tracking
+    // a proportion needs rather than a value read once at play time.
+    positionChanged(originalTempo) {
+      if (Number.isFinite(originalTempo) && originalTempo > 0) {
+        scoreTempo = originalTempo;
+        if (mode === "proportion") report();
+      }
+    },
+    // isPlayingNow is alphaTab's own playerStateChanged boolean, and it is
+    // NOT the same question as "should the click be running": alphaTab
+    // raises Playing before a count-in even starts (play() fires the state
+    // change, then conditionally calls sequencer.startCountIn()), and raises
+    // it a SECOND time, with no intervening Paused, the instant the count-in
+    // finishes and real playback begins. Naively starting on the first event
+    // sounds the click underneath the count-in at whatever tempo the click
+    // is set to - a second, differently-paced click defeating the reason a
+    // count-in exists - and the second event would then be swallowed by
+    // start()'s own `if (timer) return`, leaving the click's grid anchored to
+    // whenever the count-in happened to start rather than to the first real
+    // beat, for the rest of the session.
+    //
+    // So a rising edge is treated as a count-in, and suppressed, exactly
+    // when api.countInVolume is on at the moment it arrives; the covering
+    // SECOND rising edge (no Paused in between) is what actually starts the
+    // click, freshly anchored via start() - nothing here has to detect the
+    // count-in ending explicitly, because that second event already means
+    // exactly that.
+    setPlaying(isPlayingNow) {
+      if (isPlayingNow) {
+        if (playing) return; // already running - a redundant event
+        if (!countInPending && (api.countInVolume ?? 0) > 0) {
+          countInPending = true; // this rising edge IS the count-in
+          return;
+        }
+        countInPending = false;
+        playing = true;
+        sync();
+        return;
+      }
+      countInPending = false;
+      playing = false;
+      sync();
+    },
+    setEnabled(v) {
+      enabled = !!v;
+      sync();
+    },
+    setMode(next) {
+      mode = next === "bpm" ? "bpm" : "proportion";
+      report();
+    },
+    setProportion(next) {
+      const v = Number(next);
+      if (!Number.isFinite(v) || v <= 0) return;
+      proportion = v;
+      report();
+    },
+    setBpm(next) {
+      const v = Number(next);
+      if (!Number.isFinite(v) || v <= 0) return;
+      bpm = v;
+      report();
+    },
+    destroy() {
+      stop();
+      if (audioCtx) {
+        audioCtx.close().catch(() => {});
+        audioCtx = null;
+      }
+    },
+  };
+}
+
 // ---------------------------------------------------------------- the view
 
 /**
@@ -663,7 +1072,10 @@ export async function playPitch(midi) {
  * @param opts.profile      one of SCORE_PROFILES
  * @param opts.preset       one of LAYOUT_PRESETS
  * @param opts.theme        one of SCORE_THEMES
- * @param opts.transport    {speed, looping, metronome, countIn} to start at
+ * @param opts.transport    {speed, looping, metronome, metronomeMode,
+ *                          metronomeProportion, metronomeBpm, countIn} to
+ *                          start at - see setMetronomeMode below for what
+ *                          the two metronome* values mean
  * @param opts.onReady      playback became available
  * @param opts.onPlaying    (boolean) transport state changed
  * @param opts.onError      (message) load or render failed
@@ -679,6 +1091,11 @@ export async function playPitch(midi) {
  *                          signal a caller should wait for before treating a
  *                          profile switch as having taken effect, rather than
  *                          assuming success the moment it is requested
+ * @param opts.onMetronomeTempo  (bpm) the tempo the practice metronome is
+ *                          actually clicking at just changed - see
+ *                          createPracticeMetronome above. Fires on a setting
+ *                          change, a score load, and continuously while
+ *                          playing under a proportion whose base tempo moves.
  */
 export function createScoreView(host, opts = {}) {
   const {
@@ -695,6 +1112,7 @@ export function createScoreView(host, opts = {}) {
     onLayout = () => {},
     onProfiles = () => {},
     onProfileApplied = () => {},
+    onMetronomeTempo = () => {},
   } = opts;
 
   let profile = SCORE_PROFILES.includes(initialProfile) ? initialProfile : "scoretab";
@@ -790,6 +1208,47 @@ export function createScoreView(host, opts = {}) {
   });
 
   applyBrandingOverride(api);
+
+  // Muted permanently, not toggled with the practice metronome below - see
+  // createPracticeMetronome's own comment for why alphaTab's built-in click
+  // cannot be the thing this feature is built from.
+  api.metronomeVolume = 0;
+
+  // host is the SAME DOM element across a score switch within one mounted
+  // TabViewer (this closure is rebuilt; the element is not - see publish()'s
+  // own dataset.scoreProfiles delete for the identical reason). Without this,
+  // a fresh view for a NEW score would inherit the previous score's click
+  // count and last-reported bpm sitting on the element from before - stale
+  // data a test (or a player) could read as live.
+  if (host) {
+    delete host.dataset.metronomeClicks;
+    delete host.dataset.metronomeAccent;
+    delete host.dataset.metronomeNumerator;
+    delete host.dataset.metronomeDenominator;
+    delete host.dataset.metronomePhase;
+    delete host.dataset.metronomeBpm;
+  }
+
+  // Reflects each scheduled click onto the host, the same way publish() below
+  // reflects layout and theme - so a test can assert on a click that actually
+  // happened rather than on a value this module only intended to produce.
+  function publishMetronomeClick(accent, numerator, denominator, phase) {
+    if (!host) return;
+    host.dataset.metronomeClicks = String((Number(host.dataset.metronomeClicks) || 0) + 1);
+    host.dataset.metronomeAccent = String(accent);
+    host.dataset.metronomeNumerator = String(numerator);
+    host.dataset.metronomeDenominator = String(denominator);
+    host.dataset.metronomePhase = String(phase);
+  }
+
+  const metronome = createPracticeMetronome(
+    api,
+    (bpm) => {
+      if (host) host.dataset.metronomeBpm = String(bpm);
+      onMetronomeTempo(bpm);
+    },
+    publishMetronomeClick,
+  );
 
   // Fonts for the title block are not readable through settings; they are
   // assigned onto the live resource object, which is why this happens after
@@ -928,12 +1387,21 @@ export function createScoreView(host, opts = {}) {
       api.settings.display.staveProfile = STAVE_PROFILE[profile];
       api.updateSettings();
     }
+    metronome.scoreLoaded(loadedScore);
     publish();
     onProfiles(scoreProfiles, unrenderable);
   });
 
   api.playerReady.on(() => onReady());
-  api.playerStateChanged.on((e) => onPlaying(e.state === 1));
+  api.playerStateChanged.on((e) => {
+    const isPlaying = e.state === 1;
+    metronome.setPlaying(isPlaying);
+    onPlaying(isPlaying);
+  });
+  // originalTempo is the score's own tempo at the playhead, unaffected by
+  // playback speed - see createPracticeMetronome's positionChanged for why
+  // this is what a proportion has to track rather than resolve once.
+  api.playerPositionChanged.on((e) => metronome.positionChanged(e.originalTempo));
   api.error.on((e) => {
     if (renderInFlight) {
       renderInFlight = false;
@@ -979,7 +1447,13 @@ export function createScoreView(host, opts = {}) {
   // whatever the caller was already using.
   if (transport.speed != null) api.playbackSpeed = transport.speed;
   if (transport.looping != null) api.isLooping = transport.looping;
-  if (transport.metronome != null) api.metronomeVolume = transport.metronome ? 1 : 0;
+  if (transport.metronomeMode != null) metronome.setMode(transport.metronomeMode);
+  if (transport.metronomeProportion != null) metronome.setProportion(transport.metronomeProportion);
+  if (transport.metronomeBpm != null) metronome.setBpm(transport.metronomeBpm);
+  // Enabled last: setEnabled is what can start the click running, and it
+  // should not do that against the mode/proportion/bpm defaults for the
+  // instant before the three lines above land.
+  if (transport.metronome != null) metronome.setEnabled(transport.metronome);
   if (transport.countIn != null) api.countInVolume = transport.countIn ? 1 : 0;
 
   // A tier change is applied as a full render of our own, because the
@@ -1137,13 +1611,32 @@ export function createScoreView(host, opts = {}) {
     setLooping(v) {
       api.isLooping = v;
     },
+    /** Whether the practice metronome clicks at all - the click itself is
+     * the independent path described above createPracticeMetronome, never
+     * alphaTab's own (permanently muted; see api.metronomeVolume = 0 above). */
     setMetronome(v) {
-      api.metronomeVolume = v ? 1 : 0;
+      metronome.setEnabled(v);
+    },
+    /** "proportion" (the default) clicks `metronomeProportion` of the
+     * score's own tempo at the playhead, tracking a tempo change written
+     * mid-piece. "bpm" clicks `metronomeBpm` directly and ignores the score
+     * entirely. Either way the click's tempo has nothing to do with
+     * setSpeed() - that is the whole point; see the module comment above
+     * createPracticeMetronome. */
+    setMetronomeMode(v) {
+      metronome.setMode(v);
+    },
+    setMetronomeProportion(v) {
+      metronome.setProportion(v);
+    },
+    setMetronomeBpm(v) {
+      metronome.setBpm(v);
     },
     setCountIn(v) {
       api.countInVolume = v ? 1 : 0;
     },
     playPause() {
+      metronome.prime();
       api.playPause();
     },
     stop() {
@@ -1154,6 +1647,7 @@ export function createScoreView(host, opts = {}) {
       destroyed = true;
       observer.disconnect();
       partialWatcher.disconnect();
+      metronome.destroy();
       api.destroy();
     },
   };
