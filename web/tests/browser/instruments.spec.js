@@ -329,6 +329,14 @@ test("a reference pitch outside the bounds is refused rather than silently defau
   await expect(errors(page)).toHaveCount(0);
   await expect(editorRows(page).first().locator(".string-hz")).toHaveText("77.72 Hz");
   await page.locator(".actions button.primary").click();
+  // Wait for the save to have LANDED before reading it back, because the read
+  // below goes out of band - through the request context rather than the page -
+  // and so is not ordered against the click. Without this the read overtakes
+  // the POST often enough to fail roughly one run in ten, with an empty list
+  // and an error about reading a property of undefined. The two other tests
+  // that read the API this way each wait on the interface first for the same
+  // reason; those assertions are barriers, not only checks.
+  await expect(section(page)).toHaveAttribute("data-instrument-count", "1");
 
   const [saved] = await (await request.get("/api/instruments")).json();
   expect(saved.reference_pitch).toBe(415);
