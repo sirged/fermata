@@ -490,6 +490,61 @@ main-thread task across the whole run is **102 ms**, with none over 250 ms —
 because the renderer chunks the work into partials and only draws the ones on
 screen. That is the trade this one constant represents, if it ever bites.
 
+### Sounding one pitch, and the one number it must never report
+
+`playPitch` makes a single note audible with no score in play. The synthesiser
+is the renderer's, so this seam belongs here; everything above it — a tuning
+check, an ear exercise — does not.
+
+**It resolves with the note actually sounded, read back off the note-on event it
+handed over, or `null`.** Not a success flag, and above all not the note it was
+asked for. That distinction is the whole contract, and it is here because the
+alternative has already cost this project a defect: the instruments editor once
+auditioned the open string instead of the capo'd one, and every assertion passed,
+because they all read the row rather than what crossed this boundary.
+
+The same function then made the same mistake one layer down. It used to end
+`return noteOn ? noteOn.noteKey : key` — substituting the **input** when no
+note-on could be found. The cost of that is worth stating precisely, because it
+is a general lesson about what a green suite means:
+
+| what was broken | noticed, with the fallback | noticed, returning `null` |
+| --- | --- | --- |
+| `playPitch` made unavailable — the path cannot run | **15** | **15** |
+| the note-on never emitted — it runs and sounds nothing | **0** | **15** |
+
+Every caller and every assertion saw the number it expected, because the
+function still returned one. A suite that fails loudly on a **missing**
+dependency while silently accepting that dependency **doing nothing** inspires
+confidence in proportion to what it does not cover, and fifteen-to-zero is a
+measure of how convincing that can feel.
+
+The two columns now agree, and they agree on the *same fifteen tests* — ten in
+`tests/browser/ear-training.spec.js` and five in `tests/browser/instruments.spec.js`,
+which are every test that asks for a pitch to be sounded. That is the shape to
+want: the audio path has one set of watchers, and both ways of breaking it trip
+all of them.
+
+Note what this coverage is and is not. All fifteen notice **indirectly** — the
+drill and the editor stop working. Nothing asserts the contract at this boundary
+directly, and nothing can: there is no input for which the requested note and the
+note-on's key differ, which is precisely why the fallback was invisible, so no
+test can reach the distinguishing state without changing this source. The
+guarantee is held by the code shape and by mutation testing, not by an assertion.
+
+So: no fallback, and no other value substituted for a result anywhere in that
+function. If a caller cannot tell why it got `null` — an unplayable pitch and a
+note that never reached the synth both answer `null` — it should say what
+happened rather than name a cause it did not check. Both call sites do.
+
+Note also that **the voice and the note length are parameters**, not properties
+of this module. They default to what checking a tuning wants; a caller with a
+different task passes its own rather than inheriting constants chosen for that
+one. In the soundfont shipped here, the tuning check's nylon guitar (program 24)
+has three sample zones for the whole keyboard, which costs nothing across one
+instrument's strings and stretches a single recording by up to two octaves
+across four.
+
 ### Asking the renderer what it can draw
 
 Not every score can be drawn under every profile. A score with no tablature has
