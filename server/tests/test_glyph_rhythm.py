@@ -849,6 +849,27 @@ def test_the_reading_holds_at_every_line_of_the_grid():
             _whole_rest_under(line), _REST_LINES, _REST_SPACING) == (4.0, True), line
 
 
+def test_the_parity_reading_is_confidently_wrong_at_an_odd_half_space():
+    """The limit of the rule, recorded rather than glossed over. Parity is
+    measured modulo one staff space, so displacing a rest by an odd number of
+    half spaces puts it exactly where the OTHER rest would sit and it is read
+    as that other rest, with decided=True - a twofold duration error carrying
+    no warning. Nothing in the three arguments can tell the cases apart.
+
+    No engraving in the library needs the guard this cannot provide: every
+    one-glyph rest the decode reads lands within 0.235-0.266 of a space of a
+    line, which is the window the rule is calibrated for. This test exists so
+    that stays a known limit instead of becoming a surprise."""
+    on_line = _half_rest_on(_REST_LINES[2])
+    assert G.half_or_whole_rest(on_line, _REST_LINES, _REST_SPACING) == (2.0, True)
+    shifted = on_line + _REST_SPACING / 2
+    assert G.half_or_whole_rest(shifted, _REST_LINES, _REST_SPACING) == (4.0, True)
+    # ...and a whole space back is the original answer again, which is what
+    # "holds at every line of the grid" means.
+    assert G.half_or_whole_rest(
+        on_line + _REST_SPACING, _REST_LINES, _REST_SPACING) == (2.0, True)
+
+
 def test_a_non_positive_spacing_never_reaches_the_rest_reading():
     """half_or_whole_rest guards against a zero or negative spacing, and this
     records that the guard is DEFENCE and not a live path, because a test

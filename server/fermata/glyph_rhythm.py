@@ -1611,10 +1611,22 @@ def half_or_whole_rest(yc, line_ys, spacing):
     The discriminator is sub-space PARITY against the line grid - which side
     of a line the ink sits on - and not, as this used to ask, which staff line
     the glyph is NEAREST. The difference is not a tolerance, it is a kind:
-      * Parity holds wherever on the staff the rest was engraved, including
-        the ledger positions above and below it that a second voice's rests
-        use. Nearest-line put every rest below the middle line in the same
-        bucket, so a whole rest hanging under the staff read as a half.
+      * Parity holds at every LINE of the grid, including the ledger positions
+        above and below the staff that a second voice's rests use. Nearest-line
+        put every rest below the middle line in the same bucket, so a whole
+        rest hanging under the staff read as a half.
+
+        It does NOT hold for an arbitrary displacement, and this is a real
+        limit rather than a tolerance: the signal is which quarter of a space
+        the ink sits in, measured modulo one space, so displacing a rest by an
+        ODD number of half spaces lands it exactly where the other rest would
+        be and returns that other answer with decided=True. Nothing in (yc,
+        line_ys, spacing) can separate the two cases - a half rest sits a
+        quarter space above a line and a whole one a quarter space below one,
+        and a half-space shift maps each onto the other - so this is stated,
+        not guarded. No engraving in the library needs the guard: all 256
+        one-glyph rests the decode reads land between 0.235 and 0.266 of a
+        space from a line, and every one is decided.
       * Parity is measured against the ink. Nearest-line was measured against
         the metrics box centre (see GlyphEvent), which is a fixed distance
         from the BASELINE - nearly half a space, most of the way to the other
