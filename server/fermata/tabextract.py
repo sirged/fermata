@@ -62,6 +62,15 @@ alphaTex's `\\voice` separator. Assembling every note into one sequence
 instead made a bar hold the SUM of its voices - typically about double its
 meter - while every individual duration in it was decoded correctly.
 
+INFERRED SILENCE: those filling rests are silence nothing on the page said was
+there, and they are marked as such (musicxml.InferredRest). They exist because
+a voice that entered late needs its leading silence or every note in it sounds
+early, so removing them would move notes rather than tell the truth - but they
+are not evidence of anything, so they do not count towards a bar adding up
+(_bar_conformance), and the MusicXML writes them as `<forward>` rather than as
+a rest (profile Rule 14). Counting them was how a score missing ninety notes
+came to report every bar conformant at high confidence.
+
 Stem direction alone is not enough and is not used alone: in ordinary
 single-voice writing stems also flip with pitch around the middle line, so
 splitting on direction wherever it changes would shred a monophonic melody
@@ -75,7 +84,8 @@ be checkable only by a script written here is a conformance rule of that
 profile - every sounding voice's durations sum to the measure's duration - so
 any MusicXML tool can now find a bar that does not add up. _bar_conformance
 counts them from the same beats model the emitters read, in both directions,
-and nothing is padded or trimmed to make the sums come out.
+counting only what was actually read off the page, and nothing is padded or
+trimmed to make the sums come out.
 
 KNOWN LIMITATIONS, deliberately not modeled: tuplets, ties, and any bar
 whose voices the stems do not separate. Bars that still do not add up are
@@ -137,6 +147,15 @@ class ExtractionResult:
     bars_short: int = 0
     bars_defective: int = 0
     bars_measured: int = 0
+    # Bars holding silence that was deduced from the time signature instead of
+    # read from a rest printed on the page, the bar numbers (1-based, as the
+    # emitted measures are numbered), and how many quarter notes of it there
+    # are. Reported as data and not only in the warning prose, because "which
+    # bars are partly invented" is the question a reader comparing the
+    # transcription against the PDF actually has. See _pad_voice_to_budget.
+    bars_padded: int = 0
+    padded_bars: list[int] = field(default_factory=list)
+    inferred_rest_quarters: float = 0.0
     # Total tab / standard staff systems found across the whole document
     # (summed across pages) - same definition analyze() uses, not a
     # per-page maximum.
@@ -171,6 +190,9 @@ class ExtractionResult:
             "bars_short": self.bars_short,
             "bars_defective": self.bars_defective,
             "bars_measured": self.bars_measured,
+            "bars_padded": self.bars_padded,
+            "padded_bars": list(self.padded_bars),
+            "inferred_rest_quarters": self.inferred_rest_quarters,
             "tab_staff_count": self.tab_staff_count,
             "standard_staff_count": self.standard_staff_count,
             "pages_processed": self.pages_processed,
@@ -1142,13 +1164,19 @@ def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol, split_
     return per_group, max(0, needed - len(digits))
 
 
-def _rest_beats_for(quarters, limit=12):
-    """Decompose a span of silence into plain rest beats, longest first."""
+def _rest_beats_for(quarters, limit=12, inferred=False):
+    """Decompose a span of silence into plain rest beats, longest first.
+
+    `inferred=True` marks every beat produced as silence this extractor
+    deduced from the meter rather than read from a rest glyph on the page (see
+    musicxml.InferredRest). Every caller here that fills from the meter passes
+    it: nothing on the page said these rests were there.
+    """
     out = []
     remaining = quarters
     for q, code in _PLAIN_DURATIONS:
         while remaining >= q - 1e-6 and len(out) < limit:
-            out.append((code, 0, []))
+            out.append((code, 0, mxl.inferred_rest() if inferred else []))
             remaining -= q
     return out
 
@@ -1156,23 +1184,35 @@ def _rest_beats_for(quarters, limit=12):
 def _pad_voice_to_budget(tagged, budget, bar_first_x, onset_tol):
     """Fill a voice's silence so it accounts for the whole bar on its own.
 
-    A voice that sounds for only part of a bar is engraved with rests for the
-    remainder, and those rests are what make the arithmetic work: without
-    them every voice but the busiest reads as a short bar and the others
-    drift out of time against it. Where the decoded rest glyphs already
-    account for the silence this adds nothing.
+    KEPT, deliberately, and marked. A voice that sounds for only part of a bar
+    is engraved with rests for the remainder, and the silence has to be there
+    for the bar to play: without it a voice that entered late starts on the
+    downbeat instead, so every note in it sounds early and the voices drift
+    against each other. Dropping the padding would not turn a wrong bar into an
+    honestly short one - it would turn a bar whose notes are in the wrong
+    PLACES into a bar whose notes are in the wrong places AND short. So the
+    silence stays, and the lie it used to tell is removed instead: every beat
+    inserted here is marked as inferred, which keeps it out of the Rule 8 sums
+    (_bar_conformance, musicxml.voice_durations) and out of the emitted
+    MusicXML's rests (it becomes `<forward>` - Rule 14). The bar therefore
+    still reports SHORT by exactly what was missing, still reaches the
+    confidence downgrade, and still lays out.
 
-    Returns the quarters of rest that had to be inferred, so the caller can
-    say how much of the emitted silence was read from the score and how much
-    was deduced from the meter.
+    Where the decoded rest glyphs already account for the silence this adds
+    nothing.
+
+    Nothing is returned. How much silence was inferred, and in which bars, is
+    read back off the marked beats themselves (_bar_conformance) rather than
+    reported through a side channel here - one source of truth, and the one the
+    emitters read.
     """
     total = sum(_beat_quarters(code, dots) for _x, code, dots, _n in tagged)
     deficit = budget - total
     if deficit <= 1e-6:
-        return 0.0
-    fills = _rest_beats_for(deficit)
+        return
+    fills = _rest_beats_for(deficit, inferred=True)
     if not fills:
-        return 0.0
+        return
     # A voice whose first note sits well right of the bar's first onset
     # entered late, so its silence belongs at the front.
     late = not tagged or (tagged[0][0] - bar_first_x) > onset_tol
@@ -1182,7 +1222,6 @@ def _pad_voice_to_budget(tagged, budget, bar_first_x, onset_tol):
         tagged[:0] = inserted
     else:
         tagged.extend(inserted)
-    return sum(_beat_quarters(c, d) for _x, c, d, _n in inserted)
 
 
 def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
@@ -1219,14 +1258,16 @@ def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
     staff. `budget` is the measure's quarter-note allowance, needed to know
     how much of each voice is silence; without it no rests are inferred.
 
-    Returns (voices, unmatched_columns, unmatched_glyph_notes,
-    inferred_rest_quarters): voices is a list of one or more beat lists, each
-    a list of (duration_code, dots, notes) triples in x order ready for
-    _fmt_beat; unmatched_columns is how many tab columns had no glyph note
-    within x_tol; unmatched_glyph_notes is how many decoded noteheads had no
-    fret number to match (expected to be rare - every played tab note should
-    have one); inferred_rest_quarters is how much silence was deduced from
-    the meter rather than read from a rest glyph.
+    Returns (voices, unmatched_columns, unmatched_glyph_notes): voices is a
+    list of one or more beat lists, each a list of (duration_code, dots, notes)
+    triples in x order ready for _fmt_beat; unmatched_columns is how many tab
+    columns had no glyph note within x_tol; unmatched_glyph_notes is how many
+    decoded noteheads had no fret number to match (expected to be rare - every
+    played tab note should have one).
+
+    Silence that had to be deduced from the meter is not reported here: the
+    beats carry it themselves, as an InferredRest notes slot, which is what the
+    conformance count and both emitters read.
     """
     lo_i = bisect.bisect_left(note_xs, m_lo)
     hi_i = bisect.bisect_left(note_xs, m_hi)
@@ -1287,14 +1328,13 @@ def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
     noted = [t for t in tagged if any(notes for _x, _c, _d, notes in t)]
     live = noted if noted else [t for t in tagged if t]
 
-    inferred = 0.0
     if len(live) > 1 and budget:
         first_x = min(t[0][0] for t in live)
         for t in live:
-            inferred += _pad_voice_to_budget(t, budget, first_x, onset_tol)
+            _pad_voice_to_budget(t, budget, first_x, onset_tol)
 
     return ([[(code, dots, notes) for _x, code, dots, notes in t] for t in live],
-            unmatched_columns, unmatched_glyph_notes, inferred)
+            unmatched_columns, unmatched_glyph_notes)
 
 
 def _voice_mean_y(groups):
@@ -1574,6 +1614,12 @@ _TIE_WARNING = (
 
 _DOT_FACTORS = (1.0, 1.5, 1.75)
 
+# How many padded bar numbers the warning names before summarising the rest.
+# Enough to check a handful against the PDF without turning one warning into a
+# wall of a hundred numbers; the count beside them is always complete, and the
+# MusicXML carries every one of them.
+_PADDED_BARS_LISTED = 12
+
 
 def _beat_quarters(code, dots) -> float:
     if not code:
@@ -1591,10 +1637,18 @@ def _voices_of(beats):
     return list(beats) if isinstance(beats[0], list) else [beats]
 
 
-def _voice_quarters(beats) -> list[float]:
-    """Each voice's total length in quarter notes, in voice order - the
-    quantity both _bar_quarters and _bar_conformance are about."""
-    return [sum(_beat_quarters(code, dots) for code, dots, _n in v)
+def _voice_quarters(beats, count_inferred=True) -> list[float]:
+    """Each voice's total length in quarter notes, in voice order.
+
+    `count_inferred=False` leaves out rests this extractor deduced from the
+    meter rather than read from the page (musicxml.is_inferred_rest), which
+    gives what the bar was actually READ as. That is the quantity
+    _bar_conformance measures: with the padding counted, a voice filled out
+    from its meter is exactly as long as its meter by construction, so no
+    padded bar could ever be reported short.
+    """
+    return [sum(_beat_quarters(code, dots) for code, dots, notes in v
+                if count_inferred or not mxl.is_inferred_rest(notes))
             for v in _voices_of(beats)]
 
 
@@ -1602,7 +1656,12 @@ def _bar_quarters(beats) -> float:
     """The longest voice in this bar, in quarter notes. Voices sound
     CONCURRENTLY, so a bar is as long as its longest voice - not the sum of
     them, which is exactly the mistake that made a bar of two-voice writing
-    read as double its meter."""
+    read as double its meter.
+
+    This is how long the bar PLAYS, so inferred silence counts: it occupies
+    time. Not what to check conformance with - see _bar_conformance, which
+    measures what was read instead.
+    """
     return max(_voice_quarters(beats), default=0.0)
 
 
@@ -1620,6 +1679,18 @@ class _BarConformance(NamedTuple):
     short: int
     defective: int
     counted: int
+    # Of `counted`, how many bars hold silence that was deduced from the meter
+    # rather than read from the page, and which bars those are (1-based, in the
+    # same numbering the emitted measures use). A padded bar is normally also a
+    # SHORT one - that is the point - but not always: padding a voice that lost
+    # a note to exactly the meter can coincide with another voice that decoded
+    # correctly, and a bar padded by less than the tolerance is not short.
+    padded: int = 0
+    padded_bars: tuple[int, ...] = ()
+    # And how much of it there is, in quarter notes, across the whole score.
+    # Read off the marked beats rather than accumulated as the padding happens,
+    # so the figure reported and the silence emitted cannot disagree.
+    inferred_quarters: float = 0.0
 
 
 def _bar_conformance(measures) -> _BarConformance:
@@ -1639,17 +1710,36 @@ def _bar_conformance(measures) -> _BarConformance:
     is the same thing as "some voice differs from the meter". Nothing here
     corrects anything: a bar that does not add up is emitted as it was read,
     counted, and reported.
+
+    MEASURED ON WHAT WAS READ, not on what is emitted. Rests the extractor
+    deduced from the meter to fill a voice out (_pad_voice_to_budget) are left
+    out of the sums, because counting them makes this incapable of ever
+    reporting a padded bar short: the padding fills a voice to exactly its
+    meter by construction, so `min(voices) < budget` could not fire and a bar
+    that lost sixty notes reported as perfectly conformant. Leaving them out is
+    the same measurement as running this before the padding, and it is also
+    what a consumer computes from the emitted MusicXML, where inferred silence
+    is a `<forward>` rather than a rest and so is not part of Rule 8's sum
+    either.
     """
     overfull = 0
     short = 0
     defective = 0
     counted = 0
-    for beats, ts in measures:
+    padded_bars = []
+    inferred_quarters = 0.0
+    for index, (beats, ts) in enumerate(measures, start=1):
         if not ts:
             continue
         counted += 1
         budget = _measure_quarter_length(ts)
-        voices = _voice_quarters(beats)
+        voices = _voice_quarters(beats, count_inferred=False)
+        bar_inferred = sum(_beat_quarters(code, dots)
+                           for v in _voices_of(beats) for code, dots, notes in v
+                           if mxl.is_inferred_rest(notes))
+        if bar_inferred:
+            padded_bars.append(index)
+            inferred_quarters += bar_inferred
         if not voices:
             continue
         over = max(voices) > budget + 1e-6
@@ -1657,7 +1747,9 @@ def _bar_conformance(measures) -> _BarConformance:
         overfull += over
         short += under
         defective += over or under
-    return _BarConformance(overfull, short, defective, counted)
+    return _BarConformance(overfull, short, defective, counted,
+                           len(padded_bars), tuple(padded_bars),
+                           inferred_quarters)
 
 
 def _overfull_bars(measures) -> tuple[int, int]:
@@ -1679,6 +1771,8 @@ def _rhythm_report(counts, details, conformance=None):
     conformance = conformance or _BarConformance(0, 0, 0, 0)
     overfull, short = conformance.overfull, conformance.short
     defective, bars = conformance.defective, conformance.counted
+    padded, padded_bars = conformance.padded, conformance.padded_bars
+    inferred_quarters = conformance.inferred_quarters
     glyphs = counts.get(PROV_GLYPHS, 0)
     degraded = counts.get(PROV_GLYPHS_DEGRADED, 0)
     spacing = counts.get(PROV_SPACING, 0)
@@ -1741,6 +1835,23 @@ def _rhythm_report(counts, details, conformance=None):
             "with a gap at the end. The emitted score says so rather than padding it out, so any "
             "MusicXML tool will report those bars too"
         )
+    # Which bars were padded, not just how much silence was added across the
+    # score. A total says a score is partly invented; the bar numbers say WHERE,
+    # which is what lets somebody check those bars against the PDF.
+    if padded:
+        listed = ", ".join(str(n) for n in padded_bars[:_PADDED_BARS_LISTED])
+        rest = len(padded_bars) - _PADDED_BARS_LISTED
+        if rest > 0:
+            listed += f" and {rest} more"
+        warnings.append(
+            f"{padded} of {bars} bar(s) contain silence that was deduced from the time signature "
+            f"rather than read from a rest printed in the score - about {inferred_quarters:.4g} "
+            f"quarter note(s) of it, in bar(s) {listed}. A voice with a note missing from it is "
+            "filled out the same way a genuinely resting voice is, so that the voices of the bar "
+            "still play in time with each other; the inferred silence is NOT counted towards those "
+            "bars adding up, and is written into the MusicXML as <forward> rather than as a rest so "
+            "no consumer mistakes it for one the engraver printed"
+        )
     # The downgrade is driven by bars that fail Rule 8 in EITHER direction. A
     # score whose bars are mostly SHORT because notes were dropped is just as
     # unplayable as one whose bars overflow, and reporting "high - decoded
@@ -1779,6 +1890,14 @@ def _fmt_beat(duration_code, dots, notes):
     # trailing dot on the duration code (":8." / ":8.." fail to parse) - it
     # is a beat effect appended to the note/chord body instead
     # (":8 3.4{d}", or with a chord ":2 (3.4 5.3){d}").
+    #
+    # An INFERRED rest comes out as a plain `r` here, unmarked. alphaTex has no
+    # editorial mechanism to mark one with - it is a compact format for
+    # describing music, not for annotating provenance - and inventing a
+    # non-standard token would break the importer that has to read this back.
+    # MusicXML is the canonical output and does mark it (Rule 14); this format
+    # exists for the transcription editor to work in, and the padded bars are
+    # named in the warnings for a reader of either.
     if not notes:
         body = "r"
     else:
@@ -2162,12 +2281,11 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     prov_details = collections.defaultdict(list)
     unmatched_columns_glyph = 0
     unmatched_glyph_notes_total = 0
-    # How many bars were transcribed as concurrent voices, and how much of
-    # the silence in them was deduced from the meter rather than read from a
-    # rest glyph - both reported, so "the voices add up" can be told apart
-    # from "the voices were padded until they added up".
+    # How many bars were transcribed as concurrent voices. How much of the
+    # silence in them was deduced from the meter is counted off the emitted
+    # beats instead (see _bar_conformance), so "the voices add up" can be told
+    # apart from "the voices were padded until they added up".
     multivoice_bars = 0
-    inferred_rest_quarters = 0.0
     font_warnings_seen = []
     for page_idx, page, tab_staves, std_staves in pages_with_tab:
         tokens = _extract_digit_tokens(page)
@@ -2237,7 +2355,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             for i, m_cols in enumerate(measures_for_staff):
                 m_lo, m_hi = bounds[i], bounds[i + 1]
                 if source.uses_glyphs:
-                    voices, unmatched_cols, unmatched_notes, inferred = (
+                    voices, unmatched_cols, unmatched_notes = (
                         _build_measure_beats_glyph(
                             m_cols, m_lo, m_hi, source.note_events, source.note_xs,
                             x_tol, std_staff.spacing, measure_quarter_len,
@@ -2245,13 +2363,24 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                     )
                     unmatched_columns_glyph += unmatched_cols
                     unmatched_glyph_notes_total += unmatched_notes
-                    inferred_rest_quarters += inferred
                     if len(voices) > 1:
                         multivoice_bars += 1
                     if not voices:
                         # Nothing decoded and no tab columns either - still
                         # emit an explicit rest bar rather than dropping the
                         # measure (see the non-glyph branch below for why).
+                        # NOT marked inferred, even though the meter is where
+                        # it came from. A bar of nothing but rests is already
+                        # conspicuous - it is the one shape a reader cannot
+                        # mistake for a reading - whereas an inferred rest that
+                        # emits `<forward>` in a voice with no notes at all
+                        # leaves the measure with nothing for a Rule 8 check to
+                        # sum, so its defect would be visible to this extractor
+                        # and to nobody else. Measured on the library, 337 bars
+                        # across 172 scores take this branch. Keeping the
+                        # marker to silence that COMPLETES a voice that was
+                        # read is what keeps every reported figure equal to
+                        # what a consumer computes from the file.
                         voices = [_rest_beats_for(measure_quarter_len)]
                     all_measures.append((voices, staff_ts))
                     continue
@@ -2263,7 +2392,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                     # breaks side-by-side comparison against the original.
                     # Rests that ADD UP to the meter, not one snapped to the
                     # nearest plain value: a 3/4 bar's 3.0 quarters snap to a
-                    # whole rest, which is a third longer than the bar.
+                    # whole rest, which is a third longer than the bar. Left
+                    # unmarked for the same reason as the glyph branch above.
                     all_measures.append((_rest_beats_for(measure_quarter_len), staff_ts))
                     continue
                 durations_q = _infer_measure_rhythm(m_cols, measure_quarter_len, m_hi)
@@ -2290,13 +2420,6 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         warnings.append(
             f"{multivoice_bars} bar(s) were transcribed as two concurrent voices, split by the "
             "direction of the stems the score engraves them with"
-        )
-    if inferred_rest_quarters:
-        warnings.append(
-            f"about {inferred_rest_quarters:.4g} quarter note(s) of rest across those bars were "
-            "deduced from the time signature rather than read from a rest printed in the score - "
-            "a voice with a note missing from it is padded with silence the same way a genuinely "
-            "resting voice is"
         )
     if unmatched_columns_glyph:
         warnings.append(
@@ -2412,6 +2535,9 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         bars_short=conformance.short,
         bars_defective=conformance.defective,
         bars_measured=conformance.counted,
+        bars_padded=conformance.padded,
+        padded_bars=list(conformance.padded_bars),
+        inferred_rest_quarters=conformance.inferred_quarters,
         tab_staff_count=tab_count,
         standard_staff_count=std_count,
         pages_processed=len(pages_with_tab),

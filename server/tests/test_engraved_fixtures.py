@@ -45,7 +45,7 @@ import xml.etree.ElementTree as ET
 import fitz
 import pytest
 
-from fermata import glyph_rhythm, tabextract
+from fermata import glyph_rhythm, musicxml, tabextract
 
 from conftest import ENGRAVED_DIR
 from test_tabextract import _parse_with_alphatab
@@ -667,9 +667,17 @@ def test_an_unrecognised_notehead_is_reported_however_few_there_are(engraved):
     assert any("not been calibrated" in w for w in result.warnings)
     assert any("U+E0DB" in w for w in result.warnings), (
         "the unrecognised codepoint is named, so it can be calibrated later")
-    # ...and the bars all add up, so nothing else on the page would have said
-    # a word about it
-    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
+    # The bar that lost those two noteheads now says so. It used to report as
+    # adding up, because the voice they were dropped from was padded back to
+    # its meter with invented silence before the arithmetic was checked - so
+    # the gate above was the ONLY thing on the page that said a word about
+    # them. It is no longer alone: the padding is marked, excluded from the
+    # sums, and the bar is reported short by exactly what went missing.
+    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 1, 1)
+    assert result.bars_padded == 1
+    assert result.padded_bars == [1]
+    assert result.inferred_rest_quarters > 0
+    assert any("deduced from the time signature" in w for w in result.warnings)
 
     doc = fitz.open(engraved("harmonics_dense"))
     degraded = 0
@@ -943,7 +951,10 @@ def test_bars_wrong_in_each_direction_are_counted_and_reported(engraved):
     assert result.bars == 8
     assert result.bars_measured == 8
     assert result.bars_overfull == 4
-    assert result.bars_short == 2
+    # Was 2. The two extra are bars whose short voice used to be padded back to
+    # the meter before the arithmetic was checked, so they reported as adding
+    # up - see test_a_short_voice_beside_an_overfull_one_is_reported_short.
+    assert result.bars_short == 4
     assert result.bars_defective == 6
     assert result.bars_defective <= result.bars_measured
     assert max(result.bars_overfull, result.bars_short) <= result.bars_defective
@@ -956,29 +967,60 @@ def test_bars_wrong_in_each_direction_are_counted_and_reported(engraved):
     assert sum(q for q, _n in bars[1][0]) == 3.0, "and the short one is not padded out"
 
 
-def test_a_short_voice_beside_an_overfull_one_is_padded_not_reported_short(engraved):
+def test_a_short_voice_beside_an_overfull_one_is_reported_short(engraved):
     """The bar the library has no example of: five quarters in the upper voice
-    against three in the lower, wrong in both directions at once.
+    against three in the lower, wrong in both directions at once - engraved
+    here on purpose.
 
-    It is engraved here, and what these assertions record is a DEFECT being
-    pinned, not a behaviour being endorsed. The short voice is padded to the
-    meter with inferred silence - which is what stops voices drifting against
-    each other - so the bar is reported overfull and NOT short, and the rest
-    that fills it is written into the transcription indistinguishably from
-    one the engraver printed. That the padding is announced at all is the
-    only thing keeping it honest, and it is a weaker guarantee than the
-    figures beside it suggest.
+    This assertion used to pin a DEFECT: the short voice was padded to the
+    meter before the arithmetic was checked, so the bar reported overfull and
+    NOT short, and the rest that filled it went into the transcription
+    indistinguishably from one the engraver printed. Extraction could therefore
+    never produce a both-directions bar, and the reason was the padding rather
+    than anything about the score.
 
-    `_bar_conformance` counts a both-directions bar once and has a unit test
-    for that shape; this is why extraction has not so far produced one, and
-    the reason is the padding rather than anything about the score."""
+    The padding is still there - it is what stops voices drifting against each
+    other - but it is marked, so it no longer counts towards the bar adding up.
+    The bar is now reported wrong in both directions at once, which is what it
+    is, and this is the only place extraction produces that shape."""
     result = tabextract.extract(engraved("defective_bars"))
+
+    # The alphaTex still carries the padding, because the renderer needs it:
+    # the short voice is written out to the full four quarters of the meter.
     both = emitted_bars(result.alphatex)[2]
     assert len(both) == 2, both
     lengths = sorted(sum(q for q, _n in voice) for voice in both)
     assert lengths == [4.0, 5.0], both
+
+    # The MusicXML does not: the padding is a <forward>, which holds the
+    # position without claiming a rest, so the short voice's notes and rests
+    # sum to THREE quarters and the measure fails Rule 8 for any consumer.
+    root = ET.fromstring(result.musicxml)
+    measure = root.findall("./part/measure")[2]
+    sums = {}
+    for note in measure.findall("note"):
+        if note.find("chord") is not None:
+            continue
+        voice = note.findtext("voice")
+        sums[voice] = sums.get(voice, 0) + int(note.findtext("duration"))
+    assert sorted(sums.values()) == [3 * musicxml.DIVISIONS, 5 * musicxml.DIVISIONS], sums
+    forwards = measure.findall("forward")
+    assert len(forwards) == 1, ET.tostring(measure, encoding="unicode")
+    assert int(forwards[0].findtext("duration")) == musicxml.DIVISIONS
+    assert "deduced from the time signature" in forwards[0].findtext("footnote")
+    # ...and it says which voice it belongs to, or it could not be attributed
+    assert forwards[0].findtext("voice") == min(sums, key=lambda v: sums[v])
+
+    # This bar is wrong in both directions AT ONCE, counted once as defective.
+    assert 3 in result.padded_bars, result.padded_bars
+    assert result.bars_overfull >= 1 and result.bars_short >= 1
+    assert result.bars_defective <= result.bars_overfull + result.bars_short
     assert any("deduced from the time signature" in w for w in result.warnings)
     assert any("concurrent voices" in w for w in result.warnings)
+    # the warning names the bar, not just the total
+    padded_warning = next(w for w in result.warnings
+                          if "deduced from the time signature" in w)
+    assert "bar(s) 3" in padded_warning or ", 3" in padded_warning, padded_warning
 
 
 # ---------------------------------------------------------------------------

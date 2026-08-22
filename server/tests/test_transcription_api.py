@@ -301,7 +301,8 @@ def test_edit_format_is_read_off_the_content(content, expected):
 # ---------------------------------------------------------------------------
 
 
-BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured")
+BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
+            "bars_padded")
 
 
 def test_bar_conformance_survives_a_reload(app_env, engraved, monkeypatch, insert_score):
@@ -327,6 +328,7 @@ def test_bar_conformance_survives_a_reload(app_env, engraved, monkeypatch, inser
     assert fetched["bars_measured"] > 0
     assert fetched["bars_overfull"] > 0, "this fixture has bars over their meter"
     assert fetched["bars_short"] > 0, "...and bars under it"
+    assert fetched["bars_padded"] > 0, "...and bars filled out with inferred silence"
     # The invariant that makes `defective` the only figure comparable against
     # the total: it never exceeds the bars measured, whereas overfull + short
     # may. A client comparing the wrong pair can print "13 of 12 bars".

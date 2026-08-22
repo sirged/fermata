@@ -314,6 +314,99 @@ def test_voice_durations_reports_the_same_totals_the_xml_carries():
 
 
 # ---------------------------------------------------------------------------
+# Rule 14: inferred silence
+# ---------------------------------------------------------------------------
+
+
+def _padded_bar(ts=(3, 4)):
+    """A 3/4 bar whose second voice sounds one quarter and was filled out to
+    the meter with a half note of silence nothing on the page said was there."""
+    return [
+        [(4, 0, [(1, 0)]), (4, 0, [(1, 2)]), (4, 0, [(1, 3)])],
+        [(4, 0, [(5, 0)]), (2, 0, musicxml.inferred_rest())],
+    ]
+
+
+def test_inferred_silence_is_a_forward_and_not_a_rest():
+    """Rule 14. A rest is a claim that somebody engraved one. Writing invented
+    silence as a rest makes the measure add up, so Rule 8 passes and the notes
+    that went missing leave no trace anywhere."""
+    measure = _root(_one_bar(_padded_bar(), ts=(3, 4))).find("./part/measure")
+    rests = [n for n in measure.findall("note") if n.find("rest") is not None]
+    assert rests == [], "inferred silence must not be written as a rest"
+    (forward,) = measure.findall("forward")
+    assert int(forward.findtext("duration")) == 2 * musicxml.DIVISIONS
+    assert forward.findtext("voice") == "2", "and it says which voice it belongs to"
+    assert forward.findtext("footnote") == musicxml.INFERRED_REST_FOOTNOTE
+
+
+def test_forward_children_are_in_schema_order():
+    """forward's sequence is duration, footnote?, level?, voice?, staff? - the
+    footnote comes BEFORE the voice. Any other order fails validation outright.
+    """
+    measure = _root(_one_bar(_padded_bar(), ts=(3, 4))).find("./part/measure")
+    (forward,) = measure.findall("forward")
+    assert [c.tag for c in forward] == ["duration", "footnote", "voice"]
+
+
+def test_a_padded_measure_fails_rule_8_for_a_consumer_that_never_heard_of_us():
+    """The point of the whole mechanism. A consumer summing each voice's notes
+    and rests has to see the measure fall short by exactly what was not read -
+    otherwise the producer's own defect count and everyone else's disagree, and
+    emitting a standard format buys nothing."""
+    measure = _root(_one_bar(_padded_bar(), ts=(3, 4))).find("./part/measure")
+    expected = musicxml.measure_divisions((3, 4))
+    sums = _voice_sums(measure)
+    assert sums["1"] == expected, "the voice that was fully read still adds up"
+    assert sums["2"] == musicxml.DIVISIONS, "the padded one falls short by the padding"
+    # and the figure the emitter's own helper reports is that same number
+    assert musicxml.voice_durations(_padded_bar()) == [expected, musicxml.DIVISIONS]
+
+
+def test_a_forward_still_advances_the_position_for_the_following_voice():
+    """Inferred silence is emitted because the bar has to play: a voice that
+    entered late still enters late. So the position it holds has to be real -
+    a <backup> after it must return to the START of the measure, not to
+    wherever the notes alone reached."""
+    beats = [
+        [(4, 0, [(1, 0)]), (2, 0, musicxml.inferred_rest())],
+        [(4, 0, [(5, 0)]), (4, 0, [(5, 2)]), (4, 0, [(5, 3)])],
+    ]
+    measure = _root(_one_bar(beats, ts=(3, 4))).find("./part/measure")
+    (backup,) = measure.findall("backup")
+    assert int(backup.findtext("duration")) == 3 * musicxml.DIVISIONS
+    # the leading case too: silence first, then the note it enters on
+    leading = [
+        [(2, 0, musicxml.inferred_rest()), (4, 0, [(1, 0)])],
+        [(4, 0, [(5, 0)]), (4, 0, [(5, 2)]), (4, 0, [(5, 3)])],
+    ]
+    measure = _root(_one_bar(leading, ts=(3, 4))).find("./part/measure")
+    children = [c.tag for c in measure if c.tag in ("forward", "note", "backup")]
+    assert children[:2] == ["forward", "note"], children
+    (backup,) = measure.findall("backup")
+    assert int(backup.findtext("duration")) == 3 * musicxml.DIVISIONS
+
+
+def test_an_inferred_rest_is_still_an_ordinary_rest_to_everything_else():
+    """The marker rides in the beat's notes slot, so it must stay falsy and
+    empty - every existing reader of the beats model asks only whether a beat
+    has notes, and a marker that changed that answer would turn inferred
+    silence into a note with no strings."""
+    marked = musicxml.inferred_rest()
+    assert not marked
+    assert len(marked) == 0
+    assert marked == []
+    assert musicxml.is_inferred_rest(marked)
+    assert not musicxml.is_inferred_rest([])
+    assert not musicxml.is_inferred_rest(None)
+    assert not musicxml.is_inferred_rest([(1, 0)])
+    # ...and it is a fresh list each time, not one shared mutable instance
+    other = musicxml.inferred_rest()
+    marked.append((1, 0))
+    assert other == []
+
+
+# ---------------------------------------------------------------------------
 # Rules 9-13: fret, string and pitch
 # ---------------------------------------------------------------------------
 
@@ -481,6 +574,16 @@ def _emitted_samples():
                 ([[(4, 0, [(1, 12)])], [(4, 0, [(6, 3)])]], (1, 4)),
                 ([[(2, 0, [(3, 0)])]], (2, 4)),
             ], fifths=-2, capo=3),
+        # Rule 14: a `<forward>` carrying a footnote, in both the leading and
+        # the trailing position. Nothing else here emits one, so without this
+        # sample the schema never sees the element or its child order.
+        "inferred-silence": musicxml.build(
+            "Inferred Silence", None, DEFAULT_TUNING, (3, 4), [
+                ([[(4, 0, [(1, 0)]), (4, 0, [(1, 2)]), (4, 0, [(1, 3)])],
+                  [(4, 0, [(5, 0)]), (2, 0, musicxml.inferred_rest())]], (3, 4)),
+                ([[(2, 0, musicxml.inferred_rest()), (4, 0, [(1, 5)])],
+                  [(4, 0, [(6, 0)]), (4, 0, [(6, 2)]), (4, 0, [(6, 3)])]], (3, 4)),
+            ]),
     }
 
 

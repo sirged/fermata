@@ -1309,7 +1309,14 @@ def _transcription_row(conn, score_id: int):
 # which is a far stronger statement than either row can support. Anything
 # wanting real figures for edited content has to measure that content; it
 # cannot inherit them from the extraction it replaced.
-_BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured")
+#
+# `bars_padded` belongs with them for the same reason: a bar holding silence
+# that was deduced from the meter rather than read from the page is only partly
+# a reading, and which bars those were is not recoverable from the figures
+# above - the bar numbers themselves stay in the warning prose, which is stored
+# beside these.
+_BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
+             "bars_padded")
 
 
 def _transcription_dict(row) -> dict:
@@ -1428,6 +1435,7 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             "bars_short": result.bars_short,
             "bars_defective": result.bars_defective,
             "bars_measured": result.bars_measured,
+            "bars_padded": result.bars_padded,
         }
     )
     with tx() as tx_conn:
