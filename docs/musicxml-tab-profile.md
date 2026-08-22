@@ -469,16 +469,20 @@ that needs it has to get it from the producer.
   the voice there; MuseScore rewrites it as an invisible rest. A `<forward>`
   anywhere else must advance the position, or every note after it sounds early.
 - **The marking does not survive a save by another program.** Measured over the
-  same library with MuseScore 4: every one of 3,464 `<forward>` elements loses
-  its `<footnote>` and its `<voice>`, a trailing one is rewritten as an
-  invisible rest and a leading one as a `<backup>` with no `<forward>` at all.
-  Net effect on a Rule 8 check of the re-saved files: defective measures fall
-  from 6,013 to 5,707 and identifiable inferred silence from 5,831.6 to 4,466.2
-  quarter notes, so **306 measures this profile reports defective read as
-  conforming to anything downstream of that save**. The agreement between a
-  producer's figures and an independent check holds for the file *as the
-  producer wrote it*. Verify against that file, not against a round trip
-  through an editor — see [Checking a file](#checking-a-file).
+  same library with MuseScore 4, re-saving the 293 files it emits: of the 6,155
+  `<forward>` elements written, 2,957 survive as one and every one of those
+  loses its `<footnote>` and its `<voice>`, while a trailing one is rewritten as
+  an invisible rest and a leading one as a `<backup>` with no `<forward>` at
+  all. Not one `<forward>` in the re-saved files still carries the marking. Net
+  effect on a Rule 8 check of the re-saved files — a measure counted once
+  whichever way it is wrong, which is the `bars_defective` figure below — is
+  that defective measures fall from 5,863 to 5,430 and identifiable inferred
+  silence from 5,529.2 quarter notes to none that can be identified at all, so
+  **433 measures this profile reports defective read as conforming to anything
+  downstream of that save**. The agreement between a producer's figures and an
+  independent check holds for the file *as the producer wrote it*. Verify
+  against that file, not against a round trip through an editor — see
+  [Checking a file](#checking-a-file).
 
 **In the other direction.** Fermata also emits the same music as alphaTex for
 its transcription editor. That format has no editorial mechanism for this and

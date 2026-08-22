@@ -31,6 +31,10 @@ _FIXTURE_RELATIVE_PATHS = {
     "zanarkand": "Patreon/John Oeth/Final Fantasy/FF X/To Zanarkand (Final Fantasy X).pdf",
     "tarrega": "Classical/Tarrega/Tarrega-Study-in-C-Guitar-Free.pdf",
     "claire_de_lune": "Favorites/ClairDeLuneGuitar.pdf",
+    # Two-voice writing where a melody note shares a beat with a stem-down
+    # chord: the figure notehead-to-stem attachment gets wrong, and an Opus
+    # engraving, so it also exercises the side bearing that only that font has.
+    "dalza": "Classical/PrimoGuitar Misc/Dalza-Recercar-Guitar-2019.pdf",
 }
 
 # Skips for want of a library are COUNTED HERE as they happen, rather than
@@ -136,6 +140,14 @@ def claire_de_lune_pdf() -> Path:
     p = _fixture_path("claire_de_lune")
     if p is None:
         skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Clair de Lune fixture)")
+    return p
+
+
+@pytest.fixture
+def dalza_pdf() -> Path:
+    p = _fixture_path("dalza")
+    if p is None:
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Dalza fixture)")
     return p
 
 

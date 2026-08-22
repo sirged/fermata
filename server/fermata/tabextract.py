@@ -1661,6 +1661,24 @@ def _resolve_rhythm_source(page, std_staff, pair_reason, decoded):
                 f"(unrecognised glyphs: {sample[:6]})"
             ),
         )
+    undecided = stats.get("undecided_rests", 0)
+    if undecided:
+        # Maestro and Opus draw the half and the whole rest with one glyph, so
+        # a rest whose position says neither (no staff lines to measure it
+        # against, an outline that could not be read, a rest engraved where
+        # neither reading fits - see glyph.half_or_whole_rest) was read as the
+        # commoner of the two rather than measured. That is a twofold
+        # difference in one rest's duration, which is the whole bar's
+        # arithmetic, so it is said out loud rather than left in the stats.
+        return _RhythmSource(
+            PROV_GLYPHS_DEGRADED, note_events, stats=stats,
+            detail=(
+                f"{undecided} rest(s) on the paired notation staff are drawn with the one "
+                "glyph that serves as both the half and the whole rest, and their position "
+                "did not say which - each was read as a half rest, so a bar holding one may "
+                "be short by two quarter notes of silence"
+            ),
+        )
     return _RhythmSource(PROV_GLYPHS, note_events, stats=stats)
 
 
