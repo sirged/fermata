@@ -275,7 +275,7 @@ def test_a_melody_note_over_a_chord_keeps_its_own_stem_not_the_chords():
     assert _best([own_up, chords_down], ink_x0, ink_x1, yc, tol) == own_up
 
 
-def test_an_up_stem_is_not_measured_from_the_advance_width(monkeypatch):
+def test_an_up_stem_is_not_measured_from_the_advance_width():
     """Measured off page 2 of Dalza's Recercar, score measure 11: a filled
     eighth with its own up-stem, one staff space above a stem-down half-note
     chord. This is the same figure as the test above with the font's side
@@ -345,6 +345,11 @@ def test_the_ink_reader_answers_for_each_axis_separately():
     absurd = G._InkBoxes(_StubFont(-120, -32000, 130, 260))
     assert absurd.span(0) is None
     assert absurd.xspan(0) == (-0.120, 0.130)
+    # y failing its ORDERING test (not just the plausibility limit above)
+    # must not couple into xspan either.
+    inverted_y = G._InkBoxes(_StubFont(-120, 260, 130, -250))
+    assert inverted_y.span(0) is None
+    assert inverted_y.xspan(0) == (-0.120, 0.130)
 
 
 def test_the_horizontal_ink_scales_out_from_the_glyphs_origin():
@@ -609,6 +614,58 @@ def test_a_notehead_partway_along_a_chord_stem_still_finds_it():
     assert G._stem_through_notehead(stems, stem_xs, 44.0, 50.0, 100.0, tol) is stem
     # ...but a notehead the stem does not span is not on it
     assert G._stem_through_notehead(stems, stem_xs, 44.0, 50.0, 200.0, tol) is None
+
+
+def test_the_chord_threading_lookup_also_narrows_on_opus(monkeypatch):
+    """The chord-threading branch of decode_note_events - reached when the
+    stem-END lookup beside it finds nothing, for an inner or far member of a
+    chord - has to use the SAME ink edges as that lookup (see its "Same
+    edges" comment). Using the metrics box there instead reopens Opus's side
+    bearing (GlyphEvent.stem_edges / the class docstring): the box overhangs
+    the ink by 0.324 staff spaces on the right, which can only WIDEN this
+    window, so a stem too far away to thread onto by the ink measurement can
+    wrongly qualify by the box one.
+
+    This never fires against the current library - the box and the ink agree
+    on every chord thread it holds today, which is exactly why it needs a
+    synthetic case to stay covered: a stem placed so its distance from the
+    ink edge just fails stem_x_tol while its distance from the wider box
+    edge does not."""
+    tol = _tol(spacing=5.0)
+    ink_x0, ink_x1 = 100.0, 110.0
+    box_x1 = ink_x1 + 0.324 * tol.spacing  # Opus's right-side bearing
+    yc = 115.0
+    ev = G.GlyphEvent("Opus", 210, "notehead_filled",
+                      (ink_x0, yc - 10.0, box_x1, yc + 10.0), 0,
+                      baseline_y=yc, ink=(yc - 2.0, yc + 2.0),
+                      ink_x=(ink_x0, ink_x1))
+    assert ev.stem_edges == (ink_x0, ink_x1)
+
+    # A chord's shared stem: its own end is nowhere near this notehead (dy is
+    # huge, so the stem-END lookup finds nothing and this falls to the
+    # threading branch below), and it spans yc. x-wise it clears the box
+    # window but not the ink one. y0/y1 are chosen so the stem's overhang
+    # also agrees with which side of the notehead it sits on (up-stem, on
+    # the right) - otherwise _assign_stem_directions would drop the
+    # attachment for a reason unrelated to the one under test here.
+    stem = G.Stem(x=114.5, y0=90.0, y1=130.0)
+    assert min(abs(stem.x - ink_x0), abs(stem.x - ink_x1)) > tol.stem_x_tol
+    assert min(abs(stem.x - ev.x0), abs(stem.x - ev.x1)) <= tol.stem_x_tol
+
+    page = _BarePage()
+    monkeypatch.setattr(
+        G, "extract_glyph_events",
+        lambda _page: G.PageGlyphs([ev], {"Opus": []}, [], []))
+    monkeypatch.setattr(
+        G, "extract_stems_beams_curves",
+        lambda *a, **k: ([stem], [], []))
+    notes, _stats = G.decode_note_events(
+        page, 100.0, 120.0, 50.0, 150.0, [100.0, 105.0, 110.0, 115.0, 120.0],
+        tol.spacing)
+    assert len(notes) == 1
+    assert notes[0].stem_key is None, (
+        "the ink-edge window must not thread this notehead onto a stem the "
+        "wider metrics box would have allowed")
 
 
 def test_a_stem_whose_side_contradicts_its_overhang_is_not_believed():

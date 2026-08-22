@@ -648,9 +648,14 @@ class _InkBoxes:
         (which is most of them - a Maestro subset keeps all 204 slots and
         fills the handful a page uses).
 
-        Whether the box is USABLE is asked per axis by span and xspan, because
-        the two axes fail independently: a glyph drawn as a single vertical
-        stroke has a degenerate x extent and a perfectly good y one.
+        Whether the box is USABLE is asked per axis by span and xspan, and the
+        two axes are refused independently BY CONSTRUCTION rather than
+        because either has been seen to fail alone: a glyph drawn as a single
+        vertical stroke could in principle have a degenerate x extent and a
+        perfectly good y one. No glyph in the library actually splits that
+        way - 0 of 1,855,076 header reads have one axis usable and the other
+        not - but asking per axis costs nothing and is the right shape for a
+        case the library just hasn't shown yet.
         """
         if gid in self._cache:
             return self._cache[gid]
@@ -1725,7 +1730,7 @@ def _best_stem(stems, stem_xs, x0, x1, yc, tol, x_tol=None, y_tol=None):
     (0.348 at the 99th percentile) and its end sits 0.175 spaces from the ink
     centre (0.179 at the 90th). Both are sharp; neither decides alone, and
     letting the noisier margin overrule the other picked a stem further away in
-    y than the alternative for 51 noteheads across 20 scores, in 49 cases the
+    y than the alternative for 90 noteheads across 20 scores, in 49 cases the
     other VOICE's stem. That is a duration error of up to fourfold and a lost
     voice, not a near miss - see the two-voice bars of Dalza's Recercar.
 
@@ -1756,9 +1761,11 @@ def _best_stem(stems, stem_xs, x0, x1, yc, tol, x_tol=None, y_tol=None):
             continue
         dx = min(abs(s.x - x0), abs(s.x - x1))
         # Rounded so two candidates a floating-point hair apart cannot swap on
-        # the platform's last bit, and tie-broken on y: two stems the same
-        # distance away are two voices, and the one whose end lands on this
-        # notehead is the one it hangs off.
+        # the platform's last bit. The second key element exists to make the
+        # ordering TOTAL rather than merely partial - worth keeping even
+        # though it has not once had to decide anything: 0 exact ties on the
+        # rounded hypot across 6,203 multi-candidate noteheads in the
+        # library, and deleting it changes nothing measured.
         key = (round(math.hypot(dx / xt, dy / yt), 6), round(dy, 3))
         if best_key is None or key < best_key:
             best, best_key = s, key
@@ -1911,9 +1918,14 @@ def _assign_stem_directions(notes, stems_by_key):
     This check is a net, not a ranking, and it cannot be moved into
     _best_stem to do the choosing: the side test needs the MEAN x of every
     notehead on the stem, which is exactly what one candidate notehead does
-    not have. Applied per candidate it rejects the right stem too - measured
-    over the library, it leaves 344 noteheads with no consistent candidate at
-    all and changes 38 selections, and the selections it changes are wrong.
+    not have. It was tried anyway. Two independent attempts to measure how
+    many noteheads it leaves with no consistent candidate at all, and how
+    many selections it changes, disagreed with each other, so neither count
+    is published here - but the selections it does change are not better:
+    some individual noteheads move closer to their true stem and others move
+    away, and the change is not an improvement on net. The structural reason
+    above, which both measurements agree on, is why this is not retried
+    rather than the numbers.
 
     This catches only the contradictory subset. A neighbouring voice's stem
     that happens to sit where this notehead's own stem WOULD sit is
@@ -2030,6 +2042,11 @@ def _assign_dots(owners, dot_events, tol):
     counts = collections.Counter()
     if not owners or not dot_events:
         return counts
+    # Still the metrics box's x1 here, not an ink edge - left inconsistent
+    # with the notehead-to-stem lookups above on purpose, since it was
+    # measured against the library and found to have no current effect on
+    # which owner a dot is given, the same way the flag8_or_rest_quarter
+    # window beside it was.
     owners = sorted(owners, key=lambda e: e.x1)
     owner_x1s = [e.x1 for e in owners]
     for dot in dot_events:
@@ -2207,6 +2224,11 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
             # (Barlines are excluded from `stems` - see _is_barline - or a
             # rest engraved next to one would vanish here.)
             if ev.category == "flag8_or_rest_quarter":
+                # Still the metrics box here, not ev.stem_edges - left
+                # inconsistent with the notehead lookups above on purpose,
+                # since it was measured rather than assumed: the ink and box
+                # windows agree on all 67 of the library's flag8_or_rest_quarter
+                # glyphs, so switching this one has no current effect.
                 if _has_stem_near(stems, stem_xs, ev.x0 - tol.rest_stem_pad,
                                   ev.x1 + tol.rest_stem_pad, ev.yc, tol):
                     continue  # it's a flag - counted via the notehead's stem (see FLAG_HOOKS)
