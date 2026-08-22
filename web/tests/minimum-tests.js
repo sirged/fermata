@@ -18,7 +18,26 @@
 // This is also read directly by scripts/run-browser-tests.mjs, which is the
 // OTHER half of this guard - see that file's own comment for why counting
 // here is not, by itself, enough. Keep the two numbers in sync.
-export const MINIMUM_TESTS = 148;
+// 146 before issue #97, plus 37 for the metronome becoming a general tool: 18
+// in tests/browser/metronome-everywhere.spec.js (the standalone page, the
+// practice page, the widened tempo control, the honesty rule on an inferred
+// tempo, what the interface says at BOTH ends of the countable range, and the
+// four lifecycle cases where a setting either has to survive a component being
+// unmounted or must deliberately not) and 19 in
+// tests/unit/metronome-engine.spec.js (the engine's own rate arithmetic, what
+// it reports when the range runs out, and the tempo seeded when a mode changes
+// - all callable without a browser). Raised deliberately, and every one of the
+// 37 was shown to fail against a mutation of the behaviour it claims - see the
+// pull request. One further test was written, measured against every mutation
+// it was meant to catch, found to discriminate nothing, and deleted rather than
+// counted here.
+//
+// Plus 2 for issue #95, in tests/browser/zz-library-missing.spec.js: that a
+// score whose file has gone is shown as missing rather than disappearing, and
+// that a refused reconciliation says so on the page and can be confirmed. Both
+// were shown to fail against a mutation of the behaviour they claim - the whole
+// point of them is that the guard #95 added was invisible until they existed.
+export const MINIMUM_TESTS = 185;
 
 export default class MinimumTests {
   constructor() {

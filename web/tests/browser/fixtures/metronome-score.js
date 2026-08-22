@@ -157,6 +157,19 @@ export const METRONOME_MUSICXML_REPEAT = buildMusicXml({
 // previous score's clicks left sitting on the shared host element.
 export const METRONOME_MUSICXML_OTHER = buildMusicXml({ measures: 4, numerator: 4, denominator: 4, tempo: 140 });
 
+// 6/8 at 144 - an ordinary jig tempo, and fast enough that running it ABOVE
+// tempo reaches the click's ceiling: 150% of 144 converted onto the eighth-note
+// unit asks for 432 clicks a minute, which MAX_METRONOME_BPM holds at 400.
+// Nothing exotic about it, which is the point - a sweep of the preset ladder
+// against real meters found the ceiling roughly eighteen times more reachable
+// than the floor, so this is the end of the range a player meets first.
+export const METRONOME_MUSICXML_FAST = buildMusicXml({
+  measures: 8,
+  numerator: 6,
+  denominator: 8,
+  tempo: 144,
+});
+
 function scoreMeta(id, title) {
   // file_type not "pdf" is what routes Viewer.svelte to TabViewer directly
   // (see Viewer.svelte) rather than through ScoreCompare/PdfViewer.
@@ -193,6 +206,11 @@ export async function stubMetronomeScore(page) {
  * dataset-reset-on-switch test. */
 export async function stubMetronomeScoreOther(page) {
   await stubOneScore(page, 2, scoreMeta(2, "A different metronome fixture"), METRONOME_MUSICXML_OTHER);
+}
+
+/** Score id 5: a fast 6/8, for the click's own ceiling on an ordinary meter. */
+export async function stubMetronomeScoreFast(page) {
+  await stubOneScore(page, 5, scoreMeta(5, "Fast 6/8 metronome fixture"), METRONOME_MUSICXML_FAST);
 }
 
 /** Score id 3: the short 2-measure loop used for the loop-wrap phase test. */

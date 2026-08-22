@@ -17,6 +17,16 @@
 // being started, on the real audio clock, at the real frequency - the same
 // "wrap the constructor and count" principle instruments.spec.js uses for
 // AudioContext, one level more specific.
+//
+// This is measured rather than believed, and re-measured whenever the click
+// moves. When it was lifted out of score-render.js into metronome-engine.js
+// (issue #97), the oscillator was deleted from scheduleClick by hand with
+// every piece of bookkeeping left in place: EIGHT of the twelve tests below
+// went red. The four that did not are the four built on the dataset helpers
+// (waitForClickCount / collectClickMeta), which is what those helpers are for
+// and what their own comment says at length. If a future change to this file
+// leaves fewer than eight failing under that mutation, the suite has quietly
+// stopped being the thing it is here to be.
 import { expect, test } from "@playwright/test";
 import {
   stubMetronomeScore,
@@ -69,7 +79,16 @@ test.beforeEach(async ({ page }) => {
     window.__accentHzThreshold = accentThreshold;
     const OriginalStart = OscillatorNode.prototype.start;
     OscillatorNode.prototype.start = function (when, ...rest) {
-      window.__oscillatorStarts.push({ when: when ?? 0, frequency: this.frequency.value });
+      window.__oscillatorStarts.push({
+        when: when ?? 0,
+        frequency: this.frequency.value,
+        // How far AHEAD of the audio clock this click was scheduled, in
+        // seconds, read at the instant it was handed over. This is a
+        // different quantity from `when` and the difference is load-bearing:
+        // see the stall test at the bottom of this file, where asserting on
+        // `when` alone could not detect a pile-up at all.
+        lead: (when ?? 0) - this.context.currentTime,
+      });
       return OriginalStart.call(this, when, ...rest);
     };
   }, ACCENT_HZ_THRESHOLD);
@@ -101,11 +120,29 @@ function average(values) {
 }
 
 /** Waits until the real, scheduled click count on the host reaches `n` - a
- * valid synchronisation point now that publishMetronomeClick's dataset write
+ * valid synchronisation point because publishMetronomeClick's dataset write
  * happens from inside the same real scheduling call oscillatorStarts reads
- * (see score-render.js's scheduleClick). Used for meter/accent/phase
+ * (see scheduleClick in metronome-engine.js). Used for meter/accent/phase
  * bookkeeping oscillator frequency alone cannot carry (which bar, which
- * slot in it). */
+ * slot in it).
+ *
+ * READ THIS BEFORE TRUSTING A TEST BUILT ON IT. This is a BOOKKEEPING
+ * assertion, and it is not coverage against the click going missing. It reads
+ * a dataset attribute, so it passes for a click that was announced without a
+ * real oscillator behind it - which is precisely the failure this suite's own
+ * header describes shipping once already. That gap is closed from the product
+ * side (onClick fires only from inside the oscillator-creating call) and from
+ * the test side by the tests that read OscillatorNode.prototype.start
+ * directly - not by this helper.
+ *
+ * Measured, not assumed: after the metronome moved out of the renderer seam,
+ * the oscillator was deleted from scheduleClick by hand with all bookkeeping
+ * left intact. Eight of the twelve tests in this file went red. The four that
+ * did NOT are exactly the four built on this helper and collectClickMeta
+ * below - the mid-bar phase test, the loop-wrap test, the repeat-meter test
+ * and the counter-reset test. Each carries a note saying so. They are worth
+ * having: no oscillator's frequency can tell you WHICH BAR a click landed in.
+ * They are just not the tests that would notice the click was gone. */
 async function waitForClickCount(page, n, timeout = 20_000) {
   await page.waitForFunction(
     (count) => Number(document.querySelector(".at-host")?.dataset.metronomeClicks || 0) >= count,
@@ -115,7 +152,8 @@ async function waitForClickCount(page, n, timeout = 20_000) {
 }
 
 /** The 1st..Nth click's dataset snapshot (meter/phase), read immediately
- * after each one is confirmed scheduled. */
+ * after each one is confirmed scheduled. Bookkeeping, with the same caveat as
+ * waitForClickCount above: not coverage against a missing oscillator. */
 async function collectClickMeta(page, count) {
   const out = [];
   for (let n = 1; n <= count; n++) {
@@ -292,6 +330,8 @@ test("gig mode shows the live tempo but not the mode/value controls - a stand is
   await expect(page.locator("input.metronome-proportion")).toHaveCount(0);
 });
 
+// BOOKKEEPING (dataset, not the audio boundary) - survives an
+// oscillator-deletion mutation by design; see waitForClickCount.
 test("enabling the metronome mid-bar accents wherever the music actually is, not the start of a fresh count", async ({
   page,
 }) => {
@@ -331,7 +371,9 @@ test("the click stays silent during the count-in and starts only once real playb
   await oscillatorStarts(page, 1, 5_000);
 });
 
-test("a loop whose length is not a whole number of click periods does not walk the accent off the downbeat after it wraps", async ({
+// BOOKKEEPING (dataset, not the audio boundary) - survives an
+// oscillator-deletion mutation by design; see waitForClickCount.
+test("a loop whose length is not a whole number of click periods keeps reading its phase from the playhead rather than counting, after it wraps", async ({
   page,
 }) => {
   // The headline case from the review: a short loop (2 bars of 6/8 at 96
@@ -361,6 +403,8 @@ test("a loop whose length is not a whole number of click periods does not walk t
   expect(naiveIncrement, `phases: ${meta.map((c) => c.phase).join(", ")}`).toBe(true);
 });
 
+// BOOKKEEPING (dataset, not the audio boundary) - survives an
+// oscillator-deletion mutation by design; see waitForClickCount.
 test("a repeat sign does not desync the click's meter - the second pass of a repeated section still reports the repeated meter, not whatever bar follows it", async ({
   page,
 }) => {
@@ -397,6 +441,9 @@ test("a repeat sign does not desync the click's meter - the second pass of a rep
   );
 });
 
+// BOOKKEEPING (dataset, not the audio boundary) - survives an
+// oscillator-deletion mutation by design; see waitForClickCount. This one is
+// ABOUT the bookkeeping, so that is the right level for it.
 test("switching a mounted viewer to a different score resets the metronome's click counter instead of inheriting the previous score's count", async ({
   page,
 }) => {
@@ -450,11 +497,57 @@ test("a stall longer than the scheduler's lookahead drops the missed clicks inst
     }
   });
 
-  const gaps = await clickGapsMs(page, 8);
-  // A burst reads as one or more near-zero real-audio-clock gaps clustered
-  // together - Web Audio starts every oscillator whose scheduled `when` has
-  // already passed essentially at once. Half the nominal 200ms interval is
-  // generous enough to allow for the catch-up guard's own small resync gap
-  // while still catching a genuine pile-up.
-  expect(gaps.every((g) => g > 90), `gaps: ${gaps.join(", ")}`).toBe(true);
+  const starts = await oscillatorStarts(page, 8);
+
+  // READ THIS BEFORE CHANGING THE ASSERTIONS BELOW.
+  //
+  // An earlier version of this test measured the gaps between the scheduled
+  // `when` values and required every one to exceed 90ms, reasoning that "a
+  // burst reads as near-zero gaps". That reasoning is wrong, and the test
+  // could not fail: deleting the catch-up floor from the engine left it
+  // green. The right domain - the real values handed to Web Audio - with the
+  // wrong quantity in it.
+  //
+  // A pile-up PRESERVES the `when` gaps. Without the floor, the missed
+  // clicks are still queued one period apart on the audio timeline; they are
+  // simply all in the PAST, so Web Audio sounds them together the instant it
+  // sees them. Measured against the mutant: the wall-clock firing gaps were
+  // 148.5, 724.9, 0.1, 0.1, 74.1 - an unmistakable three-click burst - while
+  // every `when` gap was exactly 200.0ms and the old assertion held.
+  //
+  // So the two things asserted here are the two the mutant cannot satisfy.
+
+  // 1. EVERY click is scheduled AHEAD of the audio clock. That is the
+  //    scheduler's actual promise, and it is what the floor exists to keep:
+  //    nothing is ever handed over already due. Under the mutant the
+  //    catch-up clicks have a negative lead - queued for a moment that has
+  //    already gone - which is precisely the burst, expressed as the quantity
+  //    that can see it.
+  const leads = starts.map((s) => s.lead);
+  expect(
+    leads.every((l) => l > 0),
+    `leads (s): ${leads.map((l) => l.toFixed(4)).join(", ")}`,
+  ).toBe(true);
+
+  // 2. The stall leaves a HOLE. Dropping what was missed and resuming from
+  //    now necessarily means one gap longer than the click period - that is
+  //    what "the missed clicks are gone" looks like on the timeline. The
+  //    mutant replays them instead, so its gaps are all exactly one period
+  //    and this fails. An independent detector from the lead check above, on
+  //    purpose: they fail for different reasons and neither is the other's
+  //    restatement.
+  const gaps = [];
+  for (let i = 1; i < starts.length; i++) gaps.push((starts[i].when - starts[i - 1].when) * 1000);
+  expect(
+    gaps.some((g) => g > 260),
+    `gaps: ${gaps.join(", ")}`,
+  ).toBe(true);
+
+  // 3. ...and nothing collapsed to nothing either, which was the original
+  //    intent and is still worth keeping now that it is not carrying the
+  //    whole test on its own.
+  expect(
+    gaps.every((g) => g > 90),
+    `gaps: ${gaps.join(", ")}`,
+  ).toBe(true);
 });

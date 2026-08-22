@@ -4,15 +4,14 @@
 // nothing that needs a browser - so it can be tested directly rather than
 // through a rendered score.
 //
-// score-render.js is the only file that turns these numbers into sound (see
-// docs/rendering.md on why the renderer itself stays behind that one seam).
+// metronome-engine.js is the only file that turns these numbers into sound.
 // This file never touches audio, the renderer, or the DOM.
 
 /** A click slower than this stops being a metronome and starts being a wait. */
 export const MIN_METRONOME_BPM = 20;
 // A click faster than this is not a tempo practice happens at - and, just as
 // importantly, keeps the period between clicks (60_000 / this, in ms) safely
-// above METRONOME_CLICK_SECONDS in score-render.js: at 400 that is a 150ms
+// above METRONOME_CLICK_SECONDS in metronome-engine.js: at 400 that is a 150ms
 // period against a ~70ms envelope, comfortably clear of one click's tail
 // overlapping the next one's attack. This bounds the CLICK RATE itself
 // (clicks per minute - what is displayed and what is scheduled, always the
@@ -71,14 +70,36 @@ export function clampBpm(bpm) {
  * unusually-fast meter push the actual clicked rate past MAX_METRONOME_BPM
  * without ever tripping it.
  */
-export function effectiveClickRate({ mode, bpm, proportion, scoreTempo, unit }) {
+export function effectiveClickRate(request) {
+  return clampBpm(rawClickRate(request));
+}
+
+/**
+ * The same rate BEFORE clampBpm pulls it into the countable range - the exact
+ * number that was asked for, whether or not a metronome can sound it.
+ *
+ * This exists so an interface can say WHY a value it is showing has stopped
+ * matching the setting that produced it. 15% of a piece marked 120 is 18
+ * clicks a minute, which MIN_METRONOME_BPM correctly refuses; the click then
+ * runs at 20, and a control still reading "15%" beside a readout of "20" is a
+ * number that no longer describes what is sounding. Showing the true rate is
+ * most of the answer, but not all of it: without the reason, the disagreement
+ * reads as a bug rather than as a floor. Comparing this against
+ * effectiveClickRate is how the interface knows to say so.
+ *
+ * Deliberately the SAME arithmetic, expressed once: effectiveClickRate is
+ * defined in terms of this rather than the two sharing a copied formula, so
+ * there is no way for the number shown, the number scheduled and the number
+ * checked against the limits to drift apart.
+ */
+export function rawClickRate({ mode, bpm, proportion, scoreTempo, unit }) {
   if (mode === "bpm") {
-    return clampBpm(Number.isFinite(bpm) && bpm > 0 ? bpm : DEFAULT_METRONOME_BPM);
+    return Number.isFinite(bpm) && bpm > 0 ? bpm : DEFAULT_METRONOME_BPM;
   }
   const base = Number.isFinite(scoreTempo) && scoreTempo > 0 ? scoreTempo : FALLBACK_SCORE_TEMPO;
   const ratio = Number.isFinite(proportion) && proportion > 0 ? proportion : 1;
   const u = Number.isInteger(unit) && unit > 0 ? unit : 4;
-  return clampBpm(base * ratio * (u / 4));
+  return base * ratio * (u / 4);
 }
 
 /**
@@ -133,9 +154,9 @@ export function secondsPerClick(clickRate) {
  * `{startTick, endTick, numerator, denominator}[]`, in tick order - not the
  * renderer's own model, so this has no reason to import it.
  *
- * score-render.js builds this list from alphaTab's OWN generated-midi-
- * timeline lookup (`api.tickCache.masterBars`), never by summing notated bar
- * durations itself: `tick` lives on the generated MIDI's timeline, which
+ * createScoreMetronome in score-render.js builds this list from alphaTab's
+ * OWN generated-midi-timeline lookup (`api.tickCache.masterBars`), never by
+ * summing notated bar durations itself: `tick` lives on the generated MIDI's timeline, which
  * expands repeats and skips unplayed alternate endings, so the notated bar
  * order and the played tick order are different timelines the moment a
  * score has so much as one repeat sign in it. Only the renderer's own lookup
@@ -191,7 +212,7 @@ export function barAtTick(bars, tick) {
  *
  * `tick` is clamped to the bar's own span, so a click scheduled slightly
  * ahead of the audio clock (see METRONOME_SCHEDULE_AHEAD_S in
- * score-render.js) landing a few ticks past where the playhead has reached
+ * metronome-engine.js) landing a few ticks past where the playhead has reached
  * so far still answers with the bar's last slot rather than spilling into
  * one that doesn't belong to it.
  *
