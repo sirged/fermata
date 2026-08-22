@@ -33,6 +33,12 @@ process.env.FERMATA_TEST_SCRATCH = scratch;
 // running against a real install - and that guard is the reason it is safe to
 // delete practice history in here at all.
 process.env.FERMATA_TEST_LIBRARY_DIR = path.join(scratch, "library");
+// Created here, because the server no longer creates it. A library folder that
+// is not there is refused at startup on purpose: it is what a mount that did
+// not appear looks like, and a server that invents an empty library instead
+// reconciles the index down to match it (#95). This suite is the one caller
+// that legitimately wants a brand-new empty library, so this suite makes it.
+fs.mkdirSync(process.env.FERMATA_TEST_LIBRARY_DIR, { recursive: true });
 // Not 8080, and not a port anything else here uses. The suite starts its own
 // server and never adopts one (see reuseExistingServer below), so a collision
 // should fail loudly rather than quietly point these tests at whatever is

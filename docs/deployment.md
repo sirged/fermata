@@ -33,7 +33,9 @@ mkdir -p library config
 
 - `library/` is where your sheet music goes — PDFs, MusicXML, Guitar Pro
   files. Fermata only reads from and writes into this folder; it never touches
-  anything outside it.
+  anything outside it. It also will not create it: if this folder is missing,
+  Fermata stops and says so, because a missing library folder is far more often
+  a drive that did not mount than a folder nobody made yet.
 - `config/` is where Fermata keeps its own state: the database (titles, tags,
   practice history, transcriptions) and a thumbnail cache. You will not need
   to open this folder yourself, but you will back it up — see
@@ -155,7 +157,10 @@ docker compose up -d
 
 Your library files in `library/` are untouched by any of this — restoring
 `config/` brings back the database as it was at backup time, and the next
-startup scan reconciles it against whatever is currently in `library/`.
+startup scan reconciles it against whatever is currently in `library/`. That
+reconciliation cannot cost you anything: a score whose file is not found is
+marked as missing rather than removed, so its practice history, tags and
+transcription stay attached and come back with the file.
 
 ## Upgrading
 
@@ -306,10 +311,39 @@ Then restart:
 docker compose up -d
 ```
 
-There are two other reasons Fermata will stop on purpose, and because
-`docker-compose.yml` sets `restart: unless-stopped`, either one shows up as a
-container restarting over and over. Both print a plain explanation, so it is
+There are three other reasons Fermata will stop on purpose, and because
+`docker-compose.yml` sets `restart: unless-stopped`, any one of them shows up as
+a container restarting over and over. All print a plain explanation, so it is
 worth reading to the end of the log rather than only the last line.
+
+**"its library folder … is not there"** — the `library/` folder Fermata was
+told to use does not exist. This one is worth understanding rather than just
+fixing, because Fermata refuses it deliberately and used to do something much
+worse. A missing library folder is almost always a mount that did not appear:
+the host folder was renamed or moved, an external drive did not come back, or
+the container started before its volume was ready. Fermata will not create the
+folder for you — an empty library folder looks exactly like a library with
+nothing in it, and Fermata would have no way to tell the difference.
+
+Check that the folder is there, next to your `docker-compose.yml`, and that
+`docker-compose.yml` still has `./library:/data/library` under `volumes:`:
+
+```bash
+ls -la library
+```
+
+If the folder genuinely should exist and be empty — a first run before you have
+copied any music in — create it and start again:
+
+```bash
+mkdir -p library
+docker compose up -d
+```
+
+A restart loop here is harmless and self-healing: nothing has been changed, and
+the moment the mount appears the next restart attempt succeeds by itself. This
+is on purpose. Your practice history, tags and transcriptions in `config/` are
+not touched by any of it.
 
 **"this database is at schema version N"** — the database was written by a
 newer Fermata than the one you are running, so this one will not touch it. This
@@ -347,6 +381,27 @@ If that comes back empty, the files aren't where the container is looking —
 double check they're inside the `library/` folder next to your
 `docker-compose.yml`, not a `library/` folder somewhere else, and that
 `docker-compose.yml` still has `./library:/data/library` under `volumes:`.
+
+If the listing comes back empty **and** Fermata was already showing your
+scores before, look in the log instead:
+
+```bash
+docker compose logs fermata --tail 50
+```
+
+You should find a line saying the scan "did not reconcile the library", with a
+reason. Fermata refuses to act on a walk of the library it cannot believe — a
+folder that suddenly holds no readable score files at all, or one that has lost
+more than half of what it had, is treated as a mount problem rather than as news
+about your music. Nothing is changed when that happens, and the message says so.
+Fix the mount and scan again; everything comes back.
+
+If some of your scores are listed but marked as missing, that is the same
+mechanism working at a smaller scale. Fermata records that a file is no longer
+where it was, and keeps the score, its tags, its practice history and any
+hand-corrected transcription exactly as they were. Put the file back — under the
+old name or a new one — and the next scan clears the mark by itself. Nothing is
+ever deleted because a file went away.
 
 If the files do show up in that listing but not in Fermata, the extension may
 not be one Fermata recognizes. It picks up `.pdf`, `.musicxml`, `.mxl`,

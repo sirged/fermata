@@ -64,30 +64,49 @@ async function upload(request, name) {
   return waitForScore(request, name);
 }
 
-async function removeScore(request) {
+// This spec's own fixture paths, which the guard below has to be able to tell
+// apart from somebody's real sheet music.
+const OWN_PATHS = [SCORE_NAME, OTHER_NAME].map((name) => `Uploads/${name}`);
+
+// WHY THE FILES ARE NOT TAKEN BACK OUT AFTER EVERY TEST ANY MORE.
+//
+// This used to delete the fixture files and scan, and wait for /api/scores to
+// come back empty. Neither half of that works now, both for the same reason
+// (#95), and both deliberately:
+//
+//   - a score whose file is gone is MARKED missing, not deleted, so that the
+//     practice history, tags and hand-corrected transcriptions hanging off it
+//     survive a drive that did not come back. The row stays.
+//   - and a scan that finds NO readable files while the database holds scores
+//     refuses to reconcile at all, because that is what an unmounted library
+//     looks like. Emptying a two-score library is exactly the shape this guard
+//     is built to disbelieve.
+//
+// So the files stay put between tests in this file, and the rows are reused:
+// beforeEach uploads to the same path, and a scan finds the existing row there.
+// Only ever two rows exist here, one per fixture name. The files are removed
+// once at the end, for the filesystem's sake rather than the database's - and
+// this spec is named to sort LAST, so nothing runs after it either way.
+async function removeFixtureFiles() {
   for (const name of [SCORE_NAME, OTHER_NAME]) {
     const target = path.join(libraryDir(), "Uploads", name);
     if (fs.existsSync(target)) fs.rmSync(target);
   }
-  await request.post("/api/scan");
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    const scores = await (await request.get("/api/scores")).json();
-    if (!scores.length) return;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error("the library did not empty again - later specs would see this score");
 }
 
 let score;
 
 test.beforeEach(async ({ request }) => {
   // The same refusal every other spec makes, and for the same reason: this one
-  // deletes practice history too.
+  // deletes practice history too. Narrowed to scores that are NOT this spec's
+  // own fixtures, which are expected to still be on record from an earlier test
+  // in this file. Anything else means a real library, and this spec must not run
+  // against one.
   const existing = await (await request.get("/api/scores")).json();
   expect(
-    existing,
-    "refusing to run: this backend already has scores in its library, so it is not the " +
-      "throwaway instance the suite creates",
+    existing.filter((s) => !OWN_PATHS.includes(s.path)),
+    "refusing to run: this backend has scores in its library that this spec did not put " +
+      "there, so it is not the throwaway instance the suite creates",
   ).toEqual([]);
 
   // Earlier specs clear practice history on the way IN rather than out, so the
@@ -99,11 +118,14 @@ test.beforeEach(async ({ request }) => {
   score = await upload(request, SCORE_NAME);
 });
 
+test.afterAll(async () => {
+  await removeFixtureFiles();
+});
+
 test.afterEach(async ({ request }) => {
   const sessions = (await (await request.get("/api/practice/sessions?limit=1000")).json())
     .sessions;
   for (const session of sessions) await request.delete(`/api/practice/sessions/${session.id}`);
-  await removeScore(request);
 });
 
 /** Run the timer for long enough to be stored. The component refuses anything
@@ -263,11 +285,15 @@ test("the session reaches the library's own view of the score", async ({ page, r
   await practiseFor(page);
   await expect(panel(page)).toBeVisible();
 
+  // Found by id, not by position: the other fixture's row may still be on
+  // record from an earlier test in this file (marked missing, file gone), and
+  // both carry the same title, so the order is not something to lean on.
   const listed = await (await request.get("/api/scores")).json();
-  expect(listed[0].practice_seconds).toBeGreaterThanOrEqual(10);
+  const mine = listed.find((s) => s.id === score.id);
+  expect(mine.practice_seconds).toBeGreaterThanOrEqual(10);
   // The practice DAY, not a timestamp - this is what the library's "practised
   // today" is computed from.
-  expect(listed[0].last_practiced).toBe(localDay());
+  expect(mine.last_practiced).toBe(localDay());
 
   await page.goto("/#/");
   await expect(page.locator(".card .practiced")).toHaveText("practiced today");

@@ -203,6 +203,9 @@ CREATE TABLE IF NOT EXISTS tags (
     name TEXT NOT NULL UNIQUE
 );
 
+-- ON DELETE CASCADE HERE IS DELIBERATE, and it was reconsidered rather than
+-- inherited - see the same note over `transcriptions`, and the paragraph below
+-- it explaining what actually protects these rows.
 CREATE TABLE IF NOT EXISTS score_tags (
     score_id INTEGER NOT NULL REFERENCES scores(id) ON DELETE CASCADE,
     tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
@@ -213,6 +216,44 @@ CREATE TABLE IF NOT EXISTS score_tags (
 -- `source`. Kept as separate rows rather than one row with fields that get
 -- overwritten in place, so a re-extraction can freely replace the extracted
 -- row without ever touching an edited one - see api.py's transcribe().
+--
+-- ON DELETE CASCADE, AND WHY THESE TWO TABLES KEEP IT WHILE THE PRACTICE
+-- TABLES DID NOT. #95 asked the question for score_tags and transcriptions
+-- that #94 answered for practice_sessions and practice_goals, and the answer
+-- comes out the other way. The test is whether a row still SAYS anything once
+-- the score it names is gone.
+--
+-- A practice session says "forty minutes on Tuesday, at 92bpm, bars 1-16, felt
+-- rough". A goal says "practise five days this week". Those are complete
+-- statements about somebody's week; they read perfectly well with no piece
+-- named, which is exactly why SET NULL keeps something worth keeping there.
+--
+-- A score_tags row says "(this score) (this tag)" and nothing else - it is
+-- purely the association. A transcriptions row says "here is the music of
+-- (this score)". Take the score away and neither has a statement left: an
+-- orphaned tag link is a count against a name nobody can see, and orphaned
+-- alphaTex or MusicXML is notation nothing can title, list, search or open.
+-- Worse, both would accumulate silently and for ever. SQLite treats NULLs as
+-- distinct in a unique index, so PRIMARY KEY (score_id, tag_id) and
+-- idx_transcriptions_score_source would both stop constraining the orphans -
+-- unlimited duplicate rows nothing can reach, and transcribe()'s one-row-per-
+-- source invariant quietly false for them.
+--
+-- WHAT ACTUALLY PROTECTS THIS WORK, then, is that the scanner no longer
+-- deletes a score row when its file goes: it sets scores.missing_since and
+-- leaves everything hanging off the row exactly where it was (see
+-- scanner.py). A hand-corrected transcription is real work and is not
+-- something to lose casually - the way to not lose it is to keep the row it
+-- hangs from, and that also keeps it RE-ATTACHABLE, which nulling the link
+-- could never do: the score row carries the content hash the rename relink
+-- matches on, so a file that comes back finds its transcription again. A
+-- transcription with score_id NULL could not be reunited with anything,
+-- because nothing would record what it had been about.
+--
+-- So the cascade now fires only for a deliberate, explicit deletion of a score
+-- by a person (#56) - never as a side effect of a filesystem walk coming back
+-- short. Whoever builds that feature should say plainly in the interface that
+-- tags and transcriptions go with it.
 CREATE TABLE IF NOT EXISTS transcriptions (
     id INTEGER PRIMARY KEY,
     score_id INTEGER NOT NULL REFERENCES scores(id) ON DELETE CASCADE,
@@ -343,9 +384,32 @@ SCHEMA_VERSION = 3
 # standard six-string whatever instrument it names; and nothing revalidates a
 # score when its instrument is edited underneath it, so a reference can outlive
 # the shape it was chosen for (see api.update_instrument).
+#
+# missing_since separates "the file is gone" from "the record is gone", which
+# is the change #95 turns on. NULL means the file was there the last time a
+# scan looked; a timestamp means it was not, and says since when - which is the
+# question somebody asks about a row like this ("has that been gone since the
+# drive died, or since I tidied up in March?"). A boolean could not answer it.
+#
+# It is here rather than in MIGRATIONS because it is genuinely only an ADD
+# COLUMN: nullable, no foreign key, and needing no backfill, because NULL is
+# already the truth for every row that exists - they were all written by a
+# scanner that would have deleted them rather than mark them. That also means
+# SCHEMA_VERSION does not move: _add_missing_columns runs on every startup
+# regardless of the stamp, and a version bump with no MIGRATIONS step behind it
+# would record a history that never happened.
+#
+# READERS MUST NOT ASSUME THIS IS NULL. It is not a soft-delete flag and
+# nothing filters on it: a missing row still appears in the library, still
+# carries its tags, practice and transcription, and still answers to its id -
+# because "your library is intact, these files are not reachable right now" is
+# the true thing to show a person whose drive has not come back, and an empty
+# library is not. The file-serving endpoints already 404 on their own (they
+# check the path, not this column), so nothing had to learn to hide anything.
 COLUMN_ADDITIONS = {
     "scores": {
         "instrument_id": "INTEGER REFERENCES instruments(id) ON DELETE SET NULL",
+        "missing_since": "TEXT",
     },
 }
 

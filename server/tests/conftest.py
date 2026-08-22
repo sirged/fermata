@@ -142,9 +142,22 @@ def claire_de_lune_pdf() -> Path:
 @pytest.fixture
 def app_env(tmp_path, monkeypatch):
     """Point the db module at a throwaway sqlite file for one test, and reset
-    the per-thread cached connection so the swap actually takes effect."""
-    from fermata import db
+    the per-thread cached connection so the swap actually takes effect.
 
+    The config module's three directories are redirected here as well, and the
+    library one is CREATED. Fermata refuses to start without a library folder
+    on purpose (see config.ensure_dirs and #95), so a test that goes through
+    main.py's lifespan needs one that exists - and pointing it at tmp_path
+    rather than making the repository's own ./library is what keeps a test run
+    from writing into the checkout, which the config directory previously did.
+    """
+    from fermata import config, db
+
+    library = tmp_path / "library"
+    library.mkdir()
+    monkeypatch.setattr(config, "LIBRARY_DIR", library)
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "config" / "cache")
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "fermata_test.db")
     db._local.conn = None
     db.init_db()
