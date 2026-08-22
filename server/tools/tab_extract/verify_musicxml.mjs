@@ -8,11 +8,20 @@
 // re-implementation of it.
 //
 // Usage:
-//   node verify_musicxml.mjs <path-to-alphaTab.mjs> <file-or-dir> [...more]
+//   node verify_musicxml.mjs <path-to-alphaTab.mjs> [--onsets] <file-or-dir> [...]
 //
 // Prints one JSON line per file: {file, ok, bars, voices, beats, notes,
 // dottedBeats, firstNoteMidi, firstNoteString, firstNoteFret, tuning} or
 // {file, ok: false, error}. Exits 1 if any file failed to load.
+//
+// With --onsets each line also carries `onsets`: one entry per beat, as
+// [barIndex, voiceIndex, playbackStart, playbackDuration, isRest]. That is
+// what checks the profile's Rule 14 - inferred silence is written as
+// <forward>, which is only safe if a consumer advances its position across
+// one, so a note following a <forward> has to sound where a note following a
+// rest of the same duration would. A file whose leading <forward> is ignored
+// still loads, still validates, and plays every late-entering voice on the
+// downbeat, so nothing but a position tells you.
 //
 // firstNoteString/Fret and tuning are the ones that matter beyond "it
 // parsed": MusicXML numbers staff LINES from the bottom and STRINGS from the
@@ -27,9 +36,11 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 async function main() {
-    const [alphaTabPath, ...targets] = process.argv.slice(2);
+    const [alphaTabPath, ...rest] = process.argv.slice(2);
+    const wantOnsets = rest.includes("--onsets");
+    const targets = rest.filter((a) => a !== "--onsets");
     if (!alphaTabPath || targets.length === 0) {
-        console.error("usage: node verify_musicxml.mjs <alphaTab.mjs> <file-or-dir> [...]");
+        console.error("usage: node verify_musicxml.mjs <alphaTab.mjs> [--onsets] <file-or-dir> [...]");
         process.exit(2);
     }
 
@@ -60,6 +71,7 @@ async function main() {
             let bars = 0, voices = 0, beats = 0, notes = 0, dottedBeats = 0;
             let firstNoteMidi = null, firstNoteString = null, firstNoteFret = null;
             let tuning = null;
+            const onsets = [];
             for (const track of score.tracks) {
                 for (const staff of track.staves) {
                     bars = Math.max(bars, staff.bars.length);
@@ -77,6 +89,13 @@ async function main() {
                             for (const beat of voice.beats) {
                                 beats += 1;
                                 if (beat.dots > 0) dottedBeats += 1;
+                                if (wantOnsets) {
+                                    onsets.push([
+                                        bar.index, voice.index,
+                                        beat.playbackStart, beat.playbackDuration,
+                                        beat.isRest,
+                                    ]);
+                                }
                                 for (const note of beat.notes) {
                                     notes += 1;
                                     if (firstNoteMidi === null) {
@@ -94,6 +113,7 @@ async function main() {
                 ok: true, bars, voices, beats, notes, dottedBeats,
                 firstNoteMidi, firstNoteString, firstNoteFret, tuning,
             });
+            if (wantOnsets) result.onsets = onsets;
         } catch (e) {
             anyFailed = true;
             Object.assign(result, { ok: false, error: String(e && e.stack ? e.stack : e) });

@@ -126,6 +126,15 @@ class InferredRest(list):
     beats model that only asks "does this beat have notes" is unaffected, and
     an inferred rest still compares equal to a plain one. Anything that needs
     the distinction asks is_inferred_rest().
+
+    WHAT DESTROYS THE MARK, because it rides on the type rather than on a
+    value: it survives copy, deepcopy and pickle, and is lost by slicing
+    (`notes[:]`), by `list(notes)`, by concatenation, and by any round trip
+    through JSON - all of which hand back a plain list. None of those is reached
+    today; the beats model goes straight from the extractor to the two
+    emitters. But anything that caches the model as JSON and reads it back would
+    turn every inferred rest in the document into an engraved one, silently, and
+    nothing here would fail. Such a cache has to carry the mark itself.
     """
 
     __slots__ = ()
@@ -313,6 +322,37 @@ def voices_of(beats):
     if not beats:
         return []
     return list(beats) if isinstance(beats[0], list) else [beats]
+
+
+def writes_a_note(duration_code, dots, notes) -> bool:
+    """Whether build() writes this beat as a `<note>` at all.
+
+    Two kinds of beat produce none. Inferred silence becomes a `<forward>`
+    (Rule 14), and a beat that resolves to no duration cannot be written,
+    because `<duration>` is positive-divisions. Both are decided here rather
+    than by each caller, so a count reported beside the file and the file itself
+    cannot come from two different rules - see written_beats and build().
+    """
+    if is_inferred_rest(notes):
+        return False
+    return beat_divisions(duration_code, dots) >= _MIN_DURATION
+
+
+def written_beats(measures) -> int:
+    """How many beats the emitted document actually holds.
+
+    This is what `<note>` elements a consumer counts (chord members share their
+    beat's onset and carry `<chord>`, so a chord is one beat, not one per note -
+    Rule 7). Reported rather than the number of beats extraction produced,
+    because those are no longer the same number: silence deduced from the meter
+    is emitted as `<forward>` and is not a beat of the score.
+    """
+    count = 0
+    for measure_in in measures:
+        beats_in, _ts = _split_measure(measure_in, None)
+        for voice in voices_of(beats_in):
+            count += sum(1 for beat in voice if writes_a_note(*beat))
+    return count
 
 
 def voice_durations(beats) -> list[int]:
@@ -553,10 +593,14 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
                     # write a zero-length beat. Nothing sounds for no time
                     # either, so dropping it loses nothing.
                     continue
-                if is_inferred_rest(notes):
-                    # Silence this producer deduced rather than read. Written
-                    # as `<forward>`, which holds the position without
-                    # asserting a rest - see _append_forward and Rule 14.
+                if not writes_a_note(duration_code, dots, notes):
+                    # Everything writes_a_note rejects EXCEPT the zero-duration
+                    # case, which the guard above has already skipped: silence
+                    # this producer deduced rather than read. Written as
+                    # `<forward>`, which holds the position without asserting a
+                    # rest - see _append_forward and Rule 14. The predicate is
+                    # shared with written_beats, so the beat count reported
+                    # beside the file and the file itself cannot disagree.
                     _append_forward(measure, duration, voice_number)
                     written += duration
                     continue

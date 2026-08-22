@@ -48,6 +48,44 @@ def _parse_with_alphatab(tex: str) -> dict:
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
+def _load_musicxml_with_alphatab(xml: str, onsets: bool = False) -> dict:
+    """Load `xml` with the real alphaTab MusicXML importer the web player uses,
+    via tools/tab_extract/verify_musicxml.mjs.
+
+    A stored transcription IS MusicXML and the player imports it with this
+    exact loader, so nothing about how the file is written can be called safe
+    on the strength of the emitter agreeing with itself. Rule 14's `<forward>`
+    is the sharp case: a loader that ignored it would still load the file, and
+    every voice that entered late would collapse onto the downbeat. Skips
+    (rather than fails) when node or the web project's installed alphaTab build
+    aren't available, since neither is present in the production server's own
+    runtime image.
+    """
+    if shutil.which("node") is None:
+        pytest.skip("node not available")
+    repo_root = Path(__file__).resolve().parents[2]
+    alphatab = repo_root / "web" / "node_modules" / "@coderline" / "alphatab" / "dist" / "alphaTab.mjs"
+    if not alphatab.is_file():
+        pytest.skip("alphaTab.mjs not found - run `npm ci` in web/ first")
+    script = Path(__file__).resolve().parents[1] / "tools" / "tab_extract" / "verify_musicxml.mjs"
+
+    with tempfile.NamedTemporaryFile("w", suffix=".musicxml", delete=False,
+                                     encoding="utf-8") as f:
+        f.write(xml)
+        xml_path = f.name
+    try:
+        args = ["node", str(script), str(alphatab)]
+        if onsets:
+            args.append("--onsets")
+        proc = subprocess.run(args + [xml_path], capture_output=True, text=True, timeout=60)
+    finally:
+        Path(xml_path).unlink(missing_ok=True)
+
+    parsed = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert parsed.get("ok"), f"MusicXML failed to load: {parsed.get('error')}"
+    return parsed
+
+
 def _make_tab_pdf(path, pages):
     """Build a minimal PDF with one 6-line tab staff per page - good enough
     to exercise _detect_staves / _detect_barlines / _extract_digit_tokens
@@ -148,11 +186,21 @@ def test_glyph_decoded_alphatex_parses_with_dotted_beats(zanarkand_pdf):
     string first: the piece is Drop D, and its first written note (`0.1`)
     must sound MIDI 64 (high E untouched by the drop), not 38/40 (the
     mirrored low string a low-to-high tuning emission would produce)."""
+    import xml.etree.ElementTree as ET
+
     result = tabextract.extract(zanarkand_pdf, time_signature=(3, 4))
     assert result.extractable
     parsed = _parse_with_alphatab(result.alphatex)
     assert parsed["bars"] == result.bars
-    assert parsed["beats"] == result.beats
+    # `beats` is what the CANONICAL output holds, and the two formats no longer
+    # hold the same number: inferred silence is a plain rest in alphaTex (which
+    # has nothing to mark it with) and a `<forward>` in the MusicXML, which is
+    # not a beat of the score. So the alphaTex has exactly one beat more per
+    # `<forward>`, and stating the relationship pins both artefacts instead of
+    # letting `beats` drift towards whichever one is checked.
+    forwards = len(ET.fromstring(result.musicxml).findall("./part/measure/forward"))
+    assert forwards > 0, "this score does have inferred silence in it"
+    assert parsed["beats"] == result.beats + forwards
     assert parsed["notes"] == result.notes
     assert parsed["dottedBeats"] > 0
     assert parsed["firstNoteMidi"] == 64
@@ -293,6 +341,21 @@ def test_rest_only_bar_is_emitted_not_skipped(tmp_path):
     assert "3.1" in lines[0]
     assert lines[1].strip() == ":1 r |"
     assert "5.5" in lines[2]
+
+    # ...and that bar is REPORTED as one nothing was read from. Its rests add up
+    # to the meter, so Rule 8 passes and it is not a defect - which is exactly
+    # why it has to be said some other way, or a score read as nothing at all
+    # reports every bar conformant. The rest is left unmarked deliberately: a
+    # whole voice of `<forward>` would carry no notes and no rests, so no
+    # consumer enumerating voices from <note> would see the bar at all.
+    assert result.bars_unread == 1
+    assert result.unread_bars == [2]
+    assert result.bars_defective == 0, "a bar of rests does add up"
+    assert result.bars_padded == 0
+    assert "<forward>" not in result.musicxml
+    unread = next(w for w in result.warnings if "hold nothing that was read" in w)
+    assert "1 of 3 bar(s)" in unread
+    assert "The bars are: 2." in unread
 
 
 def test_last_column_duration_uses_barline_not_average_gap():
@@ -1250,24 +1313,29 @@ def test_bar_conformance_counts_both_directions():
     count existed before, so a bar with a note missing from it looked clean.
 
     The fields are (overfull, short, defective, counted, padded, padded_bars,
-    inferred_quarters)."""
+    inferred_quarters, defective_bars)."""
     exact = [[(4, 0, [(1, 0)])] * 3]
     over = [[(4, 0, [(1, 0)])] * 4]
     short = [[(4, 0, [(1, 0)])] * 2]
-    assert tabextract._bar_conformance([(exact, (3, 4))]) == (0, 0, 0, 1, 0, (), 0.0)
-    assert tabextract._bar_conformance([(over, (3, 4))]) == (1, 0, 1, 1, 0, (), 0.0)
-    assert tabextract._bar_conformance([(short, (3, 4))]) == (0, 1, 1, 1, 0, (), 0.0)
+    assert tabextract._bar_conformance([(exact, (3, 4))]) == (0, 0, 0, 1, 0, (), 0.0, ())
+    assert tabextract._bar_conformance([(over, (3, 4))]) == (1, 0, 1, 1, 0, (), 0.0, (1,))
+    assert tabextract._bar_conformance([(short, (3, 4))]) == (0, 1, 1, 1, 0, (), 0.0, (1,))
     # A bar with one voice over its meter and another under it is wrong ONCE.
     # overfull + short would count it twice and can exceed the bar count, which
     # is why `defective` is a field of its own.
     both = [[(4, 0, [(1, 0)])] * 4, [(4, 0, [(2, 0)])] * 2]
-    assert tabextract._bar_conformance([(both, (3, 4))]) == (1, 1, 1, 1, 0, (), 0.0)
+    assert tabextract._bar_conformance([(both, (3, 4))]) == (1, 1, 1, 1, 0, (), 0.0, (1,))
     # A voice padded out to its meter with inferred silence is still SHORT by
     # what was missing, and the padding is reported separately: bar 2 here.
     padded = [[(4, 0, [(1, 0)])] * 3,
               [(4, 0, [(2, 0)]), (2, 0, musicxml.inferred_rest())]]
     assert tabextract._bar_conformance([(exact, (3, 4)), (padded, (3, 4))]) == (
-        0, 1, 1, 2, 1, (2,), 2.0)
+        0, 1, 1, 2, 1, (2,), 2.0, (2,))
+    # A bar with no meter is not measured against one, but its padding is still
+    # counted: it carries a <forward> into the file either way, and a padded
+    # count the file disagrees with is what this whole mechanism prevents.
+    assert tabextract._bar_conformance([(padded, None)]) == (
+        0, 0, 0, 0, 1, (1,), 2.0, ())
     # _overfull_bars keeps its old shape for the callers that want just that
     assert tabextract._overfull_bars([(over, (3, 4))]) == (1, 1)
 
@@ -1292,8 +1360,8 @@ def test_the_padded_bars_are_named_not_just_counted():
     padded = [w for w in warnings if "deduced from the time signature" in w]
     assert len(padded) == 1, warnings
     assert "3 of 20 bar(s)" in padded[0]
-    assert "bar(s) 2, 7, 13" in padded[0]
-    assert "6.5 quarter note(s)" in padded[0]
+    assert "The bars are: 2, 7, 13." in padded[0]
+    assert "6.5 quarter note(s) of it in total" in padded[0]
 
     # Nothing is said at all when nothing was padded - a warning that fires on
     # a clean score teaches a reader to ignore it.
@@ -1302,18 +1370,49 @@ def test_the_padded_bars_are_named_not_just_counted():
     assert not any("deduced from the time signature" in w for w in quiet)
 
 
+def test_a_quarter_note_count_is_exact_not_rounded():
+    """The sentence's whole purpose is to say how much of a score was invented,
+    so the number in it has to be the number. A %.4g format printed 43.875 as
+    "43.88" and 104.25 as "104.2" - wrong, in ten of the library's scores."""
+    counts = collections.Counter({tabextract.PROV_GLYPHS: 1})
+    for quarters, text in ((43.875, "43.875"), (104.25, "104.25"), (126.0, "126"),
+                           (0.125, "0.125"), (2.5, "2.5")):
+        warnings, _c = tabextract._rhythm_report(
+            counts, {}, tabextract._BarConformance(0, 1, 1, 20, 1, (2,), quarters))
+        padded = next(w for w in warnings if "deduced from the time signature" in w)
+        assert f"{text} quarter note(s)" in padded, padded
+
+
 def test_a_hundred_padded_bars_do_not_become_a_wall_of_numbers():
     """The list is capped and says how many it left out; the COUNT beside it is
-    always the whole truth."""
+    always the whole truth, and ExtractionResult carries every number as data.
+
+    The cap VALUE is asserted, not just that some cap exists: at twelve it bound
+    131 of the library's 271 affected scores, so the prose lost the fact for half
+    of them, and a test that only checks "some numbers are missing" would have
+    called that healthy.
+    """
     counts = collections.Counter({tabextract.PROV_GLYPHS: 1})
-    bars = tuple(range(1, 101))
+    cap = tabextract._BARS_LISTED
+    assert cap == 60, "the cap is a measured choice - see _BARS_LISTED"
+    bars = tuple(range(1, cap + 41))
     warnings, _c = tabextract._rhythm_report(
-        counts, {}, tabextract._BarConformance(0, 100, 100, 100, 100, bars, 200.0))
+        counts, {}, tabextract._BarConformance(
+            0, len(bars), len(bars), len(bars), len(bars), bars, 200.0))
     padded = next(w for w in warnings if "deduced from the time signature" in w)
-    assert "100 of 100 bar(s)" in padded
-    assert str(tabextract._PADDED_BARS_LISTED) in padded
-    assert f"and {100 - tabextract._PADDED_BARS_LISTED} more" in padded
-    assert "13," not in padded, "the list stops at the cap"
+    assert f"{len(bars)} of {len(bars)} bar(s)" in padded
+    listed = padded.split("The bars are: ")[1].split(" and ")[0]
+    assert [int(n) for n in listed.split(", ")] == list(bars[:cap])
+    assert f"and {len(bars) - cap} more" in padded
+
+    # A list that fits is not truncated and says nothing about "more"
+    short_list = tuple(range(1, cap + 1))
+    warnings, _c = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(
+            0, cap, cap, cap, cap, short_list, 1.0))
+    padded = next(w for w in warnings if "deduced from the time signature" in w)
+    assert "more." not in padded
+    assert str(cap) in padded
 
 
 def test_short_bars_downgrade_confidence_the_same_way_overfull_ones_do():
@@ -1341,6 +1440,177 @@ def test_short_bars_downgrade_confidence_the_same_way_overfull_ones_do():
     _w, still_high = tabextract._rhythm_report(
         counts, {}, tabextract._BarConformance(2, 2, 2, 10))
     assert still_high.startswith("high"), still_high
+
+
+def test_a_confidence_below_the_threshold_still_says_what_is_wrong():
+    """The threshold decides the LABEL, not whether anything is said. Sixteen of
+    the nineteen library scores that still rated "high" sat just under the
+    quarter - one with invented silence in 7 of its 33 bars - and read
+    "decoded directly from the ... engraving" with nothing qualifying it, which
+    makes a score with known defective bars indistinguishable from a clean
+    one at the single figure the application uses to summarise a
+    transcription."""
+    counts = collections.Counter({tabextract.PROV_GLYPHS: 1})
+    _w, high = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 2, 2, 10))
+    assert high.startswith("high"), "still high: two of ten is under the quarter"
+    assert "2 of 10 bar(s) do not add up" in high, high
+
+    # A genuinely clean score says nothing extra - the qualifier has to mean
+    # something, and one that appears on every score would not.
+    _w, clean = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 0, 0, 10))
+    assert clean.startswith("high")
+    assert "bar(s)" not in clean, clean
+
+
+def test_bars_nothing_was_read_from_are_counted_and_named():
+    """A bar holding a whole bar of rests nothing was read from adds up to its
+    meter, so it passes Rule 8 and is NOT counted as defective - folding it in
+    would make these figures disagree with the emitted file. It is still not a
+    reading: a 40-bar score read as nothing at all was reporting 40 of 40 bars
+    conformant at high confidence with no warning mentioning emptiness."""
+    counts = collections.Counter({tabextract.PROV_GLYPHS: 1})
+    warnings, confidence = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 0, 0, 40), tuple(range(1, 41)))
+    unread = [w for w in warnings if "hold nothing that was read" in w]
+    assert len(unread) == 1, warnings
+    assert "40 of 40 bar(s)" in unread[0]
+    assert "The bars are: 1, 2," in unread[0]
+    assert confidence.startswith("low overall"), confidence
+    assert "hold nothing that was read from the score (40)" in confidence
+
+    # Below the threshold they are still named, and still qualify the string.
+    warnings, confidence = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 0, 0, 40), (7, 9))
+    assert any("2 of 40 bar(s) hold nothing" in w for w in warnings), warnings
+    assert confidence.startswith("high")
+    assert "(2)" in confidence, confidence
+
+    # And a bar that is BOTH defective and unread counts once, or the ratio
+    # could exceed 1 and a 4-bar score could report 5 unreliable bars.
+    _w, both = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 4, 4, 4, 0, (), 0.0, (1, 2, 3, 4)),
+        (1, 2, 3, 4))
+    assert "4 of 4 bar(s) either" in both, both
+
+
+def _onsets_by_voice(parsed):
+    """{voice index: [(start, duration, is_rest), ...]} from an --onsets load."""
+    out = collections.defaultdict(list)
+    for _bar, voice, start, duration, is_rest in parsed["onsets"]:
+        out[voice].append((start, duration, is_rest))
+    for beats in out.values():
+        beats.sort()
+    return dict(out)
+
+
+@pytest.mark.parametrize("where", ["leading", "trailing", "middle"])
+def test_the_renderer_puts_a_note_after_inferred_silence_where_a_rest_would(where):
+    """The one assumption the whole of Rule 14 rests on, checked against the
+    real importer rather than against this emitter agreeing with itself.
+
+    Inferred silence is written as `<forward>` instead of a rest so that it does
+    not claim the source printed one. That is only safe if a consumer advances
+    its position across it. If the renderer ever stopped doing so, every voice
+    that enters late would collapse onto the downbeat and sound its notes early
+    - a file that still loads, still validates and plays wrong. So build the
+    same bar twice, once with the silence marked inferred and once as an
+    ordinary rest, and require the onsets to be IDENTICAL. Comparing against
+    the rest version rather than against a tick figure keeps this about the
+    property and not about alphaTab's units.
+    """
+    note, silence = (4, 0, [(1, 5)]), (2, 0, None)
+    shapes = {
+        "leading": [silence, note],
+        "trailing": [note, silence],
+        "middle": [(4, 0, [(1, 5)]), (4, 0, None), (4, 0, [(1, 7)])],
+    }
+
+    def build(marked):
+        def fill(beat):
+            code, dots, notes = beat
+            if notes is not None:
+                return beat
+            return (code, dots, musicxml.inferred_rest() if marked else [])
+        upper = [fill(b) for b in shapes[where]]
+        lower = [(4, 0, [(6, 0)]), (4, 0, [(6, 2)]), (4, 0, [(6, 3)])]
+        return musicxml.build("T", None, tabextract.DEFAULT_TUNING, (3, 4),
+                              [([upper, lower], (3, 4))])
+
+    inferred = _load_musicxml_with_alphatab(build(True), onsets=True)
+    engraved = _load_musicxml_with_alphatab(build(False), onsets=True)
+
+    assert "<forward>" in build(True), "the inferred version really does write one"
+    assert "<forward>" not in build(False)
+
+    def sounding(parsed):
+        return {v: [b for b in beats if not b[2]]
+                for v, beats in _onsets_by_voice(parsed).items()}
+
+    assert sounding(inferred) == sounding(engraved), (
+        f"a {where} <forward> did not hold the position a rest holds - every note "
+        "after it moved")
+
+    if where == "trailing":
+        # A trailing forward is the one case a consumer may legitimately drop:
+        # this renderer ends the voice there rather than showing silence, and
+        # nothing sounds after it, so no note moves. Recorded because it is the
+        # only place the two spellings differ at all.
+        assert _onsets_by_voice(inferred)[0] != _onsets_by_voice(engraved)[0]
+        return
+
+    # Otherwise the position really was held, rather than two voices merely both
+    # starting on the downbeat: the padded voice covers the same span as the one
+    # that plays throughout, and where it entered late its NOTE is not first.
+    voices = _onsets_by_voice(inferred)
+    upper, lower = voices[0], voices[1]
+
+    def end(beats):
+        return max(start + duration for start, duration, _rest in beats)
+
+    assert end(upper) == end(lower), "the padded voice does not cover the bar"
+    if where == "leading":
+        starts = [start for start, _d, is_rest in upper if not is_rest]
+        assert starts and min(starts) > upper[0][0], (
+            "the late-entering voice sounds on the downbeat - the forward was ignored")
+
+
+def test_reported_beat_count_matches_what_the_musicxml_holds():
+    """`beats` is reported beside the MusicXML, so it has to be what the file
+    contains. Inferred silence is written as `<forward>` and is not a beat of
+    the score, so counting the beats model instead reported more beats than the
+    canonical output holds - 6386 more across the library, exactly its number
+    of `<forward>` elements, on 271 of 293 scores."""
+    import xml.etree.ElementTree as ET
+
+    from fermata import musicxml
+
+    measures = [
+        # one voice fully read, one padded out with inferred silence
+        ([[(4, 0, [(1, 0)]), (4, 0, [(1, 2)]), (4, 0, [(1, 3)])],
+          [(4, 0, [(5, 0)]), (2, 0, musicxml.inferred_rest())]], (3, 4)),
+        # a chord is ONE beat however many notes it has (Rule 7), and a beat
+        # whose notes have no writable pitch keeps its place as a rest
+        ([[(4, 0, [(6, 0), (5, 2), (4, 2)]), (4, 0, [(1, 78)]), (4, 0, [(1, 1)])]], (3, 4)),
+    ]
+    assert musicxml.written_beats(measures) == 7
+    root = ET.fromstring(
+        musicxml.build("T", None, tabextract.DEFAULT_TUNING, (3, 4), measures))
+    holds = len([n for n in root.findall("./part/measure/note") if n.find("chord") is None])
+    assert holds == musicxml.written_beats(measures)
+    assert len(root.findall("./part/measure/forward")) == 1
+
+
+def test_reported_beat_count_matches_the_reference_scores_musicxml(zanarkand_pdf):
+    """The same invariant on a real score, where the padding actually happens."""
+    import xml.etree.ElementTree as ET
+
+    result = tabextract.extract(zanarkand_pdf)
+    root = ET.fromstring(result.musicxml)
+    holds = len([n for n in root.findall("./part/measure/note") if n.find("chord") is None])
+    assert holds == result.beats
+    assert len(root.findall("./part/measure/forward")) > 0
 
 
 def test_reported_note_count_matches_what_the_musicxml_holds():

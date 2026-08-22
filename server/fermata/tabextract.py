@@ -156,6 +156,13 @@ class ExtractionResult:
     bars_padded: int = 0
     padded_bars: list[int] = field(default_factory=list)
     inferred_rest_quarters: float = 0.0
+    # Bars nothing was read from at all, and which ones. These are NOT counted
+    # into bars_defective: the bar of rests they emit does add up to its meter,
+    # so folding them in would make these figures disagree with what a consumer
+    # computes from the emitted file. They are a separate statement - "nothing
+    # here was read" - and they do count towards the reported confidence.
+    bars_unread: int = 0
+    unread_bars: list[int] = field(default_factory=list)
     # Total tab / standard staff systems found across the whole document
     # (summed across pages) - same definition analyze() uses, not a
     # per-page maximum.
@@ -193,6 +200,8 @@ class ExtractionResult:
             "bars_padded": self.bars_padded,
             "padded_bars": list(self.padded_bars),
             "inferred_rest_quarters": self.inferred_rest_quarters,
+            "bars_unread": self.bars_unread,
+            "unread_bars": list(self.unread_bars),
             "tab_staff_count": self.tab_staff_count,
             "standard_staff_count": self.standard_staff_count,
             "pages_processed": self.pages_processed,
@@ -1614,11 +1623,32 @@ _TIE_WARNING = (
 
 _DOT_FACTORS = (1.0, 1.5, 1.75)
 
-# How many padded bar numbers the warning names before summarising the rest.
-# Enough to check a handful against the PDF without turning one warning into a
-# wall of a hundred numbers; the count beside them is always complete, and the
-# MusicXML carries every one of them.
-_PADDED_BARS_LISTED = 12
+# How many bar numbers a warning names before summarising the rest. At 12 the
+# cap bound 131 of the 271 affected scores in the library, so the prose lost the
+# fact for half of them; 60 leaves 25 scores capped and is still one readable
+# line. The count beside the list is always complete, and the full list is
+# reported as data (ExtractionResult.padded_bars / unread_bars) for anything
+# that wants all of it.
+_BARS_LISTED = 60
+
+
+def _bar_list(numbers) -> str:
+    """Bar numbers for a warning: the first _BARS_LISTED of them, then how many
+    were left out - never a silently truncated list."""
+    listed = ", ".join(str(n) for n in numbers[:_BARS_LISTED])
+    left = len(numbers) - _BARS_LISTED
+    return f"{listed} and {left} more" if left > 0 else listed
+
+
+def _quarters_text(quarters) -> str:
+    """A quarter-note count as an exact decimal.
+
+    Every duration this extractor emits is a multiple of a 32nd, so a quarter
+    count is exact and has to print that way. A %.4g format silently rounded
+    43.875 to "43.88" and 104.25 to "104.2" - a wrong number, in a sentence
+    whose entire purpose is to say how much of a score was invented.
+    """
+    return f"{quarters:.5f}".rstrip("0").rstrip(".")
 
 
 def _beat_quarters(code, dots) -> float:
@@ -1679,18 +1709,28 @@ class _BarConformance(NamedTuple):
     short: int
     defective: int
     counted: int
-    # Of `counted`, how many bars hold silence that was deduced from the meter
-    # rather than read from the page, and which bars those are (1-based, in the
-    # same numbering the emitted measures use). A padded bar is normally also a
-    # SHORT one - that is the point - but not always: padding a voice that lost
-    # a note to exactly the meter can coincide with another voice that decoded
-    # correctly, and a bar padded by less than the tolerance is not short.
+    # How many bars hold silence that was deduced from the meter rather than
+    # read from the page, and which bars those are (1-based, in the same
+    # numbering the emitted measures use).
+    #
+    # A padded bar with a meter is ALWAYS also a short one, not merely usually:
+    # the padding only fires for a voice under its budget by more than the
+    # tolerance, and the sums below measure exactly that pre-padding total, so
+    # min(voices) is under budget by construction. `padded` can still exceed
+    # `short` in principle, because a bar with no meter is padded but not
+    # measured - which no score reaches today, since the meter falls back to
+    # 4/4.
     padded: int = 0
     padded_bars: tuple[int, ...] = ()
     # And how much of it there is, in quarter notes, across the whole score.
     # Read off the marked beats rather than accumulated as the padding happens,
     # so the figure reported and the silence emitted cannot disagree.
     inferred_quarters: float = 0.0
+    # Which bars are the defective ones. Needed because the confidence
+    # downgrade is over defective bars UNION bars nothing was read from (see
+    # _rhythm_report), and a bar can be both - adding the two counts would
+    # double-count it and could put the ratio over 1.
+    defective_bars: tuple[int, ...] = ()
 
 
 def _bar_conformance(measures) -> _BarConformance:
@@ -1724,32 +1764,38 @@ def _bar_conformance(measures) -> _BarConformance:
     """
     overfull = 0
     short = 0
-    defective = 0
     counted = 0
     padded_bars = []
+    defective_bars = []
     inferred_quarters = 0.0
     for index, (beats, ts) in enumerate(measures, start=1):
-        if not ts:
-            continue
-        counted += 1
-        budget = _measure_quarter_length(ts)
-        voices = _voice_quarters(beats, count_inferred=False)
+        # The padding accounting comes FIRST, before the meterless-bar skip: a
+        # bar with no meter is not measured against one, but if it holds
+        # inferred silence it still carries a `<forward>` into the file, and a
+        # count of padded bars that the file disagrees with is exactly what this
+        # whole mechanism exists to prevent.
         bar_inferred = sum(_beat_quarters(code, dots)
                            for v in _voices_of(beats) for code, dots, notes in v
                            if mxl.is_inferred_rest(notes))
         if bar_inferred:
             padded_bars.append(index)
             inferred_quarters += bar_inferred
+        if not ts:
+            continue
+        counted += 1
+        budget = _measure_quarter_length(ts)
+        voices = _voice_quarters(beats, count_inferred=False)
         if not voices:
             continue
         over = max(voices) > budget + 1e-6
         under = min(voices) < budget - 1e-6
         overfull += over
         short += under
-        defective += over or under
-    return _BarConformance(overfull, short, defective, counted,
+        if over or under:
+            defective_bars.append(index)
+    return _BarConformance(overfull, short, len(defective_bars), counted,
                            len(padded_bars), tuple(padded_bars),
-                           inferred_quarters)
+                           inferred_quarters, tuple(defective_bars))
 
 
 def _overfull_bars(measures) -> tuple[int, int]:
@@ -1759,7 +1805,7 @@ def _overfull_bars(measures) -> tuple[int, int]:
     return bars.overfull, bars.counted
 
 
-def _rhythm_report(counts, details, conformance=None):
+def _rhythm_report(counts, details, conformance=None, unread_bars=()):
     """Derive the document's rhythm warnings and confidence string from the
     collected per-staff provenances - the single place that decides both, so
     they cannot drift out of step with each other or with the measure loop.
@@ -1767,6 +1813,8 @@ def _rhythm_report(counts, details, conformance=None):
     `counts` is a Counter over the PROV_* values; `details` maps each
     provenance to the distinct per-staff explanations collected for it.
     `conformance` is a _BarConformance, or None where no bars were measured.
+    `unread_bars` is the numbers of bars nothing was read from at all - see the
+    warning below for why they are reported here rather than as Rule 8 defects.
     """
     conformance = conformance or _BarConformance(0, 0, 0, 0)
     overfull, short = conformance.overfull, conformance.short
@@ -1832,37 +1880,80 @@ def _rhythm_report(counts, details, conformance=None):
         warnings.append(
             f"{short} of {bars} bar(s) hold less than their time signature allows - a note whose "
             "duration was read short, or one dropped for want of a fret number, leaves the bar "
-            "with a gap at the end. The emitted score says so rather than padding it out, so any "
-            "MusicXML tool will report those bars too"
+            "with less music in it than the meter says it holds. Where such a bar has more than "
+            "one voice the missing part is filled with silence deduced from the meter, at the "
+            "front of the voice if that is where it entered late, so the voices still play in time "
+            "with each other - that silence is not counted here and is not written as a rest. "
+            "Either way the emitted MusicXML falls short by the same amount, so any MusicXML tool "
+            "will report those bars too"
         )
     # Which bars were padded, not just how much silence was added across the
     # score. A total says a score is partly invented; the bar numbers say WHERE,
     # which is what lets somebody check those bars against the PDF.
     if padded:
-        listed = ", ".join(str(n) for n in padded_bars[:_PADDED_BARS_LISTED])
-        rest = len(padded_bars) - _PADDED_BARS_LISTED
-        if rest > 0:
-            listed += f" and {rest} more"
         warnings.append(
             f"{padded} of {bars} bar(s) contain silence that was deduced from the time signature "
-            f"rather than read from a rest printed in the score - about {inferred_quarters:.4g} "
-            f"quarter note(s) of it, in bar(s) {listed}. A voice with a note missing from it is "
-            "filled out the same way a genuinely resting voice is, so that the voices of the bar "
-            "still play in time with each other; the inferred silence is NOT counted towards those "
-            "bars adding up, and is written into the MusicXML as <forward> rather than as a rest so "
-            "no consumer mistakes it for one the engraver printed"
+            "rather than read from a rest printed in the score, "
+            f"{_quarters_text(inferred_quarters)} quarter note(s) of it in total. The bars are: "
+            f"{_bar_list(padded_bars)}. A voice with a note missing from it is filled out the same "
+            "way a genuinely resting voice is, so that the voices of the bar still play in time "
+            "with each other; the inferred silence is NOT counted towards those bars adding up, and "
+            "is written into the MusicXML as <forward> rather than as a rest so no consumer "
+            "mistakes it for one the engraver printed"
         )
-    # The downgrade is driven by bars that fail Rule 8 in EITHER direction. A
-    # score whose bars are mostly SHORT because notes were dropped is just as
-    # unplayable as one whose bars overflow, and reporting "high - decoded
-    # directly from the ... engraving" over a warning list saying most bars do
-    # not add up is exactly the kind of confident-but-wrong claim the rest of
-    # this module exists to avoid.
-    if bars and defective / bars >= 0.25:
+    # A bar nothing was read from is reported SEPARATELY from the Rule 8 counts,
+    # and deliberately so. It holds a whole bar of rests that do add up to its
+    # meter, so it conforms to Rule 8 in the emitted file, and folding it into
+    # `defective` would make the figures reported here disagree with what any
+    # consumer computes from the file - the one property the padding fix exists
+    # to establish. But it is not a reading either: a 40-bar score read as
+    # nothing at all was reporting 40 of 40 bars conformant at high confidence
+    # with no warning mentioning emptiness. So it is counted, named, and folded
+    # into the confidence downgrade below instead.
+    if unread_bars:
+        warnings.append(
+            f"{len(unread_bars)} of {bars} bar(s) hold nothing that was read from the score - no "
+            "fret number and no rest glyph fell inside them - and are emitted as a whole bar of "
+            f"rests so the bar numbering still matches the source. The bars are: "
+            f"{_bar_list(unread_bars)}. Those bars add up to their time signature and so pass every "
+            "arithmetic check, but nothing in them was read: they are not evidence that the score "
+            "was transcribed, and a bar that is genuinely silent in the source cannot be told from "
+            "one whose contents were missed"
+        )
+    # The downgrade is driven by bars that fail Rule 8 in EITHER direction, plus
+    # bars nothing was read from. A score whose bars are mostly SHORT because
+    # notes were dropped is just as unplayable as one whose bars overflow, and
+    # one whose bars are mostly EMPTY was not read at all; reporting "high -
+    # decoded directly from the ... engraving" over either is exactly the kind
+    # of confident-but-wrong claim the rest of this module exists to avoid.
+    #
+    # A union, not a sum: a bar can be defective and unread at once (a meter
+    # whose rests cannot be spelled within the beat limit), and adding the two
+    # counts would double-count it and could put the ratio over 1. `defective`
+    # stays the term that carries it, with only the overlap subtracted off the
+    # unread ones, so the downgrade is still driven by the same count it always
+    # was and does not depend on the per-bar list being populated.
+    unreliable = defective + len(set(unread_bars) - set(conformance.defective_bars))
+    reason = f"{defective} of {bars} bar(s) do not add up to their time signature"
+    if unread_bars:
+        reason = (
+            f"{unreliable} of {bars} bar(s) either do not add up to their time signature "
+            f"({defective}) or hold nothing that was read from the score ({len(unread_bars)})"
+        )
+    if bars and unreliable / bars >= 0.25:
         confidence = (
             "low overall - individual durations were read from the score's own engraving, but "
-            f"{defective} of {bars} bar(s) do not add up to their time signature"
+            + reason
         )
+    elif bars and unreliable:
+        # Below the threshold is not the same as clean, and a binary gate threw
+        # away everything the counts above just established: sixteen of the
+        # nineteen scores in the library that still rated "high" sat just under
+        # the quarter, one of them with invented silence in 7 of its 33 bars,
+        # and said "decoded directly from the ... engraving" with nothing
+        # qualifying it. The threshold decides the LABEL; the sentence says what
+        # is known either way.
+        confidence = f"{confidence}; {reason}"
 
     # Surface the concrete per-staff reasons behind any downgrade, capped so
     # a long score can't turn the warning list into a wall of text.
@@ -2286,6 +2377,14 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     # beats instead (see _bar_conformance), so "the voices add up" can be told
     # apart from "the voices were padded until they added up".
     multivoice_bars = 0
+    # Bars nothing was read from at all - no fret column and no rest glyph fell
+    # inside them - emitted as a whole bar of rests so the bar numbering still
+    # matches the source. Tracked here because it cannot be recovered from the
+    # beats afterwards: the bar of rests it emits is indistinguishable from a
+    # bar of rests that WAS read, and there is exactly one of those in the
+    # library. See the _rhythm_report warning for why they are reported outside
+    # the Rule 8 counts.
+    unread_bars = []
     font_warnings_seen = []
     for page_idx, page, tab_staves, std_staves in pages_with_tab:
         tokens = _extract_digit_tokens(page)
@@ -2380,8 +2479,10 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                         # across 172 scores take this branch. Keeping the
                         # marker to silence that COMPLETES a voice that was
                         # read is what keeps every reported figure equal to
-                        # what a consumer computes from the file.
+                        # what a consumer computes from the file. The bar is
+                        # counted and named instead - see unread_bars.
                         voices = [_rest_beats_for(measure_quarter_len)]
+                        unread_bars.append(len(all_measures) + 1)
                     all_measures.append((voices, staff_ts))
                     continue
                 if not m_cols:
@@ -2393,7 +2494,9 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                     # Rests that ADD UP to the meter, not one snapped to the
                     # nearest plain value: a 3/4 bar's 3.0 quarters snap to a
                     # whole rest, which is a third longer than the bar. Left
-                    # unmarked for the same reason as the glyph branch above.
+                    # unmarked for the same reason as the glyph branch above,
+                    # and counted as unread for the same reason too.
+                    unread_bars.append(len(all_measures) + 1)
                     all_measures.append((_rest_beats_for(measure_quarter_len), staff_ts))
                     continue
                 durations_q = _infer_measure_rhythm(m_cols, measure_quarter_len, m_hi)
@@ -2404,7 +2507,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     # actually resolved to.
     conformance = _bar_conformance(all_measures)
     rhythm_warnings, rhythm_confidence = _rhythm_report(
-        prov_counts, prov_details, conformance
+        prov_counts, prov_details, conformance, tuple(unread_bars)
     )
     warnings.extend(rhythm_warnings)
     # Font-level problems that weren't already the reason a staff degraded
@@ -2476,12 +2579,21 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     title = Path(pdf_path).stem
     alphatex = _build_alphatex(title, tempo, tuning, ts, all_measures)
     musicxml = mxl.build(title, tempo, tuning, ts, all_measures, fifths=key_fifths)
-    beats_total = sum(len(v) for beats, _ in all_measures for v in _voices_of(beats))
-    # What the emitted score actually HOLDS, not what was read off the page:
-    # `unwritable` notes have no expressible pitch and are left out of the
-    # MusicXML (their beat stays, as a rest, so beats_total is unaffected).
+    # Both of these are what the emitted score actually HOLDS, not what was
+    # read off the page, and both need the emitter's own rule for it rather
+    # than a second copy of it here.
+    #
+    # `beats` therefore comes from mxl.written_beats: a beat of silence deduced
+    # from the meter is written as `<forward>` and is not a beat of the score,
+    # so counting the beats model instead reported more beats than the
+    # canonical output contains - 6386 more across the library, which is
+    # exactly its number of `<forward>` elements.
+    #
+    # `notes` subtracts `unwritable`: those have no expressible pitch and are
+    # left out (their beat stays, as a rest, so the beat count is unaffected).
     # Reporting the pre-emission figure made `notes` larger than the canonical
     # output it is reported beside.
+    beats_total = mxl.written_beats(all_measures)
     notes_total = sum(len(notes) for beats, _ in all_measures
                       for v in _voices_of(beats) for _, _, notes in v) - unwritable
 
@@ -2538,6 +2650,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         bars_padded=conformance.padded,
         padded_bars=list(conformance.padded_bars),
         inferred_rest_quarters=conformance.inferred_quarters,
+        bars_unread=len(unread_bars),
+        unread_bars=list(unread_bars),
         tab_staff_count=tab_count,
         standard_staff_count=std_count,
         pages_processed=len(pages_with_tab),

@@ -28,9 +28,34 @@ const OVERFULL_BARS_SENTENCE =
   "not, so playback timing will drift in those bars";
 const SHORT_BARS_SENTENCE =
   "1 of 50 bar(s) hold less than their time signature allows - a note whose duration " +
-  "was read short, or one dropped for want of a fret number, leaves the bar with a gap " +
-  "at the end. The emitted score says so rather than padding it out, so any MusicXML " +
-  "tool will report those bars too";
+  "was read short, or one dropped for want of a fret number, leaves the bar with less " +
+  "music in it than the meter says it holds. Where such a bar has more than one voice " +
+  "the missing part is filled with silence deduced from the meter, at the front of the " +
+  "voice if that is where it entered late, so the voices still play in time with each " +
+  "other - that silence is not counted here and is not written as a rest. Either way " +
+  "the emitted MusicXML falls short by the same amount, so any MusicXML tool will " +
+  "report those bars too";
+// The two per-bar sentences _rhythm_report adds for inferred silence and for
+// bars nothing was read from. These are facts about THIS score and belong in
+// the per-score list, so they must NOT match BAR_RE - a bar-conformance line is
+// folded into the headline count instead and deliberately not listed again, so
+// a rewording that made either of these start like one would delete it from the
+// summary with nothing failing anywhere.
+const PADDED_BARS_SENTENCE =
+  "2 of 50 bar(s) contain silence that was deduced from the time signature rather than " +
+  "read from a rest printed in the score, 5.5 quarter note(s) of it in total. The bars " +
+  "are: 7, 31. A voice with a note missing from it is filled out the same way a " +
+  "genuinely resting voice is, so that the voices of the bar still play in time with " +
+  "each other; the inferred silence is NOT counted towards those bars adding up, and is " +
+  "written into the MusicXML as <forward> rather than as a rest so no consumer mistakes " +
+  "it for one the engraver printed";
+const UNREAD_BARS_SENTENCE =
+  "1 of 50 bar(s) hold nothing that was read from the score - no fret number and no " +
+  "rest glyph fell inside them - and are emitted as a whole bar of rests so the bar " +
+  "numbering still matches the source. The bars are: 12. Those bars add up to their " +
+  "time signature and so pass every arithmetic check, but nothing in them was read: " +
+  "they are not evidence that the score was transcribed, and a bar that is genuinely " +
+  "silent in the source cannot be told from one whose contents were missed";
 
 const problems = [];
 
@@ -45,6 +70,32 @@ if (!BAR_RE.test(OVERFULL_BARS_SENTENCE)) {
 }
 if (!BAR_RE.test(SHORT_BARS_SENTENCE)) {
   problems.push("BAR_RE no longer matches _rhythm_report's short-bars sentence");
+}
+if (BAR_RE.test(PADDED_BARS_SENTENCE)) {
+  problems.push(
+    "BAR_RE now matches _rhythm_report's inferred-silence sentence - it would be " +
+      "folded into the headline bar count and dropped from the per-score list",
+  );
+}
+if (BAR_RE.test(UNREAD_BARS_SENTENCE)) {
+  problems.push(
+    "BAR_RE now matches _rhythm_report's bars-read-as-nothing sentence - it would be " +
+      "folded into the headline bar count and dropped from the per-score list",
+  );
+}
+for (const [name, sentence] of [
+  ["inferred-silence", PADDED_BARS_SENTENCE],
+  ["bars-read-as-nothing", UNREAD_BARS_SENTENCE],
+]) {
+  // Both name the affected bars after a fixed lead-in, which is what a reader
+  // checks against the PDF. A rewording that dropped it would leave a warning
+  // stating a count and nothing else.
+  if (!/The bars are: \d+/.test(sentence)) {
+    problems.push(`_rhythm_report's ${name} sentence no longer names the bars`);
+  }
+  if (STANDING_LIMITS.some((lim) => lim.test.test(sentence))) {
+    problems.push(`_rhythm_report's ${name} sentence reads as a standing limit`);
+  }
 }
 
 if (problems.length) {

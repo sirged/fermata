@@ -44,13 +44,16 @@ them.
   than only here — see [the tab profile](docs/musicxml-tab-profile.md) for
   exactly what is written. Fret numbers, strings and chords come out reliably; how much of the
   rhythm survives depends on the engraving, and whatever stayed uncertain is
-  listed with the staff rather than hidden. Bars whose voices the engraved
-  stems do not separate still do not add up — that is now a stated conformance
-  rule of the profile, so any MusicXML tool finds those bars too, and the count
-  is reported either way. Scanned PDFs have nothing to read and are not
-  transcribed. Harmonics are currently dropped rather than read — a gap worth
-  knowing about separately, because a note that is missing does not announce
-  itself the way a note read wrongly does.
+  listed with the staff rather than hidden. A bar that does not add up — because
+  its voices were flattened into one, or a note was read short, or one was
+  dropped — is reported as such, and that is a stated conformance rule of the
+  profile, so any MusicXML tool finds the same bars from the file alone. Where
+  one voice of a bar has to be filled out with silence for the bar to play in
+  time, that silence is marked in the MusicXML, counted as missing rather than
+  as read, and the bars it happened in are named. Scanned PDFs have nothing to
+  read and are not transcribed. Harmonics are currently dropped rather than
+  read — a gap worth knowing about separately, because a missing note announces
+  itself only in the arithmetic of its bar, not in the note itself.
 - **Instruments** — define what you actually play: any number of strings, any
   tuning including reentrant ones, a capo, and a reference pitch other than
   A440. Each string shows the note and frequency it sounds and can be played,

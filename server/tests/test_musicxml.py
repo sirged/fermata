@@ -313,6 +313,43 @@ def test_voice_durations_reports_the_same_totals_the_xml_carries():
     assert sorted(from_model) == sorted(from_xml.values())
 
 
+def test_voice_durations_is_the_left_hand_side_of_rule_8_for_every_shape():
+    """The Rule 8 left-hand side is what every reported conformance figure is
+    computed from, and one test guarding it means one deletion removes all of
+    its coverage. Each of these is a shape that can change the answer: a dotted
+    beat, a chord (one beat, not one per note), a rest, a beat with no writable
+    pitch, and inferred silence.
+    """
+    D = musicxml.DIVISIONS
+    cases = [
+        ([[(4, 0, [(1, 0)])]], [D]),
+        ([[(4, 1, [(1, 0)])]], [D + D // 2]),
+        ([[(4, 2, [(1, 0)])]], [D + D // 2 + D // 4]),
+        # a four-note chord is ONE beat (Rule 7)
+        ([[(4, 0, [(6, 0), (5, 2), (4, 2), (3, 1)])]], [D]),
+        # a printed rest counts; an inferred one does not (Rule 14)
+        ([[(4, 0, [])]], [D]),
+        ([[(4, 0, musicxml.inferred_rest())]], [0]),
+        ([[(4, 0, [(1, 0)]), (4, 0, musicxml.inferred_rest())]], [D]),
+        # a note with no writable pitch keeps its beat, as a rest (Rule 11)
+        ([[(4, 0, [(1, 78)])]], [D]),
+        # two voices, in voice order
+        ([[(2, 0, [(1, 0)])], [(4, 0, [(5, 0)]), (4, 0, [(5, 2)])]], [2 * D, 2 * D]),
+        # a flat list of beats is the one-voice case
+        ([(4, 0, [(1, 0)]), (8, 0, [(1, 2)])], [D + D // 2]),
+        ([], []),
+    ]
+    for beats, expected in cases:
+        assert musicxml.voice_durations(beats) == expected, beats
+        if not beats:
+            continue
+        # ...and it agrees with what the emitted file carries, which is the
+        # only reason the number is worth reporting
+        measure = _root(_one_bar(beats, ts=(4, 4))).find("./part/measure")
+        sums = _voice_sums(measure)
+        assert sorted(sums.values()) == sorted(v for v in expected if v), beats
+
+
 # ---------------------------------------------------------------------------
 # Rule 14: inferred silence
 # ---------------------------------------------------------------------------
@@ -629,6 +666,23 @@ def _example_paths():
     if not root.is_dir():
         pytest.skip("docs/examples is not present in this checkout")
     return sorted(root.glob("*.musicxml"))
+
+
+def test_the_profile_document_quotes_the_footnote_this_emitter_writes():
+    """Rule 14 publishes the footnote text as the words a consumer may match on,
+    and that text is hand-copied into the document. Two copies of a string are
+    two chances to disagree, and the one in the document is the one a third
+    party implements against - so a change here has to fail until the document
+    is changed with it."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2] / "docs"
+    profile = root / "musicxml-tab-profile.md"
+    if not profile.is_file():
+        pytest.skip("docs/musicxml-tab-profile.md is not present in this checkout")
+    text = profile.read_text(encoding="utf-8")
+    assert musicxml.INFERRED_REST_FOOTNOTE in text, (
+        "the footnote in musicxml.py is not the one Rule 14 publishes")
 
 
 def test_the_published_examples_exist_and_conform():

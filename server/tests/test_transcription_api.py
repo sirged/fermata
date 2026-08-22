@@ -302,7 +302,12 @@ def test_edit_format_is_read_off_the_content(content, expected):
 
 
 BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
-            "bars_padded")
+            "bars_padded", "bars_unread")
+# Which bars, and how much silence - the figures that only exist as data. The
+# warning prose caps its bar list, and the profile document promises a consumer
+# that `inferred_rest_quarters` is the sum of the `<forward>` durations in the
+# file, so the application has to actually offer the number.
+BAR_DETAIL_KEYS = ("padded_bars", "unread_bars", "inferred_rest_quarters")
 
 
 def test_bar_conformance_survives_a_reload(app_env, engraved, monkeypatch, insert_score):
@@ -329,6 +334,19 @@ def test_bar_conformance_survives_a_reload(app_env, engraved, monkeypatch, inser
     assert fetched["bars_overfull"] > 0, "this fixture has bars over their meter"
     assert fetched["bars_short"] > 0, "...and bars under it"
     assert fetched["bars_padded"] > 0, "...and bars filled out with inferred silence"
+    for key in BAR_DETAIL_KEYS:
+        assert posted[key] == fetched[key], key
+    assert fetched["padded_bars"] and all(
+        isinstance(n, int) for n in fetched["padded_bars"])
+    assert len(fetched["padded_bars"]) == fetched["bars_padded"]
+    assert fetched["unread_bars"] == []
+    assert fetched["inferred_rest_quarters"] > 0
+    # The warning prose names the same bars the data does, so a reader of either
+    # gets the same answer - and the number in it is the exact one.
+    padded_warning = next(w for w in fetched["warnings"]
+                          if "deduced from the time signature" in w)
+    named = padded_warning.split("The bars are: ")[1].split(".")[0]
+    assert [int(n) for n in named.split(", ")] == fetched["padded_bars"]
     # The invariant that makes `defective` the only figure comparable against
     # the total: it never exceeds the bars measured, whereas overfull + short
     # may. A client comparing the wrong pair can print "13 of 12 bars".
@@ -353,7 +371,7 @@ def test_a_row_stored_before_the_bar_figures_reports_them_unrecorded(app_env, in
 
     fetched = api.get_transcription(score_id)
     assert fetched["warnings"] == ["something was odd"]
-    for key in BAR_KEYS:
+    for key in BAR_KEYS + BAR_DETAIL_KEYS:
         assert key in fetched, key
         assert fetched[key] is None, key
 
@@ -381,7 +399,7 @@ def test_an_edit_states_that_nothing_measured_it(app_env, extractable_pdf, monke
     for state in (edited, api.get_transcription(score_id)):
         assert state["source"] == "edited"
         assert state["warnings"] == []
-        for key in BAR_KEYS:
+        for key in BAR_KEYS + BAR_DETAIL_KEYS:
             assert key in state, key
             assert state[key] is None, key
 
@@ -410,6 +428,9 @@ def test_a_corrupt_blob_does_not_yield_a_bar_count(app_env, insert_score):
                     "bars_defective": None,
                     "bars_overfull": True,
                     "bars_short": 2,
+                    "padded_bars": [1, "two", 3],
+                    "unread_bars": [4, 5],
+                    "inferred_rest_quarters": "a lot",
                 }
             ),
         ),
@@ -422,6 +443,9 @@ def test_a_corrupt_blob_does_not_yield_a_bar_count(app_env, insert_score):
     assert fetched["bars_defective"] is None
     assert fetched["bars_overfull"] is None, "a bool is not a bar count"
     assert fetched["bars_short"] == 2
+    assert fetched["padded_bars"] is None, "a list with a string in it is not bar numbers"
+    assert fetched["unread_bars"] == [4, 5]
+    assert fetched["inferred_rest_quarters"] is None, "a quarter count is a number"
 
 
 # ---------------------------------------------------------------------------

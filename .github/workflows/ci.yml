@@ -33,6 +33,29 @@ jobs:
       - name: Install alphaTab
         working-directory: web
         run: npm ci --omit=dev
+      # The emitted MusicXML is validated against the REAL MusicXML 4.0 schema,
+      # which is what catches a child in the wrong place - the profile's
+      # xs:sequence elements have exactly one legal order and anything else
+      # fails validation outright. The schema cannot live in the repository, so
+      # the two tests that use it read its path from FERMATA_MUSICXML_XSD and
+      # skip without it, and for a long time that meant they only ever ran on a
+      # maintainer's machine. Fetched here instead, from the tagged release, so
+      # they run on every change: the schema's own xs:import elements name
+      # remote URLs for xml.xsd and xlink.xsd, which is why the two are
+      # downloaded alongside it and the schemaLocation attributes repointed - a
+      # validator would otherwise fail with an unrelated complaint about
+      # xml:lang. The step fails loudly rather than silently degrading to a skip.
+      - name: Fetch the MusicXML schema
+        run: |
+          mkdir -p "$RUNNER_TEMP/musicxml-schema"
+          cd "$RUNNER_TEMP/musicxml-schema"
+          base=https://raw.githubusercontent.com/w3c/musicxml/v4.0/schema
+          for f in musicxml.xsd xml.xsd xlink.xsd; do
+            curl -fsSL --retry 3 --retry-all-errors -o "$f" "$base/$f"
+          done
+          sed -i 's|http://www.musicxml.org/xsd/xml.xsd|xml.xsd|;
+                  s|http://www.musicxml.org/xsd/xlink.xsd|xlink.xsd|' musicxml.xsd
+          echo "FERMATA_MUSICXML_XSD=$RUNNER_TEMP/musicxml-schema/musicxml.xsd" >> "$GITHUB_ENV"
       # Extraction is exercised against the engraved fixtures committed under
       # server/tests/fixtures/engraved. The tests that need the maintainer's
       # own sheet music read it from FERMATA_TEST_LIBRARY and skip when it is
