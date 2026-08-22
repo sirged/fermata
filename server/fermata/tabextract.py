@@ -214,24 +214,117 @@ class _Staff:
         return best_i + 1
 
 
+# Two collinear pieces of one broken staff line touch: measured at 0.0000pt
+# across the whole sampled library, with the closest positive gap between
+# pieces that DO belong together at 0.85pt and the closest gap between pieces
+# that do not at 1.07pt. The clearance is therefore about a fifth of a point,
+# which is why the tolerance is not what makes joining safe - see
+# STAFF_LINE_SIBLINGS_REQUIRED for what does.
+STAFF_LINE_JOIN_GAP = 1.0
+
+# A joined run has to look like part of a staff before it is believed: at
+# least this many OTHER rows must carry a run spanning the same x extent.
+# Five rows is the smallest staff there is, so four siblings is the weakest
+# evidence that can still be evidence.
+STAFF_LINE_SIBLINGS_REQUIRED = 4
+
+# How closely two rows' extents must agree to count as the same staff's
+# lines. Measured at 0.0pt across every engraver sampled - the lines of one
+# staff are drawn to the same x - so this is slack, not a threshold.
+STAFF_LINE_SIBLING_TOLERANCE = 2.0
+
+# A rule drawn along the page's own edge is page furniture, not a staff.
+PAGE_EDGE_TOLERANCE = 1.0
+
+
 def _long_horizontal_segments(page, min_len_ratio=0.25):
     """Near-horizontal vector primitives long enough to plausibly be staff
-    lines, as opposed to beams, ledger lines, or stems."""
+    lines, as opposed to beams, ledger lines, or stems.
+
+    Collinear pieces are joined before the length test, because whether a
+    staff line arrives as ONE primitive per system is an exporter's choice,
+    not a property of staves: Finale and Sibelius draw one line across the
+    system, MuseScore draws a separate piece per measure - abutting exactly -
+    so a system of six narrow bars presented six pieces of which none was a
+    quarter of the page wide, and the whole system was invisible here.
+    Detection then depended on a score happening to have wide enough bars,
+    which is how a tab staff could be found on one system of a page and not
+    the next.
+
+    WHAT KEEPS JOINING FROM INVENTING A LINE. Not the gap tolerance: the
+    real clearance between pieces that belong together and pieces that do
+    not is about 0.2pt, far too narrow to rest anything on. Instead a run
+    assembled from more than one piece has to look like part of a staff -
+    STAFF_LINE_SIBLINGS_REQUIRED other rows spanning the same x extent -
+    while a run that arrived as a single primitive is passed through exactly
+    as it always was.
+
+    That distinction is what the joining actually costs, and it was measured:
+    the Oeth arrangements draw "1." / "2." repeat brackets below the tab
+    staff as two abutting strokes meeting at a barline. Each piece is under
+    the length floor, so joining is the only reason such a run exists at
+    all; welded, it cleared the floor and landed 10-15pt below the staff,
+    inside the cluster gap, turning a 6-line tab group into a 7-line group
+    that was then discarded whole. Six scores lost 33 bars and 264 notes
+    between them. A volta has no sibling at its extent; every real staff
+    line has four or five.
+
+    A rule drawn along the page's own edge is dropped (MuseScore draws one at
+    the top and bottom of every page, which otherwise showed up as a phantom
+    one-line "staff group" in the anomaly report). Note this is a test of
+    POSITION, not of length: a length ceiling would have thrown away every
+    staff line on a page cropped to its content, refusing a perfectly
+    readable tab score with a reason that said it held no tablature.
+    """
     min_len = page.rect.width * min_len_ratio
-    segs = []
+    top, bottom = page.rect.y0, page.rect.y1
+    rows = collections.defaultdict(list)
     for d in glyph.page_drawings(page):
         for item in d.get("items", []):
             if item[0] == "l":
                 p1, p2 = item[1], item[2]
-                if abs(p1.y - p2.y) < 0.08 and abs(p1.x - p2.x) >= min_len:
-                    y = (p1.y + p2.y) / 2
-                    segs.append((y, min(p1.x, p2.x), max(p1.x, p2.x)))
+                if abs(p1.y - p2.y) >= 0.08:
+                    continue
+                y, span = (p1.y + p2.y) / 2, (min(p1.x, p2.x), max(p1.x, p2.x))
             elif item[0] == "re":
                 r = item[1]
-                if r.height < 1.0 and r.width >= min_len:
-                    y = (r.y0 + r.y1) / 2
-                    segs.append((y, r.x0, r.x1))
-    return segs
+                if r.height >= 1.0:
+                    continue
+                y, span = (r.y0 + r.y1) / 2, (r.x0, r.x1)
+            else:
+                continue
+            if y - top <= PAGE_EDGE_TOLERANCE or bottom - y <= PAGE_EDGE_TOLERANCE:
+                continue
+            rows[round(y, 1)].append(span)
+
+    # Every maximal run of touching pieces, as (y, x0, x1, pieces). The
+    # length floor is applied once, below, rather than at each of the two
+    # places a run can end - which is also what makes it possible to test
+    # that the floor is doing anything.
+    runs = []
+    for y, spans in rows.items():
+        spans.sort()
+        run_x0, run_x1, pieces = spans[0][0], spans[0][1], 1
+        for x0, x1 in spans[1:]:
+            if x0 - run_x1 <= STAFF_LINE_JOIN_GAP:
+                run_x1 = max(run_x1, x1)
+                pieces += 1
+                continue
+            runs.append((y, run_x0, run_x1, pieces))
+            run_x0, run_x1, pieces = x0, x1, 1
+        runs.append((y, run_x0, run_x1, pieces))
+
+    long_enough = [r for r in runs if r[2] - r[1] >= min_len]
+    return [(y, x0, x1) for y, x0, x1, pieces in long_enough
+            if pieces == 1 or _has_staff_siblings(y, x0, x1, long_enough)]
+
+
+def _has_staff_siblings(y, x0, x1, runs):
+    """Do enough other rows span this run's extent for it to be a staff line?"""
+    tol = STAFF_LINE_SIBLING_TOLERANCE
+    rows = {other_y for other_y, ox0, ox1, _pieces in runs
+            if other_y != y and abs(ox0 - x0) <= tol and abs(ox1 - x1) <= tol}
+    return len(rows) >= STAFF_LINE_SIBLINGS_REQUIRED
 
 
 def _detect_staves(page):
@@ -1338,6 +1431,58 @@ class _RhythmSource:
         return self.provenance in (PROV_GLYPHS, PROV_GLYPHS_DEGRADED)
 
 
+# A group of this many lines or more was almost certainly a staff: five is
+# the smallest notation staff and six the smallest tablature one, so anything
+# at or above that which was thrown away probably took music with it.
+_STAFF_SIZED_GROUP = 5
+
+
+def _discard_report(discarded_groups):
+    """Say what was thrown away, and cap the fret confidence if it mattered.
+
+    Returns (warnings, fret_confidence_override | None).
+
+    A group of staff lines whose count is neither 5 nor 6 cannot be read, and
+    it used to be reported as "N staff-line group(s) with an unexpected line
+    count were ignored" - which does not say that a tab system and six bars
+    of music are missing from the transcription, and left the confidence at
+    "high" while they were.
+
+    That combination is the worst property this code could have, because the
+    loss makes the score look BETTER: the bars that vanish are as likely as
+    any to be the ones that did not add up, so discarding a system can move
+    the defective-bar count down. A number that improves when music
+    disappears is worse than no number. So the size of what went is named,
+    and a staff-sized group caps the claim about the frets - which is exactly
+    the claim it undermines, because a whole system's digits are missing.
+    """
+    if not discarded_groups:
+        return [], None
+    warnings = []
+    staff_sized = 0
+    for page_no, anomalies in discarded_groups:
+        counts = sorted(a.get("line_count", 0) for a in anomalies)
+        staff_sized += sum(1 for n in counts if n >= _STAFF_SIZED_GROUP)
+        warnings.append(
+            f"page {page_no}: {len(anomalies)} group(s) of staff lines could not be read as a "
+            f"staff and were ignored (line counts: {counts}) - a staff has 5 lines and a "
+            "tablature staff 6, so any other count is a group this pass cannot interpret"
+        )
+    if not staff_sized:
+        return warnings, None
+    warnings.append(
+        f"{staff_sized} of the ignored group(s) had at least {_STAFF_SIZED_GROUP} lines, which "
+        "is the size of a staff - if any of those was one, that whole system's bars and notes "
+        "are MISSING from this transcription rather than wrong in it, and every count and "
+        "bar-conformance figure here describes only the systems that were read"
+    )
+    return warnings, (
+        "medium - read directly from vector text spans, but "
+        f"{staff_sized} staff-sized group(s) of lines on this score could not be read as a "
+        "staff and were skipped, so notes may be missing entirely rather than misread"
+    )
+
+
 def _resolve_rhythm_source(page, std_staff, pair_reason, decoded):
     """Decide how one tab staff's durations will be read, and say why.
 
@@ -1369,6 +1514,27 @@ def _resolve_rhythm_source(page, std_staff, pair_reason, decoded):
     unknown = stats.get("unknown_glyphs", 0)
     at_flag = stats.get("unknown_at_flag_position", 0)
     sample = stats.get("unknown_gid_or_name_sample") or []
+    unknown_heads = stats.get("unknown_noteheads", 0)
+    head_sample = stats.get("unknown_notehead_sample") or []
+
+    if unknown_heads and ratio <= _UNKNOWN_RATIO_FALLBACK:
+        # An unrecognised NOTEHEAD is reported however few of them there are,
+        # because a ratio cannot see this one: on a sparse system two
+        # unrecognised harmonics were 22% of the glyphs and degraded
+        # correctly, and on a dense one the same two were 3% and reported
+        # nothing - no warning, no defective bar, confidence "high" - while
+        # the voice above them lost two eighths to an invented quarter rest
+        # and their tab digits were attached to the voice below. Density is
+        # not evidence about a notehead.
+        return _RhythmSource(
+            PROV_GLYPHS_DEGRADED, note_events, stats=stats,
+            detail=(
+                f"{unknown_heads} notehead(s) on the paired notation staff are outside "
+                f"this decoder's calibrated vocabulary ({head_sample[:6]}) - each one's "
+                "duration was inferred from what the bar had left over rather than read, "
+                "and its tab digits may have been attached to another voice"
+            ),
+        )
 
     if ratio > _UNKNOWN_RATIO_FALLBACK:
         return _RhythmSource(
@@ -1875,6 +2041,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     std_count = 0
     vector_pages = 0
     pages_with_tab = []  # (page_index, page, tab_staves, std_staves) in page order
+    discarded_groups = []  # (page number, [anomaly, ...]) - see _discard_report
 
     # Pass 1: staff census plus tempo/tuning hints. Deliberately does NO
     # glyph work: time-signature decoding costs a font parse plus a
@@ -1892,10 +2059,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
 
         staves, anomalies = _detect_staves(page)
         if anomalies:
-            warnings.append(
-                f"page {page_no + 1}: {len(anomalies)} staff-line group(s) with an unexpected "
-                "line count were ignored"
-            )
+            discarded_groups.append((page_no + 1, anomalies))
         tab_staves = sorted((s for s in staves if s.kind == "tab"), key=lambda s: s.top)
         std_staves = sorted((s for s in staves if s.kind == "standard"), key=lambda s: s.top)
         tab_count += len(tab_staves)
@@ -1912,6 +2076,13 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
 
         if tab_staves:
             pages_with_tab.append((page_no, page, tab_staves, std_staves))
+
+    # Reported here rather than beside the confidence dict so that a refusal
+    # carries it too: a page whose staff-sized line groups were all discarded
+    # is refused for "no tab staff found", which is true and yet says nothing
+    # about the six lines that were thrown away to make it true.
+    discard_warnings, discard_note = _discard_report(discarded_groups)
+    warnings.extend(discard_warnings)
 
     if vector_pages == 0:
         return ExtractionResult(
@@ -2202,8 +2373,12 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             "meter part-way through"
         )
 
+    fret_confidence = discard_note or (
+        "high - read directly from vector text spans positioned against detected tab staff lines"
+    )
+
     confidence = {
-        "frets": "high - read directly from vector text spans positioned against detected tab staff lines",
+        "frets": fret_confidence,
         "rhythm": rhythm_confidence,
         "time_signature": ts_confidence,
         # The key decides between enharmonic spellings of the same sounding

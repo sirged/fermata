@@ -1,3 +1,15 @@
+"""The transcription endpoints.
+
+These are about the API's own behaviour - which row is written, what format
+it claims, what a reload returns - so they run against committed engraved
+fixtures rather than a score from the maintainer's library. They used to need
+that library and therefore skipped in CI, which meant nothing outside a
+developer's machine checked that transcribing a score stored anything at all.
+
+The one thing an engraved fixture cannot stand in for is real Finale or
+Sibelius output, so the end-to-end test at the bottom of this module still
+runs against the library and still skips without it.
+"""
 import json
 
 import pytest
@@ -6,10 +18,10 @@ from fastapi import HTTPException
 from fermata import api, db
 
 
-def test_edited_transcription_survives_re_extraction(app_env, zanarkand_pdf, monkeypatch, insert_score):
-    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+def test_edited_transcription_survives_re_extraction(app_env, extractable_pdf, monkeypatch, insert_score):
+    monkeypatch.setattr(api, "LIBRARY_DIR", extractable_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, zanarkand_pdf.name)
+    score_id = insert_score(conn, extractable_pdf.name)
 
     first = api.transcribe(score_id, body=None)
     assert first["source"] == "extracted"
@@ -48,10 +60,10 @@ def test_get_transcription_404_when_none_exists(app_env, insert_score):
     assert exc_info.value.status_code == 404
 
 
-def test_has_transcription_flag_is_batched_and_accurate(app_env, zanarkand_pdf, monkeypatch, insert_score):
-    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+def test_has_transcription_flag_is_batched_and_accurate(app_env, extractable_pdf, monkeypatch, insert_score):
+    monkeypatch.setattr(api, "LIBRARY_DIR", extractable_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, zanarkand_pdf.name)
+    score_id = insert_score(conn, extractable_pdf.name)
 
     before = api.get_score(score_id)
     assert before["has_transcription"] is False
@@ -65,10 +77,10 @@ def test_has_transcription_flag_is_batched_and_accurate(app_env, zanarkand_pdf, 
     assert listed[score_id] is True
 
 
-def test_transcribe_rejects_non_extractable_pdf(app_env, tarrega_pdf, monkeypatch, insert_score):
-    monkeypatch.setattr(api, "LIBRARY_DIR", tarrega_pdf.parent)
+def test_transcribe_rejects_non_extractable_pdf(app_env, non_extractable_pdf, monkeypatch, insert_score):
+    monkeypatch.setattr(api, "LIBRARY_DIR", non_extractable_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, tarrega_pdf.name)
+    score_id = insert_score(conn, non_extractable_pdf.name)
     with pytest.raises(HTTPException) as exc_info:
         api.transcribe(score_id, body=None)
     assert exc_info.value.status_code == 422
@@ -94,32 +106,32 @@ def test_transcription_analysis_endpoint(app_env, zanarkand_pdf, monkeypatch, in
     ],
 )
 def test_transcribe_rejects_invalid_time_signature(
-    app_env, zanarkand_pdf, monkeypatch, insert_score, time_signature
+    app_env, extractable_pdf, monkeypatch, insert_score, time_signature
 ):
     """[0, 4] used to be accepted straight through to \\ts 0 4, which
     alphaTab rejects and which also zeroed the per-measure quarter-note
     budget so every duration snapped to :32."""
-    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+    monkeypatch.setattr(api, "LIBRARY_DIR", extractable_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, zanarkand_pdf.name)
+    score_id = insert_score(conn, extractable_pdf.name)
     with pytest.raises(HTTPException) as exc_info:
         api.transcribe(score_id, body=api.TranscribeIn(time_signature=time_signature))
     assert exc_info.value.status_code == 422
 
 
-def test_transcribe_accepts_valid_time_signature(app_env, zanarkand_pdf, monkeypatch, insert_score):
-    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+def test_transcribe_accepts_valid_time_signature(app_env, extractable_pdf, monkeypatch, insert_score):
+    monkeypatch.setattr(api, "LIBRARY_DIR", extractable_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, zanarkand_pdf.name)
+    score_id = insert_score(conn, extractable_pdf.name)
     result = api.transcribe(score_id, body=api.TranscribeIn(time_signature=(6, 8)))
     assert result["source"] == "extracted"
     assert result["time_signature"] == [6, 8]
 
 
-def test_delete_transcription_reverts_to_extracted(app_env, zanarkand_pdf, monkeypatch, insert_score):
-    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+def test_delete_transcription_reverts_to_extracted(app_env, extractable_pdf, monkeypatch, insert_score):
+    monkeypatch.setattr(api, "LIBRARY_DIR", extractable_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, zanarkand_pdf.name)
+    score_id = insert_score(conn, extractable_pdf.name)
 
     api.transcribe(score_id, body=None)
     edited_content = '\\title "hand edited"\n.\n:4 0.1 |'
@@ -167,15 +179,15 @@ def test_delete_transcription_404_when_none_exists(app_env, insert_score):
 # ---------------------------------------------------------------------------
 
 
-def test_extraction_is_stored_as_musicxml(app_env, zanarkand_pdf, monkeypatch, insert_score):
+def test_extraction_is_stored_as_musicxml(app_env, extractable_pdf, monkeypatch, insert_score):
     """MusicXML is the canonical stored format. The row carries its own format
     rather than the reader assuming one, which is what lets this change land
     without a data migration."""
     import xml.etree.ElementTree as ET
 
-    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+    monkeypatch.setattr(api, "LIBRARY_DIR", extractable_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, zanarkand_pdf.name)
+    score_id = insert_score(conn, extractable_pdf.name)
 
     result = api.transcribe(score_id, body=None)
     assert result["format"] == "musicxml"
@@ -190,13 +202,13 @@ def test_extraction_is_stored_as_musicxml(app_env, zanarkand_pdf, monkeypatch, i
 
 
 def test_an_alphatex_edit_is_stored_and_returned_as_alphatex(
-    app_env, zanarkand_pdf, monkeypatch, insert_score
+    app_env, extractable_pdf, monkeypatch, insert_score
 ):
     """A row written in one format must keep saying so. The renderer dispatches
     on it, so a hand edit relabelled musicxml would simply fail to load."""
-    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+    monkeypatch.setattr(api, "LIBRARY_DIR", extractable_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, zanarkand_pdf.name)
+    score_id = insert_score(conn, extractable_pdf.name)
     api.transcribe(score_id, body=None)
 
     tex = '\title "hand edited"\n.\n:4 0.1 |'
@@ -242,16 +254,16 @@ def test_an_unknown_edit_format_is_rejected(app_env, insert_score):
 
 
 def test_pasting_alphatex_over_a_musicxml_row_stores_it_as_alphatex(
-    app_env, zanarkand_pdf, monkeypatch, insert_score
+    app_env, extractable_pdf, monkeypatch, insert_score
 ):
     """The format of an edit is decided by what was TYPED, not by the format of
     the row it replaces. Storing the loaded row's format meant a user who
     pasted alphaTex into the source editor of a MusicXML transcription got a
     row labelled musicxml; the viewer dispatched on that label, handed alphaTex
     to the MusicXML loader, and the staff never appeared."""
-    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+    monkeypatch.setattr(api, "LIBRARY_DIR", extractable_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, zanarkand_pdf.name)
+    score_id = insert_score(conn, extractable_pdf.name)
 
     extracted = api.transcribe(score_id, body=None)
     assert extracted["format"] == "musicxml"
@@ -292,15 +304,20 @@ def test_edit_format_is_read_off_the_content(content, expected):
 BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured")
 
 
-def test_bar_conformance_survives_a_reload(app_env, zanarkand_pdf, monkeypatch, insert_score):
+def test_bar_conformance_survives_a_reload(app_env, engraved, monkeypatch, insert_score):
     """A reloaded transcription must report the same bar figures the extraction
     did. They are not derivable from the warning prose - a bar wrong in both
     directions at once counts into overfull AND short, so their sum can exceed
     the bars measured - which means a client without these numbers can only
-    guess. It must not have to."""
-    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+    guess. It must not have to.
+
+    Deliberately run against the score whose bars do NOT add up: on a clean
+    score every figure but `bars_measured` is zero, and a persistence bug that
+    dropped them all would have looked identical to success."""
+    pdf = engraved("defective_bars")
+    monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, zanarkand_pdf.name)
+    score_id = insert_score(conn, pdf.name)
 
     posted = api.transcribe(score_id, body=None)
     fetched = api.get_transcription(score_id)
@@ -308,6 +325,8 @@ def test_bar_conformance_survives_a_reload(app_env, zanarkand_pdf, monkeypatch, 
     for key in BAR_KEYS:
         assert posted[key] == fetched[key], key
     assert fetched["bars_measured"] > 0
+    assert fetched["bars_overfull"] > 0, "this fixture has bars over their meter"
+    assert fetched["bars_short"] > 0, "...and bars under it"
     # The invariant that makes `defective` the only figure comparable against
     # the total: it never exceeds the bars measured, whereas overfull + short
     # may. A client comparing the wrong pair can print "13 of 12 bars".
@@ -337,7 +356,7 @@ def test_a_row_stored_before_the_bar_figures_reports_them_unrecorded(app_env, in
         assert fetched[key] is None, key
 
 
-def test_an_edit_states_that_nothing_measured_it(app_env, zanarkand_pdf, monkeypatch, insert_score):
+def test_an_edit_states_that_nothing_measured_it(app_env, extractable_pdf, monkeypatch, insert_score):
     """A hand edit replaces the content the figures describe, so it has none of
     its own - and it must SAY so rather than leave the keys out.
 
@@ -346,9 +365,9 @@ def test_an_edit_states_that_nothing_measured_it(app_env, zanarkand_pdf, monkeyp
     reporting bars as defective after the edit that fixed them. Carrying the
     extraction's figures forward would be worse still: it would assert
     measurements of content that nothing has measured."""
-    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+    monkeypatch.setattr(api, "LIBRARY_DIR", extractable_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, zanarkand_pdf.name)
+    score_id = insert_score(conn, extractable_pdf.name)
 
     extracted = api.transcribe(score_id, body=None)
     assert extracted["bars_measured"] > 0
@@ -401,3 +420,34 @@ def test_a_corrupt_blob_does_not_yield_a_bar_count(app_env, insert_score):
     assert fetched["bars_defective"] is None
     assert fetched["bars_overfull"] is None, "a bool is not a bar count"
     assert fetched["bars_short"] == 2
+
+
+# ---------------------------------------------------------------------------
+# End to end on real engraving (needs FERMATA_TEST_LIBRARY)
+# ---------------------------------------------------------------------------
+
+
+def test_the_api_transcribes_a_real_engraved_score(
+    app_env, zanarkand_pdf, monkeypatch, insert_score
+):
+    """The whole path on material this project did not generate: a real
+    Finale export, decoded through the Maestro glyph-ID fingerprint that no
+    committed fixture can reach, stored, and read back.
+
+    Everything above this line now runs in CI against engraved fixtures.
+    This one cannot, and it is the reason the library fixtures stay."""
+    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, zanarkand_pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    assert posted["source"] == "extracted"
+    assert posted["format"] == "musicxml"
+    assert posted["bars"] > 0
+    assert posted["notes"] > 0
+    assert posted["key_signature_source"] == "glyph-decoded"
+    assert posted["bars_measured"] == posted["bars"]
+
+    fetched = api.get_transcription(score_id)
+    assert fetched["content"] == posted["content"]
+    assert fetched["warnings"] == posted["warnings"]
