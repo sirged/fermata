@@ -295,6 +295,21 @@ test("the week this page offers is the week the server counts", async ({ page, r
 
   await page.locator(".edit-goal").click();
   await page.locator(".save-goal").click();
+  // Wait for the save to have LANDED before reading it back. click() resolves
+  // when the click is dispatched, not when the request it triggers finishes,
+  // and the read below goes out of band - through the request context rather
+  // than the page - so it is not ordered against it. Without this the read
+  // overtakes the POST and sees no goals; it failed in CI exactly that way.
+  //
+  // The edit form closing is a real barrier rather than a convenient one:
+  // saveGoal() sets editing = false only AFTER awaiting the request, so this
+  // cannot be true until the server has answered.
+  //
+  // This is the second time this pattern has bitten (see #82, which asked for
+  // it to be grepped for). Every other out-of-band read in this suite waits on
+  // the interface first - for a count attribute, a rendered row, a tick - and
+  // those assertions are barriers as much as checks. Do not remove one.
+  await expect(page.locator(".edit-goal")).toBeVisible();
   const goals = (await (await request.get(`/api/practice/goals?today=${today}`)).json()).goals;
   expect(goals).toHaveLength(1);
   expect(goals[0].period_start).toBe(weekStart(today, "sunday"));

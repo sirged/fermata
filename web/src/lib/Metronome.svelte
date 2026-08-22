@@ -186,6 +186,22 @@
   // drive one. Created eagerly rather than on first use: it holds no audio
   // resources until the click is actually switched on (see prime() and
   // ensureAudioCtx in metronome-engine.js), so there is nothing to defer.
+  //
+  // `ownsClick` is read ONCE, here, and must therefore be true or false on the
+  // very first render. That is the whole reason it exists as its own flag
+  // instead of being inferred from whether `control` happens to be present: a
+  // caller that builds its transport in an effect passes null on mount and the
+  // real object a tick later, so inferring it built a second engine nobody
+  // asked for. Do not derive `ownsClick` from anything that arrives late, and
+  // do not replace it with a `control` check.
+  //
+  // Worth knowing why that earlier second engine was harmless, since it is not
+  // a reason to relax this: toggling drives `target`, so the stray engine's own
+  // `enabled` never left false, `prime()` returned early, and no audio context
+  // was ever opened. A call site mounting with the click ALREADY on, alongside a
+  // late transport, would have had two engines and two clicks. The build's
+  // compiler gate catches the shape that produced it, but only that shape -
+  // see the note in vite.config.js for what it does not catch.
   let ownTempo = $state(null);
   let ownLimit = $state(null);
   const ownEngine = untrack(() => ownsClick)
