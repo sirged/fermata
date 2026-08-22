@@ -91,7 +91,7 @@ test.beforeEach(async ({ page, request }) => {
 // beside it rather than a reason to stop counting it - but it is worth knowing
 // that the badge is marking two facts at once: the day was not recorded, and
 // the week it landed in is not necessarily the practiser's own.
-test.describe("with a practice day that was inferred rather than recorded", () => {
+test.describe("with a practice day that was assumed rather than recorded", () => {
   test.use({ timezoneId: "UTC" });
 
   test("the day says so beside the date, and the week's total says how much of it rests on one", async ({
@@ -143,7 +143,7 @@ test.describe("with a practice day that was inferred rather than recorded", () =
     const marked = page.locator(
       `.session-list .session[data-session="${inferredSession.id}"] .session-day`,
     );
-    await expect(marked.locator(".day-inferred")).toHaveText("inferred");
+    await expect(marked.locator(".day-inferred")).toHaveText("assumed");
     // ...and on no other. Anchored on .session-day, which the row assertions
     // elsewhere in this file prove can match.
     await expect(page.locator(".session-list .session .session-day .day-inferred")).toHaveCount(1);
@@ -164,10 +164,19 @@ test.describe("with a practice day that was inferred rather than recorded", () =
       `date ${JSON.stringify(date)} badge ${JSON.stringify(badge)}`,
     ).toBeLessThan(date.height);
 
+    // ...and the word beside the date is explained, once, under the list: what
+    // was assumed and what from. The badge alone says neither, and the whole
+    // sentence will not fit beside a date. Present only because a row carries
+    // it - the test above proves this element is absent when none does.
+    const note = page.locator(".day-note");
+    await expect(note).toBeVisible();
+    await expect(note).toContainText("taken from the session's own timestamp");
+    await expect(note).toContainText("rather than recorded when the practice happened");
+
     // And the total says how much of itself rests on such a day. Without this a
     // window spanning the upgrade adds two different kinds of day together with
     // nothing marking the join.
-    await expect(week(page).locator(".no-goal")).toContainText("1 session on an inferred day");
+    await expect(week(page).locator(".no-goal")).toContainText("1 session on an assumed day");
     // Still said in the vocabulary this feature is allowed to use - nothing
     // here is a reprimand.
     const said = await week(page).locator(".no-goal").textContent();
@@ -209,6 +218,13 @@ test("once there is practice, the review appears", async ({ page, request }) => 
   await expect(page.locator(".nothing-yet")).toHaveCount(0);
   await expect(page.locator("section.review")).toBeVisible();
   await expect(pastWeeks(page)).toHaveCount(7);
+  // This day WAS recorded, so nothing says otherwise: neither the badge nor the
+  // sentence explaining it. Asserted here, on a page that is otherwise showing
+  // a full session list, so the "a day nobody recorded says so" test below is
+  // known to be about the assumed row rather than about every row.
+  await expect(sessionRows(page)).toHaveCount(1);
+  await expect(page.locator(".session-list .session .day-inferred")).toHaveCount(0);
+  await expect(page.locator(".day-note")).toHaveCount(0);
 });
 
 test("a goal is set from this page and its progress is stated as counts", async ({

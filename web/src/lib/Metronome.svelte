@@ -84,7 +84,9 @@
     //                   classical material in this library.
     //
     // Only "marked" is presented as a marking; the other two carry the same
-    // unobtrusive unverified mark the rest of the app uses.
+    // unobtrusive unverified mark the rest of the app uses. The third is
+    // SPELLED "assumed", which is the word this application uses everywhere
+    // for a value it chose rather than read - see provenance.js.
     tempoSource = "marked",
     // Only read when tempoSource is "default", and it decides which of two
     // different facts is stated. True means the score DOES declare a tempo,
@@ -464,16 +466,18 @@
 
   // "marked" is the only word here that claims something was read off a page,
   // so it is the only one that may be said when it was.
-  const TEMPO_WORD = { marked: "marked", transcribed: "transcribed", default: "default" };
   const tempoUnverified = $derived(tempoSource !== "marked");
-  // Two parts, kept separate so the markup can break between them rather than
-  // wherever a character count happens to fall - see the note on
-  // .metronome-base-aside. baseNote is the whole sentence, for the title.
-  const baseLabel = $derived(
-    proportionBase && mode === "proportion" && baseTempoLabel != null
-      ? `${TEMPO_WORD[tempoSource] ?? "default"} ♩ = ${baseTempoLabel}`
-      : null,
-  );
+  // ENGRAVER'S NOTATION FOR WHAT AN ENGRAVER WROTE, AND PLAIN WORDS FOR WHAT WE
+  // CHOSE. "♩ = 96" is how a tempo is printed on a page, and using it for 96 is
+  // right because somebody printed it. Using it for the fallback put our own
+  // choice in the notation of a marking, which quietly undercut the sentence
+  // saying it was not one - so that case reads "assumed 120 bpm" instead, in
+  // words that cannot be mistaken for something off a page.
+  const baseLabel = $derived.by(() => {
+    if (!(proportionBase && mode === "proportion" && baseTempoLabel != null)) return null;
+    if (tempoSource === "default") return `assumed ${baseTempoLabel} bpm`;
+    return `${tempoSource === "transcribed" ? "transcribed" : "marked"} ♩ = ${baseTempoLabel}`;
+  });
   const baseAside = $derived(
     tempoSource === "default" ? (tempoElsewhere ? "(none at the start)" : "(none in the score)") : null,
   );
@@ -482,8 +486,8 @@
     tempoSource !== "default"
       ? `Unverified: tempo ${baseTempoLabel} came from a transcription, not a printed marking`
       : tempoElsewhere
-        ? `Unverified: this score marks no tempo at its start, so ${baseTempoLabel} is a default rather than a marking`
-        : `Unverified: this score declares no tempo, so ${baseTempoLabel} is a default rather than a marking`,
+        ? `Unverified: this score marks no tempo at its start, so ${baseTempoLabel} bpm was assumed rather than read`
+        : `Unverified: this score declares no tempo, so ${baseTempoLabel} bpm was assumed rather than read`,
   );
 </script>
 
@@ -522,13 +526,24 @@
   {#if enabled || prominent}
     <div class="metronome-controls">
       {#if proportionBase}
+        <!-- "% of score tempo" is what this counts when there IS a score tempo.
+        Where there is not, the option said so while the note directly beside it
+        said the score declares none - two labels on one control contradicting
+        each other, which is worse than either being wrong alone. The control
+        itself is right to stay (the click has to run at something, and 100% of
+        the assumed tempo is exactly what it runs at), so the label changes
+        instead: it names the number it is a percentage OF. -->
         <select
           class="metronome-mode"
           value={mode}
           onchange={(ev) => chooseMode(ev.target.value)}
-          title="What the metronome counts - the score's own tempo, or a number set directly"
+          title={tempoSource === "default"
+            ? "What the metronome counts - the assumed tempo, since this score declares none, or a number set directly"
+            : "What the metronome counts - the score's own tempo, or a number set directly"}
         >
-          <option value="proportion">% of score tempo</option>
+          <option value="proportion">
+            {tempoSource === "default" ? "% of assumed tempo" : "% of score tempo"}
+          </option>
           <option value="bpm">Fixed BPM</option>
         </select>
       {/if}
@@ -635,7 +650,8 @@
             something unverified: a tempo we inferred from a transcription -
             or never had at all - must not read as one printed on a page. -->
             <span class="mark" aria-label={baseMarkLabel}>●</span>
-          {/if}{baseLabel}{#if baseAside}<span class="metronome-base-aside">{baseAside}</span>{/if}
+          {/if}
+          {baseLabel}{#if baseAside}<span class="metronome-base-aside">{baseAside}</span>{/if}
         </span>
       {/if}
       {#if !compact}

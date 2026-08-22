@@ -1787,3 +1787,61 @@ def test_a_bar_wrong_in_both_directions_is_counted_once():
     assert counts.overfull + counts.short > counts.counted, (
         "the sum overstates the music - this is the arithmetic no reader may do"
     )
+
+
+def test_a_printed_tuning_instruction_is_recognised_without_being_applied():
+    """The narrower thing that has to be true before the interface may describe a
+    tuning at all: knowing the page carries an instruction we did not read.
+
+    Measured across the library, 41 of the 100 scores carrying a "Drop D" label
+    also carry one of these - 9 saying to tune every string down a half step, so
+    the recorded array is a semitone out, and 32 naming a capo, so every sounding
+    pitch is out. That is 14% of the library, and until this existed all 41 were
+    describable as a tuning that had been READ off the page. A text match on one
+    tuning name is recognition of a label; it is not a reading of the tuning.
+
+    Detection only. Nothing here changes `tuning`, the emitted MusicXML, or any
+    sounding pitch - parsing these is issue #80's job.
+    """
+    from fermata.tabextract import unread_tuning_instructions as found
+
+    for text in [
+        "Tune down a half step",
+        "tune all strings down 1/2 step",
+        "Tuning: 1/2 step down",
+        "TUNE DOWN ONE HALF STEP",
+        "Lower a half tone",
+    ]:
+        assert found(text) == ["tune down a half step"], text
+
+    # The number is for the message, so a reader can check it against the page.
+    assert found("Capo 2") == ["capo 2"]
+    assert found("capo at fret III") == ["capo III"]
+    assert found("CAPO 3rd fret") == ["capo 3"]
+    # A bare instruction still counts - what matters is that one is there.
+    assert found("Play with capo") == ["capo"]
+    # A capo at the end of a line must not adopt a number from the next one.
+    assert found("Capo\n7 notes") == ["capo"]
+
+    # Both, in the order they are stated to a reader.
+    assert found("Tune down a half step, then Capo 2") == [
+        "tune down a half step",
+        "capo 2",
+    ]
+
+    # THE FALSE POSITIVE THAT MATTERS. "Da capo" is a repeat instruction - go
+    # back to the beginning - and has nothing to do with the left hand. Classical
+    # sheet music is full of them, and matching one would be its own false
+    # statement: claiming the page carries a tuning instruction it does not, which
+    # is the same fault as claiming a tuning was read.
+    for text in [
+        "Da Capo al Fine",
+        "da capo",
+        "Dal capo",
+        "D.C. al Fine",
+        "capotasto",
+        "a whole step down",
+        "Andante",
+        "",
+    ]:
+        assert found(text) == [], text

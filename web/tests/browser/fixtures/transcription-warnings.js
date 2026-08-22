@@ -173,9 +173,12 @@ export function transcriptionResponse({
 
 /** The provenance an extraction that read nothing records: no meter on the
  * page, no key on it, and no tuning named anywhere - so 4/4, no key
- * signature, and the standard six strings, every one of them an assumption.
- * The common case: 18% of first pages lose their printed meter (#90) and
- * every score not literally labelled "Drop D" reads as standard (#80). */
+ * signature, and the standard six strings.
+ *
+ * The meter and the key are stated as assumptions. The TUNING is not, and that
+ * is deliberate: it is the standard six on 193 of 293 scores, so saying so puts
+ * the unverified mark on two thirds of the library and the mark stops meaning
+ * anything. See tuningStatement in provenance.js. */
 export const ASSUMED_PROVENANCE = {
   time_signature: [4, 4],
   time_signature_source: "not detected (assumed 4/4)",
@@ -183,10 +186,11 @@ export const ASSUMED_PROVENANCE = {
   key_signature_source: "not detected (assumed no key signature)",
   tuning: ["E2", "A2", "D3", "G3", "B3", "E4"],
   tuning_label: null,
+  tuning_unread: [],
 };
 
-/** The provenance an extraction that read everything records - the meter and
- * key decoded off the engraved glyphs, and a tuning the page named. */
+/** The meter and key decoded off the engraved glyphs, and a tuning name
+ * recognised on the page with nothing else about it left unread. */
 export const READ_PROVENANCE = {
   time_signature: [6, 8],
   time_signature_source: "glyph-decoded",
@@ -194,6 +198,17 @@ export const READ_PROVENANCE = {
   key_signature_source: "glyph-decoded",
   tuning: ["D2", "A2", "D3", "G3", "B3", "E4"],
   tuning_label: "Drop D",
+  tuning_unread: [],
+};
+
+/** A Drop D label AND a printed instruction the extractor discards - the state
+ * 41 of the 100 labelled scores in the library are actually in. `tuning` is a
+ * semitone out (or every pitch is, for a capo) while looking exactly like
+ * something that was read, which is why "read from the page" could not be said
+ * of it. */
+export const INCOMPLETE_TUNING_PROVENANCE = {
+  ...READ_PROVENANCE,
+  tuning_unread: ["capo 2"],
 };
 
 /**

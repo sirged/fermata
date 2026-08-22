@@ -1377,6 +1377,13 @@ _PROVENANCE_KEYS = (
     "key_signature_source",
     "tuning",
     "tuning_label",
+    # Tuning instructions the extractor recognised on the page and did NOT
+    # apply - see tabextract.unread_tuning_instructions. Stored with the tuning
+    # because it is what stops the tuning being describable as read: a text
+    # match on one tuning name is recognition of a label, not a reading of the
+    # tuning, and it cannot be reported as one while the same page carries
+    # further instructions nobody parsed.
+    "tuning_unread",
 )
 
 
@@ -1514,6 +1521,7 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             "key_signature_source": result.key_signature_source,
             "tuning": result.tuning,
             "tuning_label": result.tuning_label,
+            "tuning_unread": result.tuning_unread,
         }
     )
     with tx() as tx_conn:

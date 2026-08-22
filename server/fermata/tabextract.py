@@ -109,6 +109,54 @@ from . import musicxml as mxl
 DEFAULT_TUNING = ["E2", "A2", "D3", "G3", "B3", "E4"]
 DROP_D_TUNING = ["D2", "A2", "D3", "G3", "B3", "E4"]
 
+# TUNING INSTRUCTIONS THIS EXTRACTOR RECOGNISES AND DOES NOT APPLY.
+#
+# Detection only, and deliberately nothing more. `tuning` is not adjusted, the
+# emitted MusicXML is unchanged, and no sounding pitch moves - parsing these
+# properly is issue #80's job. What is here is the narrower thing that has to
+# exist before the interface may describe a tuning at all: knowing that the page
+# carries an instruction we did not read, so the reading can be reported as
+# INCOMPLETE rather than as a reading.
+#
+# Measured across the library: of the 100 scores that carry a "Drop D" label,
+# 41 also carry one of these - 9 saying to tune every string down a half step
+# (so the recorded tuning array is a semitone out) and 32 naming a capo (so
+# every sounding pitch is out). That is 14% of the library, and until this
+# existed all 41 were describable as a tuning that had been read off the page.
+# Recognising a NAME is not reading a tuning.
+_HALF_STEP_DOWN_RE = re.compile(
+    r"(?:tune[d]?\s+)?(?:down|lower)\s+(?:a\s+|one\s+)?(?:half|1/2|½)[\s-]*(?:step|tone)"
+    r"|(?:half|1/2|½)[\s-]*(?:step|tone)\s+(?:down|lower|flat)",
+    re.IGNORECASE,
+)
+# "capo", but never the "da capo" of a repeat instruction, which is about where
+# to go back to and nothing to do with the left hand. Classical sheet music is
+# full of them, and matching one would be its own false statement: claiming the
+# page carries a tuning instruction it does not.
+#
+# The trailing number is for the message only - horizontal whitespace, so a
+# bare "Capo" at the end of a line cannot adopt a number from the next one.
+_CAPO_RE = re.compile(
+    r"(?<!da )(?<!dal )\bcapo\b[ \t]*[:\-]?[ \t]*(?:at[ \t]*|on[ \t]*)?(?:fret[ \t]*)?"
+    r"(\d{1,2}|[IVX]{1,4})?",
+    re.IGNORECASE,
+)
+
+
+def unread_tuning_instructions(text: str) -> list[str]:
+    """Tuning instructions present in this page's text that we do not apply.
+
+    Short phrases, written to be shown to a person as they are - each one names
+    what was seen, not what it would have meant.
+    """
+    found = []
+    if _HALF_STEP_DOWN_RE.search(text):
+        found.append("tune down a half step")
+    capo = _CAPO_RE.search(text)
+    if capo:
+        found.append(f"capo {capo.group(1)}" if capo.group(1) else "capo")
+    return found
+
 # Plain (non-dotted) duration budgets, in quarter-note units, used to snap
 # spacing-derived durations to an alphaTex duration code.
 _PLAIN_DURATIONS = [(4.0, 1), (2.0, 2), (1.0, 4), (0.5, 8), (0.25, 16), (0.125, 32)]
@@ -128,6 +176,10 @@ class ExtractionResult:
     tempo: int | None = None
     tuning: list[str] = field(default_factory=lambda: list(DEFAULT_TUNING))
     tuning_label: str | None = None
+    # Tuning instructions found printed on the page and NOT applied to `tuning`
+    # - see unread_tuning_instructions. Non-empty means `tuning` is known to be
+    # incomplete, so no reader may describe it as having been read.
+    tuning_unread: list[str] = field(default_factory=list)
     time_signature: tuple[int, int] | None = None
     time_signature_source: str = "not detected"
     # MusicXML's `fifths`: positive for sharps, negative for flats. Only ever
@@ -186,6 +238,7 @@ class ExtractionResult:
             "tempo": self.tempo,
             "tuning": self.tuning,
             "tuning_label": self.tuning_label,
+            "tuning_unread": self.tuning_unread,
             "time_signature": list(self.time_signature) if self.time_signature else None,
             "time_signature_source": self.time_signature_source,
             "key_fifths": self.key_fifths,
@@ -2244,6 +2297,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     tempo = None
     tuning = list(DEFAULT_TUNING)
     tuning_label = None
+    tuning_unread: list[str] = []
     # tab_staff_count / standard_staff_count are the total number of tab /
     # standard staff systems found across the whole document (summed across
     # pages), matching analyze()'s definition - see ExtractionResult.
@@ -2283,6 +2337,15 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         if tuning_label is None and "Drop D" in text:
             tuning_label = "Drop D"
             tuning = list(DROP_D_TUNING)
+
+        # Recognised and NOT applied - see unread_tuning_instructions. Collected
+        # whether or not a tuning name was found, because the two are
+        # independent: a score can name Drop D and then say to tune the lot down
+        # a half step, and it is the combination that makes `tuning` wrong while
+        # looking most like something that was read.
+        for instruction in unread_tuning_instructions(text):
+            if instruction not in tuning_unread:
+                tuning_unread.append(instruction)
 
         if tab_staves:
             pages_with_tab.append((page_no, page, tab_staves, std_staves))
@@ -2345,6 +2408,18 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         # generic "assumed 4/4".
         for reason in list(dict.fromkeys(ts_reasons))[:3]:
             warnings.append(f"time signature: {reason}")
+
+    if tuning_unread:
+        # Said in the warnings as well as carried as data, because it is a
+        # caveat about the transcription and a reader who has only the API
+        # should not have to infer it from a tuning array that looks complete.
+        warnings.append(
+            "the score prints a tuning instruction that was not applied ("
+            + ", ".join(tuning_unread)
+            + ") - the fret numbers are transcribed as written and the tuning is recorded as "
+            "the strings are named, so the sounding pitches will be wrong by whatever that "
+            "instruction asks for"
+        )
 
     # The key signature, for enharmonic spelling only - see
     # _detect_key_signature and musicxml.spell_pitch.
@@ -2636,6 +2711,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         tempo=tempo,
         tuning=tuning,
         tuning_label=tuning_label,
+        tuning_unread=tuning_unread,
         time_signature=ts,
         time_signature_source=ts_source,
         key_fifths=key_fifths,

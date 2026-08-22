@@ -323,10 +323,10 @@ test("a week says how much of its total rests on a day nobody recorded, and says
   // nothing marking the join - and the server had been reporting the figure to
   // nobody ever since.
   expect(periodStatement({ days_practised: 4, seconds: 12000, sessions_inferred: 2 })).toBe(
-    "4 days, 3h 20m (2 sessions on an inferred day)",
+    "4 days, 3h 20m (2 sessions on an assumed day)",
   );
   expect(periodStatement({ days_practised: 1, seconds: 600, sessions_inferred: 1 })).toBe(
-    "1 day, 10m (1 session on an inferred day)",
+    "1 day, 10m (1 session on an assumed day)",
   );
   // Silent when there is nothing to disclose, which on any install that has
   // only ever run this version is always - a note that appears every week

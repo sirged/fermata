@@ -81,9 +81,12 @@ def test_how_the_meter_key_and_tuning_were_obtained_survives_a_reload(
     assert posted["time_signature"] == [4, 4]
     assert posted["key_signature_source"] == "glyph-decoded"
     # Nothing labelled a tuning, which is the assumption #80 is about - the
-    # standard six strings, recorded as what was actually used.
+    # standard six strings, recorded as what was actually used - and no printed
+    # tuning instruction this fixture leaves unread, so nothing may be said
+    # about its tuning at all.
     assert posted["tuning_label"] is None
     assert posted["tuning"] == ["E2", "A2", "D3", "G3", "B3", "E4"]
+    assert posted["tuning_unread"] == []
 
     fetched = api.get_transcription(score_id)
     for key in (
@@ -93,6 +96,7 @@ def test_how_the_meter_key_and_tuning_were_obtained_survives_a_reload(
         "key_signature_source",
         "tuning",
         "tuning_label",
+        "tuning_unread",
     ):
         assert fetched[key] == posted[key], key
 
@@ -104,7 +108,13 @@ def test_how_the_meter_key_and_tuning_were_obtained_survives_a_reload(
     edited = api.save_transcription(
         score_id, api.TranscriptionEditIn(content='\\title "hand edited"\n.\n:4 0.1 |')
     )
-    for key in ("time_signature", "time_signature_source", "tuning", "tuning_label"):
+    for key in (
+        "time_signature",
+        "time_signature_source",
+        "tuning",
+        "tuning_label",
+        "tuning_unread",
+    ):
         assert edited[key] is None, key
 
 

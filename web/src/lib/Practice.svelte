@@ -654,12 +654,21 @@
                        row's UTC timestamp, which is the difference between a
                        fact and an attribution. The server has always said
                        which (local_date_source) and nothing read it, so a day
-                       that was inferred looked exactly like one somebody's own
+                       that was assumed looked exactly like one somebody's own
                        clock reported - and for practice logged before the day
                        was stored at all, that is every row. Said next to the
-                       date it qualifies, in visible text. -->
+                       date it qualifies, in visible text.
+
+                       One word here, and the sentence under the list says what
+                       it means. "assumed" on its own says neither what was
+                       assumed nor from what, and the whole sentence will not
+                       fit beside a date without taking a quarter of the row's
+                       width from every row that does not need it - so the word
+                       marks the row and the note explains the word, once. It is
+                       the same word this application uses everywhere else for a
+                       value it chose rather than read (see provenance.js). -->
                   {#if session.local_date_source && session.local_date_source !== "recorded"}
-                    <span class="day-inferred">inferred</span>
+                    <span class="day-inferred">assumed</span>
                   {/if}
                 </span>
                 <span class="session-what" class:orphaned={session.score_missing}>
@@ -678,6 +687,17 @@
               </li>
             {/each}
           </ul>
+          {#if sessions.some((s) => s.local_date_source && s.local_date_source !== "recorded")}
+            <!-- What the word beside a date means, and where that day came
+                 from. Once, under the list, and only when a row carries it -
+                 stated for every row it would be nineteen words of repetition,
+                 and left unstated the word says neither what was assumed nor
+                 from what. -->
+            <p class="quiet day-note">
+              A day marked <span class="day-inferred">assumed</span> was taken from the session's
+              own timestamp rather than recorded when the practice happened.
+            </p>
+          {/if}
         {:else}
           <p class="quiet">Nothing logged in this period yet.</p>
         {/if}
@@ -1095,6 +1115,11 @@
     font-size: 11px;
     font-variant-numeric: normal;
     opacity: 0.75;
+  }
+
+  .day-note {
+    margin: 10px 0 0;
+    font-size: 12px;
   }
 
   /* NOT .session-detail: that is the post-session panel in the viewer, and two
