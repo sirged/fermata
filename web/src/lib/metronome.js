@@ -4,15 +4,14 @@
 // nothing that needs a browser - so it can be tested directly rather than
 // through a rendered score.
 //
-// score-render.js is the only file that turns these numbers into sound (see
-// docs/rendering.md on why the renderer itself stays behind that one seam).
+// metronome-engine.js is the only file that turns these numbers into sound.
 // This file never touches audio, the renderer, or the DOM.
 
 /** A click slower than this stops being a metronome and starts being a wait. */
 export const MIN_METRONOME_BPM = 20;
 // A click faster than this is not a tempo practice happens at - and, just as
 // importantly, keeps the period between clicks (60_000 / this, in ms) safely
-// above METRONOME_CLICK_SECONDS in score-render.js: at 400 that is a 150ms
+// above METRONOME_CLICK_SECONDS in metronome-engine.js: at 400 that is a 150ms
 // period against a ~70ms envelope, comfortably clear of one click's tail
 // overlapping the next one's attack. This bounds the CLICK RATE itself
 // (clicks per minute - what is displayed and what is scheduled, always the
@@ -133,9 +132,9 @@ export function secondsPerClick(clickRate) {
  * `{startTick, endTick, numerator, denominator}[]`, in tick order - not the
  * renderer's own model, so this has no reason to import it.
  *
- * score-render.js builds this list from alphaTab's OWN generated-midi-
- * timeline lookup (`api.tickCache.masterBars`), never by summing notated bar
- * durations itself: `tick` lives on the generated MIDI's timeline, which
+ * createScoreMetronome in score-render.js builds this list from alphaTab's
+ * OWN generated-midi-timeline lookup (`api.tickCache.masterBars`), never by
+ * summing notated bar durations itself: `tick` lives on the generated MIDI's timeline, which
  * expands repeats and skips unplayed alternate endings, so the notated bar
  * order and the played tick order are different timelines the moment a
  * score has so much as one repeat sign in it. Only the renderer's own lookup
@@ -191,7 +190,7 @@ export function barAtTick(bars, tick) {
  *
  * `tick` is clamped to the bar's own span, so a click scheduled slightly
  * ahead of the audio clock (see METRONOME_SCHEDULE_AHEAD_S in
- * score-render.js) landing a few ticks past where the playhead has reached
+ * metronome-engine.js) landing a few ticks past where the playhead has reached
  * so far still answers with the bar's last slot rather than spilling into
  * one that doesn't belong to it.
  *

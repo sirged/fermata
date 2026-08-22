@@ -5,6 +5,11 @@ Fermata renders interactive notation and tablature with
 one module, [`web/src/lib/score-render.js`](../web/src/lib/score-render.js).
 No component imports the renderer or names one of its types.
 
+That file is the sole seam, which means things that are not about the renderer
+have to be turned out of it when they are found there. The metronome was one:
+see "The metronome is not alphaTab's" below for where it went and what it left
+behind.
+
 This document is for the contributor who looks at that dependency and asks why
 it is not VexFlow.
 
@@ -83,8 +88,9 @@ modified copy would put us under the obligation to publish it.
 
 MusicXML and Guitar Pro import, notation and tablature staves, page and
 horizontal layout, system breaking, a synthesiser with a bundled soundfont, a
-following playback cursor, drag-to-select a bar range, looping, a metronome and
-a count-in, and an incremental re-render.
+following playback cursor, drag-to-select a bar range, looping, a metronome
+(which this layer never turns on - see below), a count-in (which it does), and
+an incremental re-render.
 
 ## What this layer adds
 
@@ -98,12 +104,14 @@ presets, themes — not the renderer's.
 (`"score"`, `"tab"`, `"scoretab"`), sources (`{kind:"alphatex"}`,
 `{kind:"musicxml"}`, `{kind:"file", url}`), transport state, fonts, colours and
 layout all flow through it. The view it returns exposes `setProfile`,
-`setPreset`, `setTheme`, `setSpeed`, `setLooping`, `setMetronome`,
-`setMetronomeMode`, `setMetronomeProportion`, `setMetronomeBpm`, `setCountIn`,
-`playPause`, `stop` and `destroy`, and reports `layout`, `theme`, `profile`,
-`supportedProfiles`, `preset` and `lastRenderMs` (`onMetronomeTempo` reports
-the practice metronome's own live value - see below, since it changes on its
-own while playing rather than only when asked for).
+`setPreset`, `setTheme`, `setSpeed`, `setLooping`, `setCountIn`, `playPause`,
+`stop` and `destroy`, and reports `layout`, `theme`, `profile`,
+`supportedProfiles`, `preset` and `lastRenderMs`. It also exposes `metronome`,
+a plain metronome handle pre-filled from the score - see below, and note that
+it is a handle rather than a set of view methods precisely because the click is
+not a renderer setting. `onScoreTempo` reports the score's own declared tempo;
+`onMetronomeTempo` reports the click's live value, which changes on its own
+while playing rather than only when asked for.
 
 Which profiles a caller may ask for is score-dependent, not fixed: a score
 does not necessarily support all of `SCORE_PROFILES`, and `createScoreView`
@@ -115,7 +123,7 @@ render with that profile has actually finished, which is what a caller
 should wait for before treating a profile switch as visible on screen rather
 than merely requested.
 
-### The practice metronome is not alphaTab's
+### The metronome is not alphaTab's — and no longer lives here
 
 alphaTab has its own metronome (`api.metronomeVolume`), and this layer never
 turns it on. It stays permanently muted, set once at construction. The reason
@@ -123,123 +131,147 @@ is structural, not a style choice: the renderer generates its metronome as a
 track in the same MIDI file as the notes, ticking at the score's own tempo and
 scaled by `playbackSpeed` exactly like every other event in that file. There is
 no setting anywhere in alphaTab's public API that lets the click run at a
-different tempo than the notes beside it - the two are the same timeline. That
+different tempo than the notes beside it — the two are the same timeline. That
 is fine until practice wants them to disagree, which is normal and constant: a
 click at full tempo over a passage slowed to 70% for a hard bar, or a fixed BPM
 that has nothing to do with what the score happens to declare.
 
-So `createScoreView`'s metronome (`setMetronome`, `setMetronomeMode`,
-`setMetronomeProportion`, `setMetronomeBpm`) is a second, wholly independent
-audio path: a plain Web Audio oscillator click, scheduled off its own clock via
-the standard lookahead pattern (queue whatever falls within the next ~120ms of
-audio-clock time, on a 25ms poll), rather than a setting on alphaTab's player.
-It never touches alphaTab's synthesiser, its generated MIDI, or its notion of
-tempo. Two modes:
+So the click is a second, wholly independent Web Audio path — and **that is
+precisely why it does not belong in this file.** It was written here, and for a
+while it lived here, but nothing about it is renderer-specific: it never touches
+alphaTab's synthesiser, its generated MIDI, or its notion of tempo. Having it
+inside the one file allowed to know the renderer's vocabulary made this seam
+look wider than it is, and it stopped every other part of the application from
+using a click at all.
 
-- `"proportion"` (the default) clicks a proportion of the score's own tempo
-  *at the playhead*, read from `playerPositionChanged`'s `originalTempo` -
-  the tempo alphaTab is internally playing at before `playbackSpeed` is
-  applied - so a piece that changes tempo mid-stream is tracked continuously
-  rather than resolved once when playback starts. That quarter-note-based
-  proportion is then converted onto the CURRENT bar's own click unit
-  (`unit/4`: an eighth-note meter clicks twice as often as a quarter-note
-  one) before anything is displayed or scheduled.
-- `"bpm"` clicks the typed number directly, as the click rate itself, in
-  every meter - the meter's own beat unit plays no part in the rate at all,
-  only in which clicks get accented. That is deliberately not the same
-  convention as `"proportion"`: it is what a physical metronome's dial
-  means, and what the issue asks for - a tempo set directly, regardless of
-  what the score says. 120 in fixed-BPM mode clicks 120 times a minute in
-  6/8 exactly as it would in 4/4.
+The metronome is now a general tool in two files that know nothing about
+scores or this renderer:
 
-Either way, **the number reported to a caller (`onMetronomeTempo`, and so
-the on-screen readout) is the same number that gets scheduled: clicks per
-minute, full stop.** `effectiveClickRate` in `metronome.js` is the one
-function that produces it, and both `tick()` and `report()` call it the
-same way with the CURRENT bar's own unit, rounded once and used unrounded
-nowhere else. An earlier version reported the quarter-note figure instead -
-96 for a 6/8 piece marked "quarter = 96" - while the eighth-note clicks it
-actually scheduled sounded 192 times a minute; showing the number a
-listener would have to convert in their head, rather than the number they
-are actually hearing, is exactly the "displayed and sounded disagree"
-failure this project keeps having to re-learn not to ship. The clamp
-(`MAX_METRONOME_BPM`) is applied to this same, already-converted rate for
-the same reason: clamping the quarter-note figure first and converting
-second would let a compound or unusually fine meter (4/128, or even a
-plain 6/8 at a fast marking) push the actual clicked rate far past what the
-constant - or the click's own envelope length - could survive.
+- [`web/src/lib/metronome-engine.js`](../web/src/lib/metronome-engine.js) — the
+  click itself: tempo, meter, subdivision, an accent, start and stop, over the
+  lookahead scheduler. It has its own header covering the scheduling
+  properties, which were moved rather than rewritten.
+- [`web/src/lib/metronome.js`](../web/src/lib/metronome.js) — the arithmetic
+  underneath, still pure and import-free.
+- [`web/src/lib/Metronome.svelte`](../web/src/lib/Metronome.svelte) — the
+  interface, used by the score viewer, the practice page and the standalone
+  `#/metronome` page alike, each pre-filling it from its own context.
 
-Time signature and bar position (for subdivision and which click is
-accented) come from `api.tickCache.masterBars` - alphaTab's own lookup from
-generated-MIDI tick to the `MasterBar` sounding there - looked up fresh on
-every scheduled click, never cached across one. Two things about this are
-load-bearing:
+#### What is left here, and why it has to be
 
-- **It has to be `tickCache`, not a hand-built index.** `api.tickPosition`
-  lives on the generated MIDI's timeline, which expands repeats and skips
-  unplayed alternate endings - the notated bar order and the played tick
-  order are different timelines the moment a score has one repeat sign in
-  it. An earlier version of this summed `MasterBar.calculateDuration()`
-  itself to build that mapping; past the first repeat, every position it
-  answered for was for the wrong bar - the wrong meter, the wrong accent
-  grouping, silently.
-- **The accent's phase is derived from the playhead every time, not carried
-  as a counter.** A `clickIndex` that only resets when the scheduler starts
-  drifts out of alignment the moment the metronome is switched on mid-bar,
-  the transport seeks, a loop whose length is not a whole number of click
-  periods wraps, or the meter changes mid-score. Recomputing "which slot of
-  the CURRENT bar is this" from `api.tickPosition` on every click instead
-  means all four of those are the ordinary case, not a special one to
-  detect: whatever the playhead is doing, the next click just answers the
-  same question again. One consequence worth knowing: when the click's own
-  rate doesn't evenly divide the bar's real duration (any proportion other
-  than 100%, or a fixed BPM), the accent does not recur at a fixed spacing
-  measured in clicks - it recurs at a fixed spacing measured in the music's
-  own bars, landing on or just after each real downbeat regardless of the
-  click's own tempo. That is the point, not a rounding error.
+`createScoreView` exposes a `metronome` handle — a plain metronome
+(`setEnabled`, `setMode`, `setProportion`, `setBpm`, `setSubdivision`,
+`setAccent`, `prime`, `currentRate`), not a set of `setMetronome*` methods on
+the view, because the click is not a renderer setting and never was. What this
+file contributes is the **pre-fill and the live playhead behind it** —
+`createScoreMetronome`, which is the only part that genuinely needs the
+renderer's vocabulary. Three things, and nothing else:
+
+1. **The playhead and the bar sounding at it.** Time signature and bar position
+   (for subdivision and which click is accented) come from
+   `api.tickCache.masterBars` — alphaTab's own lookup from generated-MIDI tick
+   to the `MasterBar` sounding there — mapped into the plain
+   `{startTick, endTick, numerator, denominator}` shape `metronome.js` defines,
+   and handed to the engine as a `pulseSource` it calls fresh on every
+   scheduled click. It has to be `tickCache`, not a hand-built index:
+   `api.tickPosition` lives on the generated MIDI's timeline, which expands
+   repeats and skips unplayed alternate endings, so the notated bar order and
+   the played tick order are different timelines the moment a score has one
+   repeat sign in it. An earlier version summed `MasterBar.calculateDuration()`
+   itself; past the first repeat, every position it answered for was the wrong
+   bar — the wrong meter, the wrong accent grouping, silently.
+2. **The score's own tempo at the playhead**, from `playerPositionChanged`'s
+   `originalTempo` — the tempo alphaTab is internally playing at *before*
+   `playbackSpeed` is applied — so a piece that changes tempo mid-stream is
+   tracked continuously rather than resolved once when playback starts. Also
+   reported outwards as `onScoreTempo`, so an interface can say "70% of what"
+   rather than showing a bare percentage.
+3. **When real playback is under way**, which is not the same question as
+   alphaTab's own Playing state — see the count-in below.
+
+Because the engine takes the playhead rather than reaching for one, the
+properties that used to be described here are now described where the code is.
+Two are worth restating from this side, since they are claims about the
+renderer:
+
+- **The accent's phase is derived from the playhead every time, not carried as
+  a counter.** A `clickIndex` that only resets when the scheduler starts drifts
+  out of alignment the moment the metronome is switched on mid-bar, the
+  transport seeks, a loop whose length is not a whole number of click periods
+  wraps, or the meter changes mid-score. Recomputing "which slot of the current
+  bar is this" from `api.tickPosition` on every click means all four are the
+  ordinary case, not a special one to detect. One consequence worth knowing:
+  when the click's own rate doesn't evenly divide the bar's real duration (any
+  proportion other than 100%, or a fixed BPM), the accent does not recur at a
+  fixed spacing measured in clicks — it recurs at a fixed spacing measured in
+  the music's own bars, landing on or just after each real downbeat. That is
+  the point, not a rounding error. (A metronome with no playhead at all — the
+  standalone page — necessarily counts instead, because every one of those four
+  failure modes is a statement about a playhead moving independently of the
+  click, and none can arise when the click is the only timeline.)
+- **One imprecision, stated rather than quietly lived with.**
+  `api.tickPosition` answers "where is the playhead right now", not "where will
+  it be when this click — queued up to `METRONOME_SCHEDULE_AHEAD_S` ahead —
+  actually sounds". When the click's rate does not match the music's, an
+  individual click landing close to a bar or beat boundary can occasionally
+  read one slot early. It never accumulates: the very next click reads the
+  playhead fresh again, so the cost is a single click's accent placed a slot
+  off near a boundary, not a drift that persists through the piece.
+
+#### Two modes, and the one number
+
+- `"proportion"` (the default over a piece) clicks a proportion of the score's
+  own tempo *at the playhead*. That quarter-note-based proportion is converted
+  onto the **current bar's** own click unit (`unit/4`: an eighth-note meter
+  clicks twice as often as a quarter-note one) before anything is displayed or
+  scheduled.
+- `"bpm"` clicks the typed number directly, as the click rate itself, in every
+  meter — the meter's own beat unit plays no part in the rate, only in which
+  clicks get accented. That is deliberately not the same convention as
+  `"proportion"`: it is what a physical metronome's dial means. 120 in
+  fixed-BPM mode clicks 120 times a minute in 6/8 exactly as it would in 4/4.
+  It is also the only mode a metronome with no piece behind it has, since a
+  percentage of nothing means nothing.
+
+Either way, **the number reported to a caller (`onMetronomeTempo`, and so the
+on-screen readout) is the same number that gets scheduled: clicks per minute,
+full stop.** `effectiveClickRate` in `metronome.js` is the one function that
+produces it, rounded once in `resolve()` and used unrounded nowhere else. An
+earlier version reported the quarter-note figure instead — 96 for a 6/8 piece
+marked "quarter = 96" — while the eighth-note clicks it actually scheduled
+sounded 192 times a minute; showing the number a listener would have to convert
+in their head, rather than the number they are hearing, is exactly the
+"displayed and sounded disagree" failure this project keeps having to re-learn
+not to ship. The clamp (`MAX_METRONOME_BPM`) is applied to this same,
+already-converted rate for the same reason: clamping the quarter-note figure
+first and converting second would let a compound or unusually fine meter
+(4/128, or even a plain 6/8 at a fast marking) push the actual clicked rate far
+past what the constant — or the click's own envelope length — could survive. A
+subdivision setting is folded into that conversion's *inputs* rather than
+multiplied onto its output, so the clamp still lands on the rate actually
+scheduled.
 
 Compound grouping (accent every third click) applies to 6/8-style meters
-written in sixteenths too (9/16, 12/16, ...), not only eighths -
+written in sixteenths too (9/16, 12/16, ...), not only eighths —
 `metronomePattern` checks the denominator against both. x/4 meters are left
-alone even when the numerator is divisible by three (6/4): unlike 6/8,
-which is unambiguously two dotted-quarter pulses, 6/4 is genuinely
-ambiguous between two dotted-half pulses and six plain quarters, with no
-default worth guessing.
+alone even when the numerator is divisible by three (6/4): unlike 6/8, which is
+unambiguously two dotted-quarter pulses, 6/4 is genuinely ambiguous between two
+dotted-half pulses and six plain quarters, with no default worth guessing.
 
-One imprecision is worth stating rather than quietly living with:
-`api.tickPosition` answers "where is the playhead right now", not "where
-will it be when this click - queued up to `METRONOME_SCHEDULE_AHEAD_S`
-ahead - actually sounds". When the click's own rate does not match the
-music's (any proportion other than 100%, or a fixed BPM), an individual
-click landing close to a bar or beat boundary can occasionally read one
-slot early. It never accumulates - the very next click reads the playhead
-fresh again, per the point above - so the cost is a single click's accent
-placed a slot off near a boundary, not a drift that persists through the
-piece.
-
-The scheduler also floors its next scheduled time to "now" (dropping,
-rather than replaying, anything a stall left in the past) — see
-`METRONOME_LOOKAHEAD_MS` handling in `tick()` - and cancels any oscillators
-still pending when the click stops, so pausing or switching it off is
-silent within one Web Audio callback rather than up to
-`METRONOME_SCHEDULE_AHEAD_S` later. The click's own gain levels (accent and
-tick together, in the pathological case of one click's tail overlapping the
-next one's attack) stay under unity with headroom to spare, and
-`ensureAudioCtx` catches the constructor itself throwing - Safari and iOS
-still enforce a hard cap on live `AudioContext`s - so a synthesiser
-resource limit silences the click rather than the Play button.
+#### The count-in
 
 The count-in (`setCountIn`) still uses alphaTab's own click, at the score's
-tempo, scaled by `playbackSpeed`, exactly as before - but the practice
-click is not simply left alone around it. alphaTab raises
-`playerStateChanged` to Playing *before* the count-in starts, and raises it
-a second time, with no intervening Paused, the instant the count-in ends
-and real playback begins. Starting on the first event would sound the
-practice click underneath the count-in at a different tempo, which is
-exactly the confusion a count-in exists to prevent - so `setPlaying` treats
-a rising edge as a count-in (and stays silent) whenever `countInVolume` is
-on when it arrives, and treats the covering second rising edge as the
-signal to start for real, freshly anchored.
+tempo, scaled by `playbackSpeed`, exactly as before — but the general click is
+not simply left alone around it, and this is the third thing that has to stay
+in this file, because it is a fact about alphaTab and nothing else. alphaTab
+raises `playerStateChanged` to Playing *before* the count-in starts, and raises
+it a second time, with no intervening Paused, the instant the count-in ends and
+real playback begins. Starting on the first event would sound the click
+underneath the count-in at a different tempo, which is exactly the confusion a
+count-in exists to prevent — so `createScoreMetronome`'s `setPlaying` treats a
+rising edge as a count-in (and holds the engine's transport gate shut) whenever
+`countInVolume` is on when it arrives, and treats the covering second rising
+edge as the signal to start for real, freshly anchored.
 
 ### Responsive layout
 
@@ -521,12 +553,13 @@ source of truth. So:
   stave-profile constant. Themes are token names.
 - Loading is expressed as a source shape (`alphatex`, `musicxml`, `file`), not as
   the byte-loader call the library happens to want.
-- The transport is `setSpeed` / `setLooping` / `setMetronome` /
-  `setMetronomeMode` / `setMetronomeProportion` / `setMetronomeBpm` /
-  `setCountIn` / `playPause` / `stop`, not volume fields and boolean
-  properties on a live api object - and the practice metronome's click is not
-  even one of those properties (see "The practice metronome is not
-  alphaTab's" above); it is a second audio path this file owns outright.
+- The transport is `setSpeed` / `setLooping` / `setCountIn` / `playPause` /
+  `stop`, not volume fields and boolean properties on a live api object.
+- The metronome is not in this file at all any more, and that is the clearest
+  single measure of where the boundary actually is. What remains is
+  `createScoreMetronome`: the pre-fill, plus a `pulseSource` that answers
+  "where is the playhead and which bar is sounding there" in plain numbers.
+  Replacing the renderer means rewriting that function - not the click.
 - The renderer's event names, enums, settings tree, colour objects, font objects
   and prototype quirks all stop at this file.
 

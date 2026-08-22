@@ -3,6 +3,7 @@
   import Viewer from "./lib/Viewer.svelte";
   import Settings from "./lib/Settings.svelte";
   import Practice from "./lib/Practice.svelte";
+  import MetronomePage from "./lib/MetronomePage.svelte";
 
   function parse(hash) {
     const m = hash.match(/^#\/score\/(\d+)/);
@@ -10,6 +11,7 @@
     if (hash.startsWith("#/demo")) return { page: "demo" };
     if (hash.startsWith("#/settings")) return { page: "settings" };
     if (hash.startsWith("#/practice")) return { page: "practice" };
+    if (hash.startsWith("#/metronome")) return { page: "metronome" };
     return { page: "library" };
   }
 
@@ -30,6 +32,8 @@
   <Settings />
 {:else if route.page === "practice"}
   <Practice />
+{:else if route.page === "metronome"}
+  <MetronomePage />
 {:else}
   <Library />
 {/if}

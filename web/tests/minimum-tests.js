@@ -18,7 +18,15 @@
 // This is also read directly by scripts/run-browser-tests.mjs, which is the
 // OTHER half of this guard - see that file's own comment for why counting
 // here is not, by itself, enough. Keep the two numbers in sync.
-export const MINIMUM_TESTS = 146;
+// 146 before issue #97, plus 25 for the metronome becoming a general tool: 11
+// in tests/browser/metronome-everywhere.spec.js (the standalone page, the
+// practice page, the widened tempo control, the gig-mode round trip, and the
+// honesty rule on an inferred tempo) and 14 in
+// tests/unit/metronome-engine.spec.js (the engine's own rate arithmetic,
+// callable without a browser). Raised deliberately, and every one of the 25
+// was shown to fail against a mutation of the behaviour it claims - see the
+// pull request for the list.
+export const MINIMUM_TESTS = 171;
 
 export default class MinimumTests {
   constructor() {

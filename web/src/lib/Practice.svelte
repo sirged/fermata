@@ -19,6 +19,7 @@
   //   - Every zero is stated plainly. A day with no practice is a fact about
   //     the week and is drawn as an empty bar, not as a gap and not in red.
   import { api } from "./api.js";
+  import Metronome from "./Metronome.svelte";
   import {
     ACTIVITY_LABELS,
     activityLabel,
@@ -68,6 +69,30 @@
   let otherMinutes = $state(15);
   let otherNote = $state("");
   let logging = $state(false);
+
+  // A click, available while working through a goal without having to open a
+  // piece first. The general metronome (issue #97), pre-filled from the only
+  // tempo this page actually knows: the one most recently practised at.
+  let metronomeOn = $state(false);
+
+  // The tempo to arrive at. A session records both what it was practised at
+  // and what it was aiming for, and the TARGET is the better pre-fill of the
+  // two - a tempo ladder exists to be climbed, so the number worth being
+  // handed tomorrow is the one that was being worked towards, not the one
+  // already managed. Falls back to the achieved tempo, then to the plain
+  // default. Not a guess dressed up as a reading either way: both numbers
+  // were entered by the person practising.
+  //
+  // $derived, not read once, because `sessions` arrives asynchronously - and
+  // then again after logging a session. Metronome.svelte takes this as a
+  // pre-fill at mount, so a change here reaches it on the {#key} below.
+  const practisedTempo = $derived.by(() => {
+    for (const session of sessions ?? []) {
+      const t = session.target_tempo_bpm ?? session.tempo_bpm;
+      if (Number.isFinite(t) && t > 0) return t;
+    }
+    return null;
+  });
 
   function blankForm() {
     return {
@@ -424,6 +449,35 @@
         {/if}
       </section>
 
+      <!-- ------------------------------------------------------ metronome -->
+      <section class="metronome-section">
+        <div class="section-head">
+          <h2>Metronome</h2>
+        </div>
+        <p class="hint">
+          {#if practisedTempo != null}
+            Set to {practisedTempo} bpm, the tempo your most recent session was working
+            towards. Change it to whatever today needs.
+          {:else}
+            For technique, scales, or working a passage from memory. Nothing here is tied to
+            a piece.
+          {/if}
+        </p>
+        <!-- Keyed on the pre-fill, so a tempo that arrives (or changes) after
+             this mounted actually lands in the control rather than being
+             quietly ignored - the alternative is a heading that says "set to
+             96" above a box reading 120. Nothing persists across the remount
+             on purpose: the point of this site is that it starts from what you
+             were practising, and a stale override would defeat it. -->
+        {#key practisedTempo}
+          <Metronome
+            bind:enabled={metronomeOn}
+            prominent={true}
+            initialBpm={practisedTempo ?? undefined}
+          />
+        {/key}
+      </section>
+
       <!-- --------------------------------------------- log other practice -->
       <section class="log-other">
         <div class="section-head">
@@ -660,6 +714,18 @@
     flex-direction: column;
     gap: 34px;
     max-width: 760px;
+  }
+
+  /* Centred, because what is inside it is - see Metronome.svelte's prominent
+     layout. Nothing else on this page is, so it needs saying here rather than
+     being inherited. */
+  .metronome-section {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .metronome-section .hint {
+    margin-bottom: 20px;
   }
 
   .section-head {
