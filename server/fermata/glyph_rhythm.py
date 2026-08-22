@@ -96,12 +96,23 @@ How this works (full validation detail):
   measured across 254 staves), so a condensed multi-system score or a
   large-print edition silently dropped stems and beams and degraded every
   eighth and sixteenth to a quarter while still reporting high confidence.
+
+  A glyph's vertical position is its INK centre, read from the embedded
+  outline - NOT the centre of the box the text trace reports, which is a
+  metrics box whose top and bottom are the font's ascender and descender and
+  therefore says the same thing about every glyph in the font. See
+  GlyphEvent, _InkBoxes and half_or_whole_rest: the difference is about 0.4
+  staff spaces, it is invisible to glyph-to-glyph comparisons because it
+  cancels, and it was deciding whether a rest was a half or a whole - a
+  twofold difference in duration - from a measurement that was never the
+  rest's position.
 """
 import bisect
 import collections
 import hashlib
 import io
 import math
+import struct
 import weakref
 
 
@@ -457,10 +468,19 @@ _SP = {
     # flags
     "flag_x_tol": 0.98,           # was 5.0pt
     "flag_y_tol": 1.76,           # was 9.0pt
+    # How far outside a flag's own INK the stem end it is drawn on may fall -
+    # see _at_stem_end. A flag is joined to its stem's tip, so the tip is
+    # inside the ink; this is slack for a stroke that stops a hair short of
+    # the hook it carries. Measured over the whole sampled library by the
+    # hooks each value counts: no slack at all counts 4,984 and loses 166 of
+    # the hooks a centre-distance test found, 0.1 and 0.25 both count 5,158,
+    # and widening to a full space adds only 4 more. The value sits in the
+    # middle of that plateau.
+    "flag_ink_pad": 0.25,
     # augmentation dots
     "dot_x_tol": 1.17,            # was 6.0pt
     "dot_x_back": 0.20,           # was 1.0pt
-    "dot_y_tol": 0.78,            # was 4.0pt
+    # A dot's vertical window is not a symmetric tolerance - see _DOT_TIERS.
     # ties
     "tie_gap_max": 7.80,          # was 40.0pt
     "tie_height_max": 1.56,       # was 8.0pt
@@ -584,6 +604,67 @@ def maestro_fingerprint_ok(tt, digests=None, min_glyphs=None):
     return True, f"{len(matched)} glyph outlines match the calibrated Maestro subset"
 
 
+# A glyph's ink never runs more than a couple of ems from the baseline (the
+# tallest thing measured in the calibrated vocabulary is a clef, at 2.2 em), so
+# a `glyf` header claiming more than this is a stale or corrupt box rather than
+# a shape - and a wrong ink box is worse than none, because none degrades to
+# the baseline while a wrong one is believed.
+_INK_MAX_EM = 8.0
+
+
+class _InkBoxes:
+    """Where each glyph's INK is, vertically, in one embedded font - as a
+    fraction of the em, so it scales with whatever size the page drew at.
+
+    A TrueType glyph record starts with its own bounding box
+    (numberOfContours, xMin, yMin, xMax, yMax, five int16s), so this needs no
+    outline parsing at all: slice the glyph's bytes out of `glyf` using the
+    `loca` offsets and unpack the header. That is the same access the Maestro
+    fingerprint already makes (see _glyf_digests), and it is why the ink box
+    is available for every font this decoder reads glyphs from.
+    """
+
+    __slots__ = ("_glyf", "_loca", "_upem", "_cache")
+
+    def __init__(self, tt):
+        self._glyf = tt.getTableData("glyf")
+        self._loca = tt["loca"]
+        self._upem = tt["head"].unitsPerEm or 1000
+        self._cache = {}
+
+    def span(self, gid):
+        """(yMin, yMax) in em fractions, or None where this font has nothing
+        to say about that glyph: a gid past the end of `loca`, a slot the
+        subset left empty (which is most of them - a Maestro subset keeps all
+        204 slots and fills the handful a page uses), or a header whose box is
+        degenerate or implausible."""
+        if gid in self._cache:
+            return self._cache[gid]
+        out = None
+        loca = self._loca
+        if gid >= 0 and gid + 1 < len(loca):
+            seg = self._glyf[loca[gid]:loca[gid + 1]]
+            if len(seg) >= 10:
+                _n, _x0, ymin, _x1, ymax = struct.unpack(">hhhhh", seg[:10])
+                limit = _INK_MAX_EM * self._upem
+                if ymax > ymin and abs(ymin) <= limit and abs(ymax) <= limit:
+                    out = (ymin / self._upem, ymax / self._upem)
+        self._cache[gid] = out
+        return out
+
+
+def _ink_boxes(tt):
+    """An _InkBoxes for this font, or None when its outlines cannot be read.
+    Never raises: an unreadable ink box costs precision - see GlyphEvent.yc,
+    which falls back to the text baseline - not the decode."""
+    if tt is None:
+        return None
+    try:
+        return _InkBoxes(tt)
+    except Exception:
+        return None
+
+
 class MusicFont:
     """One embedded music-symbol font RESOURCE (one xref) on a page, with
     its glyph order resolved so GIDs (Maestro) or names (Opus family) can be
@@ -593,13 +674,18 @@ class MusicFont:
     resources on the same page can have completely different glyph orders
     even though both are named "Opus"."""
 
-    __slots__ = ("family", "xref", "tt", "glyph_order")
+    __slots__ = ("family", "xref", "tt", "glyph_order", "ink")
 
     def __init__(self, family, xref, tt):
         self.family = family  # "Maestro" | "Opus" | "OpusSpecial"
         self.xref = xref
         self.tt = tt
         self.glyph_order = tt.getGlyphOrder() if tt else []
+        # This resource's own ink boxes. Kept on the resource rather than
+        # looked up by family name for the same reason its glyph order is: a
+        # gid means something only within ONE resource, so a box read from a
+        # sibling resource that happens to share the name is a wrong number.
+        self.ink = _ink_boxes(tt)
 
     def category(self, gid):
         if self.family == "Maestro":
@@ -643,17 +729,24 @@ _TRUETYPE_EXTS = ("ttf",)
 # CPython reused the address. Hanging it off the object ties its lifetime to
 # exactly the right thing and needs no invalidation.
 _FONT_CACHE_ATTR = "_fermata_music_font_cache"
+# The same, for the ink boxes of fonts that get no MusicFont - see
+# _ink_boxes_by_name.
+_INK_CACHE_ATTR = "_fermata_ink_box_cache"
 
 
-def _font_cache(doc):
-    cache = getattr(doc, _FONT_CACHE_ATTR, None)
+def _doc_cache(doc, attr):
+    cache = getattr(doc, attr, None)
     if cache is None:
         cache = {}
         try:
-            setattr(doc, _FONT_CACHE_ATTR, cache)
+            setattr(doc, attr, cache)
         except Exception:
             pass  # uncacheable document: still correct, just not memoised
     return cache
+
+
+def _font_cache(doc):
+    return _doc_cache(doc, _FONT_CACHE_ATTR)
 
 
 def _load_one_font(doc, xref, base, ext):
@@ -740,15 +833,55 @@ def load_music_fonts(doc, page):
 # ---------------------------------------------------------------------------
 
 class GlyphEvent:
-    __slots__ = ("family", "gid", "category", "x0", "y0", "x1", "y1", "code", "smufl")
+    """One music-font glyph the page drew, and where.
 
-    def __init__(self, family, gid, category, bbox, code, smufl=False):
+    THE BOX IS NOT THE INK. (x0, y0, x1, y1) is the box the text trace
+    reports, and vertically that box is METRICS-based: its top and bottom come
+    from the font's ascender and descender relative to the text baseline, so
+    it says the same thing about every glyph in the font (measured: 4.0 staff
+    spaces tall for Maestro, whatever the glyph, notehead or clef alike). Its
+    centre therefore sits at a FIXED offset from the baseline rather than at
+    the middle of the drawn shape - measured over the library: -0.39 staff
+    spaces for Maestro, -0.49 for Opus, -0.27 for MuseScore's MScore, -0.67
+    for OpusSpecial - and anything comparing it against staff geometry reads
+    every glyph as most of half a space higher than it is.
+
+    The exception is worth knowing, because it is what the committed fixtures
+    are engraved with: Leland's embedded box is centred on the baseline
+    (measured 0.000 over 475 glyphs), so on a Leland page the box centre and a
+    notehead's ink centre coincide and this defect does not show. It shows for
+    Leland's FLAGS, whose ink is nowhere near either.
+
+    That bias cancels between two glyphs, which is why it survived: noteheads
+    kept their relative positions, chords still grouped, dots still found
+    their owners. It does NOT cancel against a staff line, a staff band, or
+    the middle-line split between a numerator and a denominator, and it was
+    deciding whether a one-glyph rest was a half or a whole - a twofold
+    difference in duration - from a number that was never the rest's position.
+
+    So `yc` is the INK centre, measured from the embedded outline (see
+    _InkBoxes). `y0`/`y1` are kept as what the trace said, and `height` with
+    them, because the metrics box is the right box for the two things that use
+    it: the advance width for horizontal gaps, and a font-wide row height for
+    grouping digits into a numeral.
+    """
+
+    __slots__ = ("family", "gid", "category", "x0", "y0", "x1", "y1", "code",
+                 "smufl", "baseline_y", "ink_y0", "ink_y1")
+
+    def __init__(self, family, gid, category, bbox, code, smufl=False,
+                 baseline_y=None, ink=None):
         self.family = family
         self.gid = gid
         self.category = category
         self.x0, self.y0, self.x1, self.y1 = bbox
         self.code = code
         self.smufl = smufl
+        # The text baseline this glyph was drawn on - the point the engraver
+        # placed it BY - and its measured ink extent, where the font could
+        # supply one.
+        self.baseline_y = baseline_y
+        self.ink_y0, self.ink_y1 = ink if ink is not None else (None, None)
 
     @property
     def calibration_key(self):
@@ -763,7 +896,37 @@ class GlyphEvent:
         return (self.x0 + self.x1) / 2
 
     @property
+    def ink_measured(self):
+        """Was this glyph's ink extent actually read from the font? Only an
+        ink box can answer a question about sub-space POSITION (see
+        half_or_whole_rest); the fallbacks below are good to a fraction of a
+        space, which is not the same thing."""
+        return self.ink_y0 is not None
+
+    @property
     def yc(self):
+        """The middle of the drawn shape - see the class docstring.
+
+        Falls back to the text baseline where the outline could not be read (a
+        CFF embed, a rotated span, a subset slot with no glyph). That is the
+        glyph's registration point, and for the glyphs whose position is
+        compared against staff geometry it is very nearly the ink centre:
+        measured over the library, a notehead's baseline sits within 0.013
+        staff spaces of its ink centre and a meter digit's within 0.036, in
+        Maestro, Opus, MScore and Leland alike. It is NOT good enough for the
+        sub-space parity the half/whole rest turns on - those rests' baselines
+        sit exactly ON the line grid in every one of those fonts, which is an
+        offset of zero and evidence for neither answer - which is why that
+        decision asks whether the ink was measured at all.
+
+        Falls back further to the metrics box centre for an event built by
+        hand from a box and nothing else, which is a test writing coordinates
+        down rather than a page being read.
+        """
+        if self.ink_y0 is not None:
+            return (self.ink_y0 + self.ink_y1) / 2
+        if self.baseline_y is not None:
+            return self.baseline_y
         return (self.y0 + self.y1) / 2
 
     @property
@@ -858,6 +1021,114 @@ def _embedded_font_names(doc, page):
     return names
 
 
+def _ink_boxes_by_name(doc, page):
+    """A function from a basefont NAME to that font's _InkBoxes, or None.
+
+    The SMuFL path has no MusicFont to hang an ink box off - a SMuFL font is
+    recognised from the codepoints it drew, and nothing on that path needs to
+    open the font to decide what a glyph MEANS (see SMUFL_CODE_MAP). Where the
+    glyph is is a different question: it needs the outline, because the text
+    trace's box is a metrics box (see GlyphEvent). So the outline is opened
+    here for measurement only, and failing to read it costs precision rather
+    than the decode.
+
+    Resolved lazily, and only for a name some span actually drew music glyphs
+    in: a page carries half a dozen embedded text fonts that this decoder
+    never reads a glyph from, and parsing those to measure glyphs nobody asks
+    about is work for nothing. Each resource is parsed once per DOCUMENT, like
+    the music fonts beside it.
+
+    A name that more than one distinct resource on the page answers to
+    resolves to None rather than to a guess: a SMuFL subset's glyph order is
+    minted per file, so a box read from the wrong resource is a wrong number,
+    and the text trace reports the font's NAME, not which resource drew the
+    span. Those glyphs fall back to the baseline origin, which SMuFL fixes as
+    each glyph's registration point.
+    """
+    cache = _doc_cache(doc, _INK_CACHE_ATTR)
+    xrefs = collections.defaultdict(set)
+    try:
+        fonts = page.get_fonts(full=True)
+    except Exception:
+        fonts = []
+    for f in fonts:
+        xref, ext, _ftype, basefont = f[0], f[1], f[2], f[3]
+        if not ext or ext in ("n/a", "none"):
+            continue
+        xrefs[basefont.split("+")[-1]].add(xref)
+    resolved = {}
+
+    def resolve(name):
+        if name not in resolved:
+            refs = xrefs.get(name) or ()
+            boxes = None
+            if len(refs) == 1:
+                xref = next(iter(refs))
+                if xref not in cache:
+                    cache[xref] = _load_ink_boxes(doc, xref)
+                boxes = cache[xref]
+            resolved[name] = boxes
+        return resolved[name]
+
+    return resolve
+
+
+def _load_ink_boxes(doc, xref):
+    """The ink boxes of one embedded font resource, or None. Never raises -
+    every reason this can fail (no font program, a CFF-flavour embed with no
+    `glyf`, a truncated subset) is a font whose glyph positions are simply
+    measured from the baseline instead."""
+    ttfont_cls = _ttfont_class()
+    if ttfont_cls is None:
+        return None
+    try:
+        content = doc.extract_font(xref)
+        if isinstance(content, tuple):
+            content = content[-1]
+        if not content:
+            return None
+        tt = ttfont_cls(io.BytesIO(content), fontNumber=0)
+        if "glyf" not in tt:
+            return None
+    except Exception:
+        return None
+    return _ink_boxes(tt)
+
+
+def _ink_scale(span):
+    """The size to scale a glyph's em-relative ink box by for this text span,
+    or None when the span's ink extent cannot be placed from it.
+
+    The trace's own `size` is that scale: checked against the advance width in
+    the embedded `hmtx` for every glyph a music font drew on a notation staff
+    in the sampled library, the two agree to within 1% on 407,469 of 407,537.
+
+    An em-relative box only maps onto page y for UPRIGHT text, so a rotated
+    span declines here and its glyphs are measured from the baseline instead
+    of being placed confidently wrong. The library holds 17 such characters
+    against 407,728 upright ones, so this is nearly - but not quite - a guard
+    against something that does not happen."""
+    size = span.get("size")
+    if not size or size <= 0:
+        return None
+    d = span.get("dir")
+    if d is not None and (abs(d[0] - 1.0) > 1e-6 or abs(d[1]) > 1e-6):
+        return None
+    return size
+
+
+def _ink_span_on_page(reader, gid, origin_y, size):
+    """(ink top, ink bottom) in page points, or None. Page y grows downward
+    and font y grows upward, so the glyph's yMax is its TOP."""
+    if reader is None or size is None or origin_y is None:
+        return None
+    em = reader.span(gid)
+    if em is None:
+        return None
+    ymin, ymax = em
+    return origin_y - ymax * size, origin_y - ymin * size
+
+
 def _smufl_music_fonts(doc, page, trace):
     """Which fonts on this page may be read as SMuFL music fonts?
 
@@ -944,6 +1215,11 @@ def extract_glyph_events(page):
         _GLYPH_EVENTS_CACHE[page] = result
         return result
 
+    # Ink boxes for fonts that got no MusicFont (the SMuFL path). A
+    # Maestro/Opus glyph takes its ink box from the resource that named it
+    # instead - see MusicFont.ink.
+    ink_for = _ink_boxes_by_name(page.parent, page)
+
     events = []
     unknown = []
     for span in trace:
@@ -964,18 +1240,24 @@ def extract_glyph_events(page):
             # the notehead was neither read nor reported.
             if not smufl_names:
                 continue
+            size = _ink_scale(span)
+            reader = ink_for(fname)
             for ch in span.get("chars", []):
-                code, gid, _origin, bbox = ch
+                code, gid, origin, bbox = ch
                 if not SMUFL_RANGE[0] <= code <= SMUFL_RANGE[1]:
                     # a music font can also carry plain text characters
                     # (rehearsal marks, fingerings); those are not music
                     # symbols and must not count as unrecognised ones.
                     continue
-                ev = GlyphEvent(fname, gid, SMUFL_CODE_MAP.get(code), bbox, code, smufl=True)
+                oy = origin[1] if origin else None
+                ev = GlyphEvent(fname, gid, SMUFL_CODE_MAP.get(code), bbox, code, smufl=True,
+                                baseline_y=oy,
+                                ink=_ink_span_on_page(reader, gid, oy, size))
                 events.append(ev)
                 if ev.category is None:
                     unknown.append(ev)
             continue
+        size = _ink_scale(span)
         for ch in span.get("chars", []):
             code, gid, origin, bbox = ch
             # try each font resource sharing this family name until one
@@ -984,12 +1266,22 @@ def extract_glyph_events(page):
             # one Opus resource, this picks whichever one actually knows
             # this GID instead of always trusting the first-loaded xref.
             cat = None
+            reader = None
             for mf in candidates:
                 c = mf.category(gid)
                 if c is not None:
                     cat = c
+                    # ...and the ink box comes from that same resource, which
+                    # is the one whose glyph order this gid was read against.
+                    reader = mf.ink
                     break
-            ev = GlyphEvent(fname, gid, cat, bbox, code)
+            if reader is None and len(candidates) == 1:
+                # An unrecognised glyph still has a position, and with one
+                # resource on the page there is no doubt about whose it is.
+                reader = candidates[0].ink
+            oy = origin[1] if origin else None
+            ev = GlyphEvent(fname, gid, cat, bbox, code, baseline_y=oy,
+                            ink=_ink_span_on_page(reader, gid, oy, size))
             events.append(ev)
             if cat is None:
                 unknown.append(ev)
@@ -1209,6 +1501,66 @@ def extract_stems_beams_curves(page, y_lo, y_hi, x_lo, x_hi, tol=None):
 
 DURATION_CODE = {4.0: 1, 2.0: 2, 1.0: 4, 0.5: 8, 0.25: 16, 0.125: 32}
 
+# A half rest SITS ON a staff line; a whole rest HANGS BELOW one. Both are
+# drawn half a staff space deep, so each one's INK CENTRE lands a quarter of a
+# space off the line grid - a quarter ABOVE a line for a half rest, a quarter
+# BELOW one for a whole rest.
+#
+# Measured over every one-glyph rest in the sampled library plus every rest a
+# SMuFL font spelled out (314 glyphs): the offset is 0.23 to 0.35 of a space
+# either side of a line, never anything below 0.23 and never above 0.35. The
+# window below is that population with room on both sides, and its two edges
+# reject the two things that are not a reading: an offset near zero (the ink
+# centre landing ON a line, which is where a rest whose ink extent could not be
+# measured ends up, because these rests' BASELINES sit on the grid in Maestro,
+# Opus and Leland alike) and an offset near half a space (the ink centre midway
+# between two lines, which no engraver draws).
+REST_PARITY_MIN = 0.125
+REST_PARITY_MAX = 0.375
+
+
+def half_or_whole_rest(yc, line_ys, spacing):
+    """Is this one-glyph rest a HALF rest or a WHOLE one? Returns
+    (base_units, decided) - 2.0 for a half rest, 4.0 for a whole one.
+
+    Maestro and Opus draw both rests with a SINGLE glyph (294 of the 2,795
+    rest glyphs in the sampled library are that one id), so geometry is the
+    only discriminator there is, for a twofold difference in duration: a whole
+    rest read as a half loses two quarter notes of silence out of the bar, a
+    half read as a whole invents two, and either shifts everything after it.
+
+    The discriminator is sub-space PARITY against the line grid - which side
+    of a line the ink sits on - and not, as this used to ask, which staff line
+    the glyph is NEAREST. The difference is not a tolerance, it is a kind:
+      * Parity holds wherever on the staff the rest was engraved, including
+        the ledger positions above and below it that a second voice's rests
+        use. Nearest-line put every rest below the middle line in the same
+        bucket, so a whole rest hanging under the staff read as a half.
+      * Parity is measured against the ink. Nearest-line was measured against
+        the metrics box centre (see GlyphEvent), which is a fixed distance
+        from the BASELINE - nearly half a space, most of the way to the other
+        answer.
+    Checked against the one population where the answer is known independently
+    of geometry: the rests a SMuFL font spells out in the codepoint itself.
+    Parity agrees with the engraving on all 20 of them in the library;
+    nearest-line disagrees with it on 4.
+
+    `decided` is False where the geometry says neither - no staff lines to
+    measure against, no usable spacing, or an offset outside the measured
+    window (see REST_PARITY_MIN). Those are read as a HALF rest, which is what
+    254 of the 294 one-glyph rests in the library are, and the caller reports
+    the count rather than passing the guess off as a reading. Nothing in the
+    library needs it: all 294 are decided, and each one's ink was measured.
+    """
+    if not line_ys or not spacing or spacing <= 0:
+        return 2.0, False
+    offset = (yc - line_ys[0]) / spacing
+    offset -= round(offset)
+    if REST_PARITY_MIN <= abs(offset) <= REST_PARITY_MAX:
+        # Page y grows downward, so a positive offset is ink BELOW the line.
+        return (4.0 if offset > 0 else 2.0), True
+    return 2.0, False
+
 
 class NoteEvent:
     __slots__ = ("x", "y", "base_units", "flags", "dotted", "is_rest",
@@ -1333,6 +1685,30 @@ def _has_stem_near(stems, stem_xs, x0, x1, yc, tol):
                       x_tol=tol.rest_stem_x_tol, y_tol=tol.rest_stem_y_tol) is not None
 
 
+def _at_stem_end(ev, free_y, tol):
+    """Is this glyph drawn ON that stem end?
+
+    A flag is joined to the tip of its stem, so the tip falls INSIDE the
+    flag's ink - true for 4,669 of the 4,843 flag attachments in the sampled
+    library, with the rest inside the pad - and that is the test to make,
+    because a flag's ink reaches a long way from the point it attaches at.
+    Its centre does not reach it: a 32nd hook's ink centre sits two staff
+    spaces from the tip in Leland, and a centre-distance test with a tolerance
+    wide enough to cover that would have to reach four spaces to either side,
+    far enough to take a neighbouring voice's hook. At the tolerance it did
+    have, it read the fixture's 32nds as quarters - a 32-fold error in four
+    durations - which is what the flag_ink_pad note measures from the other
+    side.
+
+    Falls back to the centre-distance test where the glyph's ink extent is
+    unknown (see GlyphEvent.yc) - which is what the whole decoder used
+    before the ink was available, tolerance included.
+    """
+    if ev.ink_measured:
+        return ev.ink_y0 - tol.flag_ink_pad <= free_y <= ev.ink_y1 + tol.flag_ink_pad
+    return abs(ev.yc - free_y) <= tol.flag_y_tol
+
+
 def _flag_count_near(flag_events, flag_xs, stem, notehead_yc, tol):
     """Count flag hooks attached at the free end of a stem (the end further
     from the notehead)."""
@@ -1341,7 +1717,7 @@ def _flag_count_near(flag_events, flag_xs, stem, notehead_yc, tol):
     hooks = 0
     for i in range(lo, hi):
         ev = flag_events[i]
-        if abs(ev.yc - free_y) > tol.flag_y_tol:
+        if not _at_stem_end(ev, free_y, tol):
             continue
         hooks += FLAG_HOOKS.get(ev.category, 1)
     return hooks
@@ -1473,6 +1849,43 @@ def _mark_ties(notes, curves, tol):
                 break
 
 
+# An augmentation dot is drawn in the MIDDLE OF A SPACE, never on a line -
+# measured over every dot in the sampled library (11,405 of them), 11,350 sit
+# within a tenth of a space of a space's centre. So there are exactly three
+# places a dot can be relative to the note it belongs to, and the engraving
+# convention ranks them: the note's OWN space (a note sitting in a space), the
+# space ABOVE it (a note on a line - the default), or the space BELOW it (the
+# same note, where the space above is taken by another voice).
+#
+# The ranking is the discriminator, because the distances are not: a dot in
+# the space above a note on a line is exactly as far from the note one space
+# higher as it is from its own, and a nearest-|dy| test therefore decides
+# which by rounding. It did, and getting it wrong gave one notehead two
+# vertically stacked dots - which is not what a double dot is; a double dot is
+# two dots side by side - while the note the second dot belonged to lost half
+# its length. Both real cases are in the library: a chord of noteheads a space
+# apart, each with its own raised dot, and a lower voice's dotted whole note
+# whose dot is in the space below it.
+_DOT_TIERS = (0.0, -0.5, 0.5)
+# Engraving jitter around each of those positions. A quarter space is also the
+# most it can be: the three positions are half a space apart, so a wider window
+# would make them overlap and there would be nothing to rank. Measured over the
+# library, the widest deviation from one of them is 0.239 of a space, which this
+# just covers.
+_DOT_Y_SLACK = 0.25
+
+
+def _dot_fit(offset, spacing):
+    """Which of the three places a dot can sit relative to a note is this, and
+    how far off it - (tier, deviation), or None for an offset that is none of
+    them. Lower tier is the likelier engraving; see _DOT_TIERS."""
+    for tier, expected in enumerate(_DOT_TIERS):
+        deviation = abs(offset - expected * spacing)
+        if deviation <= _DOT_Y_SLACK * spacing:
+            return tier, deviation
+    return None
+
+
 def _assign_dots(owners, dot_events, tol):
     """Assign each augmentation-dot glyph to exactly ONE owner (notehead or
     rest) and return {id(owner): dot_count}.
@@ -1484,6 +1897,11 @@ def _assign_dots(owners, dot_events, tol):
     wide and cannot itself separate two voices a staff step apart. That is
     how a 3/4 bar came to hold a `:2 ...{dd}` - 3.5 quarters, more than the
     bar can physically contain. One dot, one owner fixes it.
+
+    WHICH owner is then decided by where a dot is allowed to be relative to
+    its note, in the order an engraver puts it there (see _DOT_TIERS), rather
+    than by which notehead's centre is nearest - a question two noteheads a
+    space apart answer with a tie.
     """
     counts = collections.Counter()
     if not owners or not dot_events:
@@ -1496,10 +1914,11 @@ def _assign_dots(owners, dot_events, tol):
         best_key = None
         for i in range(lo, hi):
             ev = owners[i]
-            dy = abs(ev.yc - dot.yc)
-            if dy > tol.dot_y_tol:
+            # Page y grows downward, so a dot ABOVE its notehead is negative.
+            fit = _dot_fit(dot.yc - ev.yc, tol.spacing)
+            if fit is None:
                 continue
-            key = (round(dy, 3), round(abs(dot.xc - ev.x1), 3))
+            key = (fit[0], round(fit[1], 3), round(abs(dot.xc - ev.x1), 3))
             if best_key is None or key < best_key:
                 best, best_key = ev, key
         if best is not None:
@@ -1512,17 +1931,22 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
     """Core decode for one standard-notation staff: returns (NoteEvent list
     sorted by x, stats).
 
-    line_ys: sorted list of the 5 staff line y-coordinates (for half/whole
-    rest disambiguation). spacing: that staff's line spacing, used to scale
-    every geometric tolerance (defaults to the spacing implied by line_ys).
+    line_ys: sorted list of the 5 staff line y-coordinates. They are the grid
+    a one-glyph rest's half-or-whole reading is measured against (see
+    half_or_whole_rest), and an empty list is tolerated the way the spacing
+    helper beside it tolerates one - such a staff reports its rests as
+    undecided instead of raising. spacing: that staff's line spacing, used to
+    scale every geometric tolerance (defaults to the spacing implied by
+    line_ys).
 
     `stats` is the decode's own honesty record and callers are expected to
     ACT on it, not just log it: unknown_glyphs / unknown_ratio say how much
     of this staff's music-font text fell outside the calibrated vocabulary,
-    and unknown_at_flag_position counts unrecognised glyphs sitting exactly
+    unknown_at_flag_position counts unrecognised glyphs sitting exactly
     where a flag would attach - the shape of "this piece uses 32nd flags,
     grace notes or an articulation we never calibrated", which decodes as
-    systematically wrong durations while looking perfectly healthy.
+    systematically wrong durations while looking perfectly healthy - and
+    undecided_rests counts rests whose value was guessed rather than read.
     """
     tol = _Tol(spacing if spacing else _spacing_from_lines(line_ys),
                staff_bottom - staff_top, staff_x1 - staff_x0)
@@ -1537,6 +1961,11 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         "stem_count": 0,
         "beam_segment_count": 0,
         "curve_count": 0,
+        # One-glyph rests whose half-or-whole reading the geometry could not
+        # give (see half_or_whole_rest). Read as half rests, and reported so
+        # the caller can say the durations on this staff were partly guessed
+        # rather than read - see _resolve_rhythm_source.
+        "undecided_rests": 0,
         "font_warnings": list(glyphs.warnings),
     }
     if not glyphs.events:
@@ -1582,6 +2011,7 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
 
     notes = []
     stems_by_key = {}
+    undecided_rests = 0
     for ev in staff_events:
         if ev.category in NOTEHEAD_CATS:
             stem = None
@@ -1652,10 +2082,16 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
             else:
                 cat = ev.category
             if cat == "rest_half_whole":
-                # whole rest hangs below the 2nd line from top; half rest
-                # sits on the middle (3rd) line - use nearest line index
-                nearest_idx = min(range(len(line_ys)), key=lambda i: abs(line_ys[i] - ev.yc))
-                base = 4.0 if nearest_idx <= 1 else 2.0
+                base, decided = half_or_whole_rest(ev.yc, line_ys, tol.spacing)
+                if not decided or not ev.ink_measured:
+                    # Both halves of the reading have to hold: the parity has
+                    # to be one of the two an engraver draws, AND it has to
+                    # have been measured on the ink. Without the outline the
+                    # position falls back to the baseline, which sits ON the
+                    # grid for exactly this glyph in every calibrated font -
+                    # an offset of zero, which is not evidence for either
+                    # answer even when rounding lands it inside the window.
+                    base, undecided_rests = 2.0, undecided_rests + 1
             else:
                 # A font that spells the rest's value in the glyph itself
                 # (see REST_VALUES) needs no positional guess.
@@ -1680,7 +2116,7 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         if stem is None:
             continue
         free_y = stem.y1 if abs(stem.y1 - u.yc) > abs(stem.y0 - u.yc) else stem.y0
-        if abs(u.yc - free_y) <= tol.flag_y_tol:
+        if _at_stem_end(u, free_y, tol):
             suspect += 1
 
     stats.update({
@@ -1698,6 +2134,7 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         "stem_count": len(stems),
         "beam_segment_count": len(beams),
         "curve_count": len(curves),
+        "undecided_rests": undecided_rests,
     })
     return notes, stats
 

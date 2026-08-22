@@ -1124,6 +1124,20 @@ def test_high_unknown_ratio_alone_downgrades(monkeypatch):
     assert src.provenance == tabextract.PROV_GLYPHS_DEGRADED
 
 
+def test_a_rest_read_as_the_likelier_of_two_values_is_not_reported_as_read(monkeypatch):
+    """Maestro and Opus draw the half and the whole rest with ONE glyph, so a
+    rest whose position says neither (no detected staff lines to measure it
+    against, or an outline that could not be read) is read as the commoner of
+    the two. That is a twofold difference in one rest's duration, which is the
+    whole bar's arithmetic - so it caps what may be claimed about this staff
+    rather than sitting in the stats unread."""
+    src = _resolve_with_stats(monkeypatch, _stats(undecided_rests=1))
+    assert src.provenance == tabextract.PROV_GLYPHS_DEGRADED
+    assert src.uses_glyphs, "every other duration on the staff was still read"
+    assert "1 rest(s)" in src.detail
+    assert "read as a half rest" in src.detail
+
+
 def test_no_decoded_events_falls_back_with_the_font_reason(monkeypatch):
     src = _resolve_with_stats(
         monkeypatch, _stats(font_warnings=["Opus is embedded with 'cff' outlines"]), notes=[])

@@ -39,6 +39,7 @@ coverage and is not is worse than none:
     A regression that only shows up in density will still only show up
     there.
 """
+import collections
 import re
 import xml.etree.ElementTree as ET
 
@@ -589,6 +590,48 @@ def test_every_rest_value_is_read_from_the_glyph_that_spells_it(engraved):
     rests = [(q, notes) for bar in emitted_bars(result.alphatex)
              for voice in bar for q, notes in voice if not notes]
     assert sorted({q for q, _n in rests}) == [0.125, 0.25, 0.5, 1.0, 2.0, 4.0], rests
+
+
+def test_the_rest_the_engraving_names_is_the_rest_its_position_says(engraved):
+    """The positional rule, checked against the one population where the
+    answer is known WITHOUT it.
+
+    Maestro and Opus draw the half and the whole rest with a single glyph, so
+    for those fonts geometry is the only discriminator there is - for a
+    twofold difference in duration. A SMuFL font names the value in the
+    codepoint, so this fixture's rests are ground truth for the rule: apply
+    the geometry to them and it has to reach the same answer the engraving
+    already stated. Measured over the library the two disagree on 4 of the 19
+    rests where the truth is knowable, and every one of those disagreements is
+    the geometry being wrong.
+    """
+    doc = fitz.open(engraved("rests_and_flags"))
+    named = {"rest_whole": 4.0, "rest_half": 2.0}
+    checked = collections.Counter()
+    try:
+        for page in doc:
+            staves, _anomalies = tabextract._detect_staves(page)
+            standard = [s for s in staves if s.kind == "standard"]
+            glyphs = glyph_rhythm.extract_glyph_events(page)
+            for staff in standard:
+                pad = (staff.bottom - staff.top) * 1.6
+                for ev in glyphs.events:
+                    if ev.category not in named:
+                        continue
+                    if not staff.top - pad <= ev.yc <= staff.bottom + pad:
+                        continue
+                    assert ev.ink_measured, "the rule needs the ink, not the metrics box"
+                    base, decided = glyph_rhythm.half_or_whole_rest(
+                        ev.yc, staff.line_ys, staff.spacing)
+                    assert decided, (ev.category, ev.yc, staff.line_ys)
+                    assert base == named[ev.category], (
+                        f"the engraving says {ev.category} ({named[ev.category]} quarters), "
+                        f"its position on the staff says {base}")
+                    checked[ev.category] += 1
+    finally:
+        doc.close()
+    # ...and both readings really were exercised, in both directions
+    assert checked == {"rest_whole": 1, "rest_half": 1}, checked
 
 
 def test_a_flagged_thirty_second_is_not_read_as_a_quarter(engraved):

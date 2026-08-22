@@ -469,13 +469,16 @@ that needs it has to get it from the producer.
   the voice there; MuseScore rewrites it as an invisible rest. A `<forward>`
   anywhere else must advance the position, or every note after it sounds early.
 - **The marking does not survive a save by another program.** Measured over the
-  same library with MuseScore 4: every one of 3,464 `<forward>` elements loses
-  its `<footnote>` and its `<voice>`, a trailing one is rewritten as an
-  invisible rest and a leading one as a `<backup>` with no `<forward>` at all.
-  Net effect on a Rule 8 check of the re-saved files: defective measures fall
-  from 6,013 to 5,707 and identifiable inferred silence from 5,831.6 to 4,466.2
-  quarter notes, so **306 measures this profile reports defective read as
-  conforming to anything downstream of that save**. The agreement between a
+  same library with MuseScore 4, re-saving the 293 files it emits: every one of
+  the 3,109 `<forward>` elements that survives as one loses its `<footnote>`
+  and its `<voice>`, a trailing one is rewritten as an invisible rest and a
+  leading one as a `<backup>` with no `<forward>` at all. Net effect on a Rule
+  8 check of the re-saved files — a measure counted once whichever way it is
+  wrong, which is the `bars_defective` figure below — is that defective
+  measures fall from 5,931 to 5,600 and identifiable inferred silence from
+  5,450.5 to 3,848.2 quarter notes, so **331 measures this profile reports
+  defective read as conforming to anything downstream of that save**. The
+  agreement between a
   producer's figures and an independent check holds for the file *as the
   producer wrote it*. Verify against that file, not against a round trip
   through an editor — see [Checking a file](#checking-a-file).
