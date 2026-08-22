@@ -190,10 +190,28 @@ test("a refused scan says so on the page, and can be confirmed", async ({ page, 
   await alert.getByRole("button", { name: /I meant to do that/i }).click();
   await expect(page.locator(".alert")).toHaveCount(0, { timeout: 30_000 });
 
-  const after = await (await request.get("/api/scan/status")).json();
-  expect(after.refused).toBe(false);
-  expect(after.missing).toBe(2);
-  // Marked, never deleted.
+  // Polled until the rescan the acknowledgement started has actually LANDED,
+  // rather than read once. The alert disappearing is a client-side signal - the
+  // page refetched and saw the refusal gone - while the reconciliation that
+  // marks both rows happens in the scan behind it, and this read goes out of
+  // band through the request context rather than through the page, so it is not
+  // ordered against that scan finishing. Read once, it overtook the scan and
+  // reported `missing: 0`: a real failure, seen once in a full-suite run and
+  // never in isolation, which is the signature of exactly this race.
+  //
+  // The same trap instruments.spec.js already names - "those assertions are
+  // barriers, not only checks" - and the same one this file's own comment below
+  // records having been caught by on a slower runner. Every assertion is kept;
+  // only the reading of them becomes a barrier.
+  await expect(async () => {
+    const after = await (await request.get("/api/scan/status")).json();
+    expect(after.scanning, JSON.stringify(after)).toBe(false);
+    expect(after.refused, JSON.stringify(after)).toBe(false);
+    expect(after.missing, JSON.stringify(after)).toBe(2);
+  }).toPass({ timeout: 30_000 });
+
+  // Marked, never deleted. Ordered after the barrier above, so this reads the
+  // library the reconciliation actually left behind.
   const listed = await scores(request);
   for (const name of OWN) {
     const row = listed.find((s) => s.path === name);
