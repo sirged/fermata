@@ -316,6 +316,31 @@ test("a week states its days and its total, or says plainly there was none", () 
   expect(periodStatement(null)).toBe("No practice recorded this week");
 });
 
+test("a week says how much of its total rests on a day nobody recorded, and says nothing when none does", () => {
+  // Issue #103. A single session has always said whether its day was recorded
+  // or taken from its UTC timestamp; the total said nothing, so a window
+  // spanning the upgrade added two different kinds of day together with
+  // nothing marking the join - and the server had been reporting the figure to
+  // nobody ever since.
+  expect(periodStatement({ days_practised: 4, seconds: 12000, sessions_inferred: 2 })).toBe(
+    "4 days, 3h 20m (2 sessions on an inferred day)",
+  );
+  expect(periodStatement({ days_practised: 1, seconds: 600, sessions_inferred: 1 })).toBe(
+    "1 day, 10m (1 session on an inferred day)",
+  );
+  // Silent when there is nothing to disclose, which on any install that has
+  // only ever run this version is always - a note that appears every week
+  // stops being read.
+  expect(periodStatement({ days_practised: 4, seconds: 12000, sessions_inferred: 0 })).toBe(
+    "4 days, 3h 20m",
+  );
+  expect(periodStatement({ days_practised: 4, seconds: 12000 })).toBe("4 days, 3h 20m");
+  // And it is still said in the vocabulary this feature is allowed to use.
+  expect(
+    forbiddenWord(periodStatement({ days_practised: 4, seconds: 12000, sessions_inferred: 2 })),
+  ).toBeNull();
+});
+
 test("a past week does not call itself this week", () => {
   // It did, for every row in the review - so a quiet spell in July rendered as
   // three consecutive rows reading "No practice recorded this week" beside

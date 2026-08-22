@@ -648,7 +648,20 @@
           <ul class="session-list">
             {#each sessions as session (session.id)}
               <li class="session" data-session={session.id}>
-                <span class="session-day">{session.local_date}</span>
+                <span class="session-day">
+                  {session.local_date}
+                  <!-- Whether that day was RECORDED or worked out from the
+                       row's UTC timestamp, which is the difference between a
+                       fact and an attribution. The server has always said
+                       which (local_date_source) and nothing read it, so a day
+                       that was inferred looked exactly like one somebody's own
+                       clock reported - and for practice logged before the day
+                       was stored at all, that is every row. Said next to the
+                       date it qualifies, in visible text. -->
+                  {#if session.local_date_source && session.local_date_source !== "recorded"}
+                    <span class="day-inferred">inferred</span>
+                  {/if}
+                </span>
                 <span class="session-what" class:orphaned={session.score_missing}>
                   {#if session.score_title}
                     <a href={"#/score/" + session.score_id}>{session.score_title}</a>
@@ -1059,6 +1072,14 @@
     color: var(--ink-dim);
     font-size: 13px;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Quieter than the date it sits beside, and not styled as a fault - nothing
+     went wrong, a day was attributed rather than recorded. */
+  .day-inferred {
+    font-size: 11px;
+    font-variant-numeric: normal;
+    opacity: 0.75;
   }
 
   /* NOT .session-detail: that is the post-session panel in the viewer, and two

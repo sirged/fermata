@@ -17,6 +17,12 @@
 const DIVISIONS = 480; // ticks per quarter note
 const PITCHES = ["C", "D", "E", "F", "G", "A", "B", "C"];
 
+// `tempo` of null emits NO tempo direction at all - not a direction carrying
+// 120, and not a <words>Andante</words> either. That is the shape of the
+// editions this library is mostly made of, and the one the metronome used to
+// describe as "marked ♩ = 120": alphaTab's Score.tempo is a getter that
+// answers 120 when the first bar holds no tempo automation, so nothing
+// downstream could tell it apart from a score that really did print 120.
 function timeAndTempoBlock(numerator, denominator, tempo) {
   return `
       <attributes>
@@ -27,13 +33,17 @@ function timeAndTempoBlock(numerator, denominator, tempo) {
           <beat-type>${denominator}</beat-type>
         </time>
         <clef><sign>G</sign><line>2</line></clef>
-      </attributes>
+      </attributes>${
+        tempo == null
+          ? ""
+          : `
       <direction placement="above">
         <direction-type>
           <metronome><beat-unit>quarter</beat-unit><per-minute>${tempo}</per-minute></metronome>
         </direction-type>
         <sound tempo="${tempo}" />
-      </direction>`;
+      </direction>`
+      }`;
 }
 
 function notesForBar(numerator, denominator) {
@@ -170,6 +180,22 @@ export const METRONOME_MUSICXML_FAST = buildMusicXml({
   tempo: 144,
 });
 
+// 4/4 with NO tempo direction anywhere - the fixture the two existing honesty
+// tests for the tempo control did not have. Both of those declare a tempo (96
+// and 90), which is why the `?? null` guard meant to catch an undeclared one
+// was never exercised and was in fact dead code (issue #102).
+//
+// 4/4 rather than 6/8 so the click rate and the quarter-note tempo are the
+// same number: the base tempo IS the readout, and a test can tell "the
+// fallback was used" from "something else was used" without a meter
+// conversion in the way.
+export const METRONOME_MUSICXML_NO_TEMPO = buildMusicXml({
+  measures: 8,
+  numerator: 4,
+  denominator: 4,
+  tempo: null,
+});
+
 function scoreMeta(id, title) {
   // file_type not "pdf" is what routes Viewer.svelte to TabViewer directly
   // (see Viewer.svelte) rather than through ScoreCompare/PdfViewer.
@@ -222,4 +248,9 @@ export async function stubMetronomeScoreShortLoop(page) {
  * regression test. */
 export async function stubMetronomeScoreRepeat(page) {
   await stubOneScore(page, 4, scoreMeta(4, "Repeat metronome fixture"), METRONOME_MUSICXML_REPEAT);
+}
+
+/** Score id 6: 4/4 with no tempo direction at all. */
+export async function stubMetronomeScoreNoTempo(page) {
+  await stubOneScore(page, 6, scoreMeta(6, "No-tempo metronome fixture"), METRONOME_MUSICXML_NO_TEMPO);
 }

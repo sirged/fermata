@@ -21,8 +21,10 @@
 import { expect, test } from "@playwright/test";
 
 import {
+  METRONOME_MUSICXML_NO_TEMPO,
   stubMetronomeScore,
   stubMetronomeScoreFast,
+  stubMetronomeScoreNoTempo,
   stubMetronomeScoreOther,
   stubMetronomeScoreRepeat,
 } from "./fixtures/metronome-score.js";
@@ -357,6 +359,35 @@ test("the same control over a transcription says transcribed, so the number it i
   await expect(baseNote(page).locator(".mark")).toHaveCount(1);
 });
 
+test("a transcription whose own document declares no tempo says default rather than transcribed - nothing was lifted off anything", async ({
+  page,
+}) => {
+  // The interaction between the two words, and the case that matters most in
+  // practice: the extractor emits no tempo direction at all when it read no
+  // tempo off the PDF (see musicxml.build - `if opening and tempo`), so this is
+  // the shape a great many real transcriptions have. "transcribed ♩ = 120"
+  // would claim a number was lifted out of a scanned page; the 120 is the
+  // renderer's fallback and came from nowhere.
+  await stubScoreApi(
+    page,
+    transcriptionResponse({
+      warnings: [],
+      confidence: CLEAN_CONFIDENCE,
+      content: METRONOME_MUSICXML_NO_TEMPO,
+      format: "musicxml",
+    }),
+  );
+  await page.goto("/#/score/1");
+  await expect(playButton(page)).toBeEnabled({ timeout: 30_000 });
+  await metronomeButton(page).click();
+  await expect(baseNote(page)).toHaveText(/default/);
+  await expect(baseNote(page)).toContainText("none in the score");
+  // Anchored on .metronome-base, which the transcription test above proves can
+  // match on this very route.
+  await expect(baseNote(page)).not.toContainText("transcribed");
+  await expect(baseNote(page)).not.toContainText("marked");
+});
+
 // ------------------------------------------------------ on the practice page
 
 test("the practice page has a click of its own, pre-filled from the tempo the last session was working towards, and it really clicks there", async ({
@@ -445,6 +476,48 @@ test("a tempo set up before stepping into gig mode is still set when stepping ba
   const rate = await measuredRate(page, 4, 30_000);
   expect(rate, `measured ${rate}`).toBeGreaterThan(66);
   expect(rate, `measured ${rate}`).toBeLessThan(68);
+});
+
+test("a score that prints no tempo at all calls the number a default and says there was none to read", async ({
+  page,
+}) => {
+  // Issue #102, and the reason the two tests above could both pass while this
+  // was broken: they use fixtures that DECLARE a tempo. alphaTab's
+  // Score.tempo is a getter answering 120 whenever the first bar holds no
+  // tempo automation, so an edition printing *Andante* and no number - most of
+  // the classical material in this library - was reported as
+  // "marked ♩ = 120". A value we invented, presented as one we read, on the
+  // most visible number on the control.
+  await stubMetronomeScoreNoTempo(page);
+  await page.goto("/#/score/6");
+  await expect(playButton(page)).toBeEnabled({ timeout: 30_000 });
+  await metronomeButton(page).click();
+
+  // The word first: "default", never "marked". Asserted on .metronome-base,
+  // which the two tests above prove can match, so "no such element" cannot be
+  // what makes the negative assertion pass.
+  await expect(baseNote(page)).toHaveText(/default/);
+  await expect(baseNote(page)).not.toContainText("marked");
+  await expect(baseNote(page)).not.toContainText("transcribed");
+  // ...and then, in visible text rather than a title attribute, that there was
+  // nothing to read. "default ♩ = 120" alone still leaves a reader working out
+  // whether 120 came from somewhere.
+  await expect(baseNote(page)).toContainText("none in the score");
+  await expect(baseNote(page)).toContainText("120");
+  // The same unobtrusive mark the app uses for anything unverified - present
+  // here, and absent on the printed-marking score above, which is what makes
+  // it mean anything.
+  await expect(baseNote(page).locator(".mark")).toHaveCount(1);
+
+  // The number is still the number the click actually runs at. Saying "default
+  // 120" beside a click running at something else would be a different lie,
+  // and 4/4 means the quarter-note base and the click rate are one number.
+  await expect(readout(page)).toHaveText("120");
+  await page.locator('button:has-text("Loop")').click();
+  await playButton(page).click();
+  const rate = await measuredRate(page, 8);
+  expect(rate, `measured ${rate}`).toBeGreaterThan(119);
+  expect(rate, `measured ${rate}`).toBeLessThan(121);
 });
 
 // ------------------------------------------- where the range runs out

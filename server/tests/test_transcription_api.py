@@ -52,6 +52,62 @@ def test_edited_transcription_survives_re_extraction(app_env, extractable_pdf, m
     assert {r["source"] for r in rows} == {"edited", "extracted"}
 
 
+def test_how_the_meter_key_and_tuning_were_obtained_survives_a_reload(
+    app_env, extractable_pdf, monkeypatch, insert_score
+):
+    """Whether each of those three was READ or ASSUMED has to outlive the
+    response that extracted it.
+
+    It did not. The extractor works the distinction out, POST /transcribe
+    echoed it, and every later read of the same row - which is every ordinary
+    visit to a score - handed back the assumed value with nothing saying it was
+    assumed. An interface cannot show what it is never told, and this is the
+    half of issue #103 that had to move on the server for the other half to be
+    possible at all.
+
+    Reading them back through GET and comparing against POST is the point: it
+    fails if the keys are echoed but not stored, which is exactly the state
+    this was in.
+    """
+    monkeypatch.setattr(api, "LIBRARY_DIR", extractable_pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, extractable_pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    # The fixture's meter and key really are decoded off the engraving, so
+    # "read" is the true answer here and a test that only ever saw "assumed"
+    # could not tell the two apart.
+    assert posted["time_signature_source"] == "glyph-decoded"
+    assert posted["time_signature"] == [4, 4]
+    assert posted["key_signature_source"] == "glyph-decoded"
+    # Nothing labelled a tuning, which is the assumption #80 is about - the
+    # standard six strings, recorded as what was actually used.
+    assert posted["tuning_label"] is None
+    assert posted["tuning"] == ["E2", "A2", "D3", "G3", "B3", "E4"]
+
+    fetched = api.get_transcription(score_id)
+    for key in (
+        "time_signature",
+        "time_signature_source",
+        "key_fifths",
+        "key_signature_source",
+        "tuning",
+        "tuning_label",
+    ):
+        assert fetched[key] == posted[key], key
+
+    # A hand edit measures nothing, so it states "not recorded" rather than
+    # keeping the extraction's answer - the same rule the bar counts follow,
+    # and for the same reason: a client that merges this response over the one
+    # it already holds must not go on reporting provenance for content that has
+    # been replaced.
+    edited = api.save_transcription(
+        score_id, api.TranscriptionEditIn(content='\\title "hand edited"\n.\n:4 0.1 |')
+    )
+    for key in ("time_signature", "time_signature_source", "tuning", "tuning_label"):
+        assert edited[key] is None, key
+
+
 def test_get_transcription_404_when_none_exists(app_env, insert_score):
     conn = db.connect()
     score_id = insert_score(conn, "nope.pdf")

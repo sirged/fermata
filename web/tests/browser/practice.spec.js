@@ -72,6 +72,55 @@ test.beforeEach(async ({ page, request }) => {
   await expect(week(page)).toBeVisible();
 });
 
+test("a practice day nobody recorded says so beside the date, and the week's total says how much of it rests on one", async ({
+  page,
+  request,
+}) => {
+  // Issue #103. The server has always answered `local_date_source` on a
+  // session and `sessions_inferred` on a period's facts, and nothing in the
+  // interface read either - so a day worked out from a UTC timestamp looked
+  // exactly like one a person's own clock reported. For practice logged before
+  // the day was stored at all, that is every row an existing install has.
+  //
+  // Logged with no local_date, which is what produces an inferred day - the
+  // same shape those older rows have.
+  const inferred = await request.post("/api/practice/sessions", {
+    data: { activity: "technique", seconds: 1800 },
+  });
+  expect(inferred.ok(), await inferred.text()).toBe(true);
+  const inferredSession = await inferred.json();
+  expect(
+    inferredSession.local_date_source,
+    "the server is expected to call this day inferred, or this test proves nothing",
+  ).toBe("utc_date");
+  // ...and one whose day WAS recorded, so the mark below is known to be about
+  // the first row rather than about every row.
+  await logPractice(request, { day: today, minutes: 20 });
+
+  const inferredId = inferredSession.id;
+
+  await page.reload();
+  await expect(week(page)).toBeVisible();
+  await expect(sessionRows(page)).toHaveCount(2);
+  // On THAT row, identified by its own id rather than by position - both
+  // sessions land on the same date here, so "one row is marked" would also be
+  // satisfied by marking the wrong one.
+  const marked = page.locator(`.session-list .session[data-session="${inferredId}"]`);
+  await expect(marked.locator(".session-day .day-inferred")).toHaveText("inferred");
+  // ...and on no other. Anchored on .session-day, which the row assertions
+  // elsewhere in this file prove can match.
+  await expect(page.locator(".session-list .session .session-day .day-inferred")).toHaveCount(1);
+
+  // And the total says how much of itself rests on such a day. Without this a
+  // window spanning the upgrade adds two different kinds of day together with
+  // nothing marking the join.
+  await expect(week(page).locator(".no-goal")).toContainText("1 session on an inferred day");
+  // Still said in the vocabulary this feature is allowed to use - nothing here
+  // is a reprimand.
+  const said = await week(page).locator(".no-goal").textContent();
+  expect(forbiddenWord(said), said).toBeNull();
+});
+
 test("with no goal set, the week says so and shows seven empty days", async ({ page }) => {
   const thisWeek = week(page).locator(".no-goal");
   await expect(thisWeek).toContainText("No goal set for this week");

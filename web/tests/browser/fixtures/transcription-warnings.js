@@ -122,8 +122,28 @@ export const STANDING_LIMITS_ONLY_WARNINGS = [
  * ScoreCompare.svelte's own defensive read: when true, `warnings` is
  * IsUnusual and only present nested inside the `confidence` JSON string,
  * not at the top level, and the frontend must still find it.
+ *
+ * `provenance` is the meter/key/tuning group - `{ time_signature,
+ * time_signature_source, key_fifths, key_signature_source, tuning,
+ * tuning_label }`, any subset - and mirrors _PROVENANCE_KEYS in
+ * server/fermata/api.py: stored in the blob AND lifted to the top level on
+ * both GET and POST, exactly like the bar counts. Omitted entirely by
+ * default, which is the shape of a row extracted before this was stored and
+ * of every hand-edited row.
+ *
+ * `content` and `format` override the rendered transcription itself, for the
+ * cases that are about what the staff/metronome make of the document rather
+ * than about the warning panel above it.
  */
-export function transcriptionResponse({ warnings, confidence, bars, nestWarningsOnly = false }) {
+export function transcriptionResponse({
+  warnings,
+  confidence,
+  bars,
+  nestWarningsOnly = false,
+  provenance = null,
+  content = SAMPLE_TEX,
+  format = "alphatex",
+}) {
   const blob = { warnings, confidence };
   if (bars) {
     blob.bars_overfull = bars.overfull ?? 0;
@@ -131,11 +151,12 @@ export function transcriptionResponse({ warnings, confidence, bars, nestWarnings
     blob.bars_defective = bars.defective;
     blob.bars_measured = bars.measured;
   }
+  if (provenance) Object.assign(blob, provenance);
   const body = {
     id: 1,
     score_id: 1,
-    format: "alphatex",
-    content: SAMPLE_TEX,
+    format,
+    content,
     source: "extracted",
     confidence: JSON.stringify(blob),
   };
@@ -146,8 +167,34 @@ export function transcriptionResponse({ warnings, confidence, bars, nestWarnings
     body.bars_defective = blob.bars_defective;
     body.bars_measured = blob.bars_measured;
   }
+  if (provenance) Object.assign(body, provenance);
   return body;
 }
+
+/** The provenance an extraction that read nothing records: no meter on the
+ * page, no key on it, and no tuning named anywhere - so 4/4, no key
+ * signature, and the standard six strings, every one of them an assumption.
+ * The common case: 18% of first pages lose their printed meter (#90) and
+ * every score not literally labelled "Drop D" reads as standard (#80). */
+export const ASSUMED_PROVENANCE = {
+  time_signature: [4, 4],
+  time_signature_source: "not detected (assumed 4/4)",
+  key_fifths: 0,
+  key_signature_source: "not detected (assumed no key signature)",
+  tuning: ["E2", "A2", "D3", "G3", "B3", "E4"],
+  tuning_label: null,
+};
+
+/** The provenance an extraction that read everything records - the meter and
+ * key decoded off the engraved glyphs, and a tuning the page named. */
+export const READ_PROVENANCE = {
+  time_signature: [6, 8],
+  time_signature_source: "glyph-decoded",
+  key_fifths: 2,
+  key_signature_source: "glyph-decoded",
+  tuning: ["D2", "A2", "D3", "G3", "B3", "E4"],
+  tuning_label: "Drop D",
+};
 
 /**
  * A saved hand edit's response shape, mirroring server/fermata/api.py's

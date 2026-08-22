@@ -3,6 +3,7 @@
   import { api } from "./api.js";
   import PdfViewer from "./PdfViewer.svelte";
   import TabViewer from "./TabViewer.svelte";
+  import { transcriptionProvenance } from "./provenance.js";
   import { STANDING_LIMITS, BAR_RE } from "./warning-patterns.js";
 
   let {
@@ -178,6 +179,21 @@
     return parts.join(" · ");
   });
 
+  // The meter, the key and the tuning, each beside the word for how it was
+  // obtained. See provenance.js for the classification and why an
+  // unrecognised source says nothing at all.
+  //
+  // Shown as one quiet line rather than three marks: the values sit together
+  // on the staff below it (the meter in the signature, the tuning in the tab
+  // legend), so one line naming all three keeps each value next to its own
+  // provenance without three separate strips above a score. Visible text, not
+  // a title attribute - the reader is at a music stand, holding an
+  // instrument, and the tablet under it has no pointer.
+  let provenance = $derived(transcriptionProvenance(transcription));
+  let hasProvenance = $derived(
+    provenance.read.length + provenance.assumed.length + provenance.supplied.length > 0,
+  );
+
   // Gig mode drops the warnings block entirely (see the !gigMode guard
   // below) - performance isn't when anyone corrects a transcription. But an
   // unverified rhythm silently drilled at tempo is the exact mistake the
@@ -192,6 +208,11 @@
       );
     }
     if (rhythmCapped) parts.push(`rhythm confidence: ${rhythmLabel}`);
+    // A meter or a tuning nobody read is the same class of fact, and the one a
+    // player on a stage is most likely to catch: the arrangement in their hands
+    // is in a tuning, and this says whether the staff agrees because it was
+    // read or because nothing contradicted the default.
+    if (provenance.assumed.length) parts.push(`assumed: ${provenance.assumed.join(", ")}`);
     return parts.join(" · ");
   });
 
@@ -498,6 +519,29 @@
         {:else if standingNotes.length}
           <p class="standing-footnote">Standing limits: {standingNotes.join("; ")}.</p>
         {/if}
+      {/if}
+      {#if !gigMode && hasProvenance}
+        <!-- Outside the warnings block on purpose. This is not a warning and
+             must not be collapsed behind one: a read meter is good news and
+             an assumed one is a standing fact about this transcription, and
+             both are true whether or not the score has any warnings at all
+             (a clean extraction can still have assumed its tuning). -->
+        <p class="provenance">
+          {#if provenance.read.length}
+            <span class="prov-read">Read from the page: {provenance.read.join(", ")}.</span>
+          {/if}
+          {#if provenance.supplied.length}
+            <span class="prov-supplied">As you supplied it: {provenance.supplied.join(", ")}.</span>
+          {/if}
+          {#if provenance.assumed.length}
+            <!-- The same unobtrusive mark the rest of the app uses for
+                 something unverified. -->
+            <span class="prov-assumed">
+              <span class="mark" aria-label="Unverified">●</span>
+              Assumed, not read from the page: {provenance.assumed.join(", ")}.
+            </span>
+          {/if}
+        </p>
       {/if}
       {#if editorOpen}
         <div class="editor">
@@ -852,6 +896,26 @@
     margin: 10px 16px 0;
     font-size: 11.5px;
     color: var(--ink-dim);
+  }
+
+  /* Stated in the same register as the value it qualifies. No colour, no
+     weight, no word like "warning": an assumed meter is a fact about this
+     transcription, not a fault, and the project's rule is that nothing which
+     is not a fault is styled as one. The mark plus the words "Assumed, not
+     read from the page" are the whole signal. */
+  .provenance {
+    margin: 10px 16px 0;
+    font-size: 11.5px;
+    color: var(--ink-dim);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+  }
+
+  .provenance .mark {
+    font-size: 9px;
+    vertical-align: 1px;
+    margin-right: 3px;
   }
 
   .editor {

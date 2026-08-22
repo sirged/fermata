@@ -69,10 +69,24 @@
     // and the click is a plain BPM - which is all a metronome standing on its
     // own ever was.
     proportionBase = false,
-    // True when that piece tempo was read off a transcription rather than a
-    // printed marking. A tempo we inferred must not look like one we read.
-    tempoInferred = false,
-    // The piece's own marking, for the "100% of what?" the percentages need
+    // Where that piece tempo came from, which decides what the control is
+    // allowed to CALL it. A tempo we did not read must not look like one we
+    // did, and there are three genuinely different cases:
+    //
+    //   "marked"      - printed on the page and read off it.
+    //   "transcribed" - lifted out of a transcription of a scanned page.
+    //   "default"     - the score declares no tempo at all, so the number
+    //                   beside the percentages is the renderer's fallback and
+    //                   nothing about it was read anywhere. This one is the
+    //                   defect issue #102 was about: it used to read
+    //                   "marked ♩ = 120" for an edition that prints
+    //                   *Andante* and no number, which is most of the
+    //                   classical material in this library.
+    //
+    // Only "marked" is presented as a marking; the other two carry the same
+    // unobtrusive unverified mark the rest of the app uses.
+    tempoSource = "marked",
+    // The piece's own tempo, for the "100% of what?" the percentages need
     // to be legible. Null when unknown.
     baseTempoLabel = null,
     // Pre-fills. null means "not known", which is not the same as a default:
@@ -405,6 +419,13 @@
   // the rest of the app uses for something unverified. Only in proportion
   // mode - a fixed BPM is a number the player typed, and there is nothing
   // inferred about it to disclose.
+  //
+  // The third case is a score that declares NO tempo, where the number is the
+  // renderer's own 120 fallback. It gets the same treatment and one more
+  // thing: it says outright that there was none to read, because "default
+  // ♩ = 120" on its own still leaves a reader to work out whether 120 came
+  // from somewhere. Nothing here is a percentage of a marking in that case,
+  // and the control says so instead of quietly implying otherwise.
   // Said plainly, in visible text, whenever the countable-range clamp rather
   // than the chosen setting is what decided the rate on screen. Without this,
   // a control reading "15%" beside a readout of "20" is a percentage that has
@@ -427,10 +448,20 @@
         : null,
   );
 
+  // "marked" is the only word here that claims something was read off a page,
+  // so it is the only one that may be said when it was.
+  const TEMPO_WORD = { marked: "marked", transcribed: "transcribed", default: "default" };
+  const tempoUnverified = $derived(tempoSource !== "marked");
   const baseNote = $derived(
     proportionBase && mode === "proportion" && baseTempoLabel != null
-      ? `${tempoInferred ? "transcribed" : "marked"} ♩ = ${baseTempoLabel}`
+      ? `${TEMPO_WORD[tempoSource] ?? "default"} ♩ = ${baseTempoLabel}` +
+          (tempoSource === "default" ? " (none in the score)" : "")
       : null,
+  );
+  const baseMarkLabel = $derived(
+    tempoSource === "default"
+      ? `Unverified: this score declares no tempo, so ${baseTempoLabel} is a default rather than a marking`
+      : `Unverified: tempo ${baseTempoLabel} came from a transcription, not a printed marking`,
   );
 </script>
 
@@ -572,14 +603,17 @@
         <span class="metronome-limit" title={limitWhy}>{limitNote}</span>
       {/if}
       {#if baseNote}
-        <span class="metronome-base" class:inferred={tempoInferred} title={`The tempo the percentages are of - ${baseNote}`}>
-          {#if tempoInferred}
+        <span
+          class="metronome-base"
+          class:inferred={tempoUnverified}
+          class:undeclared={tempoSource === "default"}
+          title={`The tempo the percentages are of - ${baseNote}`}
+        >
+          {#if tempoUnverified}
             <!-- The same unobtrusive mark the rest of the app uses for
-            something unverified: a tempo we inferred from a transcription
-            must not read as one printed on a page. -->
-            <span class="mark" aria-label={`Unverified: tempo ${baseTempoLabel} came from a transcription, not a printed marking`}
-              >●</span
-            >
+            something unverified: a tempo we inferred from a transcription -
+            or never had at all - must not read as one printed on a page. -->
+            <span class="mark" aria-label={baseMarkLabel}>●</span>
           {/if}
           {baseNote}
         </span>
@@ -768,6 +802,18 @@
     font-size: 11px;
     color: var(--ink-dim);
     white-space: nowrap;
+  }
+
+  /* The undeclared-tempo form is a short sentence rather than a three-token
+     label, and the score viewer's toolbar is a single non-wrapping flex row
+     with six other controls in it. Held on one line it is the widest thing in
+     the metronome block and pushes the row wide enough to clip the profile
+     buttons at the far end; allowed to wrap it costs one line of height and
+     nothing else. Only this state - the shorter forms have no reason to
+     break. */
+  .metronome-base.undeclared {
+    white-space: normal;
+    max-width: 15ch;
   }
 
   /* No colour, no weight change, no word like "unverified" in the visible

@@ -23,6 +23,8 @@
 // fixture is the only way to exercise it.
 import { test, expect } from "@playwright/test";
 import {
+  ASSUMED_PROVENANCE,
+  READ_PROVENANCE,
   SCORE,
   NINE_WARNINGS,
   NINE_WARNINGS_EXPECTED_SUMMARY,
@@ -303,6 +305,117 @@ test.describe("ScoreCompare warnings summary", () => {
     await page.locator('.seg button:has-text("Staff")').click();
     await page.locator('button:has-text("Gig mode")').click();
     await expect(page.locator(".gig-mark")).toHaveCount(0);
+  });
+
+  // ------------------------------- what was read, and what was assumed
+
+  test("a meter and a tuning nobody read say so beside the staff, naming the values they qualify", async ({
+    page,
+  }) => {
+    // Issue #103. The extractor already knew it had assumed all three; the
+    // interface showed the assumptions and not the fact that they were
+    // assumptions, which is the same defect as an invented rest presented as a
+    // read one, at the scale of a whole score.
+    await stubScoreApi(
+      page,
+      transcriptionResponse({
+        warnings: [],
+        confidence: CLEAN_CONFIDENCE,
+        provenance: ASSUMED_PROVENANCE,
+      }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+
+    const assumed = page.locator(".provenance .prov-assumed");
+    await expect(assumed).toBeVisible();
+    // The value travels WITH the word: "4/4" in the assumed sentence, not a
+    // bare "assumed" with the digits a paragraph away on the staff.
+    await expect(assumed).toContainText("Assumed, not read from the page");
+    await expect(assumed).toContainText("4/4");
+    await expect(assumed).toContainText("no key signature");
+    await expect(assumed).toContainText("standard tuning");
+    // Visible text, not a title attribute - the reader is at a music stand
+    // holding an instrument and the tablet under it has no pointer.
+    await expect(assumed).not.toHaveAttribute("title", /.+/);
+    // Nothing was read, so there is no read sentence to make. Anchored inside
+    // .provenance, which this test has just proven can match, so "the whole
+    // block is missing" cannot be what satisfies this.
+    await expect(page.locator(".provenance .prov-read")).toHaveCount(0);
+    // This score is otherwise clean: no warnings at all. The provenance line
+    // is not a warning and is not collapsed behind one.
+    await expect(page.locator(".warnings")).toHaveCount(0);
+  });
+
+  test("a meter and a tuning that WERE read say that instead, so the assumed wording means something", async ({
+    page,
+  }) => {
+    await stubScoreApi(
+      page,
+      transcriptionResponse({
+        warnings: [],
+        confidence: CLEAN_CONFIDENCE,
+        provenance: READ_PROVENANCE,
+      }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+
+    const read = page.locator(".provenance .prov-read");
+    await expect(read).toBeVisible();
+    await expect(read).toContainText("Read from the page");
+    await expect(read).toContainText("6/8");
+    await expect(read).toContainText("2 sharps");
+    await expect(read).toContainText("Drop D tuning");
+    await expect(page.locator(".provenance .prov-assumed")).toHaveCount(0);
+  });
+
+  test("a transcription that records no provenance claims neither - it says nothing rather than something safe-sounding", async ({
+    page,
+  }) => {
+    // A hand-edited row, or one extracted before the provenance was stored,
+    // has measured nothing. Reporting "standard tuning assumed" there would be
+    // inventing a reading of content nothing has looked at; reporting "read
+    // from the page" would be worse. Both are refused.
+    await stubScoreApi(
+      page,
+      transcriptionResponse({ warnings: NINE_WARNINGS, confidence: CAPPED_CONFIDENCE }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+    // The warnings block IS present on this fixture, which is what makes the
+    // absence below an absence of the provenance line specifically rather than
+    // of the whole pane.
+    await expect(page.locator(".warnings-summary")).toBeVisible();
+    await expect(page.locator(".provenance")).toHaveCount(0);
+  });
+
+  test("gig mode keeps a mark for an assumed meter or tuning, since that is exactly what a player would catch", async ({
+    page,
+  }) => {
+    // Gig mode drops the warnings block - a performance is not when anyone
+    // corrects a transcription - but a tuning nobody read is the one fact a
+    // player looking at their own arrangement catches instantly, so it keeps
+    // the single unobtrusive mark the two other never-lose-this facts keep.
+    await stubScoreApi(
+      page,
+      transcriptionResponse({
+        warnings: [],
+        confidence: CLEAN_CONFIDENCE,
+        provenance: ASSUMED_PROVENANCE,
+      }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+    await page.locator('.seg button:has-text("Staff")').click();
+    await page.locator('button:has-text("Gig mode")').click();
+
+    const mark = page.locator(".gig-mark");
+    await expect(mark).toHaveCount(1);
+    await expect(mark).toHaveAttribute(
+      "title",
+      "assumed: 4/4, no key signature, standard tuning",
+    );
   });
 
   test("the #/demo route still renders with no console errors", async ({ page }) => {

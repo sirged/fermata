@@ -837,6 +837,18 @@ into the reported confidence instead. That confidence also states any known
 defect below the threshold at which it changes label, so an unqualified
 high-confidence string means no measure was in question rather than not many.
 
+**How the meter, key and tuning were obtained** is reported the same way, and
+for the same reason: `time_signature` with `time_signature_source`, `key_fifths`
+with `key_signature_source`, and `tuning` with `tuning_label`. A source of
+`glyph-decoded` or `auto-detected` means the value was read off the page,
+`manual override` means the caller supplied it, and anything beginning
+`not detected` means the value is an assumption — 4/4, no key signature, or the
+standard six strings. A `tuning_label` is present only when a tuning was
+recognised, so its absence is the assumption. These are stored on the record
+rather than only echoed on the response that extracted them, because a value
+that was assumed has to still say so on the tenth reading of the same score,
+and none of it is recoverable from the warning prose.
+
 ## Out of scope
 
 An honest scope statement is more useful than an aspirational one. The
