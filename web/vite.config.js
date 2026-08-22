@@ -17,6 +17,22 @@ import { defineConfig } from "vite";
 // which is exactly what happened. To silence a warning on purpose, say so at
 // the site - `untrack(...)`, or a `<!-- svelte-ignore ... -->` comment with a
 // reason next to it - rather than adding a code to a list here.
+//
+// Know what this does NOT buy, because it is narrower than the defect that
+// prompted it. It catches a particular SHAPE - a reactive value read at the top
+// level of a component - not the mistake of capturing a value that arrives
+// late. The same defect written any of these ways compiles silently:
+//
+//   - the read moved inside a function body;
+//   - the read wrapped in `untrack(...)`, which is how a deliberate one is
+//     declared, so the declaration and the bug are indistinguishable here;
+//   - a value captured into a plain `const` from somewhere the compiler does
+//     not track at all.
+//
+// So a green build means no warning, not "nothing captured too early". The
+// question to ask at a call site is still whether every value it reads once is
+// actually available on the first render - and for a prop the caller builds in
+// an effect, it is not.
 function failOnSvelteWarnings(warning, defaultHandler) {
   // Not a defect in our source and not actionable from here: a dependency's own
   // compiled Svelte, if one ever appears in the graph.
