@@ -696,6 +696,12 @@ function createScoreMetronome(api, onTempo, onClick) {
   // True from the moment a play() with a count-in configured is detected
   // until the count-in finishes - see setPlaying.
   let countInPending = false;
+  // Shut before anything can ask. Belt-and-braces rather than the real gate:
+  // alphaTab raises playerStateChanged during load, so setPlaying below closes
+  // it independently, and deleting this line changes nothing observable (that
+  // was measured, not assumed). Kept because "the click is not running until
+  // something says it is" should be true of a freshly built adapter without
+  // depending on a renderer event having fired first.
   engine.setRunning(false);
 
   // api.tickCache is rebuilt by the renderer on each render, and mapping it

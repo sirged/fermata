@@ -505,6 +505,31 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
   };
 }
 
+/**
+ * The number to put in a fixed-BPM box so that the click keeps sounding at
+ * `rate`, given the subdivision currently in force.
+ *
+ * `rate` is the click rate - what is heard and what is displayed - while the
+ * box holds the rate per NOTATED click, which the engine then multiplies by
+ * the subdivision. Seeding the box with the rate itself therefore multiplies
+ * the tempo by the subdivision the instant the mode changes: 100% of a piece
+ * marked 120 in 4/4 with eighths reports 240, seeding 240 makes the engine
+ * compute 480, the clamp holds it at 400 - and the box reads 240 beside a
+ * readout of 400, with 400 sounding. Two numbers on the same strip
+ * disagreeing is the failure this project keeps having to re-learn not to
+ * ship, and it is why this division lives in one named, tested place rather
+ * than inline at the call site.
+ *
+ * Clamped, so the seeded value is one the box can legitimately hold.
+ */
+export function seedBpmForRate(rate, subdivision = 1) {
+  const r = Number(rate);
+  const d = Number(subdivision);
+  if (!Number.isFinite(r) || r <= 0) return DEFAULT_METRONOME_BPM;
+  const divisor = Number.isFinite(d) && d >= 1 ? d : 1;
+  return clampBpm(Math.round(r / divisor));
+}
+
 /** The percentage ladder for a click taken as a proportion of a piece's own
  * tempo. Deliberately much wider at the bottom than a half-speed floor: for
  * a passage that is genuinely beyond you, half speed is not slow enough, and

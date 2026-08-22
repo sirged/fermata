@@ -18,6 +18,7 @@ import {
   MAX_SUBDIVISION,
   PROPORTION_PRESETS,
   createMetronomeEngine,
+  seedBpmForRate,
 } from "../../src/lib/metronome-engine.js";
 
 /** An engine with nothing switched on - so it never asks for an AudioContext
@@ -296,4 +297,87 @@ test("the limit is reported alongside the rate, including when it changes while 
   // explanation, which is the exact failure the limit exists to prevent.
   e.setProportion(0.1);
   expect(reported.at(-1)).toEqual([20, "slowest"]);
+});
+
+// --------------------------------- seeding a fixed tempo from a live rate
+
+test("seeding a fixed tempo from the live rate divides by the subdivision, so the box and the readout cannot disagree", () => {
+  // The failure this exists to rule out, in full: proportion mode, 100% of a
+  // piece marked 120 in 4/4, eighth-note subdivision. The engine reports 240.
+  // Seeding the fixed-BPM box with 240 makes the engine compute 240 * 2 = 480,
+  // which the clamp holds at 400 - so the box reads 240 while 400 sounds and
+  // the readout beside it says 400. Two numbers on the same strip disagreeing.
+  const e = createMetronomeEngine({ onTempo: () => {} });
+  e.setMode("proportion");
+  e.setBaseTempo(120);
+  e.setMeter(4, 4);
+  e.setSubdivision(2);
+  expect(e.currentRate()).toBe(240);
+
+  // Seeded correctly, switching mode leaves the tempo exactly where it was.
+  const seeded = seedBpmForRate(e.currentRate(), 2);
+  expect(seeded).toBe(120);
+  e.setMode("bpm");
+  e.setBpm(seeded);
+  expect(e.currentRate()).toBe(240);
+  expect(e.currentLimit()).toBeNull();
+
+  // ...where seeding with the rate itself would have moved it, and tripped the
+  // ceiling on the way. Asserted so this test states what the wrong answer
+  // actually does rather than only what the right one does.
+  e.setBpm(240);
+  expect(e.currentRate()).toBe(MAX_METRONOME_BPM);
+  expect(e.currentLimit()).toBe("fastest");
+});
+
+test("seeding with no subdivision in force is the identity, and a nonsense subdivision does not corrupt it", () => {
+  expect(seedBpmForRate(96)).toBe(96);
+  expect(seedBpmForRate(96, 1)).toBe(96);
+  for (const bad of [0, -2, Number.NaN, null, undefined, "two"]) {
+    expect(seedBpmForRate(96, bad), `subdivision ${String(bad)}`).toBe(96);
+  }
+  // A rate that is not usable at all falls back rather than propagating NaN
+  // into the scheduler - the same rule clampBpm follows.
+  for (const bad of [0, -5, Number.NaN, null, "fast"]) {
+    expect(Number.isFinite(seedBpmForRate(bad, 2)), `rate ${String(bad)}`).toBe(true);
+  }
+  // Still clamped, so what lands in the box is a value the box can hold.
+  expect(seedBpmForRate(4000, 1)).toBe(MAX_METRONOME_BPM);
+  expect(seedBpmForRate(30, 4)).toBe(MIN_METRONOME_BPM);
+});
+
+test("the ceiling is reachable from ordinary meters at ordinary presets, not only from extreme settings", () => {
+  // A sweep of the preset ladder against real meters found the ceiling roughly
+  // eighteen times more reachable than the floor. These are the cases from it:
+  // running a jig or a 12/8 blues above tempo, which is normal practice. Kept
+  // as a table because the claim being made is about how ORDINARY these are,
+  // and a single example would not carry it.
+  const e = createMetronomeEngine({ onTempo: () => {} });
+  e.setMode("proportion");
+  const cases = [
+    { tempo: 144, meter: [6, 8], preset: 150, asked: 432 },
+    { tempo: 120, meter: [6, 8], preset: 175, asked: 420 },
+    { tempo: 120, meter: [9, 8], preset: 175, asked: 420 },
+    { tempo: 120, meter: [12, 8], preset: 175, asked: 420 },
+  ];
+  for (const { tempo, meter, preset, asked } of cases) {
+    e.setBaseTempo(tempo);
+    e.setMeter(meter[0], meter[1]);
+    e.setProportion(preset / 100);
+    const label = `${preset}% of ${tempo} in ${meter[0]}/${meter[1]}`;
+    // The arithmetic really does ask for more than can be sounded...
+    expect(tempo * (preset / 100) * (meter[1] / 4), label).toBeCloseTo(asked, 5);
+    // ...so the rate is the ceiling, and it says so.
+    expect(e.currentRate(), label).toBe(MAX_METRONOME_BPM);
+    expect(e.currentLimit(), label).toBe("fastest");
+  }
+
+  // And the same meters at 100% are comfortably inside the range, so the
+  // notice above is a fact about those presets rather than about those meters.
+  e.setProportion(1);
+  for (const { tempo, meter } of cases) {
+    e.setBaseTempo(tempo);
+    e.setMeter(meter[0], meter[1]);
+    expect(e.currentLimit(), `100% of ${tempo} in ${meter[0]}/${meter[1]}`).toBeNull();
+  }
 });

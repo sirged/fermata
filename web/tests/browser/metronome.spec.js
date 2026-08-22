@@ -79,7 +79,16 @@ test.beforeEach(async ({ page }) => {
     window.__accentHzThreshold = accentThreshold;
     const OriginalStart = OscillatorNode.prototype.start;
     OscillatorNode.prototype.start = function (when, ...rest) {
-      window.__oscillatorStarts.push({ when: when ?? 0, frequency: this.frequency.value });
+      window.__oscillatorStarts.push({
+        when: when ?? 0,
+        frequency: this.frequency.value,
+        // How far AHEAD of the audio clock this click was scheduled, in
+        // seconds, read at the instant it was handed over. This is a
+        // different quantity from `when` and the difference is load-bearing:
+        // see the stall test at the bottom of this file, where asserting on
+        // `when` alone could not detect a pile-up at all.
+        lead: (when ?? 0) - this.context.currentTime,
+      });
       return OriginalStart.call(this, when, ...rest);
     };
   }, ACCENT_HZ_THRESHOLD);
@@ -364,7 +373,7 @@ test("the click stays silent during the count-in and starts only once real playb
 
 // BOOKKEEPING (dataset, not the audio boundary) - survives an
 // oscillator-deletion mutation by design; see waitForClickCount.
-test("a loop whose length is not a whole number of click periods does not walk the accent off the downbeat after it wraps", async ({
+test("a loop whose length is not a whole number of click periods keeps reading its phase from the playhead rather than counting, after it wraps", async ({
   page,
 }) => {
   // The headline case from the review: a short loop (2 bars of 6/8 at 96
@@ -488,11 +497,57 @@ test("a stall longer than the scheduler's lookahead drops the missed clicks inst
     }
   });
 
-  const gaps = await clickGapsMs(page, 8);
-  // A burst reads as one or more near-zero real-audio-clock gaps clustered
-  // together - Web Audio starts every oscillator whose scheduled `when` has
-  // already passed essentially at once. Half the nominal 200ms interval is
-  // generous enough to allow for the catch-up guard's own small resync gap
-  // while still catching a genuine pile-up.
-  expect(gaps.every((g) => g > 90), `gaps: ${gaps.join(", ")}`).toBe(true);
+  const starts = await oscillatorStarts(page, 8);
+
+  // READ THIS BEFORE CHANGING THE ASSERTIONS BELOW.
+  //
+  // An earlier version of this test measured the gaps between the scheduled
+  // `when` values and required every one to exceed 90ms, reasoning that "a
+  // burst reads as near-zero gaps". That reasoning is wrong, and the test
+  // could not fail: deleting the catch-up floor from the engine left it
+  // green. The right domain - the real values handed to Web Audio - with the
+  // wrong quantity in it.
+  //
+  // A pile-up PRESERVES the `when` gaps. Without the floor, the missed
+  // clicks are still queued one period apart on the audio timeline; they are
+  // simply all in the PAST, so Web Audio sounds them together the instant it
+  // sees them. Measured against the mutant: the wall-clock firing gaps were
+  // 148.5, 724.9, 0.1, 0.1, 74.1 - an unmistakable three-click burst - while
+  // every `when` gap was exactly 200.0ms and the old assertion held.
+  //
+  // So the two things asserted here are the two the mutant cannot satisfy.
+
+  // 1. EVERY click is scheduled AHEAD of the audio clock. That is the
+  //    scheduler's actual promise, and it is what the floor exists to keep:
+  //    nothing is ever handed over already due. Under the mutant the
+  //    catch-up clicks have a negative lead - queued for a moment that has
+  //    already gone - which is precisely the burst, expressed as the quantity
+  //    that can see it.
+  const leads = starts.map((s) => s.lead);
+  expect(
+    leads.every((l) => l > 0),
+    `leads (s): ${leads.map((l) => l.toFixed(4)).join(", ")}`,
+  ).toBe(true);
+
+  // 2. The stall leaves a HOLE. Dropping what was missed and resuming from
+  //    now necessarily means one gap longer than the click period - that is
+  //    what "the missed clicks are gone" looks like on the timeline. The
+  //    mutant replays them instead, so its gaps are all exactly one period
+  //    and this fails. An independent detector from the lead check above, on
+  //    purpose: they fail for different reasons and neither is the other's
+  //    restatement.
+  const gaps = [];
+  for (let i = 1; i < starts.length; i++) gaps.push((starts[i].when - starts[i - 1].when) * 1000);
+  expect(
+    gaps.some((g) => g > 260),
+    `gaps: ${gaps.join(", ")}`,
+  ).toBe(true);
+
+  // 3. ...and nothing collapsed to nothing either, which was the original
+  //    intent and is still worth keeping now that it is not carrying the
+  //    whole test on its own.
+  expect(
+    gaps.every((g) => g > 90),
+    `gaps: ${gaps.join(", ")}`,
+  ).toBe(true);
 });

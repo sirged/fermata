@@ -347,6 +347,7 @@
           and there is nothing there for a player to set; and nothing here
           persists, for the reason on `metronome`'s declaration above. -->
           <Metronome
+            ownsClick={false}
             control={view?.metronome ?? null}
             bind:enabled={metronome}
             tempo={metronomeTempo}

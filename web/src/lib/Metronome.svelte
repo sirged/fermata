@@ -30,15 +30,28 @@
     PROPORTION_PRESETS,
     SUBDIVISION_LABELS,
     createMetronomeEngine,
+    seedBpmForRate,
   } from "./metronome-engine.js";
 
   let {
+    // Whether this component owns the click, or drives one somebody else owns.
+    //
+    // DECLARED, not inferred from `control` being null. Inferring is the
+    // obvious thing and it is wrong: a caller that builds its metronome
+    // asynchronously - the score viewer constructs its renderer in an effect -
+    // passes null on the first render, so "control is null, therefore make my
+    // own" constructs a second engine nobody wanted. That was inert only
+    // because the viewer's toggle happens to drive the score engine, so the
+    // stray one was never enabled; a caller mounting with `enabled` already
+    // true beside a late `control` would have got two engines and two clicks.
+    // The Svelte compiler flagged exactly this as state_referenced_locally,
+    // and the build now fails on that warning - see vite.config.js.
+    ownsClick = true,
     // A metronome-shaped object to drive - `{setEnabled, setMode,
-    // setProportion, setBpm, ...}`. Null means "make your own", which is what
-    // a page with no transport of its own wants; it may also arrive late (the
-    // score viewer builds its renderer after mount) or be REPLACED (a new
-    // view per score), both of which the effect below handles by re-pushing
-    // every setting at whatever object is current.
+    // setProportion, setBpm, ...}`. Only meaningful when ownsClick is false.
+    // It may arrive late (see above) or be REPLACED (a new view per score),
+    // both of which the effect below handles by re-pushing every setting at
+    // whatever object is current.
     control = null,
     // The live click rate, clicks per minute, as reported by `control`. Only
     // read when a `control` was supplied - an engine made here reports its own.
@@ -152,17 +165,22 @@
   // sequence a player performs, so finding it reset to 100% on return would be
   // a real loss and a silent one. A parent that does not bind them (the
   // standalone and practice pages) lets this component own them outright.
-  if (mode == null) mode = stored?.mode ?? (proportionBase ? "proportion" : "bpm");
+  // untrack: these three deliberately read the value as it is RIGHT NOW, once,
+  // to seed state that the player then owns. Said explicitly because the
+  // compiler is right to ask - reading a prop once is usually a bug (see
+  // ownsClick above for the one where it was), and a build that fails on the
+  // warning needs the deliberate cases to declare themselves.
+  if (mode == null) mode = stored?.mode ?? (untrack(() => proportionBase) ? "proportion" : "bpm");
   // A percentage, not a 0-1 ratio, because that is how a player would say it
   // out loud - "seventy percent" - and the control below reads that way too.
   if (proportion == null) proportion = stored?.proportion ?? 100;
-  if (bpm == null) bpm = stored?.bpm ?? initialBpm ?? DEFAULT_METRONOME_BPM;
+  if (bpm == null) bpm = stored?.bpm ?? untrack(() => initialBpm) ?? DEFAULT_METRONOME_BPM;
 
   // Not bindable: these three are only ever shown when `compact` is false, and
   // the only caller that unmounts this component mid-use is the compact one.
   let subdivision = $state(stored?.subdivision ?? 1);
   let accent = $state(stored?.accent ?? true);
-  let meter = $state(stored?.meter ?? initialMeter);
+  let meter = $state(stored?.meter ?? untrack(() => initialMeter));
 
   // An engine of this component's own, for a caller with no transport to
   // drive one. Created eagerly rather than on first use: it holds no audio
@@ -170,17 +188,17 @@
   // ensureAudioCtx in metronome-engine.js), so there is nothing to defer.
   let ownTempo = $state(null);
   let ownLimit = $state(null);
-  const ownEngine = control
-    ? null
-    : createMetronomeEngine({
+  const ownEngine = untrack(() => ownsClick)
+    ? createMetronomeEngine({
         onTempo: (rate, atLimit) => {
           ownTempo = rate;
           ownLimit = atLimit;
         },
-      });
-  const target = $derived(control ?? ownEngine);
-  const liveTempo = $derived(control ? tempo : ownTempo);
-  const liveLimit = $derived(control ? limit : ownLimit);
+      })
+    : null;
+  const target = $derived(ownEngine ?? control);
+  const liveTempo = $derived(ownEngine ? ownTempo : tempo);
+  const liveLimit = $derived(ownEngine ? ownLimit : limit);
 
   // True once anything here has been set by hand. A pre-fill is a starting
   // point, so one that arrives late still has to land - but it must never
@@ -222,7 +240,7 @@
   // defaults while the interface went on showing these values.
   $effect(() => {
     const c = control;
-    if (!c) return;
+    if (ownEngine || !c) return;
     untrack(() => applyAll(c));
   });
 
@@ -252,8 +270,8 @@
     // stack, and this is that stack. setEnabled above has already created the
     // context synchronously, so there is only a resume left to do.
     //
-    // Only for an engine of this component's own, which is exactly the
-    // no-transport case. A supplied `control` belongs to a caller that has
+    // Only for an engine of this component's own (ownsClick), which is exactly
+    // the no-transport case. A supplied `control` belongs to a caller that has
     // its own gesture to prime from - the score viewer's Play button - and
     // creating an AudioContext here instead would open one the moment the
     // toggle is touched, on a page whose player may never be used at all.
@@ -272,8 +290,13 @@
     // the meter's own click unit - and not from `proportion` times some
     // score tempo guessed at here. Switching modes should not change the
     // tempo out from under a player mid-passage.
+    //
+    // Divided by the subdivision, because the box holds the rate per NOTATED
+    // click and the engine multiplies it back up. See seedBpmForRate for the
+    // case that gets this wrong and the two disagreeing numbers it puts on
+    // screen.
     if (next === "bpm" && liveTempo != null) {
-      bpm = clamp(liveTempo, MIN_METRONOME_BPM, MAX_METRONOME_BPM);
+      bpm = seedBpmForRate(liveTempo, subdivision);
     }
     touched = true;
     mode = next;

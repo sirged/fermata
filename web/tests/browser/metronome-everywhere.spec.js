@@ -22,6 +22,7 @@ import { expect, test } from "@playwright/test";
 
 import {
   stubMetronomeScore,
+  stubMetronomeScoreFast,
   stubMetronomeScoreOther,
   stubMetronomeScoreRepeat,
 } from "./fixtures/metronome-score.js";
@@ -476,6 +477,42 @@ test("a percentage the click cannot actually sound says so in plain sight, rathe
   await presetSelect(page).selectOption("50");
   await expect(readout(page)).toHaveText("60");
   await expect(limitNote(page)).toHaveCount(0);
+});
+
+test("the ceiling is reached on an ordinary meter at an ordinary preset, and says so - it is the end of the range a player meets first", async ({
+  page,
+}) => {
+  // A sweep of the preset ladder against real meters found the ceiling roughly
+  // eighteen times more reachable than the floor: 150% of a piece marked 144
+  // in 6/8 asks for 432, and 175% of 120 asks 420 in 6/8, 9/8 and 12/8 alike.
+  // Running a jig or a 12/8 blues above tempo is ordinary practice, not an
+  // extreme, so this end of the range is the one that actually needs to
+  // explain itself - and the earlier version of this work only tested the
+  // floor.
+  await stubMetronomeScoreFast(page);
+  await page.goto("/#/score/5");
+  await expect(playButton(page)).toBeEnabled({ timeout: 30_000 });
+  await metronomeButton(page).click();
+
+  // 100% of 144 onto 6/8's eighth-note unit is 288 - inside the range, so
+  // nothing is claimed yet. Asserted first so the notice below is known to
+  // appear because of the preset and not because it is simply always there.
+  await expect(readout(page)).toHaveText("288");
+  await expect(limitNote(page)).toHaveCount(0);
+
+  await presetSelect(page).selectOption("150");
+  // 144 * 1.5 * 2 = 432, held at 400.
+  await expect(readout(page)).toHaveText("400");
+  await expect(limitNote(page)).toHaveText("at its fastest");
+
+  // ...and the click really does run at 400, not at the 432 that was asked
+  // for. The notice would be worth nothing if the rate beside it were a
+  // fiction: 400 a minute is 150ms, where 432 would be 138.9ms.
+  await page.locator('button:has-text("Loop")').click();
+  await playButton(page).click();
+  const rate = await measuredRate(page, 10);
+  expect(rate, `measured ${rate}`).toBeGreaterThan(398);
+  expect(rate, `measured ${rate}`).toBeLessThan(402);
 });
 
 test("the top of the range says so too, and the notice is not styled as an error", async ({ page }) => {
