@@ -70,14 +70,36 @@ export function clampBpm(bpm) {
  * unusually-fast meter push the actual clicked rate past MAX_METRONOME_BPM
  * without ever tripping it.
  */
-export function effectiveClickRate({ mode, bpm, proportion, scoreTempo, unit }) {
+export function effectiveClickRate(request) {
+  return clampBpm(rawClickRate(request));
+}
+
+/**
+ * The same rate BEFORE clampBpm pulls it into the countable range - the exact
+ * number that was asked for, whether or not a metronome can sound it.
+ *
+ * This exists so an interface can say WHY a value it is showing has stopped
+ * matching the setting that produced it. 15% of a piece marked 120 is 18
+ * clicks a minute, which MIN_METRONOME_BPM correctly refuses; the click then
+ * runs at 20, and a control still reading "15%" beside a readout of "20" is a
+ * number that no longer describes what is sounding. Showing the true rate is
+ * most of the answer, but not all of it: without the reason, the disagreement
+ * reads as a bug rather than as a floor. Comparing this against
+ * effectiveClickRate is how the interface knows to say so.
+ *
+ * Deliberately the SAME arithmetic, expressed once: effectiveClickRate is
+ * defined in terms of this rather than the two sharing a copied formula, so
+ * there is no way for the number shown, the number scheduled and the number
+ * checked against the limits to drift apart.
+ */
+export function rawClickRate({ mode, bpm, proportion, scoreTempo, unit }) {
   if (mode === "bpm") {
-    return clampBpm(Number.isFinite(bpm) && bpm > 0 ? bpm : DEFAULT_METRONOME_BPM);
+    return Number.isFinite(bpm) && bpm > 0 ? bpm : DEFAULT_METRONOME_BPM;
   }
   const base = Number.isFinite(scoreTempo) && scoreTempo > 0 ? scoreTempo : FALLBACK_SCORE_TEMPO;
   const ratio = Number.isFinite(proportion) && proportion > 0 ? proportion : 1;
   const u = Number.isInteger(unit) && unit > 0 ? unit : 4;
-  return clampBpm(base * ratio * (u / 4));
+  return base * ratio * (u / 4);
 }
 
 /**

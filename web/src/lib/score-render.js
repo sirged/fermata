@@ -744,6 +744,7 @@ function createScoreMetronome(api, onTempo, onClick) {
     // hooks below are not something a caller can reach in and drive.
     control: {
       prime: engine.prime,
+      currentLimit: engine.currentLimit,
       setEnabled: engine.setEnabled,
       setMode: engine.setMode,
       setProportion: engine.setProportion,
@@ -856,7 +857,7 @@ function createScoreMetronome(api, onTempo, onClick) {
  *                          a proportion of. Reported so an interface can say
  *                          "70% of what" rather than showing a bare
  *                          percentage; null for a score that declares none.
- * @param opts.onMetronomeTempo  (bpm) the tempo the metronome is actually
+ * @param opts.onMetronomeTempo  (bpm, limit) the tempo the metronome is actually
  *                          clicking at just changed - see
  *                          metronome-engine.js, and createScoreMetronome
  *                          above for the pre-fill this view gives it. Fires
@@ -1011,9 +1012,9 @@ export function createScoreView(host, opts = {}) {
 
   const metronome = createScoreMetronome(
     api,
-    (bpm) => {
+    (bpm, limit) => {
       if (host) host.dataset.metronomeBpm = String(bpm);
-      onMetronomeTempo(bpm);
+      onMetronomeTempo(bpm, limit);
     },
     publishMetronomeClick,
   );

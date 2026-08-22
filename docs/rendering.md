@@ -110,8 +110,9 @@ layout all flow through it. The view it returns exposes `setProfile`,
 a plain metronome handle pre-filled from the score - see below, and note that
 it is a handle rather than a set of view methods precisely because the click is
 not a renderer setting. `onScoreTempo` reports the score's own declared tempo;
-`onMetronomeTempo` reports the click's live value, which changes on its own
-while playing rather than only when asked for.
+`onMetronomeTempo(bpm, limit)` reports the click's live value, which changes on
+its own while playing rather than only when asked for, together with whether
+the countable-range clamp rather than the setting is what decided it.
 
 Which profiles a caller may ask for is score-dependent, not fixed: a score
 does not necessarily support all of `SCORE_PROFILES`, and `createScoreView`
@@ -250,6 +251,25 @@ past what the constant — or the click's own envelope length — could survive.
 subdivision setting is folded into that conversion's *inputs* rather than
 multiplied onto its output, so the clamp still lands on the rate actually
 scheduled.
+
+**And the clamp says so when it bites.** Showing the true rate is most of the
+answer but not all of it: 15% of a piece marked 120 is 18 clicks a minute,
+which `MIN_METRONOME_BPM` correctly refuses, so the click runs at 20 — and a
+control still reading "15%" beside a readout of "20" is a percentage that has
+quietly stopped being a percentage. Without a reason the disagreement reads as
+a bug rather than as a floor. So `rawClickRate` in `metronome.js` exposes the
+same arithmetic *before* the clamp (`effectiveClickRate` is defined in terms of
+it, so there is one formula and no way for the three numbers to drift), the
+engine compares the two, and `onMetronomeTempo(bpm, limit)` carries `"slowest"`
+/ `"fastest"` / `null` alongside the rate. The interface renders that as
+visible text next to the number — not a `title`, because a phone at a music
+stand has no pointer to hover with, and that is exactly the moment the reader
+is holding an instrument instead of a mouse. It is stated, not warned about:
+nothing has gone wrong when a click reaches the end of its range.
+
+The reported value is de-duplicated on the rate **and** the limit, because the
+limit can move while the rate does not: a raw rate of 19.9 and one of 15 both
+clamp to 20, and only the second is a setting the click has stopped honouring.
 
 Compound grouping (accent every third click) applies to 6/8-style meters
 written in sixteenths too (9/16, 12/16, ...), not only eighths —

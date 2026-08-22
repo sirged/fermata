@@ -43,6 +43,10 @@
     // The live click rate, clicks per minute, as reported by `control`. Only
     // read when a `control` was supplied - an engine made here reports its own.
     tempo = null,
+    // "slowest"/"fastest" when the countable-range clamp, rather than the
+    // setting above it, is what decided that rate. Same rule: only read when a
+    // `control` was supplied.
+    limit = null,
     // Bound, so a parent that needs to know (the viewer's gig HUD shows the
     // readout with the controls left behind) can read it without this
     // component having to tell it twice.
@@ -58,8 +62,13 @@
     // The piece's own marking, for the "100% of what?" the percentages need
     // to be legible. Null when unknown.
     baseTempoLabel = null,
-    // Pre-fills. Applied once, at mount, and adjustable afterwards.
-    initialBpm = DEFAULT_METRONOME_BPM,
+    // Pre-fills. null means "not known", which is not the same as a default:
+    // a caller whose context arrives over the network (the practice page
+    // learns the tempo last practised at from the server, after this has
+    // mounted) passes null first and the real number later, and the effect
+    // below adopts a late arrival - but never over a choice already made by
+    // hand. See `touched`.
+    initialBpm = null,
     initialMeter = "4/4",
     // A localStorage key to remember these settings under, or null to forget
     // them when the component goes away. See the note on persistence below.
@@ -117,6 +126,17 @@
   function persist() {
     if (!remember) return;
     try {
+      // DEVICE-LOCAL, and that is a recorded compromise rather than the right
+      // answer. A real preference belongs on the server, at
+      // /api/settings, where the staff theme already lives - that is what
+      // follows a person from phone to tablet to desktop, and getting all of
+      // a person's data in and out is an explicit goal of this project. That
+      // endpoint takes a fixed allowlist of keys, and widening it is a server
+      // change the work that introduced this was not permitted to make. So
+      // until the endpoint can carry it, this one preference stays in browser
+      // storage: a tempo left on a desktop is not inherited by a phone at a
+      // music stand. Move it to setSetting() when the allowlist can hold it,
+      // and delete this comment with it.
       localStorage.setItem(remember, JSON.stringify({ mode, proportion, bpm, subdivision, accent, meter }));
     } catch {
       // storage unavailable - the settings just will not be remembered
@@ -136,7 +156,7 @@
   // A percentage, not a 0-1 ratio, because that is how a player would say it
   // out loud - "seventy percent" - and the control below reads that way too.
   if (proportion == null) proportion = stored?.proportion ?? 100;
-  if (bpm == null) bpm = stored?.bpm ?? initialBpm;
+  if (bpm == null) bpm = stored?.bpm ?? initialBpm ?? DEFAULT_METRONOME_BPM;
 
   // Not bindable: these three are only ever shown when `compact` is false, and
   // the only caller that unmounts this component mid-use is the compact one.
@@ -149,9 +169,26 @@
   // resources until the click is actually switched on (see prime() and
   // ensureAudioCtx in metronome-engine.js), so there is nothing to defer.
   let ownTempo = $state(null);
-  const ownEngine = control ? null : createMetronomeEngine({ onTempo: (rate) => (ownTempo = rate) });
+  let ownLimit = $state(null);
+  const ownEngine = control
+    ? null
+    : createMetronomeEngine({
+        onTempo: (rate, atLimit) => {
+          ownTempo = rate;
+          ownLimit = atLimit;
+        },
+      });
   const target = $derived(control ?? ownEngine);
   const liveTempo = $derived(control ? tempo : ownTempo);
+  const liveLimit = $derived(control ? limit : ownLimit);
+
+  // True once anything here has been set by hand. A pre-fill is a starting
+  // point, so one that arrives late still has to land - but it must never
+  // land on top of a choice somebody already made. Without this, logging a
+  // practice session (which reloads the sessions this page pre-fills from)
+  // would silently throw away the tempo you had just dialled in, which is the
+  // same class of fault as a setting lost to an unmount.
+  let touched = $state(false);
 
   function meterParts(text) {
     const m = /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(String(text ?? ""));
@@ -191,6 +228,19 @@
 
   if (ownEngine) applyAll(ownEngine);
 
+  // A pre-fill that arrives after mount. Tracks `initialBpm` only - the
+  // settings are read and written through untrack, so this cannot re-run on
+  // its own writes - and gives up the moment anything has been set by hand.
+  $effect(() => {
+    const next = initialBpm;
+    if (next == null) return;
+    untrack(() => {
+      if (touched || bpm === next) return;
+      bpm = next;
+      target?.setBpm(next);
+    });
+  });
+
   $effect(() => () => ownEngine?.destroy());
 
   function toggle() {
@@ -225,6 +275,7 @@
     if (next === "bpm" && liveTempo != null) {
       bpm = clamp(liveTempo, MIN_METRONOME_BPM, MAX_METRONOME_BPM);
     }
+    touched = true;
     mode = next;
     target?.setMode(mode);
     if (mode === "bpm") target?.setBpm(bpm);
@@ -245,6 +296,7 @@
     const n = Number(String(next).trim());
     if (String(next).trim() === "" || !Number.isFinite(n)) return;
     const clamped = clamp(Math.round(n), PROPORTION_PRESETS[0], PROPORTION_PRESETS.at(-1));
+    touched = true;
     proportion = clamped;
     target?.setProportion(clamped / 100);
     persist();
@@ -255,6 +307,7 @@
     const n = Number(String(next).trim());
     if (String(next).trim() === "" || !Number.isFinite(n)) return;
     const clamped = clamp(Math.round(n), MIN_METRONOME_BPM, MAX_METRONOME_BPM);
+    touched = true;
     bpm = clamped;
     target?.setBpm(clamped);
     persist();
@@ -281,18 +334,21 @@
   }
 
   function chooseSubdivision(next) {
+    touched = true;
     subdivision = Number(next);
     target?.setSubdivision?.(subdivision);
     persist();
   }
 
   function toggleAccent() {
+    touched = true;
     accent = !accent;
     target?.setAccent?.(accent);
     persist();
   }
 
   function chooseMeter(next) {
+    touched = true;
     meter = next;
     const parts = meterParts(next);
     if (parts) target?.setMeter?.(parts.numerator, parts.denominator);
@@ -310,6 +366,28 @@
   // the rest of the app uses for something unverified. Only in proportion
   // mode - a fixed BPM is a number the player typed, and there is nothing
   // inferred about it to disclose.
+  // Said plainly, in visible text, whenever the countable-range clamp rather
+  // than the chosen setting is what decided the rate on screen. Without this,
+  // a control reading "15%" beside a readout of "20" is a percentage that has
+  // quietly stopped being a percentage - and the reader has no way to tell a
+  // floor from a bug. Not a title attribute: a phone at a music stand has no
+  // pointer to hover with, and this is exactly the situation where the reader
+  // is holding an instrument rather than a mouse.
+  const limitNote = $derived(
+    liveLimit === "slowest"
+      ? "at its slowest"
+      : liveLimit === "fastest"
+        ? "at its fastest"
+        : null,
+  );
+  const limitWhy = $derived(
+    liveLimit === "slowest"
+      ? `A slower click than ${MIN_METRONOME_BPM} a minute stops being a metronome and starts being a wait, so this is as slow as it goes - the setting above asks for less than the click can sound.`
+      : liveLimit === "fastest"
+        ? `A faster click than ${MAX_METRONOME_BPM} a minute is not a tempo practice happens at, and one click's tail would run into the next one's attack, so this is as fast as it goes - the setting above asks for more than the click can sound.`
+        : null,
+  );
+
   const baseNote = $derived(
     proportionBase && mode === "proportion" && baseTempoLabel != null
       ? `${tempoInferred ? "transcribed" : "marked"} ♩ = ${baseTempoLabel}`
@@ -330,6 +408,9 @@
       <span class="metronome-readout-large" title="clicks per minute">{liveTempo ?? target?.currentRate?.() ?? bpm}</span>
       <span class="metronome-unit">bpm</span>
     </div>
+    {#if limitNote}
+      <span class="metronome-limit" title={limitWhy}>{limitNote}</span>
+    {/if}
   {/if}
   <button class:on={enabled} class:primary={prominent && !enabled} onclick={toggle} title="Metronome click">
     {#if prominent}
@@ -445,6 +526,12 @@
           +
         </button>
       </span>
+      {#if limitNote && !prominent}
+        <!-- The prominent layout puts this directly under the big number
+        instead - see above. Exactly one of the two renders, so there is one
+        place a reader looks for it and one element a test can assert on. -->
+        <span class="metronome-limit" title={limitWhy}>{limitNote}</span>
+      {/if}
       {#if baseNote}
         <span class="metronome-base" class:inferred={tempoInferred} title={`The tempo the percentages are of - ${baseNote}`}>
           {#if tempoInferred}
@@ -618,6 +705,24 @@
     font-size: 16px;
     line-height: 1;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Stated, not warned about - no --danger, no bold, no icon. Nothing has
+     gone wrong when the click reaches the end of its range; a fact about the
+     tempo is being reported, in the same register as the tempo itself. It sits
+     directly beside (or, in the prominent layout, directly under) the number
+     it explains, because a reason placed anywhere else is a reason nobody
+     connects to the thing it is about. */
+  .metronome-limit {
+    font-size: 11px;
+    color: var(--ink-dim);
+    white-space: nowrap;
+    font-style: italic;
+  }
+
+  .metronome.prominent .metronome-limit {
+    font-size: 13px;
+    margin-top: -8px;
   }
 
   .metronome-base {

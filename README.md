@@ -64,7 +64,11 @@ them.
   speed a passage should be practised at today. Tempo is settable as a
   proportion of the piece from 15% to 175% (far below half speed, because for a
   passage that is beyond you half speed is not slow enough) or as a fixed
-  number, one beat per minute at a time. It does not use the renderer's own
+  number, one beat per minute at a time. When a setting asks for a click slower
+  or faster than one can actually be sounded, it shows the rate it is really
+  clicking at and says plainly that it is at the end of its range, rather than
+  leaving a percentage on screen that has stopped describing what you hear. It
+  does not use the renderer's own
   metronome, which cannot run at a tempo different from the notes beside it —
   see [how scores are rendered](docs/rendering.md).
 - **Practice tracking** — a session timer per piece, with recently-practised

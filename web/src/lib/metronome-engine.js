@@ -42,10 +42,12 @@
 
 import {
   DEFAULT_METRONOME_BPM,
+  MAX_METRONOME_BPM,
+  MIN_METRONOME_BPM,
   clampBpm,
   clickPhaseInBar,
-  effectiveClickRate,
   metronomePattern,
+  rawClickRate,
   secondsPerClick,
 } from "./metronome.js";
 
@@ -72,10 +74,13 @@ export const MAX_SUBDIVISION = 4;
 /**
  * A metronome. Tempo, meter, subdivision, an accent, start and stop.
  *
- * `onTempo(rate)` fires whenever the click RATE it would report changes -
- * clicks per minute, the same number that is actually scheduled, never a
- * quarter-note tempo a listener would have to convert in their head. It fires
- * on a setting change and, while running, whenever the live context under a
+ * `onTempo(rate, limit)` fires whenever either changes. `rate` is clicks per
+ * minute, the same number that is actually scheduled, never a quarter-note
+ * tempo a listener would have to convert in their head. `limit` is "slowest",
+ * "fastest" or null, and says whether the countable-range clamp - rather than
+ * the setting - is what decided that rate; an interface needs it to explain a
+ * readout that has stopped matching the control above it. Both fire on a
+ * setting change and, while running, whenever the live context under a
  * proportion moves (a tempo change written mid-piece, or the meter itself
  * changing - which changes the rate even when the tempo does not).
  *
@@ -132,6 +137,7 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
   let timer = null;
   let nextClickTime = 0;
   let lastReportedRate = null;
+  let lastReportedLimit = null;
   // Oscillators already scheduled but not yet finished. Tracked so stop()
   // can cut them off - otherwise up to METRONOME_SCHEDULE_AHEAD_S of clicks
   // already queued keep sounding after pausing or switching the click off.
@@ -177,15 +183,24 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
     // scales the rate (unit/4), so a finer subdivision is exactly a finer
     // unit; in bpm mode the typed number IS the rate per notated click, so
     // splitting each one in two doubles it.
-    const rate =
+    const raw =
       mode === "bpm"
-        ? effectiveClickRate({ mode: "bpm", bpm: bpm * subdivision })
-        : effectiveClickRate({
+        ? rawClickRate({ mode: "bpm", bpm: bpm * subdivision })
+        : rawClickRate({
             mode: "proportion",
             proportion,
             scoreTempo: baseTempo,
             unit: denominator * subdivision,
           });
+    const rate = clampBpm(raw);
+    // Which end of the countable range the clamp is holding this at, or null
+    // when it is not holding it anywhere. Reported so an interface can say
+    // WHY the rate it is showing has stopped matching the setting that
+    // produced it - see rawClickRate in metronome.js. Flagged whenever the
+    // clamp is actually load-bearing, not only when the two numbers round
+    // differently: at the floor, pressing "slower" does nothing, and that is
+    // worth saying either way.
+    const limit = raw < MIN_METRONOME_BPM ? "slowest" : raw > MAX_METRONOME_BPM ? "fastest" : null;
     // Keyed on whether a pulse source EXISTS, not on whether it happened to
     // answer with a bar this time. The distinction matters: a caller with a
     // playhead whose bar lookup is not ready yet (the score viewer's tick
@@ -202,6 +217,7 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
       denominator,
       clicksPerBar,
       phase,
+      limit,
       accent: accentEnabled && phase % accentEvery === 0,
       // Rounded ONCE, here, and used unrounded nowhere else: both the
       // scheduler and the readout consume exactly this number. A display that
@@ -214,10 +230,15 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
 
   function report(live) {
     if (!hasContext) return;
-    const rate = resolve(live ?? context()).rate;
-    if (rate === lastReportedRate) return;
+    const { rate, limit } = resolve(live ?? context());
+    // De-duplicated on BOTH, because the limit can change while the rate does
+    // not: a raw rate of 19.9 and one of 15 both clamp to 20, but only the
+    // second is a setting the click has stopped honouring. Keying on the rate
+    // alone would announce the first and swallow the second.
+    if (rate === lastReportedRate && limit === lastReportedLimit) return;
     lastReportedRate = rate;
-    onTempo(rate);
+    lastReportedLimit = limit;
+    onTempo(rate, limit);
   }
 
   function shouldRun() {
@@ -452,6 +473,7 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
     setReady(v) {
       hasContext = !!v;
       lastReportedRate = null;
+      lastReportedLimit = null;
       report();
     },
     /** Install (or clear, with null) the live playhead this click derives its
@@ -465,6 +487,12 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
     currentRate() {
       if (!hasContext) return null;
       return resolve(context()).rate;
+    },
+    /** "slowest" or "fastest" when the countable-range clamp is what is
+     * deciding the rate rather than the setting, otherwise null. */
+    currentLimit() {
+      if (!hasContext) return null;
+      return resolve(context()).limit;
     },
     destroy() {
       stop();

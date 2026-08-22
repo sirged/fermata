@@ -20,7 +20,11 @@
 // assertions are written to be in that 8, not the surviving 4.
 import { expect, test } from "@playwright/test";
 
-import { stubMetronomeScore } from "./fixtures/metronome-score.js";
+import {
+  stubMetronomeScore,
+  stubMetronomeScoreOther,
+  stubMetronomeScoreRepeat,
+} from "./fixtures/metronome-score.js";
 import { CLEAN_CONFIDENCE, stubScoreApi, transcriptionResponse } from "./fixtures/transcription-warnings.js";
 import { localDay } from "../../src/lib/practice.js";
 
@@ -37,6 +41,7 @@ const subdivisionSelect = (page) => page.locator("select.metronome-subdivision")
 const meterSelect = (page) => page.locator("select.metronome-meter");
 const accentButton = (page) => page.locator("button.metronome-accent");
 const baseNote = (page) => page.locator(".metronome-base");
+const limitNote = (page) => page.locator(".metronome-limit");
 const playButton = (page) => page.locator(".player button.primary");
 
 // Halfway between METRONOME_TICK_HZ (950) and METRONOME_ACCENT_HZ (1500) in
@@ -439,4 +444,204 @@ test("a tempo set up before stepping into gig mode is still set when stepping ba
   const rate = await measuredRate(page, 4, 30_000);
   expect(rate, `measured ${rate}`).toBeGreaterThan(66);
   expect(rate, `measured ${rate}`).toBeLessThan(68);
+});
+
+// ------------------------------------------- where the range runs out
+
+test("a percentage the click cannot actually sound says so in plain sight, rather than leaving the readout looking wrong", async ({
+  page,
+}) => {
+  // 15% of a piece marked 120 is 18 clicks a minute, which MIN_METRONOME_BPM
+  // correctly refuses - a click that slow stops being a metronome and starts
+  // being a wait. The click therefore runs at 20, and a control still reading
+  // "15%" beside a readout of "20" is a percentage that has quietly stopped
+  // being a percentage. Showing the true rate is most of the answer; without
+  // the reason, the disagreement reads as a bug rather than as a floor.
+  await stubMetronomeScoreRepeat(page);
+  await page.goto("/#/score/4");
+  await expect(playButton(page)).toBeEnabled({ timeout: 30_000 });
+  await metronomeButton(page).click();
+  await presetSelect(page).selectOption("15");
+
+  // The rate shown is the real one - the floor, not the wish.
+  await expect(readout(page)).toHaveText("20");
+  // ...and the reason is VISIBLE TEXT, not a title attribute. A phone at a
+  // music stand has no pointer to hover with, and this is exactly the moment
+  // the reader is holding an instrument instead of a mouse.
+  await expect(limitNote(page)).toBeVisible();
+  await expect(limitNote(page)).toHaveText("at its slowest");
+
+  // Backing off the percentage until the click can sound it takes the notice
+  // away again, so it never becomes decoration that stops meaning anything.
+  await presetSelect(page).selectOption("50");
+  await expect(readout(page)).toHaveText("60");
+  await expect(limitNote(page)).toHaveCount(0);
+});
+
+test("the top of the range says so too, and the notice is not styled as an error", async ({ page }) => {
+  await page.goto("/#/metronome");
+  await bpmInput(page).fill("176");
+  await bpmInput(page).press("Tab");
+  await subdivisionSelect(page).selectOption("3");
+  // 176 in triplets is 528 clicks a minute; MAX_METRONOME_BPM holds it at 400,
+  // both to keep it a tempo practice happens at and to keep one click's tail
+  // clear of the next one's attack.
+  await expect(bigReadout(page)).toHaveText("400");
+  await expect(limitNote(page)).toHaveText("at its fastest");
+
+  // Nothing here went wrong - a fact about the tempo is being reported, in the
+  // same register as the tempo itself. The project's rule is that nothing which
+  // is not a fault is styled as one, and --danger is how a fault is spelled.
+  const danger = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue("--danger").trim(),
+  );
+  expect(danger, "--danger is expected to exist, or this assertion proves nothing").not.toBe("");
+  // Resolved through a probe element, the same way practice.spec.js does it:
+  // the token holds a hex string while getComputedStyle().color answers in
+  // rgb(), so comparing the two directly would be a tautology that passes
+  // however red this text became.
+  const dangerRgb = await page.evaluate((hex) => {
+    const probe = document.createElement("span");
+    probe.style.color = hex;
+    document.body.appendChild(probe);
+    const value = getComputedStyle(probe).color;
+    probe.remove();
+    return value;
+  }, danger);
+  const colour = await limitNote(page).evaluate((el) => getComputedStyle(el).color);
+  expect(colour).not.toBe(dangerRgb);
+
+  await subdivisionSelect(page).selectOption("1");
+  await expect(bigReadout(page)).toHaveText("176");
+  await expect(limitNote(page)).toHaveCount(0);
+});
+
+// --------------------- state that has to survive, and state that must not
+
+test("a per-piece tempo does not survive a full reload - a proportion left over from a slow passage is not the next session's default", async ({
+  page,
+}) => {
+  await stubMetronomeScore(page);
+  await page.goto("/#/score/1");
+  await expect(playButton(page)).toBeEnabled({ timeout: 30_000 });
+  await metronomeButton(page).click();
+  await presetSelect(page).selectOption("35");
+  await expect(readout(page)).toHaveText("67");
+
+  // A full reload, which is the strongest form of the question: nothing at all
+  // is carried in memory, so anything still here came out of storage.
+  await page.reload();
+  await expect(playButton(page)).toBeEnabled({ timeout: 30_000 });
+  await metronomeButton(page).click();
+  await expect(presetSelect(page)).toHaveValue("100");
+  await expect(readout(page)).toHaveText("192");
+});
+
+test("a tempo set for one score is still set when a mounted viewer is switched to another", async ({ page }) => {
+  // The sibling of the gig-mode case: there the component is unmounted and the
+  // control survives; here the component survives and the control under it is
+  // replaced. Both are "state versus a lifecycle", and the answers differ on
+  // purpose - within one session, switching pieces to work the same passage at
+  // the same proportion should not make you set it up again.
+  await stubMetronomeScore(page);
+  await stubMetronomeScoreOther(page);
+  await page.goto("/#/score/1");
+  await expect(playButton(page)).toBeEnabled({ timeout: 30_000 });
+  await metronomeButton(page).click();
+  await presetSelect(page).selectOption("50");
+  await expect(readout(page)).toHaveText("96");
+
+  await page.evaluate(() => {
+    location.hash = "#/score/2";
+  });
+  await expect(playButton(page)).toBeEnabled({ timeout: 30_000 });
+  await expect(presetSelect(page)).toHaveValue("50");
+  // Score 2 is 4/4 at 140, so 50% is 70 - the SETTING carried over and was
+  // re-resolved against the new piece, rather than the old piece's resolved
+  // number being carried over with it.
+  await expect(readout(page)).toHaveText("70");
+});
+
+test("leaving a page while the click is running really stops it, rather than leaving a scheduler behind", async ({
+  page,
+}) => {
+  // The metronome on its own owns its scheduler and its AudioContext, so
+  // navigating away has to tear both down. A leaked interval is inaudible
+  // right up to the moment it is not - two of them, after two visits, click
+  // twice.
+  await page.goto("/#/metronome");
+  await bpmInput(page).fill("300");
+  await bpmInput(page).press("Tab");
+  await startButton(page).click();
+  await oscillatorStarts(page, 4);
+
+  await page.evaluate(() => {
+    location.hash = "#/";
+  });
+  // Long enough to catch a survivor in the act - at 300 a minute anything
+  // still scheduling would fire four more clicks inside this window.
+  await page.waitForTimeout(300);
+  const afterLeaving = await page.evaluate(() => window.__oscillatorStarts.length);
+  await page.waitForTimeout(900);
+  expect(await page.evaluate(() => window.__oscillatorStarts.length)).toBe(afterLeaving);
+
+  // Coming back arrives stopped, at what it was left at. A metronome that
+  // starts clicking the moment a page opens is not one anybody asked for.
+  await page.evaluate(() => {
+    location.hash = "#/metronome";
+  });
+  await expect(bigReadout(page)).toHaveText("300");
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => window.__oscillatorStarts.length)).toBe(afterLeaving);
+});
+
+test("on the practice page a tempo set by hand is not thrown away when the pre-fill it started from changes underneath it", async ({
+  page,
+  request,
+}) => {
+  // The same class of fault as the gig-mode one, found by going looking for
+  // more of it. This page pre-fills from the last session's tempo, and that
+  // number changes whenever the session list reloads - which happens every
+  // time a session is logged. Rebuilding the control to take a new pre-fill
+  // would destroy whatever had been dialled in since, stop the click, and
+  // start it again somewhere else. Adopting a pre-fill only while nothing has
+  // been set by hand is what avoids that.
+  const scores = await (await request.get("/api/scores")).json();
+  expect(
+    scores,
+    "refusing to run: this backend has scores in its library, so it is not the " +
+      "throwaway instance the suite creates - and this test deletes practice history",
+  ).toEqual([]);
+  const clear = async () => {
+    const rows = (await (await request.get("/api/practice/sessions?limit=1000")).json()).sessions;
+    for (const r of rows) await request.delete(`/api/practice/sessions/${r.id}`);
+  };
+  await clear();
+
+  // No sessions at all yet, so there is no pre-fill to start from.
+  await page.goto("/#/practice");
+  const section = page.locator("section.metronome-section");
+  await expect(section).toBeVisible();
+  await expect(section.locator(".metronome-readout-large")).toHaveText("120");
+
+  // Dialled in by hand.
+  await section.locator("input.metronome-bpm").fill("58");
+  await section.locator("input.metronome-bpm").press("Tab");
+  await expect(section.locator(".metronome-readout-large")).toHaveText("58");
+
+  // Now a session with a tempo exists, and the page reloads its sessions -
+  // exactly what logging practice does. The pre-fill goes from "unknown" to
+  // 132, which is the change that used to rebuild the control.
+  const res = await request.post("/api/practice/sessions", {
+    data: { activity: "technique", seconds: 600, local_date: localDay(), target_tempo_bpm: 132 },
+  });
+  expect(res.ok(), await res.text()).toBe(true);
+  await page.locator("button.log-other-button").click();
+  await expect(section.locator(".hint")).toContainText("132");
+
+  // The hint offers the new number; the control keeps the one that was chosen.
+  await expect(section.locator(".metronome-readout-large")).toHaveText("58");
+  await expect(section.locator("input.metronome-bpm")).toHaveValue("58");
+
+  await clear();
 });

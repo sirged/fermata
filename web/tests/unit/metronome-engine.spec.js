@@ -251,3 +251,49 @@ test("what is reported is what would be scheduled - one rounding, not two", () =
   expect(e.currentRate()).toBe(29);
   expect(reported.at(-1)).toBe(29);
 });
+
+// ------------------------------------------- when the range runs out
+
+test("the engine says which end of its range the clamp is holding the click at, so an interface can explain a readout that stopped matching its control", () => {
+  const { e } = engine();
+  e.setMode("proportion");
+  e.setBaseTempo(120);
+  e.setMeter(4, 4);
+
+  // 15% of 120 is 18 a minute, below the countable floor.
+  e.setProportion(0.15);
+  expect(e.currentRate()).toBe(MIN_METRONOME_BPM);
+  expect(e.currentLimit()).toBe("slowest");
+
+  // Far enough up that the setting decides the rate again, and nothing is
+  // claimed - a notice that is always on stops meaning anything.
+  e.setProportion(0.5);
+  expect(e.currentRate()).toBe(60);
+  expect(e.currentLimit()).toBeNull();
+
+  // And the other end.
+  e.setMode("bpm");
+  e.setBpm(200);
+  e.setSubdivision(4);
+  expect(e.currentRate()).toBe(MAX_METRONOME_BPM);
+  expect(e.currentLimit()).toBe("fastest");
+});
+
+test("the limit is reported alongside the rate, including when it changes while the rate does not", () => {
+  const reported = [];
+  const e = createMetronomeEngine({ onTempo: (rate, limit) => reported.push([rate, limit]) });
+  e.setMode("proportion");
+  e.setMeter(4, 4);
+  // A base of 100: 20% is 20 a minute exactly - the floor's own value, reached
+  // legitimately rather than by being clamped to it.
+  e.setBaseTempo(100);
+  e.setProportion(0.2);
+  expect(reported.at(-1)).toEqual([20, null]);
+
+  // 10% of the same base is 10 a minute, clamped up to the same 20. The RATE
+  // is unchanged, so a de-duplication keyed on the rate alone would swallow
+  // this - and the interface would go on showing "10%" beside "20" with no
+  // explanation, which is the exact failure the limit exists to prevent.
+  e.setProportion(0.1);
+  expect(reported.at(-1)).toEqual([20, "slowest"]);
+});

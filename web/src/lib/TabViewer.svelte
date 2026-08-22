@@ -75,6 +75,10 @@
   // here a second time: showing a value this component derived itself would
   // stay green through a bug in what the audio layer actually does with it.
   let metronomeTempo = $state(null);
+  // "slowest"/"fastest" when the click's countable-range clamp - rather than
+  // the chosen percentage - is what decided that rate, otherwise null. Passed
+  // down so the control can say why the two have stopped agreeing.
+  let metronomeLimit = $state(null);
   // The metronome's three visible settings, owned here rather than inside
   // Metronome.svelte for one reason: gig mode unmounts the whole toolbar, and
   // a setting that lived in the component would silently revert to its default
@@ -145,6 +149,7 @@
     // a new score has its own tempo - the old readout would otherwise show
     // the previous score's number until this one's first report arrives
     metronomeTempo = null;
+    metronomeLimit = null;
     scoreTempo = null;
     // unknown again for this score, not "same as the last one" - see the
     // comment on profileOptions's declaration
@@ -164,7 +169,10 @@
         onPlaying: (p) => (playing = p),
         onError: (m) => (loadError = m),
         onPassComplete: advanceLadder,
-        onMetronomeTempo: (bpm) => (metronomeTempo = bpm),
+        onMetronomeTempo: (bpm, limit) => {
+          metronomeTempo = bpm;
+          metronomeLimit = limit;
+        },
         onScoreTempo: (t) => (scoreTempo = t),
         // Only which buttons to offer, not which one is highlighted - see
         // onProfileApplied for that. A score with nothing drawable reports an
@@ -342,6 +350,7 @@
             control={view?.metronome ?? null}
             bind:enabled={metronome}
             tempo={metronomeTempo}
+            limit={metronomeLimit}
             proportionBase={true}
             baseTempoLabel={scoreTempo}
             tempoInferred={tex != null}

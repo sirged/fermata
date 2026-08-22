@@ -84,8 +84,10 @@
   // were entered by the person practising.
   //
   // $derived, not read once, because `sessions` arrives asynchronously - and
-  // then again after logging a session. Metronome.svelte takes this as a
-  // pre-fill at mount, so a change here reaches it on the {#key} below.
+  // then again after logging a session. Metronome.svelte adopts a pre-fill
+  // that arrives after it mounted, and stops adopting once anything has been
+  // set by hand - so the first answer lands and a later one cannot overwrite a
+  // tempo already dialled in.
   const practisedTempo = $derived.by(() => {
     for (const session of sessions ?? []) {
       const t = session.target_tempo_bpm ?? session.tempo_bpm;
@@ -463,19 +465,14 @@
             a piece.
           {/if}
         </p>
-        <!-- Keyed on the pre-fill, so a tempo that arrives (or changes) after
-             this mounted actually lands in the control rather than being
-             quietly ignored - the alternative is a heading that says "set to
-             96" above a box reading 120. Nothing persists across the remount
-             on purpose: the point of this site is that it starts from what you
-             were practising, and a stale override would defeat it. -->
-        {#key practisedTempo}
-          <Metronome
-            bind:enabled={metronomeOn}
-            prominent={true}
-            initialBpm={practisedTempo ?? undefined}
-          />
-        {/key}
+        <!-- Deliberately NOT wrapped in {#key practisedTempo}. Keying it would
+             remount the control every time this number changed, which happens
+             once on load and again after every logged session - and a remount
+             throws away whatever tempo had been set by hand since, stops the
+             click, and starts it again at the pre-fill. Passing the pre-fill as
+             a prop the control adopts while untouched gets the late first
+             answer to land without that. -->
+        <Metronome bind:enabled={metronomeOn} prominent={true} initialBpm={practisedTempo} />
       </section>
 
       <!-- --------------------------------------------- log other practice -->

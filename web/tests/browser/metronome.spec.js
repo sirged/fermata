@@ -17,6 +17,16 @@
 // being started, on the real audio clock, at the real frequency - the same
 // "wrap the constructor and count" principle instruments.spec.js uses for
 // AudioContext, one level more specific.
+//
+// This is measured rather than believed, and re-measured whenever the click
+// moves. When it was lifted out of score-render.js into metronome-engine.js
+// (issue #97), the oscillator was deleted from scheduleClick by hand with
+// every piece of bookkeeping left in place: EIGHT of the twelve tests below
+// went red. The four that did not are the four built on the dataset helpers
+// (waitForClickCount / collectClickMeta), which is what those helpers are for
+// and what their own comment says at length. If a future change to this file
+// leaves fewer than eight failing under that mutation, the suite has quietly
+// stopped being the thing it is here to be.
 import { expect, test } from "@playwright/test";
 import {
   stubMetronomeScore,
@@ -101,11 +111,29 @@ function average(values) {
 }
 
 /** Waits until the real, scheduled click count on the host reaches `n` - a
- * valid synchronisation point now that publishMetronomeClick's dataset write
+ * valid synchronisation point because publishMetronomeClick's dataset write
  * happens from inside the same real scheduling call oscillatorStarts reads
- * (see score-render.js's scheduleClick). Used for meter/accent/phase
+ * (see scheduleClick in metronome-engine.js). Used for meter/accent/phase
  * bookkeeping oscillator frequency alone cannot carry (which bar, which
- * slot in it). */
+ * slot in it).
+ *
+ * READ THIS BEFORE TRUSTING A TEST BUILT ON IT. This is a BOOKKEEPING
+ * assertion, and it is not coverage against the click going missing. It reads
+ * a dataset attribute, so it passes for a click that was announced without a
+ * real oscillator behind it - which is precisely the failure this suite's own
+ * header describes shipping once already. That gap is closed from the product
+ * side (onClick fires only from inside the oscillator-creating call) and from
+ * the test side by the tests that read OscillatorNode.prototype.start
+ * directly - not by this helper.
+ *
+ * Measured, not assumed: after the metronome moved out of the renderer seam,
+ * the oscillator was deleted from scheduleClick by hand with all bookkeeping
+ * left intact. Eight of the twelve tests in this file went red. The four that
+ * did NOT are exactly the four built on this helper and collectClickMeta
+ * below - the mid-bar phase test, the loop-wrap test, the repeat-meter test
+ * and the counter-reset test. Each carries a note saying so. They are worth
+ * having: no oscillator's frequency can tell you WHICH BAR a click landed in.
+ * They are just not the tests that would notice the click was gone. */
 async function waitForClickCount(page, n, timeout = 20_000) {
   await page.waitForFunction(
     (count) => Number(document.querySelector(".at-host")?.dataset.metronomeClicks || 0) >= count,
@@ -115,7 +143,8 @@ async function waitForClickCount(page, n, timeout = 20_000) {
 }
 
 /** The 1st..Nth click's dataset snapshot (meter/phase), read immediately
- * after each one is confirmed scheduled. */
+ * after each one is confirmed scheduled. Bookkeeping, with the same caveat as
+ * waitForClickCount above: not coverage against a missing oscillator. */
 async function collectClickMeta(page, count) {
   const out = [];
   for (let n = 1; n <= count; n++) {
@@ -292,6 +321,8 @@ test("gig mode shows the live tempo but not the mode/value controls - a stand is
   await expect(page.locator("input.metronome-proportion")).toHaveCount(0);
 });
 
+// BOOKKEEPING (dataset, not the audio boundary) - survives an
+// oscillator-deletion mutation by design; see waitForClickCount.
 test("enabling the metronome mid-bar accents wherever the music actually is, not the start of a fresh count", async ({
   page,
 }) => {
@@ -331,6 +362,8 @@ test("the click stays silent during the count-in and starts only once real playb
   await oscillatorStarts(page, 1, 5_000);
 });
 
+// BOOKKEEPING (dataset, not the audio boundary) - survives an
+// oscillator-deletion mutation by design; see waitForClickCount.
 test("a loop whose length is not a whole number of click periods does not walk the accent off the downbeat after it wraps", async ({
   page,
 }) => {
@@ -361,6 +394,8 @@ test("a loop whose length is not a whole number of click periods does not walk t
   expect(naiveIncrement, `phases: ${meta.map((c) => c.phase).join(", ")}`).toBe(true);
 });
 
+// BOOKKEEPING (dataset, not the audio boundary) - survives an
+// oscillator-deletion mutation by design; see waitForClickCount.
 test("a repeat sign does not desync the click's meter - the second pass of a repeated section still reports the repeated meter, not whatever bar follows it", async ({
   page,
 }) => {
@@ -397,6 +432,9 @@ test("a repeat sign does not desync the click's meter - the second pass of a rep
   );
 });
 
+// BOOKKEEPING (dataset, not the audio boundary) - survives an
+// oscillator-deletion mutation by design; see waitForClickCount. This one is
+// ABOUT the bookkeeping, so that is the right level for it.
 test("switching a mounted viewer to a different score resets the metronome's click counter instead of inheriting the previous score's count", async ({
   page,
 }) => {
