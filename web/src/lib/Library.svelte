@@ -69,12 +69,43 @@
   async function triggerScan() {
     await api.scan();
     scan = { ...(scan ?? {}), scanning: true };
+    pollUntilDone();
+  }
+
+  function pollUntilDone() {
     const poll = async () => {
       scan = await api.scanStatus();
       if (scan.scanning) setTimeout(poll, 1500);
       else refresh();
     };
     setTimeout(poll, 800);
+  }
+
+  // A refused scan is the one thing here that needs a person, so it is the one
+  // thing that gets a button. Fermata will not mark scores missing when the
+  // evidence looks like a mount problem rather than like somebody tidying up -
+  // and without a way to say "I meant it", that refusal would repeat on every
+  // scan for ever, because the same files are missing every time.
+  let acknowledging = $state(false);
+  let acknowledgeError = $state("");
+
+  async function acknowledgeRemovals() {
+    if (!scan?.acknowledge_token) return;
+    acknowledging = true;
+    acknowledgeError = "";
+    try {
+      await api.acknowledgeScan(scan.acknowledge_token);
+      scan = { ...scan, scanning: true, refused: false };
+      pollUntilDone();
+    } catch (err) {
+      // The usual cause is the library having changed again while this message
+      // was on screen, which makes the token stale on purpose - saying so is
+      // more use than a silent no-op.
+      acknowledgeError =
+        err?.message ?? "Fermata could not confirm that. Scan again and re-read the message.";
+    } finally {
+      acknowledging = false;
+    }
   }
 
   async function onUpload(ev) {
@@ -149,7 +180,16 @@
           class:active={collection === c.collection}
           onclick={() => { collection = collection === c.collection ? "" : c.collection; showDuplicates = false; }}
         >
-          {c.collection} <span class="count">{c.count}</span>
+          {c.collection}
+          <span class="count">{c.count}</span>
+          {#if c.missing}
+            <!-- Files this collection has on record that are not on disk. Shown
+                 because a folder that has partly gone used to be counted as
+                 though it were whole. -->
+            <span class="count missing-count" title="{c.missing} file(s) not found in your library folder">
+              {c.missing} missing
+            </span>
+          {/if}
         </button>
       {/each}
 
@@ -186,6 +226,51 @@
   </aside>
 
   <main>
+    {#if scan?.refused}
+      <!-- The scan declined to change anything because what it saw did not look
+           like a description of this library. This used to be invisible: the
+           status carried `refused` and a reason and nothing rendered either, so
+           somebody with 296 of 297 files gone saw a healthy-looking scan, a full
+           library, and no hint that anything was wrong. -->
+      <div class="alert" role="alert">
+        <div class="alert-head">Fermata did not update your library</div>
+        <p class="alert-body">{scan.refused_reason}</p>
+        {#if scan.unmatched_count}
+          <details class="alert-paths">
+            <summary>
+              {scan.unmatched_count} file{scan.unmatched_count === 1 ? "" : "s"} not found
+              {#if scan.unmatched_count > scan.unmatched_paths.length}
+                (first {scan.unmatched_paths.length} shown)
+              {/if}
+            </summary>
+            <ul>
+              {#each scan.unmatched_paths as path}
+                <li>{path}</li>
+              {/each}
+            </ul>
+          </details>
+        {/if}
+        {#if scan.acknowledge_token}
+          <div class="alert-actions">
+            <button onclick={acknowledgeRemovals} disabled={acknowledging}>
+              {acknowledging ? "Confirming…" : "Yes, I meant to do that"}
+            </button>
+            <button onclick={triggerScan} disabled={scan.scanning || acknowledging}>
+              Scan again
+            </button>
+          </div>
+          <p class="alert-note">
+            Confirming never deletes anything. Files that have moved are matched back to
+            their own score; anything Fermata cannot find is marked as missing and keeps
+            its practice history, tags and transcriptions.
+          </p>
+        {/if}
+        {#if acknowledgeError}
+          <p class="alert-error">{acknowledgeError}</p>
+        {/if}
+      </div>
+    {/if}
+
     {#if showDuplicates}
       <header>
         <span class="result-count">{duplicates.length} duplicate group{duplicates.length === 1 ? "" : "s"}</span>
@@ -228,7 +313,7 @@
       {:else}
         <div class="grid">
           {#each scores as score (score.id)}
-            <a class="card" href={"#/score/" + score.id}>
+            <a class="card" class:is-missing={score.missing_since} href={"#/score/" + score.id}>
               <div class="sheet">
                 {#if score.file_type === "pdf"}
                   <img src={api.thumbUrl(score.id)} alt="" loading="lazy" onerror={(e) => (e.target.style.display = "none")} />
@@ -238,6 +323,18 @@
                 <button class="fav" class:on={score.favorite} onclick={(e) => toggleFavorite(score, e)} title="Favorite">★</button>
                 {#if kindLabel[score.content_kind]}
                   <span class="kind">{kindLabel[score.content_kind]}</span>
+                {/if}
+                {#if score.missing_since}
+                  <!-- The file is not where Fermata last saw it. The SCORE is
+                       untouched - its practice history, tags and any
+                       hand-corrected transcription are all still attached, and
+                       putting the file back (under this name or another) clears
+                       this by itself on the next scan. Saying so on the card is
+                       what makes "your library is intact, these files are not
+                       reachable" visible instead of merely true. -->
+                  <span class="missing-flag" title="Fermata cannot find this file. Nothing about the score has been lost - put the file back and scan again.">
+                    file missing
+                  </span>
                 {/if}
               </div>
               <div class="meta">
@@ -506,6 +603,91 @@
     color: var(--brass-bright);
     padding: 2px 8px;
     border-radius: 99px;
+  }
+
+  /* Amber rather than red: nothing is broken and nothing is lost, the file is
+     just not reachable. Red would say "you have lost this", which is the
+     opposite of what happened. */
+  .missing-flag {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    background: rgba(22, 19, 14, 0.82);
+    color: #e8b45c;
+    border: 1px solid rgba(232, 180, 92, 0.5);
+    padding: 2px 8px;
+    border-radius: 99px;
+  }
+
+  /* Dimmed, not hidden. The score is still here and still opens; only the file
+     behind it is unreachable, so the card stays reachable too. */
+  .card.is-missing .sheet {
+    opacity: 0.45;
+  }
+
+  .card.is-missing .title {
+    color: var(--ink-dim);
+  }
+
+  .missing-count {
+    color: #e8b45c;
+    margin-left: 4px;
+  }
+
+  .alert {
+    border: 1px solid rgba(232, 180, 92, 0.55);
+    background: rgba(232, 180, 92, 0.08);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 18px;
+  }
+
+  .alert-head {
+    color: #e8b45c;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+
+  .alert-body {
+    /* The reason text is written as prose with paragraph breaks in it, and it is
+       the same sentence the log carries. Preserving the breaks is what keeps it
+       readable rather than one long run. */
+    white-space: pre-line;
+    margin: 0 0 10px;
+    color: var(--ink);
+  }
+
+  .alert-paths {
+    margin-bottom: 10px;
+    color: var(--ink-dim);
+    font-size: 13px;
+  }
+
+  .alert-paths ul {
+    margin: 6px 0 0;
+    padding-left: 20px;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+
+  .alert-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .alert-note {
+    color: var(--ink-dim);
+    font-size: 13px;
+    margin: 8px 0 0;
+  }
+
+  .alert-error {
+    color: #e8b45c;
+    font-size: 13px;
+    margin: 8px 0 0;
   }
 
   .meta {

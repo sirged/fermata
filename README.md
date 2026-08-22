@@ -120,6 +120,11 @@ home network.
 | `/data/library` | Your sheet music files (read + uploads)        |
 | `/data/config`  | Database, thumbnails, cache — back this up     |
 
+Fermata creates `/data/config` if it needs to, but never `/data/library` — a
+library folder that isn't there is usually a volume that didn't mount, and an
+empty one is indistinguishable from a library with nothing in it. It stops with
+an explanation instead, and recovers by itself once the mount appears.
+
 ## Development
 
 Backend (FastAPI, Python 3.12):

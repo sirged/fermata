@@ -309,7 +309,7 @@ def test_every_practice_session_survives_the_upgrade(upgraded, version):
 def test_the_upgrade_stamps_the_new_version(upgraded, version):
     upgraded(version)
     conn = db.connect()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION == 4
 
 
 def test_carried_rows_are_marked_as_the_piece_practice_they_were(upgraded):
@@ -788,6 +788,6 @@ def test_a_fresh_install_needs_no_migration_and_still_lands_on_the_new_table(
         r["name"]: r["notnull"] for r in conn.execute("PRAGMA table_info(practice_sessions)")
     }
     assert notnull["score_id"] == 0
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
     assert conn.execute("SELECT COUNT(*) FROM practice_sessions").fetchone()[0] == 0
     db._local.conn = None

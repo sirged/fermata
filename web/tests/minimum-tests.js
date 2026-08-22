@@ -31,7 +31,13 @@
 // pull request. One further test was written, measured against every mutation
 // it was meant to catch, found to discriminate nothing, and deleted rather than
 // counted here.
-export const MINIMUM_TESTS = 183;
+//
+// Plus 2 for issue #95, in tests/browser/zz-library-missing.spec.js: that a
+// score whose file has gone is shown as missing rather than disappearing, and
+// that a refused reconciliation says so on the page and can be confirmed. Both
+// were shown to fail against a mutation of the behaviour they claim - the whole
+// point of them is that the guard #95 added was invisible until they existed.
+export const MINIMUM_TESTS = 185;
 
 export default class MinimumTests {
   constructor() {
