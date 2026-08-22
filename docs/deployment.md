@@ -240,7 +240,11 @@ or less than the time signature says it should hold. Fermata does not silently
 pad or trim a bar to make the arithmetic work — it reports exactly how many
 bars in a transcription don't add up, alongside the transcription itself, so
 you can see which passages to check by ear rather than trusting an unstated
-guess.
+guess. Where one voice of a bar does have to be filled out with silence — a
+voice that enters halfway through the bar has to start halfway through the bar,
+or its notes play early — the transcription names the bars that happened in,
+counts that silence as missing rather than as read, and marks it in the
+MusicXML so another program can tell it from a rest that was printed.
 
 **Harmonics are not carried into a transcription.** Natural and artificial
 harmonics on a fretted instrument are dropped entirely when Fermata converts

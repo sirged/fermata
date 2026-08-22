@@ -26,6 +26,7 @@ several things this profile has to decide.
   - [Tab staff description](#tab-staff-description-rules-4-5)
   - [Voices](#voices-rules-6-8)
   - [Fret, string and pitch](#fret-string-and-pitch-rules-9-13)
+  - [Inferred silence](#inferred-silence-rule-14)
 - [Example 1: one monophonic bar](#example-1-one-monophonic-bar)
 - [Example 2: two voices in one bar](#example-2-two-voices-in-one-bar)
 - [Checking a file](#checking-a-file)
@@ -262,7 +263,16 @@ Two notes on what conformance means in practice:
 - A producer must not pad or trim a measure to satisfy Rule 8. Silently
   inserting a rest to make the sum work hides the defect the rule exists to
   expose. Fermata emits measures exactly as read and reports how many fail the
-  rule — see [Checking a file](#checking-a-file).
+  rule — see [Checking a file](#checking-a-file). Where a producer genuinely
+  has to hold a position it did not read — a voice that enters late still has
+  to enter late — [Rule 14](#inferred-silence-rule-14) says how, and that
+  mechanism is deliberately not a rest and so does not enter this sum.
+- "Every voice that appears in it" is the whole of the measure's voices, and a
+  voice can appear without carrying a note: a `<forward>` names a `<voice>`
+  too. A checker that enumerates voices only from `<note>` elements will miss
+  such a voice entirely, and score a measure whose every voice was inferred as
+  conforming. Enumerate voices from `<note>` **and** `<forward>`, then sum only
+  notes and rests.
 - A reader should treat a Rule 8 violation as a diagnostic, not a parse error.
   The file is still valid MusicXML and still largely playable; the affected
   measures simply drift.
@@ -382,6 +392,99 @@ Both cost only how accidentals are written. The sounding pitch, the fret and
 the string are unaffected by the key, so a wrong or missing key signature never
 makes a note wrong — only oddly spelled. That asymmetry is why this profile
 picks a documented default instead of recording per-note uncertainty.
+
+### Inferred silence (Rule 14)
+
+**Rule 14.** Silence a producer deduced rather than read is written as
+`<forward>`, never as a `<rest>`. Each such element carries a `<duration>`, a
+`<footnote>` saying so, and the `<voice>` it belongs to:
+
+```xml
+<forward>
+  <duration>960</duration>
+  <footnote>silence deduced from the time signature, not read from a rest printed in the source</footnote>
+  <voice>1</voice>
+</forward>
+```
+
+The schema's sequence for `forward` is `duration`, `footnote?`, `level?`,
+`voice?`, `staff?` — the footnote comes **before** the voice.
+
+**Why a producer needs this at all.** Reading polyphonic tablature off an
+engraved page loses notes: an unmapped notehead, an unreadable fret number, a
+rest glyph too far from any onset to place. A voice that has lost a note is
+shorter than its meter, and a voice that is shorter than its meter cannot
+simply be written short, because *where* its remaining notes fall depends on
+the silence around them. A voice that enters on beat three and is written with
+nothing before it enters on beat one instead, and every note in it sounds two
+beats early against the other voices. The silence has to be there for the bar
+to play.
+
+**Why it must not be a rest.** A rest is a claim about the source: somebody
+engraved it. Writing invented silence as a rest makes the measure add up, so
+[Rule 8](#voices-rules-6-8) passes, the transcription reports itself conformant,
+and the notes that went missing leave no trace anywhere. Measured on one real
+library, a score that had lost ninety notes and gained seventy-seven quarter
+notes of invented rest reported every bar as adding up, at high confidence.
+Every dropped note downstream of that was invisible for the same reason.
+
+`<forward>` resolves both halves. It advances the writing position exactly as a
+rest of the same duration would, so notes still sound where they should and the
+measure still lays out — renderers treat it as the silence it is. But it is not
+a note and not a rest, so it does not enter Rule 8's sum, and the measure fails
+Rule 8 by exactly the amount that was never read. **The producer's own count of
+defective measures and an independent tool's count therefore agree**, which is
+the entire reason for choosing a standard format.
+
+**What this rule covers, and what it does not.** It covers silence inserted to
+complete a voice the producer *did* read notes from. A measure a producer read
+nothing at all from is a different statement — it holds no voice to complete —
+and is written as an ordinary measure of rests.
+
+Writing *that* as `<forward>` would be worse, not better: a voice consisting of
+nothing but `<forward>` contributes no notes and no rests, so a consumer
+enumerating voices from `<note>` elements never sees the voice at all, and the
+measure reads as vacuously conforming. An honest measure of rests is the better
+encoding, and Fermata emits one — the measure keeps its number, so side-by-side
+comparison against the source stays aligned.
+
+The consequence has to be stated, because a consumer cannot recover it: **a
+measure of rests may be either genuinely engraved silence or a measure whose
+contents were missed, and nothing in the file distinguishes them.** In the
+library this profile was developed against, 338 measures are a bar of rests and
+exactly one of them was printed that way. Fermata therefore reports these
+measures outside the Rule 8 figures — counted, named by number, and folded into
+its own confidence — because the file cannot carry the distinction. A consumer
+that needs it has to get it from the producer.
+
+**For a reader.** Four things follow, and they all matter:
+
+- Do not treat `<forward>` as a rest when checking Rule 8. It is what makes a
+  short measure detectable.
+- A file with no `<forward>` in it makes no claim either way. This profile
+  requires a producer that infers silence to mark it; it cannot make a producer
+  that pads silently declare itself.
+- A `<forward>` that is the last thing in its voice may be dropped rather than
+  rendered: nothing sounds after it, so no note moves either way. alphaTab ends
+  the voice there; MuseScore rewrites it as an invisible rest. A `<forward>`
+  anywhere else must advance the position, or every note after it sounds early.
+- **The marking does not survive a save by another program.** Measured over the
+  same library with MuseScore 4: every one of 3,464 `<forward>` elements loses
+  its `<footnote>` and its `<voice>`, a trailing one is rewritten as an
+  invisible rest and a leading one as a `<backup>` with no `<forward>` at all.
+  Net effect on a Rule 8 check of the re-saved files: defective measures fall
+  from 6,013 to 5,707 and identifiable inferred silence from 5,831.6 to 4,466.2
+  quarter notes, so **306 measures this profile reports defective read as
+  conforming to anything downstream of that save**. The agreement between a
+  producer's figures and an independent check holds for the file *as the
+  producer wrote it*. Verify against that file, not against a round trip
+  through an editor — see [Checking a file](#checking-a-file).
+
+**In the other direction.** Fermata also emits the same music as alphaTex for
+its transcription editor. That format has no editorial mechanism for this and
+carries the inferred silence as an ordinary rest; MusicXML is the canonical
+output, and the numbers under [Checking a file](#checking-a-file) name the
+affected measures for a reader of either.
 
 ## Example 1: one monophonic bar
 
@@ -670,7 +773,10 @@ numbering or a Rule 8 violation, because both produce perfectly valid XML.
 **Measure arithmetic.** Rule 8 is checkable by any MusicXML implementation.
 [music21](https://www.music21.org/) reports it directly: parse the file, and for
 each measure compare each voice's summed `duration.quarterLength` against the
-measure's `barDuration.quarterLength`.
+measure's `barDuration.quarterLength`. Count notes and rests only: a
+`<forward>` is [inferred silence](#inferred-silence-rule-14) and holding it
+against the meter would report the measure as adding up when the producer knows
+it does not.
 
 **Round-trip through a renderer.** Loading the file in an application that
 reads tablature is what catches a mirrored string numbering, since the notes
@@ -678,21 +784,58 @@ come back on the wrong strings while everything else looks correct. Fermata
 uses [alphaTab](https://alphatab.net/) for this, via
 `server/tools/tab_extract/verify_musicxml.mjs`, which reports each file's bar,
 voice and note counts along with the first note's MIDI value, string and fret.
+Its `--onsets` flag adds every beat's playback position, which is how [Rule
+14](#inferred-silence-rule-14)'s central assumption is checked: a note after a
+`<forward>` has to sound where a note after a rest of the same duration would.
+A loader that ignored the element would produce a file that still loads, still
+validates, and plays every late-entering voice on the downbeat.
+
+**Load the file, do not save it.** This check means opening the file, not
+opening and re-saving it. A save by another program is that program's encoding
+of the music, not this one's, and at least one major editor rewrites Rule 14's
+`<forward>` elements into something that no longer carries the marking — with
+the figures moving accordingly. The bound is in [Rule
+14](#inferred-silence-rule-14). Whatever a producer states about its own file
+is a statement about the bytes it wrote.
 
 **What Fermata reports about its own transcriptions.** A transcription's
 warnings and confidence live on the transcription record and in the API
-response, not in the MusicXML — the emitted file is an ordinary score with
-nothing unusual in it. The warnings say how many measures fail Rule 8, in each
-direction, and how many notes were unwritable under Rule 11. The same Rule 8
-counts are also returned as numbers — `bars_overfull`, `bars_short`,
-`bars_defective` and `bars_measured` — so a consumer can compare them against
-what its own MusicXML tooling makes of the file.
+response, not in the MusicXML — the emitted file is an ordinary score, and the
+one thing in it that speaks about provenance is [Rule
+14](#inferred-silence-rule-14)'s `<forward>`. The warnings say how many measures
+fail Rule 8, in each direction, and how many notes were unwritable under Rule
+11. The same Rule 8 counts are also returned as numbers — `bars_overfull`,
+`bars_short`, `bars_defective` and `bars_measured` — so a consumer can compare
+them against what its own MusicXML tooling makes of the file.
 
 `bars_defective` counts a measure once whichever way it is wrong. A measure
 with two voices can have one over its meter and the other under it, so
 `bars_overfull + bars_short` double-counts such a measure and can exceed
 `bars_measured`; `bars_defective` is the figure to compare against another
 tool's count, and the one the reported confidence is derived from.
+
+`bars_padded` is how many of those measures hold inferred silence,
+`padded_bars` is which ones by number, and `inferred_rest_quarters` is how much
+silence there is in quarter notes. These are the counterpart of the `<forward>`
+elements in the file: a consumer that counts measures containing one gets
+`bars_padded`, one that lists them gets `padded_bars`, and one that sums their
+durations gets `inferred_rest_quarters`.
+
+Every padded measure is also a short one, without exception: the padding only
+fires for a voice that is under its meter, and the Rule 8 sum measures exactly
+that pre-padding total. `bars_padded` can still be smaller than `bars_short` —
+a measure with a single voice is never padded, and is emitted short — and could
+in principle be larger only for a measure carrying no `<time>` at all, which is
+not a thing a conforming file has.
+
+`bars_unread` and `unread_bars` are the measures nothing was read from, reported
+separately for the reason given in [Rule 14](#inferred-silence-rule-14): the
+measure of rests they hold does add up, so counting them as Rule 8 defects would
+make these figures disagree with the file, and *not* counting them anywhere let
+a score read as nothing at all report every measure conforming. They are folded
+into the reported confidence instead. That confidence also states any known
+defect below the threshold at which it changes label, so an unqualified
+high-confidence string means no measure was in question rather than not many.
 
 ## Out of scope
 

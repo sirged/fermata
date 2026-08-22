@@ -361,7 +361,8 @@
       // edit itself is the source of truth for content/source either way
       // `res` carries the format the server read off the content, which is
       // what the viewer dispatches on - so let it win over the loaded row's.
-      // `res` STATES warnings ([]) and the four bars_* figures (null) on
+      // `res` STATES warnings ([]) and every bar figure (null) - the bars_*
+      // counts plus padded_bars, unread_bars and inferred_rest_quarters - on
       // every response rather than omitting them for an edit, which has no
       // confidence to report - an absent key would be silently kept by this
       // spread, which is exactly how a saved edit once went on reporting the

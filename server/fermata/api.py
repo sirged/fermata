@@ -1309,7 +1309,45 @@ def _transcription_row(conn, score_id: int):
 # which is a far stronger statement than either row can support. Anything
 # wanting real figures for edited content has to measure that content; it
 # cannot inherit them from the extraction it replaced.
-_BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured")
+#
+# `bars_padded` and `bars_unread` belong with them for the same reason: a bar
+# holding silence that was deduced from the meter rather than read from the
+# page, or holding nothing that was read at all, is not the reading the other
+# figures make it look like, and neither is recoverable from them.
+_BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
+             "bars_padded", "bars_unread")
+
+# WHICH bars those were, as data and not only inside the warning prose. The
+# prose names them, but it caps the list, and the profile document states that a
+# consumer summing the `<forward>` durations in the file should get
+# `inferred_rest_quarters` - a claim the application has to actually make good
+# on. `padded_bars` / `unread_bars` are lists of bar numbers;
+# `inferred_rest_quarters` is a quarter-note count and can be fractional.
+_BAR_LIST_KEYS = ("padded_bars", "unread_bars")
+_BAR_AMOUNT_KEYS = ("inferred_rest_quarters",)
+
+
+def _stored_count(value):
+    """A stored bar count, or None if the blob holds something else there. bool
+    is a subclass of int and would otherwise pass as a count."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _stored_bar_list(value):
+    """A stored list of bar numbers, or None. Validated element by element: a
+    list with a string in it is not a list of bar numbers, and passing it
+    through would hand a caller something to do arithmetic on that cannot be."""
+    if not isinstance(value, list):
+        return None
+    return value if all(_stored_count(n) is not None for n in value) else None
+
+
+def _stored_amount(value):
+    """A stored quarter-note count, or None. Accepts int as well as float - 12
+    quarters is a whole number and JSON writes it as one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _transcription_dict(row) -> dict:
@@ -1327,9 +1365,11 @@ def _transcription_dict(row) -> dict:
     warnings = stored.get("warnings")
     d["warnings"] = warnings if isinstance(warnings, list) else []
     for key in _BAR_KEYS:
-        value = stored.get(key)
-        # bool is a subclass of int and would otherwise pass as a count.
-        d[key] = value if isinstance(value, int) and not isinstance(value, bool) else None
+        d[key] = _stored_count(stored.get(key))
+    for key in _BAR_LIST_KEYS:
+        d[key] = _stored_bar_list(stored.get(key))
+    for key in _BAR_AMOUNT_KEYS:
+        d[key] = _stored_amount(stored.get(key))
     return d
 
 
@@ -1428,6 +1468,11 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             "bars_short": result.bars_short,
             "bars_defective": result.bars_defective,
             "bars_measured": result.bars_measured,
+            "bars_padded": result.bars_padded,
+            "bars_unread": result.bars_unread,
+            "padded_bars": result.padded_bars,
+            "unread_bars": result.unread_bars,
+            "inferred_rest_quarters": result.inferred_rest_quarters,
         }
     )
     with tx() as tx_conn:

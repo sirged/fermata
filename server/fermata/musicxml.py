@@ -113,6 +113,58 @@ MIN_OCTAVE = 0
 MAX_OCTAVE = 9
 
 
+class InferredRest(list):
+    """The `notes` slot of a rest beat that was DEDUCED, not read.
+
+    Any rest beat carries an empty notes list. This marks the subset of them
+    that were never printed in the source and exist only because a voice the
+    producer DID read notes from came up short of its meter - see tabextract's
+    _pad_voice_to_budget. Telling the two apart is the whole point: silence
+    invented to balance a bar must not read as silence somebody engraved.
+
+    It subclasses `list` and is always empty, so every existing consumer of the
+    beats model that only asks "does this beat have notes" is unaffected, and
+    an inferred rest still compares equal to a plain one. Anything that needs
+    the distinction asks is_inferred_rest().
+
+    WHAT DESTROYS THE MARK, because it rides on the type rather than on a
+    value: it survives copy, deepcopy and pickle, and is lost by slicing
+    (`notes[:]`), by `list(notes)`, by concatenation, and by any round trip
+    through JSON - all of which hand back a plain list. None of those is reached
+    today; the beats model goes straight from the extractor to the two
+    emitters. But anything that caches the model as JSON and reads it back would
+    turn every inferred rest in the document into an engraved one, silently, and
+    nothing here would fail. Such a cache has to carry the mark itself.
+    """
+
+    __slots__ = ()
+
+
+def inferred_rest() -> InferredRest:
+    """A fresh notes list marked as inferred silence.
+
+    Fresh rather than one shared module-level instance: it is a list, and a
+    single shared mutable empty list is one stray append away from putting the
+    same note into every inferred rest in the document.
+    """
+    return InferredRest()
+
+
+def is_inferred_rest(notes) -> bool:
+    """Whether this beat's notes slot marks silence deduced from the meter."""
+    return isinstance(notes, InferredRest)
+
+
+# What a `<forward>` written for inferred silence says about itself, in words,
+# beside the machine-readable fact of being a forward and not a rest. A
+# constant because it is part of the published profile (Rule 14), so a consumer
+# may match on it - see _append_forward.
+INFERRED_REST_FOOTNOTE = (
+    "silence deduced from the time signature, not read from a rest printed in "
+    "the source"
+)
+
+
 def _fifths_position(n: int) -> tuple[str, int]:
     """The (step, alter) at position n on the line of fifths."""
     return _FIFTHS_LETTERS[(n + 1) % 7], (n + 1) // 7
@@ -272,12 +324,50 @@ def voices_of(beats):
     return list(beats) if isinstance(beats[0], list) else [beats]
 
 
+def writes_a_note(duration_code, dots, notes) -> bool:
+    """Whether build() writes this beat as a `<note>` at all.
+
+    Two kinds of beat produce none. Inferred silence becomes a `<forward>`
+    (Rule 14), and a beat that resolves to no duration cannot be written,
+    because `<duration>` is positive-divisions. Both are decided here rather
+    than by each caller, so a count reported beside the file and the file itself
+    cannot come from two different rules - see written_beats and build().
+    """
+    if is_inferred_rest(notes):
+        return False
+    return beat_divisions(duration_code, dots) >= _MIN_DURATION
+
+
+def written_beats(measures) -> int:
+    """How many beats the emitted document actually holds.
+
+    This is what `<note>` elements a consumer counts (chord members share their
+    beat's onset and carry `<chord>`, so a chord is one beat, not one per note -
+    Rule 7). Reported rather than the number of beats extraction produced,
+    because those are no longer the same number: silence deduced from the meter
+    is emitted as `<forward>` and is not a beat of the score.
+    """
+    count = 0
+    for measure_in in measures:
+        beats_in, _ts = _split_measure(measure_in, None)
+        for voice in voices_of(beats_in):
+            count += sum(1 for beat in voice if writes_a_note(*beat))
+    return count
+
+
 def voice_durations(beats) -> list[int]:
     """Each voice's total length in divisions, in voice order. This is the
     left-hand side of Rule 8, computed from the beats model rather than from
     emitted XML, so a caller can report on a transcription without parsing its
-    own output back in."""
-    return [sum(beat_divisions(code, dots) for code, dots, _notes in voice)
+    own output back in.
+
+    Inferred silence (see InferredRest) is NOT counted, because it is not
+    written as a note or a rest: build() emits `<forward>` for it, which Rule 8
+    does not count either. That is what keeps this equal to the per-voice sums
+    a consumer adds up out of the emitted file.
+    """
+    return [sum(beat_divisions(code, dots) for code, dots, notes in voice
+                if not is_inferred_rest(notes))
             for voice in voices_of(beats)]
 
 
@@ -321,6 +411,26 @@ def _append_note(measure, duration, type_name, dots, voice, string=None,
         technical = _sub(notations, "technical")
         _sub(technical, "string", string)
         _sub(technical, "fret", fret)
+
+
+def _append_forward(measure, duration, voice):
+    """Advance one voice's writing position without writing a note or a rest.
+
+    This is how inferred silence is emitted (Rule 14). `<forward>` moves the
+    position exactly as a rest of the same duration would, so the notes after
+    it still sound where they should and the measure still lays out - but it is
+    not a rest, so it does not claim the source printed one, and Rule 8's sum
+    over that voice's notes and rests genuinely falls short. A measure padded
+    to look complete would report as conformant to every tool that reads it,
+    which is precisely the defect that must stay visible.
+
+    The schema's sequence for forward is duration, footnote?, level?, voice?,
+    staff? - so the footnote comes before the voice, not after.
+    """
+    forward = _sub(measure, "forward")
+    _sub(forward, "duration", duration)
+    _sub(forward, "footnote", INFERRED_REST_FOOTNOTE)
+    _sub(forward, "voice", voice)
 
 
 def _append_attributes(measure, ts, fifths, tuning, capo, opening):
@@ -419,6 +529,13 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
     reports, and the whole point of emitting a standard format is that
     somebody else's tool can find those.
 
+    A beat whose notes are an InferredRest is silence the extractor deduced
+    from the meter rather than read from the page. It is written as
+    `<forward>`, not as a rest (Rule 14): the position advances so the rest of
+    the voice still sounds in the right place, while the measure's notes and
+    rests genuinely fall short of its meter, so a Rule 8 check by any consumer
+    reports the same defect this producer reports.
+
     The one thing it does refuse to write is a pitch MusicXML has no way to
     express - see is_representable, and unrepresentable_notes for the count a
     caller should report.
@@ -475,6 +592,17 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
                     # <duration> is positive-divisions, so there is no way to
                     # write a zero-length beat. Nothing sounds for no time
                     # either, so dropping it loses nothing.
+                    continue
+                if not writes_a_note(duration_code, dots, notes):
+                    # Everything writes_a_note rejects EXCEPT the zero-duration
+                    # case, which the guard above has already skipped: silence
+                    # this producer deduced rather than read. Written as
+                    # `<forward>`, which holds the position without asserting a
+                    # rest - see _append_forward and Rule 14. The predicate is
+                    # shared with written_beats, so the beat count reported
+                    # beside the file and the file itself cannot disagree.
+                    _append_forward(measure, duration, voice_number)
+                    written += duration
                     continue
                 type_name = TYPE_NAMES.get(duration_code)
                 dot_count = min(max(dots, 0), len(_DOT_FACTORS) - 1)
