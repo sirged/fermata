@@ -27,7 +27,7 @@ them.
   interactively and can be switched between standard notation, tablature, or
   both staves at once, with audio playback, adjustable speed, and a moving
   cursor. The built-in synthesizer also drives practice tools: drag-select a
-  passage on the score to loop it, plus metronome and count-in toggles. The
+  passage on the score to loop it, plus a count-in. The
   staff is themed to match the interface, lays itself out differently on a
   phone, a tablet on a stand and a desktop, and can be drawn dark for
   practising in the dark — see [how scores are rendered](docs/rendering.md) for
@@ -59,6 +59,22 @@ them.
   than a convenience. Presets cover guitars, basses, ukulele, violin, viola and
   cello. Transcription does not yet use a score's instrument — it still assumes
   a six-string guitar in standard tuning.
+- **Metronome, everywhere** — one click, available over a piece, on the
+  practice page, and on a page of its own, because "I just want a metronome" is
+  a real thing to want from a practice tool. Wherever it appears it arrives
+  already set up for that context — over a piece, to that piece's tempo and
+  time signature — and every pre-filled value is still adjustable, because a
+  marking is sometimes wrong, sometimes aspirational, and frequently not the
+  speed a passage should be practised at today. Tempo is settable as a
+  proportion of the piece from 15% to 175% (far below half speed, because for a
+  passage that is beyond you half speed is not slow enough) or as a fixed
+  number, one beat per minute at a time. When a setting asks for a click slower
+  or faster than one can actually be sounded, it shows the rate it is really
+  clicking at and says plainly that it is at the end of its range, rather than
+  leaving a percentage on screen that has stopped describing what you hear. It
+  does not use the renderer's own
+  metronome, which cannot run at a tempo different from the notes beside it —
+  see [how scores are rendered](docs/rendering.md).
 - **Practice tracking** — a session timer per piece, with recently-practised
   and neglected views so the library reflects what you are actually working on.
   A session can record what the work was: which bars or pages, at what tempo,

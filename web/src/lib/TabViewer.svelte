@@ -3,7 +3,7 @@
   import { api } from "./api.js";
   import { createScoreView, UNRENDERABLE_MESSAGE } from "./score-render.js";
   import { getSettings, setSetting, STAFF_THEMES, STAFF_THEME_LABELS } from "./settings.svelte.js";
-  import { MAX_METRONOME_BPM, MIN_METRONOME_BPM } from "./metronome.js";
+  import Metronome from "./Metronome.svelte";
 
   const settings = getSettings();
 
@@ -57,26 +57,40 @@
   let playerReady = $state(false);
   let speed = $state(1);
   let looping = $state(false);
+  // Whether the click is on. Owned here rather than inside Metronome.svelte
+  // because gig mode strips the toolbar - and its metronome controls - while
+  // still having to show the readout, so this component needs the answer too.
+  // Bound to the component below; nothing else here sets it.
+  //
+  // None of the metronome's settings are server-persisted, deliberately, and
+  // none of them are kept here either: they live in Metronome.svelte, which
+  // re-pushes them whenever `view` is replaced. Every other transport control
+  // here (speed, looping, count-in) is per-session state that resets with a
+  // fresh load, and a click's tempo is exactly as tied to "the passage being
+  // worked on right now" as those are.
   let metronome = $state(false);
-  // "proportion" (the default) clicks a percentage of the score's own tempo
-  // and tracks it as the piece moves; "bpm" clicks a fixed value and ignores
-  // the score. Neither is a server-persisted setting, deliberately: every
-  // other transport control here (speed, looping, count-in) is per-session
-  // state that resets with a fresh load, and the metronome's tempo is exactly
-  // as tied to "the passage being worked on right now" as those are - a
-  // proportion left over from yesterday's slow passage is not a default
-  // tomorrow's fast one wants.
-  let metronomeMode = $state("proportion");
-  // A percentage, not a 0-1 ratio, because that is how a player would say it
-  // out loud - "seventy percent" - and the input below reads that way too.
-  let metronomeProportion = $state(100);
-  let metronomeBpm = $state(120);
-  // The value score-render.js reports it is actually clicking at right now -
+  // The value the audio layer reports it is actually clicking at right now -
   // null until a score has loaded and it has one to report. This is read
   // back FROM the audio layer (see onMetronomeTempo below), not computed
   // here a second time: showing a value this component derived itself would
   // stay green through a bug in what the audio layer actually does with it.
   let metronomeTempo = $state(null);
+  // "slowest"/"fastest" when the click's countable-range clamp - rather than
+  // the chosen percentage - is what decided that rate, otherwise null. Passed
+  // down so the control can say why the two have stopped agreeing.
+  let metronomeLimit = $state(null);
+  // The metronome's three visible settings, owned here rather than inside
+  // Metronome.svelte for one reason: gig mode unmounts the whole toolbar, and
+  // a setting that lived in the component would silently revert to its default
+  // on the way back out. null means "not chosen yet" - the component fills each
+  // one in from its own pre-fill chain and hands it back. Still not persisted
+  // anywhere: see the note on `metronome` above.
+  let metronomeMode = $state(null);
+  let metronomeProportion = $state(null);
+  let metronomeBpm = $state(null);
+  // The score's own declared tempo, so the percentages can say what they are
+  // percentages OF - see Metronome.svelte's baseTempoLabel.
+  let scoreTempo = $state(null);
   let countIn = $state(false);
   let loadError = $state("");
   let ladder = $state(false);
@@ -135,6 +149,8 @@
     // a new score has its own tempo - the old readout would otherwise show
     // the previous score's number until this one's first report arrives
     metronomeTempo = null;
+    metronomeLimit = null;
+    scoreTempo = null;
     // unknown again for this score, not "same as the last one" - see the
     // comment on profileOptions's declaration
     profileOptions = null;
@@ -148,20 +164,16 @@
         profile,
         preset: gigMode ? "stand" : "desk",
         theme: settings.staff_theme,
-        transport: {
-          speed,
-          looping,
-          metronome,
-          metronomeMode,
-          metronomeProportion: metronomeProportion / 100,
-          metronomeBpm,
-          countIn,
-        },
+        transport: { speed, looping, countIn },
         onReady: () => (playerReady = true),
         onPlaying: (p) => (playing = p),
         onError: (m) => (loadError = m),
         onPassComplete: advanceLadder,
-        onMetronomeTempo: (bpm) => (metronomeTempo = bpm),
+        onMetronomeTempo: (bpm, limit) => {
+          metronomeTempo = bpm;
+          metronomeLimit = limit;
+        },
+        onScoreTempo: (t) => (scoreTempo = t),
         // Only which buttons to offer, not which one is highlighted - see
         // onProfileApplied for that. A score with nothing drawable reports an
         // empty array here, not a fallback list; the empty-state notice in
@@ -226,53 +238,6 @@
     view?.setLooping(looping);
     // the ladder advances on loop completions, so it cannot run unlooped
     if (!looping) ladder = false;
-  }
-
-  function toggleMetronome() {
-    metronome = !metronome;
-    view?.setMetronome(metronome);
-  }
-
-  function chooseMetronomeMode(ev) {
-    const next = ev.target.value;
-    // Seeding the fixed-bpm field from the click's own last reported value -
-    // not from metronomeProportion times some guessed score tempo, which
-    // this component does not reliably know - means switching modes mid
-    // practice does not jump the click to an unrelated speed the instant
-    // it's chosen. Only one direction: converting a chosen bpm back into "a
-    // percentage of what" has no such anchor to seed from, so proportion
-    // mode is left at whatever it last held.
-    if (next === "bpm" && metronomeTempo != null) {
-      metronomeBpm = clamp(metronomeTempo, MIN_METRONOME_BPM, MAX_METRONOME_BPM);
-    }
-    metronomeMode = next;
-    view?.setMetronomeMode(metronomeMode);
-    if (next === "bpm") view?.setMetronomeBpm(metronomeBpm);
-  }
-
-  function setMetronomeProportion(ev) {
-    // Generous but bounded - the audio layer clamps to a countable range
-    // regardless, this just keeps the number in the field sane before it
-    // gets there.
-    const clamped = clamp(Number(ev.target.value), 10, 300);
-    metronomeProportion = clamped;
-    // Forced onto the field directly, not left to Svelte's own value={...}
-    // binding: when the clamp lands on the SAME number the state already
-    // held (typing 400 while already at 300), the state does not change, so
-    // nothing re-renders the input - and the box would go on showing the 400
-    // that was typed while the click kept running at 300. This project has
-    // already shipped the same mismatch once (a tuner showing one pitch
-    // while the synthesiser sounded another); displayed and actual have to
-    // agree unconditionally, not just on the changes Svelte happens to see.
-    ev.target.value = String(clamped);
-    view?.setMetronomeProportion(clamped / 100);
-  }
-
-  function setMetronomeBpm(ev) {
-    const clamped = clamp(Number(ev.target.value), MIN_METRONOME_BPM, MAX_METRONOME_BPM);
-    metronomeBpm = clamped;
-    ev.target.value = String(clamped); // see setMetronomeProportion above
-    view?.setMetronomeBpm(clamped);
   }
 
   function toggleCountIn() {
@@ -374,52 +339,27 @@
           >
             Loop
           </button>
-          <button class:on={metronome} onclick={toggleMetronome} title="Metronome click during playback">
-            Metronome
-            {#if metronome && metronomeTempo != null}
-              <span class="metronome-readout" title="clicks per minute">{metronomeTempo}</span>
-            {/if}
-          </button>
-          {#if metronome}
-            <div class="metronome-controls">
-              <select
-                class="metronome-mode"
-                value={metronomeMode}
-                onchange={chooseMetronomeMode}
-                title="What the metronome counts - the score's own tempo, or a number set directly"
-              >
-                <option value="proportion">% of score tempo</option>
-                <option value="bpm">Fixed BPM</option>
-              </select>
-              {#if metronomeMode === "proportion"}
-                <label>
-                  <input
-                    class="metronome-proportion"
-                    type="number"
-                    min="10"
-                    max="300"
-                    step="5"
-                    value={metronomeProportion}
-                    onchange={setMetronomeProportion}
-                  />
-                  %
-                </label>
-              {:else}
-                <label>
-                  <input
-                    class="metronome-bpm"
-                    type="number"
-                    min={MIN_METRONOME_BPM}
-                    max={MAX_METRONOME_BPM}
-                    step="1"
-                    value={metronomeBpm}
-                    onchange={setMetronomeBpm}
-                  />
-                  bpm
-                </label>
-              {/if}
-            </div>
-          {/if}
+          <!-- The general metronome (issue #97), pre-filled from this score:
+          its declared tempo as the base the percentages are of, and its own
+          time signature (which the click reads live from the playhead, so a
+          meter change mid-piece is followed rather than assumed). compact,
+          because over a piece the meter and subdivision come from the score
+          and there is nothing there for a player to set; and nothing here
+          persists, for the reason on `metronome`'s declaration above. -->
+          <Metronome
+            ownsClick={false}
+            control={view?.metronome ?? null}
+            bind:enabled={metronome}
+            tempo={metronomeTempo}
+            limit={metronomeLimit}
+            proportionBase={true}
+            baseTempoLabel={scoreTempo}
+            tempoInferred={tex != null}
+            bind:mode={metronomeMode}
+            bind:proportion={metronomeProportion}
+            bind:bpm={metronomeBpm}
+            compact={true}
+          />
           <button class:on={countIn} onclick={toggleCountIn} title="Count-in before playback starts">
             Count-in
           </button>
@@ -598,50 +538,11 @@
     color: var(--brass);
   }
 
-  /* The live click tempo, inline in the button that turns it on - "the
-     current value visible" has to sit where a glance at the toggle already
-     goes, not in a second place a player has to know to look. */
-  .metronome-readout {
-    margin-left: 4px;
-    font-variant-numeric: tabular-nums;
-    opacity: 0.85;
-  }
+  /* .metronome-readout and .metronome-controls moved into Metronome.svelte
+     along with the controls themselves. What stays here is the gig-mode
+     HUD's own read-only echo below, which is this component's markup.
 
-  /* Same shape as .ladder-controls (a small bordered strip of compact
-     inputs) - the two are siblings in the same button row and should read as
-     the same kind of thing, not two different idioms for "the button next to
-     it has settings". */
-  .metronome-controls {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 8px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--surface);
-  }
-
-  .metronome-controls select {
-    font-size: 12px;
-  }
-
-  .metronome-controls label {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 12px;
-    color: var(--ink-dim);
-  }
-
-  .metronome-controls input {
-    /* one digit wider than .ladder-controls input - a fixed bpm reasonably
-       runs to three digits (60-208 and beyond), where the ladder's own
-       fields stay within two */
-    width: 52px;
-    padding: 2px 4px;
-  }
-
-  /* The gig-mode HUD's read-only echo of the same value - see the markup
+     The gig-mode HUD's read-only echo of the same value - see the markup
      above for why the controls themselves do not follow it into gig mode. */
   .metronome-indicator {
     font-size: 14px;
