@@ -36,6 +36,8 @@
   import { api } from "./api.js";
   import {
     DEFAULT_RANGE,
+    DRILL_SECONDS,
+    DRILL_VOICE,
     buildChoices,
     instrumentRange,
     loggedStatement,
@@ -133,9 +135,15 @@
   async function sound(midi) {
     soundError = "";
     try {
-      const heard = await playPitch(midi);
+      // The drill's OWN voice and note length, not the tuning check's defaults -
+      // see DRILL_VOICE and DRILL_SECONDS for the measurement behind the voice.
+      const heard = await playPitch(midi, { voice: DRILL_VOICE, seconds: DRILL_SECONDS });
       if (heard == null) {
-        soundError = "That pitch is outside what the synthesiser can play.";
+        // Says what is true and stops there. Null means no note reached the
+        // synthesiser, and this cannot tell whether that was the pitch being
+        // unplayable or the note never being handed over - so it names neither
+        // cause rather than asserting the likelier one.
+        soundError = "No note was sounded, so there is nothing to name yet.";
         return null;
       }
       lastSounded = heard;

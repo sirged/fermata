@@ -48,6 +48,50 @@ export const MIN_RANGE_SEMITONES = CHOICE_COUNT - 1;
  * than above them. */
 export const DEFAULT_RANGE = { low: 36, high: 84, top: "chosen" };
 
+// ------------------------------------------- what the drill sounds, and for how long
+//
+// Both are this exercise's own, passed to playPitch rather than inherited from
+// it. They used to be its defaults, which were chosen for CHECKING A TUNING -
+// a different task, and the reason a constant should not be shared between the
+// two just because one of them was written first.
+
+/** The voice the drill sounds, as a raw (0-based) midi program: 0, Acoustic
+ * Grand Piano.
+ *
+ * NOT the nylon guitar (24) the tuning check uses, and this is measured rather
+ * than preferred. In the soundfont Fermata ships (sonivox.sf2), program 24 has
+ * **three** sample zones for the whole keyboard, so a note is a single recording
+ * pitch-shifted a long way: over this drill's default C2-C6 the worst case is
+ * **24 semitones - two full octaves** - from its sample's root, and over a
+ * guitar's own E2-D6 it is 26. A note transposed two octaves is a thin,
+ * formant-shifted artefact, so at the ends of the range the exercise would be
+ * testing the soundfont rather than the ear.
+ *
+ * Program 0 has **eleven** zones, roughly one per octave: the same worst case is
+ * 12 semitones, and 7 over a violin's range and 6 over a cello's. It is also the
+ * right voice on its own merits - a piano is the reference instrument ear
+ * training is taught on, its attack is unambiguous and its fundamental clear,
+ * and this exercise is about the NAME of a pitch rather than the timbre of an
+ * instrument somebody may not even play.
+ *
+ * The tuning check keeps the guitar deliberately: matching a string by ear wants
+ * something like the instrument in hand, and its range is one instrument's
+ * strings rather than four octaves. */
+export const DRILL_VOICE = 0;
+
+/** How long the note is held, in seconds.
+ *
+ * Longer than the tuning check's 1.6, which is enough to hear a string against
+ * the one you are tuning and is not the same task: identifying a pitch cold
+ * needs the attack to pass and the sustain to be heard AS a pitch rather than as
+ * a transient, and it wants long enough to hum against. Short enough that four
+ * notes in a row is not a wait.
+ *
+ * A round number chosen for stated reasons rather than a measured one - nobody
+ * has listened to this yet, and it is a parameter precisely so that whoever
+ * does can change it here without touching the tuning check. */
+export const DRILL_SECONDS = 2.5;
+
 /** The synthesiser's reference pitch, which is fixed. score-render.js's
  * playPitch says the same thing in prose: alphaTab's synth is equal-tempered
  * around A440 and takes no reference, so an instrument defined at A415 has its
