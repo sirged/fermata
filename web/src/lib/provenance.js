@@ -76,13 +76,23 @@ export function keySignatureLabel(fifths) {
   return `${count} ${accidental}${count === 1 ? "" : "s"}`;
 }
 
-/** A tuning as a person would say it. Named by its strings when it is neither
- * labelled nor the standard one, because "standard tuning" would then be a
- * claim about something nobody checked. */
+/**
+ * A tuning as a person would say it, or null when there is nothing this can
+ * say about it honestly.
+ *
+ * The null case is the interesting one: a tuning that is NEITHER labelled nor
+ * the standard one. Today the extractor cannot produce that - it recognises
+ * exactly one non-standard tuning and labels it - but the moment #80 widens
+ * the recognition it can, and the answer must not be "standard tuning
+ * assumed". A tuning that demonstrably differs from standard cannot have come
+ * from an assumption of standard, so calling it assumed is a false accusation,
+ * and nothing records where it did come from. Same rule sourceKind already
+ * follows on a source string it does not recognise: report neither rather than
+ * pick the safer-sounding wrong answer.
+ */
 export function tuningDescription(tuning, label) {
   if (typeof label === "string" && label) return `${label} tuning`;
   if (isStandardTuning(tuning)) return "standard tuning";
-  if (Array.isArray(tuning) && tuning.length) return `tuning ${tuning.join(" ")}`;
   return null;
 }
 
@@ -119,9 +129,10 @@ export function transcriptionProvenance(t) {
   // The tuning has no source field of its own, and does not need one: the
   // extractor recognises exactly one non-standard tuning, by finding the words
   // "Drop D" in the page text, and records the label when it does. So a label
-  // IS the reading, and its absence is the assumption - which is #80's whole
-  // complaint. Guarded on the tuning itself being present so an edited row,
-  // which records neither, is not reported as assuming anything.
+  // IS the reading, and the absence of one ALONGSIDE THE STANDARD SIX STRINGS
+  // is the assumption - which is #80's whole complaint. An unlabelled tuning
+  // that is not the standard one is neither, and tuningDescription returns null
+  // for it; so does an edited row, which records no tuning at all.
   const tuning = tuningDescription(t.tuning, t.tuning_label);
   if (tuning) groups[t.tuning_label ? "read" : "assumed"].push(tuning);
 

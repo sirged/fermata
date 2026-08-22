@@ -649,7 +649,7 @@
             {#each sessions as session (session.id)}
               <li class="session" data-session={session.id}>
                 <span class="session-day">
-                  {session.local_date}
+                  <span class="day-date">{session.local_date}</span>
                   <!-- Whether that day was RECORDED or worked out from the
                        row's UTC timestamp, which is the difference between a
                        fact and an attribution. The server has always said
@@ -1060,7 +1060,15 @@
 
   .session {
     display: grid;
-    grid-template-columns: 92px 1fr 70px;
+    /* 92px held the date and nothing else. The inferred badge has to sit
+       BESIDE the date rather than under it - it qualifies that date, and a
+       word wrapped onto its own line under a column of dates reads as a
+       layout accident rather than as a note about the day. The two together
+       need about 116px, measured rather than guessed, so the track is wide
+       enough for both. A fixed width and not `auto`: each row is its own
+       grid, so a track that sized to content would leave the middle column
+       starting at a different x on the rows that carry a badge. */
+    grid-template-columns: 120px 1fr 70px;
     gap: 10px;
     align-items: baseline;
     padding-bottom: 6px;
@@ -1075,7 +1083,14 @@
   }
 
   /* Quieter than the date it sits beside, and not styled as a fault - nothing
-     went wrong, a day was attributed rather than recorded. */
+     went wrong, a day was attributed rather than recorded. nowrap on both
+     halves, because "beside the date" is the whole point: without it the badge
+     breaks onto its own line the moment the track is a pixel too narrow, and a
+     test that asserts only the text cannot see that happen. */
+  .session-day {
+    white-space: nowrap;
+  }
+
   .day-inferred {
     font-size: 11px;
     font-variant-numeric: normal;

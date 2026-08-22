@@ -24,6 +24,7 @@ import {
   METRONOME_MUSICXML_NO_TEMPO,
   stubMetronomeScore,
   stubMetronomeScoreFast,
+  stubMetronomeScoreLateTempo,
   stubMetronomeScoreNoTempo,
   stubMetronomeScoreOther,
   stubMetronomeScoreRepeat,
@@ -509,6 +510,24 @@ test("a score that prints no tempo at all calls the number a default and says th
   // it mean anything.
   await expect(baseNote(page).locator(".mark")).toHaveCount(1);
 
+  // TWO LINES, and the toolbar no wider than its own box. This is a sentence
+  // where the other two states are a three-token label, and the toolbar is a
+  // single non-wrapping flex row with six other controls in it - held on one
+  // line it clips the profile buttons at the far end, and left to wrap wherever
+  // a character cap falls it can take three. Measured, because no assertion on
+  // the TEXT can see either happen.
+  const lines = await baseNote(page).evaluate((el) => {
+    const style = getComputedStyle(el);
+    const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
+    return Math.round(el.getBoundingClientRect().height / lineHeight);
+  });
+  expect(lines, "the base note is expected to occupy exactly two lines").toBe(2);
+  const toolbar = await page.locator(".toolbar").evaluate((el) => ({
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth,
+  }));
+  expect(toolbar.scrollWidth, JSON.stringify(toolbar)).toBeLessThanOrEqual(toolbar.clientWidth);
+
   // The number is still the number the click actually runs at. Saying "default
   // 120" beside a click running at something else would be a different lie,
   // and 4/4 means the quarter-note base and the click rate are one number.
@@ -518,6 +537,38 @@ test("a score that prints no tempo at all calls the number a default and says th
   const rate = await measuredRate(page, 8);
   expect(rate, `measured ${rate}`).toBeGreaterThan(119);
   expect(rate, `measured ${rate}`).toBeLessThan(121);
+});
+
+test("a score whose tempo mark sits in a later bar is not told it has none - that would be the same fault with the sign flipped", async ({
+  page,
+}) => {
+  // The false-assertion direction, and the one to be most suspicious of in a
+  // change like this. This fixture DOES declare a tempo - 88, on bar two, which
+  // is what a score looks like when it opens with a pickup or when the exporter
+  // attached the mark to the first real note. The number the renderer reports
+  // is still the 120 fallback, so "default" is right; but the first version of
+  // this work looked only at bar one and went on to PRINT that the score
+  // declares no tempo, which is untrue of the document. Failing to mention a
+  // fact (#102) and asserting a false one are not the same size of mistake.
+  await stubMetronomeScoreLateTempo(page);
+  await page.goto("/#/score/7");
+  await expect(playButton(page)).toBeEnabled({ timeout: 30_000 });
+  await metronomeButton(page).click();
+
+  await expect(baseNote(page)).toHaveText(/default/);
+  await expect(baseNote(page)).toContainText("120");
+  // The weaker claim, which is true here: nothing at the start.
+  await expect(baseNote(page)).toContainText("none at the start");
+  // NOT the stronger one, which is false here. Anchored on .metronome-base,
+  // which the tests above prove can match.
+  await expect(baseNote(page)).not.toContainText("none in the score");
+  await expect(baseNote(page)).not.toContainText("marked");
+  // The accessible label carries the same distinction, rather than the mark
+  // saying one thing and its label another.
+  await expect(baseNote(page).locator(".mark")).toHaveAttribute(
+    "aria-label",
+    /marks no tempo at its start/,
+  );
 });
 
 // ------------------------------------------- where the range runs out

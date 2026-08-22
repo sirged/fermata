@@ -75,10 +75,10 @@
     //
     //   "marked"      - printed on the page and read off it.
     //   "transcribed" - lifted out of a transcription of a scanned page.
-    //   "default"     - the score declares no tempo at all, so the number
-    //                   beside the percentages is the renderer's fallback and
-    //                   nothing about it was read anywhere. This one is the
-    //                   defect issue #102 was about: it used to read
+    //   "default"     - the score declares no tempo where this number comes
+    //                   from, so it is the renderer's fallback and nothing
+    //                   about it was read anywhere. This one is the defect
+    //                   issue #102 was about: it used to read
     //                   "marked ♩ = 120" for an edition that prints
     //                   *Andante* and no number, which is most of the
     //                   classical material in this library.
@@ -86,6 +86,14 @@
     // Only "marked" is presented as a marking; the other two carry the same
     // unobtrusive unverified mark the rest of the app uses.
     tempoSource = "marked",
+    // Only read when tempoSource is "default", and it decides which of two
+    // different facts is stated. True means the score DOES declare a tempo,
+    // just not one that applies where this number was taken from (a pickup
+    // bar, or an exporter that attached the mark to the first real note). The
+    // number is the fallback either way, but "this score has no tempo" is then
+    // false OF THE DOCUMENT - and printing a falsehood is worse than the
+    // omission #102 was about, so the two are kept apart.
+    tempoElsewhere = false,
     // The piece's own tempo, for the "100% of what?" the percentages need
     // to be legible. Null when unknown.
     baseTempoLabel = null,
@@ -420,12 +428,18 @@
   // mode - a fixed BPM is a number the player typed, and there is nothing
   // inferred about it to disclose.
   //
-  // The third case is a score that declares NO tempo, where the number is the
-  // renderer's own 120 fallback. It gets the same treatment and one more
-  // thing: it says outright that there was none to read, because "default
-  // ♩ = 120" on its own still leaves a reader to work out whether 120 came
-  // from somewhere. Nothing here is a percentage of a marking in that case,
-  // and the control says so instead of quietly implying otherwise.
+  // The third case is a tempo the score does not declare here, where the
+  // number is the renderer's own 120 fallback. It gets the same treatment and
+  // one more thing: it says outright that there was none to read, because
+  // "default ♩ = 120" on its own still leaves a reader to work out whether 120
+  // came from somewhere. Nothing here is a percentage of a marking in that
+  // case, and the control says so instead of quietly implying otherwise.
+  //
+  // Which "none" it is matters. "none in the score" is a claim ABOUT THE
+  // DOCUMENT and is only made when the document really carries no tempo
+  // anywhere; a score whose mark sits in a later bar gets "none at the start",
+  // which is a claim about this number and is true of both cases. Stating the
+  // stronger one where the weaker one holds would be exactly #102 in reverse.
   // Said plainly, in visible text, whenever the countable-range clamp rather
   // than the chosen setting is what decided the rate on screen. Without this,
   // a control reading "15%" beside a readout of "20" is a percentage that has
@@ -452,16 +466,24 @@
   // so it is the only one that may be said when it was.
   const TEMPO_WORD = { marked: "marked", transcribed: "transcribed", default: "default" };
   const tempoUnverified = $derived(tempoSource !== "marked");
-  const baseNote = $derived(
+  // Two parts, kept separate so the markup can break between them rather than
+  // wherever a character count happens to fall - see the note on
+  // .metronome-base-aside. baseNote is the whole sentence, for the title.
+  const baseLabel = $derived(
     proportionBase && mode === "proportion" && baseTempoLabel != null
-      ? `${TEMPO_WORD[tempoSource] ?? "default"} ♩ = ${baseTempoLabel}` +
-          (tempoSource === "default" ? " (none in the score)" : "")
+      ? `${TEMPO_WORD[tempoSource] ?? "default"} ♩ = ${baseTempoLabel}`
       : null,
   );
+  const baseAside = $derived(
+    tempoSource === "default" ? (tempoElsewhere ? "(none at the start)" : "(none in the score)") : null,
+  );
+  const baseNote = $derived(baseLabel && [baseLabel, baseAside].filter(Boolean).join(" "));
   const baseMarkLabel = $derived(
-    tempoSource === "default"
-      ? `Unverified: this score declares no tempo, so ${baseTempoLabel} is a default rather than a marking`
-      : `Unverified: tempo ${baseTempoLabel} came from a transcription, not a printed marking`,
+    tempoSource !== "default"
+      ? `Unverified: tempo ${baseTempoLabel} came from a transcription, not a printed marking`
+      : tempoElsewhere
+        ? `Unverified: this score marks no tempo at its start, so ${baseTempoLabel} is a default rather than a marking`
+        : `Unverified: this score declares no tempo, so ${baseTempoLabel} is a default rather than a marking`,
   );
 </script>
 
@@ -606,7 +628,6 @@
         <span
           class="metronome-base"
           class:inferred={tempoUnverified}
-          class:undeclared={tempoSource === "default"}
           title={`The tempo the percentages are of - ${baseNote}`}
         >
           {#if tempoUnverified}
@@ -614,8 +635,7 @@
             something unverified: a tempo we inferred from a transcription -
             or never had at all - must not read as one printed on a page. -->
             <span class="mark" aria-label={baseMarkLabel}>●</span>
-          {/if}
-          {baseNote}
+          {/if}{baseLabel}{#if baseAside}<span class="metronome-base-aside">{baseAside}</span>{/if}
         </span>
       {/if}
       {#if !compact}
@@ -808,12 +828,15 @@
      label, and the score viewer's toolbar is a single non-wrapping flex row
      with six other controls in it. Held on one line it is the widest thing in
      the metronome block and pushes the row wide enough to clip the profile
-     buttons at the far end; allowed to wrap it costs one line of height and
-     nothing else. Only this state - the shorter forms have no reason to
-     break. */
-  .metronome-base.undeclared {
-    white-space: normal;
-    max-width: 15ch;
+     buttons at the far end.
+     So it breaks in a stated place: the parenthetical takes its own line, and
+     both halves stay unbroken. An earlier version left it to `white-space:
+     normal` under a max-width in `ch`, which produced two lines only because
+     the longest half happened to land exactly on the cap - a font a hair wider
+     and it would have been three, with no way to see that from the rule. This
+     is exactly two lines by construction, on any string either half holds. */
+  .metronome-base-aside {
+    display: block;
   }
 
   /* No colour, no weight change, no word like "unverified" in the visible

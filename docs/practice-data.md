@@ -63,6 +63,15 @@ so a reader is never handed an inferred day as though it were a recorded one.
 The practice page says which beside the date on every session row, because a
 distinction that only exists in the API is one nobody is ever told about.
 
+An inferred day is filed in whichever week UTC puts it in, while the page asks
+for the week around the practiser's own day — so west of Greenwich, an evening's
+practice from before this column existed can sit in the week after the one it
+happened in. Storing the day is what fixed that going forward and is the reason
+the column exists; a row that predates it cannot be fixed that way. Which is a
+reason to mark such a day rather than a reason to stop counting it, but the mark
+is carrying two facts at once: the day was not recorded, and the week it landed
+in is not necessarily the practiser's own.
+
 ### What is derived rather than stored
 
 - `reached_target` is `tempo_bpm >= target_tempo_bpm`, computed on read. A

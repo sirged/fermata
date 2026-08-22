@@ -92,21 +92,29 @@ test("a source string this version does not know is reported as neither, rather 
   expect(groups.assumed).not.toContain("4/4");
 });
 
-test("a tuning is described by what it actually is, never by a word that would be wrong", () => {
+test("an unlabelled tuning that is not the standard one is neither read nor assumed", () => {
   expect(tuningDescription(["E2", "A2", "D3", "G3", "B3", "E4"], null)).toBe("standard tuning");
   expect(tuningDescription(["D2", "A2", "D3", "G3", "B3", "E4"], "Drop D")).toBe("Drop D tuning");
-  // Unlabelled and NOT the standard six: "standard tuning" would be a claim
-  // about something nobody checked, so the strings are named instead.
-  expect(tuningDescription(["C2", "G2", "C3", "F3", "A3", "D4"], null)).toBe(
-    "tuning C2 G2 C3 F3 A3 D4",
-  );
-  // Seven strings, the first five of them standard - length has to count, or
-  // an extended-range instrument is described as a six-string in standard.
-  expect(tuningDescription(["B1", "E2", "A2", "D3", "G3", "B3", "E4"], null)).toBe(
-    "tuning B1 E2 A2 D3 G3 B3 E4",
-  );
+  // The case #80 makes reachable. A tuning that demonstrably differs from
+  // standard cannot have come from an assumption OF standard, so "assumed"
+  // there is a false accusation - and nothing records where it did come from.
+  // Same rule sourceKind follows on an unrecognised source: report neither.
+  expect(tuningDescription(["C2", "G2", "C3", "F3", "A3", "D4"], null)).toBeNull();
+  // Seven strings, the first six of them standard - length has to count, or an
+  // extended-range instrument is described as a six-string in standard.
+  expect(tuningDescription(["E2", "A2", "D3", "G3", "B3", "E4", "A4"], null)).toBeNull();
   expect(tuningDescription(null, null)).toBeNull();
   expect(tuningDescription([], null)).toBeNull();
+
+  // ...and it reaches no group at all, rather than quietly landing in
+  // "assumed" the way an unlabelled standard tuning correctly does.
+  const groups = transcriptionProvenance({
+    ...ASSUMED_EVERYTHING,
+    tuning: ["C2", "G2", "C3", "F3", "A3", "D4"],
+    tuning_label: null,
+  });
+  expect(groups.assumed).toEqual(["4/4", "no key signature"]);
+  expect(groups.read).toEqual([]);
 });
 
 test("a key signature is said the way a person would say it", () => {

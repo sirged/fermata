@@ -37,12 +37,14 @@
 // that a refused reconciliation says so on the page and can be confirmed. Both
 // were shown to fail against a mutation of the behaviour they claim - the whole
 // point of them is that the guard #95 added was invisible until they existed.
-// Plus 14 for issues #102 and #103 - the application knowing it guessed and
-// not saying so. 2 in tests/browser/metronome-everywhere.spec.js (a score that
+// Plus 15 for issues #102 and #103 - the application knowing it guessed and
+// not saying so. 3 in tests/browser/metronome-everywhere.spec.js (a score that
 // prints no tempo, and a transcription whose document declares none, both of
 // which used to read "marked ♩ = 120"; the two honesty tests that were already
 // there both use fixtures that DECLARE a tempo, which is why the guard meant to
-// catch this was never exercised and was in fact dead code), 4 in
+// catch this was never exercised and was in fact dead code - plus the opposite
+// error, a score whose tempo mark sits in a later bar, which the first version
+// of that fix affirmatively told the reader had no tempo at all), 4 in
 // tests/browser/score-compare-warnings.spec.js (an assumed meter/key/tuning
 // saying so beside the staff, a read one saying that instead, a row that
 // records neither claiming neither, and the mark gig mode keeps), 1 in
@@ -52,9 +54,11 @@
 // read-versus-assumed sorting itself, including what it does with a source
 // string it does not recognise) and 1 in tests/unit/practice.spec.js (how much
 // of a week's total rests on an inferred day). Raised deliberately, and every
-// one of the 14 was shown to fail against a mutation of the behaviour it claims
-// - see the pull request.
-export const MINIMUM_TESTS = 199;
+// one of the 15 was shown to fail against a mutation of the behaviour it claims
+// - see the pull request. Two of them also assert PLACEMENT and not only text,
+// because both of those facts were rendered in the wrong place while every
+// assertion about their wording passed.
+export const MINIMUM_TESTS = 200;
 
 export default class MinimumTests {
   constructor() {
