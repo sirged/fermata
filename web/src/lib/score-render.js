@@ -674,6 +674,67 @@ export async function playPitch(midi) {
 // 0, set once below and never touched again) so the two never sound at once.
 
 /**
+ * Where the tempo `score.tempo` hands back actually came from: "start" (the
+ * document declares it), "later" (the document declares a tempo, but not one
+ * that applies at the start, so the reported number is still the fallback), or
+ * "none" (the document declares no tempo anywhere).
+ *
+ * This exists because `score.tempo` cannot answer the question. It is a
+ * getter over the first bar's tempo automations that returns a hard-coded
+ * 120 when there are none, so a score printing no tempo at all and a score
+ * printing "quarter = 120" are indistinguishable through it - which is how
+ * the metronome came to report "marked quarter = 120" for editions that
+ * print *Andante* and no number at all (issue #102). A `?? null` guard on
+ * that getter is dead code: it never returns null.
+ *
+ * Nor can `score.tempoLabel` answer it, despite being the obvious candidate.
+ * It is the automation's `text`, and alphaTab's MusicXML importer never sets
+ * that - it is "" for a score with a printed metronome mark of 96 exactly as
+ * it is for a score with nothing. Measured against the real importer, on the
+ * three shapes that matter: a `<metronome>` mark, a bare `<sound tempo=>`,
+ * and a document with neither.
+ *
+ * What does answer it is `isVisible`. ModelUtils.consolidate() runs at the
+ * end of every import and, when the first bar has no tempo automation at
+ * position zero, SYNTHESISES one carrying score.tempo (the 120 fallback) with
+ * `isVisible = false`. Every automation built from something actually in the
+ * document is visible.
+ *
+ * WHY THREE ANSWERS AND NOT TWO. The first version of this asked only whether
+ * the FIRST BAR held a visible automation, and reported anything else as
+ * "the score declares no tempo". A score whose tempo mark sits in a later bar
+ * - it opens with a pickup, or the exporter attached the mark to the first
+ * real note rather than to bar one - was therefore described as having none.
+ * The number was still right, because the fallback is genuinely what applies
+ * before the mark, but the interface then PRINTED that the document says
+ * nothing about its tempo, which is untrue of the document. That is #102 with
+ * the sign flipped, and worse than #102: failing to mention a fact is not the
+ * same as asserting a false one. So "not at the start" and "not anywhere" are
+ * kept apart, and only the second is allowed to say the score has none.
+ *
+ * The test for "start" is deliberately about `automations[0]` rather than
+ * about any visible automation in bar one, because index 0 is exactly the
+ * entry `score.tempo` reads: consolidate only ever APPENDS its synthesised
+ * one, so a real automation in bar one - even one attached part-way through
+ * it - is always index 0, and the number being labelled is then that
+ * automation's own value rather than the fallback.
+ *
+ * A non-empty tempoLabel counts as declared, for the formats whose importers
+ * fill it in (the Guitar Pro readers set it from the file's own label) - a
+ * named tempo is a declared one however it arrived, and nothing invents a
+ * label.
+ */
+function tempoProvenance(score) {
+  const bars = score?.masterBars ?? [];
+  const opening = (bars[0]?.tempoAutomations ?? [])[0];
+  if (opening && (opening.isVisible !== false || !!score?.tempoLabel)) return "start";
+  for (const bar of bars) {
+    if ((bar?.tempoAutomations ?? []).some((a) => a?.isVisible !== false)) return "later";
+  }
+  return "none";
+}
+
+/**
  * The score viewer's pre-fill for the general metronome: an engine, plus the
  * adapter that keeps it fed with this renderer's playhead and meter.
  *
@@ -858,11 +919,20 @@ function createScoreMetronome(api, onTempo, onClick) {
  *                          signal a caller should wait for before treating a
  *                          profile switch as having taken effect, rather than
  *                          assuming success the moment it is requested
- * @param opts.onScoreTempo (bpm|null) the score's OWN declared quarter-note
- *                          tempo, once one has loaded - what a proportion is
- *                          a proportion of. Reported so an interface can say
- *                          "70% of what" rather than showing a bare
- *                          percentage; null for a score that declares none.
+ * @param opts.onScoreTempo (bpm, provenance) the quarter-note tempo a
+ *                          proportion is a proportion of, once a score has
+ *                          loaded - reported so an interface can say "70% of
+ *                          what" rather than showing a bare percentage - and
+ *                          where that number came from: "start", "later" or
+ *                          "none". Both, rather than a null for the cases
+ *                          where nothing was declared, because the click
+ *                          still has to run at something and the interface
+ *                          still has to name it; what must not happen is
+ *                          naming it as a marking. Reported once per load and
+ *                          not tracked afterwards, which is why it can be a
+ *                          fact about the score: the live playhead tempo goes
+ *                          to the engine (and so to the readout), not to this
+ *                          callback. See tempoProvenance.
  * @param opts.onMetronomeTempo  (bpm, limit) the tempo the metronome is actually
  *                          clicking at just changed - see
  *                          metronome-engine.js, and createScoreMetronome
@@ -1163,7 +1233,7 @@ export function createScoreView(host, opts = {}) {
       api.updateSettings();
     }
     metronome.scoreLoaded(loadedScore);
-    onScoreTempo(loadedScore?.tempo ?? null);
+    onScoreTempo(loadedScore?.tempo ?? null, tempoProvenance(loadedScore));
     publish();
     onProfiles(scoreProfiles, unrenderable);
   });

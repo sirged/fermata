@@ -21,8 +21,11 @@
 import { expect, test } from "@playwright/test";
 
 import {
+  METRONOME_MUSICXML_NO_TEMPO,
   stubMetronomeScore,
   stubMetronomeScoreFast,
+  stubMetronomeScoreLateTempo,
+  stubMetronomeScoreNoTempo,
   stubMetronomeScoreOther,
   stubMetronomeScoreRepeat,
 } from "./fixtures/metronome-score.js";
@@ -357,6 +360,35 @@ test("the same control over a transcription says transcribed, so the number it i
   await expect(baseNote(page).locator(".mark")).toHaveCount(1);
 });
 
+test("a transcription whose own document declares no tempo says assumed rather than transcribed - nothing was lifted off anything", async ({
+  page,
+}) => {
+  // The interaction between the two words, and the case that matters most in
+  // practice: the extractor emits no tempo direction at all when it read no
+  // tempo off the PDF (see musicxml.build - `if opening and tempo`), so this is
+  // the shape a great many real transcriptions have. "transcribed ♩ = 120"
+  // would claim a number was lifted out of a scanned page; the 120 is the
+  // renderer's fallback and came from nowhere.
+  await stubScoreApi(
+    page,
+    transcriptionResponse({
+      warnings: [],
+      confidence: CLEAN_CONFIDENCE,
+      content: METRONOME_MUSICXML_NO_TEMPO,
+      format: "musicxml",
+    }),
+  );
+  await page.goto("/#/score/1");
+  await expect(playButton(page)).toBeEnabled({ timeout: 30_000 });
+  await metronomeButton(page).click();
+  await expect(baseNote(page)).toHaveText(/assumed 120 bpm/);
+  await expect(baseNote(page)).toContainText("none in the score");
+  // Anchored on .metronome-base, which the transcription test above proves can
+  // match on this very route.
+  await expect(baseNote(page)).not.toContainText("transcribed");
+  await expect(baseNote(page)).not.toContainText("marked");
+});
+
 // ------------------------------------------------------ on the practice page
 
 test("the practice page has a click of its own, pre-filled from the tempo the last session was working towards, and it really clicks there", async ({
@@ -445,6 +477,120 @@ test("a tempo set up before stepping into gig mode is still set when stepping ba
   const rate = await measuredRate(page, 4, 30_000);
   expect(rate, `measured ${rate}`).toBeGreaterThan(66);
   expect(rate, `measured ${rate}`).toBeLessThan(68);
+});
+
+test("a score that prints no tempo at all calls the number assumed and says there was none to read", async ({
+  page,
+}) => {
+  // Issue #102, and the reason the two tests above could both pass while this
+  // was broken: they use fixtures that DECLARE a tempo. alphaTab's
+  // Score.tempo is a getter answering 120 whenever the first bar holds no
+  // tempo automation, so an edition printing *Andante* and no number - most of
+  // the classical material in this library - was reported as
+  // "marked ♩ = 120". A value we invented, presented as one we read, on the
+  // most visible number on the control.
+  //
+  // And it is said in PLAIN WORDS, not in engraver's notation. "♩ = 96" is how
+  // a tempo is printed on a page and is right for a tempo somebody printed;
+  // using it for our own fallback put the invention in the notation of a
+  // marking, which undercut the very sentence saying it was not one.
+  await stubMetronomeScoreNoTempo(page);
+  await page.goto("/#/score/6");
+  await expect(playButton(page)).toBeEnabled({ timeout: 30_000 });
+  await metronomeButton(page).click();
+
+  // The word first: "assumed", never "marked" - the same word this application
+  // uses at every other site for a value it chose rather than read. Asserted on
+  // .metronome-base, which the two tests above prove can match, so "no such
+  // element" cannot be what makes the negative assertion pass.
+  await expect(baseNote(page)).toHaveText(/assumed 120 bpm/);
+  await expect(baseNote(page)).not.toContainText("marked");
+  await expect(baseNote(page)).not.toContainText("transcribed");
+  // ...and not in the notation of a marking.
+  await expect(baseNote(page)).not.toContainText("♩ =");
+  // ...and then, in visible text rather than a title attribute, that there was
+  // nothing to read. "default ♩ = 120" alone still leaves a reader working out
+  // whether 120 came from somewhere.
+  await expect(baseNote(page)).toContainText("none in the score");
+  await expect(baseNote(page)).toContainText("120");
+  // The same unobtrusive mark the app uses for anything unverified - present
+  // here, and absent on the printed-marking score above, which is what makes
+  // it mean anything.
+  await expect(baseNote(page).locator(".mark")).toHaveCount(1);
+
+  // TWO LINES, and the toolbar no wider than its own box. This is a sentence
+  // where the other two states are a three-token label, and the toolbar is a
+  // single non-wrapping flex row with six other controls in it - held on one
+  // line it clips the profile buttons at the far end, and left to wrap wherever
+  // a character cap falls it can take three. Measured, because no assertion on
+  // the TEXT can see either happen.
+  const lines = await baseNote(page).evaluate((el) => {
+    const style = getComputedStyle(el);
+    const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
+    return Math.round(el.getBoundingClientRect().height / lineHeight);
+  });
+  expect(lines, "the base note is expected to occupy exactly two lines").toBe(2);
+  const toolbar = await page.locator(".toolbar").evaluate((el) => ({
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth,
+  }));
+  expect(toolbar.scrollWidth, JSON.stringify(toolbar)).toBeLessThanOrEqual(toolbar.clientWidth);
+
+  // The control beside it must not contradict it. Keeping the proportion mode
+  // is right - the click has to run at something, and 100% of the assumed tempo
+  // is what it runs at - but an option reading "% of score tempo" next to a note
+  // saying the score declares none is two labels on one control disagreeing,
+  // which is worse than either being wrong alone.
+  await expect(modeSelect(page).locator("option[value=proportion]")).toHaveText(
+    "% of assumed tempo",
+  );
+  await expect(modeSelect(page)).not.toContainText("% of score tempo");
+
+  // The number is still the number the click actually runs at. Saying "default
+  // 120" beside a click running at something else would be a different lie,
+  // and 4/4 means the quarter-note base and the click rate are one number.
+  await expect(readout(page)).toHaveText("120");
+  await page.locator('button:has-text("Loop")').click();
+  await playButton(page).click();
+  const rate = await measuredRate(page, 8);
+  expect(rate, `measured ${rate}`).toBeGreaterThan(119);
+  expect(rate, `measured ${rate}`).toBeLessThan(121);
+});
+
+test("a score whose tempo mark sits in a later bar is not told it has none - that would be the same fault with the sign flipped", async ({
+  page,
+}) => {
+  // The false-assertion direction, and the one to be most suspicious of in a
+  // change like this. This fixture DOES declare a tempo - 88, on bar two, which
+  // is what a score looks like when it opens with a pickup or when the exporter
+  // attached the mark to the first real note. The number the renderer reports
+  // is still the 120 fallback, so "default" is right; but the first version of
+  // this work looked only at bar one and went on to PRINT that the score
+  // declares no tempo, which is untrue of the document. Failing to mention a
+  // fact (#102) and asserting a false one are not the same size of mistake.
+  await stubMetronomeScoreLateTempo(page);
+  await page.goto("/#/score/7");
+  await expect(playButton(page)).toBeEnabled({ timeout: 30_000 });
+  await metronomeButton(page).click();
+
+  await expect(baseNote(page)).toHaveText(/assumed 120 bpm/);
+  // The weaker claim, which is true here: nothing at the start.
+  await expect(baseNote(page)).toContainText("none at the start");
+  // NOT the stronger one, which is false here. Anchored on .metronome-base,
+  // which the tests above prove can match.
+  await expect(baseNote(page)).not.toContainText("none in the score");
+  await expect(baseNote(page)).not.toContainText("marked");
+  // The accessible label carries the same distinction, rather than the mark
+  // saying one thing and its label another.
+  await expect(baseNote(page).locator(".mark")).toHaveAttribute(
+    "aria-label",
+    /marks no tempo at its start/,
+  );
+  // The word is the same one everywhere else, in the label as in the text.
+  await expect(baseNote(page).locator(".mark")).toHaveAttribute(
+    "aria-label",
+    /was assumed rather than read/,
+  );
 });
 
 // ------------------------------------------- where the range runs out

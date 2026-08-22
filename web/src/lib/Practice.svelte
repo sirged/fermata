@@ -648,7 +648,29 @@
           <ul class="session-list">
             {#each sessions as session (session.id)}
               <li class="session" data-session={session.id}>
-                <span class="session-day">{session.local_date}</span>
+                <span class="session-day">
+                  <span class="day-date">{session.local_date}</span>
+                  <!-- Whether that day was RECORDED or worked out from the
+                       row's UTC timestamp, which is the difference between a
+                       fact and an attribution. The server has always said
+                       which (local_date_source) and nothing read it, so a day
+                       that was assumed looked exactly like one somebody's own
+                       clock reported - and for practice logged before the day
+                       was stored at all, that is every row. Said next to the
+                       date it qualifies, in visible text.
+
+                       One word here, and the sentence under the list says what
+                       it means. "assumed" on its own says neither what was
+                       assumed nor from what, and the whole sentence will not
+                       fit beside a date without taking a quarter of the row's
+                       width from every row that does not need it - so the word
+                       marks the row and the note explains the word, once. It is
+                       the same word this application uses everywhere else for a
+                       value it chose rather than read (see provenance.js). -->
+                  {#if session.local_date_source && session.local_date_source !== "recorded"}
+                    <span class="day-inferred">assumed</span>
+                  {/if}
+                </span>
                 <span class="session-what" class:orphaned={session.score_missing}>
                   {#if session.score_title}
                     <a href={"#/score/" + session.score_id}>{session.score_title}</a>
@@ -665,6 +687,17 @@
               </li>
             {/each}
           </ul>
+          {#if sessions.some((s) => s.local_date_source && s.local_date_source !== "recorded")}
+            <!-- What the word beside a date means, and where that day came
+                 from. Once, under the list, and only when a row carries it -
+                 stated for every row it would be nineteen words of repetition,
+                 and left unstated the word says neither what was assumed nor
+                 from what. -->
+            <p class="quiet day-note">
+              A day marked <span class="day-inferred">assumed</span> was taken from the session's
+              own timestamp rather than recorded when the practice happened.
+            </p>
+          {/if}
         {:else}
           <p class="quiet">Nothing logged in this period yet.</p>
         {/if}
@@ -1047,7 +1080,15 @@
 
   .session {
     display: grid;
-    grid-template-columns: 92px 1fr 70px;
+    /* 92px held the date and nothing else. The inferred badge has to sit
+       BESIDE the date rather than under it - it qualifies that date, and a
+       word wrapped onto its own line under a column of dates reads as a
+       layout accident rather than as a note about the day. The two together
+       need about 116px, measured rather than guessed, so the track is wide
+       enough for both. A fixed width and not `auto`: each row is its own
+       grid, so a track that sized to content would leave the middle column
+       starting at a different x on the rows that carry a badge. */
+    grid-template-columns: 120px 1fr 70px;
     gap: 10px;
     align-items: baseline;
     padding-bottom: 6px;
@@ -1059,6 +1100,26 @@
     color: var(--ink-dim);
     font-size: 13px;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Quieter than the date it sits beside, and not styled as a fault - nothing
+     went wrong, a day was attributed rather than recorded. nowrap on both
+     halves, because "beside the date" is the whole point: without it the badge
+     breaks onto its own line the moment the track is a pixel too narrow, and a
+     test that asserts only the text cannot see that happen. */
+  .session-day {
+    white-space: nowrap;
+  }
+
+  .day-inferred {
+    font-size: 11px;
+    font-variant-numeric: normal;
+    opacity: 0.75;
+  }
+
+  .day-note {
+    margin: 10px 0 0;
+    font-size: 12px;
   }
 
   /* NOT .session-detail: that is the post-session panel in the viewer, and two

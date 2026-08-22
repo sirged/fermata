@@ -88,9 +88,15 @@
   let metronomeMode = $state(null);
   let metronomeProportion = $state(null);
   let metronomeBpm = $state(null);
-  // The score's own declared tempo, so the percentages can say what they are
-  // percentages OF - see Metronome.svelte's baseTempoLabel.
+  // The tempo the percentages are percentages OF - see Metronome.svelte's
+  // baseTempoLabel - and where it came from: "start", "later" or "none" (see
+  // tempoProvenance in score-render.js). Two values, because `score.tempo`
+  // alone cannot tell a declared tempo from the renderer's 120 fallback, which
+  // is how a score printing no tempo came to be described as "marked ♩ = 120"
+  // (issue #102). "none" until a score says otherwise: the number is
+  // meaningless before then, and "not yet loaded" must not read as "declared".
   let scoreTempo = $state(null);
+  let scoreTempoFrom = $state("none");
   let countIn = $state(false);
   let loadError = $state("");
   let ladder = $state(false);
@@ -151,6 +157,7 @@
     metronomeTempo = null;
     metronomeLimit = null;
     scoreTempo = null;
+    scoreTempoFrom = "none";
     // unknown again for this score, not "same as the last one" - see the
     // comment on profileOptions's declaration
     profileOptions = null;
@@ -173,7 +180,10 @@
           metronomeTempo = bpm;
           metronomeLimit = limit;
         },
-        onScoreTempo: (t) => (scoreTempo = t),
+        onScoreTempo: (t, from) => {
+          scoreTempo = t;
+          scoreTempoFrom = from;
+        },
         // Only which buttons to offer, not which one is highlighted - see
         // onProfileApplied for that. A score with nothing drawable reports an
         // empty array here, not a fallback list; the empty-state notice in
@@ -345,7 +355,15 @@
           meter change mid-piece is followed rather than assumed). compact,
           because over a piece the meter and subdivision come from the score
           and there is nothing there for a player to set; and nothing here
-          persists, for the reason on `metronome`'s declaration above. -->
+          persists, for the reason on `metronome`'s declaration above.
+
+          tempoSource is what the control is allowed to CALL that base tempo.
+          "not declared at the start" beats both of the other two: a score that
+          prints no tempo there hands the renderer's fallback to a
+          transcription and to a MusicXML file alike, and neither of them read
+          it anywhere. tempoElsewhere then separates "the document says nothing
+          about its tempo" from "it says something, just not here" - only the
+          first may be stated as a fact about the document. -->
           <Metronome
             ownsClick={false}
             control={view?.metronome ?? null}
@@ -354,7 +372,8 @@
             limit={metronomeLimit}
             proportionBase={true}
             baseTempoLabel={scoreTempo}
-            tempoInferred={tex != null}
+            tempoSource={scoreTempoFrom !== "start" ? "default" : tex != null ? "transcribed" : "marked"}
+            tempoElsewhere={scoreTempoFrom === "later"}
             bind:mode={metronomeMode}
             bind:proportion={metronomeProportion}
             bind:bpm={metronomeBpm}

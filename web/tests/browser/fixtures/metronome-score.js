@@ -17,6 +17,23 @@
 const DIVISIONS = 480; // ticks per quarter note
 const PITCHES = ["C", "D", "E", "F", "G", "A", "B", "C"];
 
+// `tempo` of null emits NO tempo direction at all - not a direction carrying
+// 120, and not a <words>Andante</words> either. That is the shape of the
+// editions this library is mostly made of, and the one the metronome used to
+// describe as "marked ♩ = 120": alphaTab's Score.tempo is a getter that
+// answers 120 when the first bar holds no tempo automation, so nothing
+// downstream could tell it apart from a score that really did print 120.
+function tempoDirection(tempo) {
+  if (tempo == null) return "";
+  return `
+      <direction placement="above">
+        <direction-type>
+          <metronome><beat-unit>quarter</beat-unit><per-minute>${tempo}</per-minute></metronome>
+        </direction-type>
+        <sound tempo="${tempo}" />
+      </direction>`;
+}
+
 function timeAndTempoBlock(numerator, denominator, tempo) {
   return `
       <attributes>
@@ -27,13 +44,7 @@ function timeAndTempoBlock(numerator, denominator, tempo) {
           <beat-type>${denominator}</beat-type>
         </time>
         <clef><sign>G</sign><line>2</line></clef>
-      </attributes>
-      <direction placement="above">
-        <direction-type>
-          <metronome><beat-unit>quarter</beat-unit><per-minute>${tempo}</per-minute></metronome>
-        </direction-type>
-        <sound tempo="${tempo}" />
-      </direction>`;
+      </attributes>${tempoDirection(tempo)}`;
 }
 
 function notesForBar(numerator, denominator) {
@@ -61,8 +72,21 @@ function notesForBar(numerator, denominator) {
  * the end of that 1-based bar number, repeating from the start of the piece
  * (no forward repeat needed - the piece's own start is where a backward
  * repeat with nothing preceding it returns to).
+ *
+ * `tempoAt` is the 1-based bar the tempo direction is attached to. Anything
+ * other than 1 leaves the first bar carrying no tempo at all - the shape a
+ * score has when it opens with a pickup, or when an exporter attached the mark
+ * to the first real note rather than to bar one.
  */
-function buildMusicXml({ measures, numerator, denominator, tempo, repeatAfter = null, change = null }) {
+function buildMusicXml({
+  measures,
+  numerator,
+  denominator,
+  tempo,
+  repeatAfter = null,
+  change = null,
+  tempoAt = 1,
+}) {
   const bars = [];
   let curNum = numerator;
   let curDen = denominator;
@@ -74,13 +98,13 @@ function buildMusicXml({ measures, numerator, denominator, tempo, repeatAfter = 
       curDen = change.denominator;
     }
     const attrs = isFirst
-      ? timeAndTempoBlock(curNum, curDen, tempo)
-      : isChange
-        ? `
+      ? timeAndTempoBlock(curNum, curDen, tempoAt === 1 ? tempo : null)
+      : (isChange
+          ? `
       <attributes>
         <time><beats>${curNum}</beats><beat-type>${curDen}</beat-type></time>
       </attributes>`
-        : "";
+          : "") + (i === tempoAt ? tempoDirection(tempo) : "");
     const barline =
       repeatAfter === i
         ? `
@@ -170,6 +194,36 @@ export const METRONOME_MUSICXML_FAST = buildMusicXml({
   tempo: 144,
 });
 
+// 4/4 with NO tempo direction anywhere - the fixture the two existing honesty
+// tests for the tempo control did not have. Both of those declare a tempo (96
+// and 90), which is why the `?? null` guard meant to catch an undeclared one
+// was never exercised and was in fact dead code (issue #102).
+//
+// 4/4 rather than 6/8 so the click rate and the quarter-note tempo are the
+// same number: the base tempo IS the readout, and a test can tell "the
+// fallback was used" from "something else was used" without a meter
+// conversion in the way.
+export const METRONOME_MUSICXML_NO_TEMPO = buildMusicXml({
+  measures: 8,
+  numerator: 4,
+  denominator: 4,
+  tempo: null,
+});
+
+// A tempo the score DOES declare, just not at its start: bar one carries none
+// and bar two is marked 88. The number the renderer reports is still the 120
+// fallback, so the control must still call it a default - but the document does
+// say what its tempo is, so it must NOT say the score has none. That claim
+// would be #102 with the sign flipped, and worse than #102: the old code failed
+// to mention a fact, this would assert an untrue one.
+export const METRONOME_MUSICXML_LATE_TEMPO = buildMusicXml({
+  measures: 8,
+  numerator: 4,
+  denominator: 4,
+  tempo: 88,
+  tempoAt: 2,
+});
+
 function scoreMeta(id, title) {
   // file_type not "pdf" is what routes Viewer.svelte to TabViewer directly
   // (see Viewer.svelte) rather than through ScoreCompare/PdfViewer.
@@ -222,4 +276,19 @@ export async function stubMetronomeScoreShortLoop(page) {
  * regression test. */
 export async function stubMetronomeScoreRepeat(page) {
   await stubOneScore(page, 4, scoreMeta(4, "Repeat metronome fixture"), METRONOME_MUSICXML_REPEAT);
+}
+
+/** Score id 6: 4/4 with no tempo direction at all. */
+export async function stubMetronomeScoreNoTempo(page) {
+  await stubOneScore(page, 6, scoreMeta(6, "No-tempo metronome fixture"), METRONOME_MUSICXML_NO_TEMPO);
+}
+
+/** Score id 7: 4/4 whose only tempo direction is on bar two. */
+export async function stubMetronomeScoreLateTempo(page) {
+  await stubOneScore(
+    page,
+    7,
+    scoreMeta(7, "Late-tempo metronome fixture"),
+    METRONOME_MUSICXML_LATE_TEMPO,
+  );
 }

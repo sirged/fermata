@@ -271,6 +271,24 @@
       </div>
     {/if}
 
+    {#if !scan?.scanning && scan?.restored}
+      <!-- The other half of the missing-file story, and until now the half
+           nobody was told. The scanner counts rows whose file turned up again
+           AT THE PATH IT LEFT FROM - deliberately not a content-hash relink,
+           which is a guess about identity - specifically so it can stand as
+           evidence that a remount really did recover. It stood as evidence to
+           nobody: the count was on /api/scan/status and nothing read it, so
+           somebody who put a drive back saw flags quietly disappear with no
+           statement that anything had been recovered (issue #103).
+
+           Attributed to the LAST SCAN rather than stated as a bare number,
+           because that is what it is - the counter resets when a scan starts. -->
+      <p class="scan-note">
+        Last scan: {scan.restored} score{scan.restored === 1 ? "" : "s"} found again
+        {scan.restored === 1 ? "at the path it" : "at the paths they"} went missing from.
+      </p>
+    {/if}
+
     {#if showDuplicates}
       <header>
         <span class="result-count">{duplicates.length} duplicate group{duplicates.length === 1 ? "" : "s"}</span>
@@ -682,6 +700,14 @@
     color: var(--ink-dim);
     font-size: 13px;
     margin: 8px 0 0;
+  }
+
+  /* A recovery is good news, so it is not styled as an alert - same register
+     as any other quiet statement of fact on this page. */
+  .scan-note {
+    color: var(--ink-dim);
+    font-size: 13px;
+    margin: 0 0 12px;
   }
 
   .alert-error {

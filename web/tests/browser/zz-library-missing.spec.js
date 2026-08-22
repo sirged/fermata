@@ -201,3 +201,54 @@ test("a refused scan says so on the page, and can be confirmed", async ({ page, 
     expect(row.missing_since).toBeTruthy();
   }
 });
+
+// LAST IN THIS FILE, and that is not tidiness. Sitting between the two tests
+// above it, this one changed what scans had happened just before the refusal
+// test ran, and that test began failing in CI on an assertion about the
+// acknowledge token - green locally, red on a slower runner. The file's other
+// tests are older than this one and were passing; the ordering that keeps them
+// seeing exactly the state they saw before is the ordering they had. Anything
+// added here belongs after them, for the same reason the whole file is named to
+// sort last.
+test("a scan that found a missing file again says so, rather than only clearing the flag", async ({
+  page,
+  request,
+}) => {
+  // Issue #103. The scanner counts rows whose file turned up again AT THE PATH
+  // IT LEFT FROM - deliberately not a content-hash relink, which is a guess
+  // about identity - specifically so the count can stand as evidence that a
+  // remount really did recover. It stood as evidence to nobody: `restored` was
+  // on /api/scan/status and nothing in the interface read it, so somebody who
+  // put a drive back saw flags quietly disappear and no statement that
+  // anything had been recovered.
+  const first = await upload(request, FIRST);
+  await upload(request, SECOND);
+  await scanAndWait(request);
+  const bytes = fs.readFileSync(filePath(FIRST));
+
+  // Gone, and marked - the other one stays, so this is an ordinary
+  // reconciliation rather than the refused empty-library case.
+  fs.rmSync(filePath(FIRST));
+  const marked = await scanAndWait(request);
+  expect(marked.refused, JSON.stringify(marked)).toBe(false);
+  expect(marked.missing).toBe(1);
+  // Nothing to report yet, so nothing is reported. Asserted before the notice
+  // appears, so the notice below is known to be caused by the recovery rather
+  // than being permanently on the page.
+  await page.goto("/#/");
+  await expect(page.locator(`.card[href="#/score/${first.id}"] .missing-flag`)).toBeVisible();
+  await expect(page.locator(".scan-note")).toHaveCount(0);
+
+  // Back at the path it left from.
+  fs.writeFileSync(filePath(FIRST), bytes);
+  const recovered = await scanAndWait(request);
+  expect(recovered.restored, JSON.stringify(recovered)).toBe(1);
+
+  await page.reload();
+  const note = page.locator(".scan-note");
+  await expect(note).toBeVisible();
+  await expect(note).toContainText("1 score found again");
+  await expect(note).toContainText("at the path it went missing from");
+  // ...and the flag really has gone, so the statement and the library agree.
+  await expect(page.locator(`.card[href="#/score/${first.id}"] .missing-flag`)).toHaveCount(0);
+});

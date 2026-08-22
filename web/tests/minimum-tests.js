@@ -37,7 +37,38 @@
 // that a refused reconciliation says so on the page and can be confirmed. Both
 // were shown to fail against a mutation of the behaviour they claim - the whole
 // point of them is that the guard #95 added was invisible until they existed.
-export const MINIMUM_TESTS = 185;
+// Plus 20 for issues #102 and #103 - the application knowing it guessed and
+// not saying so.
+//
+// 3 in tests/browser/metronome-everywhere.spec.js: a score that prints no
+// tempo, and a transcription whose document declares none, both of which used
+// to read "marked ♩ = 120" (the two honesty tests already there both use
+// fixtures that DECLARE a tempo, which is why the guard meant to catch this was
+// never exercised and was in fact dead code) - plus the opposite error, a score
+// whose tempo mark sits in a later bar, which the first version of that fix
+// affirmatively told the reader had no tempo at all.
+//
+// 7 in tests/browser/score-compare-warnings.spec.js: an assumed meter saying so
+// beside the staff and first in the line, a read one saying that instead, a row
+// that records neither claiming neither, a recognised tuning NAME reported as a
+// name rather than as a tuning that was read, a printed tuning instruction the
+// extractor discards being stated, and the two gig-mode cases - the mark kept
+// for an unread tuning instruction, and NOT kept for a tuning merely assumed
+// standard, which is two thirds of the library.
+//
+// 1 in tests/browser/practice.spec.js (a practice day assumed rather than
+// recorded), 1 in tests/browser/zz-library-missing.spec.js (a scan that found a
+// missing file again saying so), 7 in tests/unit/provenance.spec.js (the
+// read-versus-assumed sorting, what it does with a source string it does not
+// recognise, and the three things it may say about a tuning - name recognised,
+// instruction unread, nothing) and 1 in tests/unit/practice.spec.js (how much
+// of a week's total rests on an assumed day).
+//
+// Raised deliberately, and every one of the 20 was shown to fail against a
+// mutation of the behaviour it claims - see the pull request. Two of them also
+// assert PLACEMENT and not only text, because both of those facts were rendered
+// in the wrong place while every assertion about their wording passed.
+export const MINIMUM_TESTS = 205;
 
 export default class MinimumTests {
   constructor() {

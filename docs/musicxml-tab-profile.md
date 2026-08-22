@@ -837,6 +837,30 @@ into the reported confidence instead. That confidence also states any known
 defect below the threshold at which it changes label, so an unqualified
 high-confidence string means no measure was in question rather than not many.
 
+**How the meter and key were obtained** is reported the same way, and for the
+same reason: `time_signature` with `time_signature_source`, and `key_fifths`
+with `key_signature_source`. A source of `glyph-decoded` or `auto-detected`
+means the value was read off the page, `manual override` means the caller
+supplied it, and anything beginning `not detected` means the value is an
+assumption — 4/4, or no key signature. These are stored on the record rather
+than only echoed on the response that extracted them, because a value that was
+assumed has to still say so on the tenth reading of the same score, and none of
+it is recoverable from the warning prose.
+
+**The tuning is reported differently, because it is not known the same way.**
+`tuning` is the six strings in use and `tuning_label` is a name — and the name
+is found by matching text on the page, which is recognition of a label rather
+than a reading of the tuning. `tuning_unread` is what makes the difference
+sayable: printed tuning instructions found on the page and **not** applied to
+`tuning`. Today that is a direction to tune down a half step and a capo, neither
+of which is parsed; a non-empty list means `tuning` is known to be incomplete
+and no consumer may describe it as having been read. Measured across the
+library, 41 of the 100 scores carrying a `tuning_label` also carry one of these
+— 9 the half-step direction, so the array is a semitone out, and 32 a capo, so
+every sounding pitch is out. `tuning_unread` is detection only: it does not
+change `tuning`, the emitted `<staff-tuning>`, or any pitch. Parsing these
+properly is a separate piece of work.
+
 ## Out of scope
 
 An honest scope statement is more useful than an aspirational one. The

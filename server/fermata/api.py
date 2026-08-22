@@ -1349,6 +1349,43 @@ def _stored_amount(value):
         return None
     return float(value)
 
+# WHAT WAS READ OFF THE PAGE, AND WHAT WAS ASSUMED - stored, for the same
+# reason the bar counts are, and STATED on every response for the same reason
+# they are.
+#
+# The extractor works out whether it read the meter, the key and the tuning or
+# fell back to an assumption, and until this was persisted that answer existed
+# only on the POST /transcribe response and died there. Every later read of the
+# same row - which is every ordinary visit to a score - got the assumed value
+# with nothing saying it was assumed, which is precisely the thing this project
+# exists not to do (issue #103). It is not recoverable from the warning prose
+# either: the meter's absence is narrated, the key's is narrated differently,
+# and a tuning nobody recognised produces no warning at all.
+#
+# The values travel with their provenance rather than being stored apart from
+# it. "assumed 4/4" is one fact, not two, and a reader that has the source
+# string without the digits it qualifies can only say something vaguer than
+# what is known.
+#
+# None means not recorded - a hand-edited row, or one extracted before this was
+# stored. It does not mean "standard tuning" or "no key signature", both of
+# which are real readings this must not invent.
+_PROVENANCE_KEYS = (
+    "time_signature",
+    "time_signature_source",
+    "key_fifths",
+    "key_signature_source",
+    "tuning",
+    "tuning_label",
+    # Tuning instructions the extractor recognised on the page and did NOT
+    # apply - see tabextract.unread_tuning_instructions. Stored with the tuning
+    # because it is what stops the tuning being describable as read: a text
+    # match on one tuning name is recognition of a label, not a reading of the
+    # tuning, and it cannot be reported as one while the same page carries
+    # further instructions nobody parsed.
+    "tuning_unread",
+)
+
 
 def _transcription_dict(row) -> dict:
     d = dict(row)
@@ -1370,6 +1407,8 @@ def _transcription_dict(row) -> dict:
         d[key] = _stored_bar_list(stored.get(key))
     for key in _BAR_AMOUNT_KEYS:
         d[key] = _stored_amount(stored.get(key))
+    for key in _PROVENANCE_KEYS:
+        d[key] = stored.get(key)
     return d
 
 
@@ -1460,6 +1499,9 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
     # arithmetic over the two warning sentences recovers it. A reader that
     # reloads a transcription and has only the prose can therefore either say
     # nothing about bars or say something untrue - so it gets the numbers.
+    # The meter, key and tuning are stored WITH how each was obtained, for the
+    # reasons on _PROVENANCE_KEYS: an assumption that only says so on the
+    # response that created it is an assumption nobody will ever be told about.
     confidence_json = json.dumps(
         {
             "warnings": result.warnings,
@@ -1473,6 +1515,13 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             "padded_bars": result.padded_bars,
             "unread_bars": result.unread_bars,
             "inferred_rest_quarters": result.inferred_rest_quarters,
+            "time_signature": list(result.time_signature) if result.time_signature else None,
+            "time_signature_source": result.time_signature_source,
+            "key_fifths": result.key_fifths,
+            "key_signature_source": result.key_signature_source,
+            "tuning": result.tuning,
+            "tuning_label": result.tuning_label,
+            "tuning_unread": result.tuning_unread,
         }
     )
     with tx() as tx_conn:
@@ -1489,22 +1538,17 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
     saved = conn.execute(
         "SELECT * FROM transcriptions WHERE score_id = ? AND source = 'extracted'", (score_id,)
     ).fetchone()
-    # `warnings` and the Rule 8 conformance figures are NOT set from `result`
-    # here. They come back out of the row that was just written, so that this
-    # response and a later GET of the same row are answered from one source
-    # rather than two that could drift. Everything below is extraction detail
-    # that is genuinely only available on this response.
+    # `warnings`, the Rule 8 conformance figures and the meter/key/tuning
+    # provenance are NOT set from `result` here. They come back out of the row
+    # that was just written, so that this response and a later GET of the same
+    # row are answered from one source rather than two that could drift.
+    # Everything below is extraction detail that is genuinely only available on
+    # this response.
     d = _transcription_dict(saved)
     d["bars"] = result.bars
     d["beats"] = result.beats
     d["notes"] = result.notes
     d["tempo"] = result.tempo
-    d["tuning"] = result.tuning
-    d["tuning_label"] = result.tuning_label
-    d["time_signature"] = list(result.time_signature) if result.time_signature else None
-    d["time_signature_source"] = result.time_signature_source
-    d["key_fifths"] = result.key_fifths
-    d["key_signature_source"] = result.key_signature_source
     return d
 
 

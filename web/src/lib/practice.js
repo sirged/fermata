@@ -295,7 +295,20 @@ export function periodStatement(facts, current = true) {
   if (!facts || !facts.days_practised) {
     return current ? "No practice recorded this week" : "No practice recorded";
   }
-  return `${formatDays(facts.days_practised)}, ${formatDuration(facts.seconds)}`;
+  const total = `${formatDays(facts.days_practised)}, ${formatDuration(facts.seconds)}`;
+  // How much of that total rests on a day nobody recorded. A single session
+  // has always said whether its day was recorded or taken from its UTC
+  // timestamp; the total said nothing, so a window spanning the upgrade added
+  // two different kinds of day together with nothing marking the join, and the
+  // server has been reporting the figure to nobody ever since (issue #103).
+  // Silent when there is nothing to disclose, which on any install that has
+  // only ever run this version is always.
+  // "assumed", not "inferred": one word for a value this application chose
+  // rather than read, used at every site that has to say so - see
+  // provenance.js. The server's field keeps its own name.
+  const inferred = facts.sessions_inferred ?? 0;
+  if (!inferred) return total;
+  return `${total} (${inferred} session${inferred === 1 ? "" : "s"} on an assumed day)`;
 }
 
 /** The bars of a week's per-day strip, scaled against the busiest day IN THAT

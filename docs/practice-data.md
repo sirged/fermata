@@ -60,6 +60,17 @@ Rows written before this column existed hold `NULL`, and are attributed to
 `date(started_at)` because that is the only day they ever recorded. Every
 session response carries `local_date_source`, which is `recorded` or `utc_date`,
 so a reader is never handed an inferred day as though it were a recorded one.
+The practice page says which beside the date on every session row, because a
+distinction that only exists in the API is one nobody is ever told about.
+
+An inferred day is filed in whichever week UTC puts it in, while the page asks
+for the week around the practiser's own day — so west of Greenwich, an evening's
+practice from before this column existed can sit in the week after the one it
+happened in. Storing the day is what fixed that going forward and is the reason
+the column exists; a row that predates it cannot be fixed that way. Which is a
+reason to mark such a day rather than a reason to stop counting it, but the mark
+is carrying two facts at once: the day was not recorded, and the week it landed
+in is not necessarily the practiser's own.
 
 ### What is derived rather than stored
 
@@ -251,7 +262,8 @@ It also carries `sessions_inferred`: how many of the sessions behind those
 totals had no recorded practice day and were attributed to their UTC one. A
 single session already says which it is; a total said nothing, so a window
 spanning the upgrade quietly added two kinds of day together. Zero on any
-install that has only ever run this version.
+install that has only ever run this version, and the week's own statement says
+so when it is not.
 
 A `met_*` value is `null` when that target was not set, which is not the same
 as unmet - a goal with no minutes target has nothing to say about minutes, and
