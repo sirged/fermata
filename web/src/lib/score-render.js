@@ -479,14 +479,24 @@ const RENDER_IN_WORKER = false;
 // actually clicked.
 
 const AUDITION_CHANNEL = 0;
+// The two below are DEFAULTS chosen for checking a tuning, not properties of
+// this module. playPitch takes both as parameters, because a caller with a
+// different task has no business inheriting a constant that was tuned for this
+// one - see the ear exercise's DRILL_VOICE, which is a different voice for a
+// measured reason.
+//
 // Raw midi program numbers are 0-based, so 24 is Acoustic Guitar (nylon) -
 // the same voice server/fermata/musicxml.py writes, where MusicXML's 1-based
 // numbering calls it 25. What a tuning check needs is a clear fundamental
-// with some decay, not the exact timbre of the instrument in hand.
+// with some decay, not the exact timbre of the instrument in hand. Note that in
+// the soundfont shipped here it has only three sample zones for the whole
+// keyboard, which is unimportant across one instrument's strings and matters a
+// great deal across four octaves.
 const AUDITION_PROGRAM = 24;
 const AUDITION_VELOCITY = 100;
 // Long enough to hear against a plucked string and let it decay, short enough
-// that clicking down a set of six is not a wait.
+// that clicking down a set of six is not a wait. Identifying a pitch cold is a
+// different task and wants longer; that is the caller's to say.
 const AUDITION_SECONDS = 1.6;
 // The renderer's own division, and a tempo that makes a quarter note half a
 // second. Both are stated rather than left to the sequencer's defaults so the
@@ -601,21 +611,45 @@ function toError(e, fallback) {
  * Sound one pitch on its own, as a MIDI note number.
  *
  * Resolves with THE MIDI NOTE ACTUALLY SOUNDED - the number written into the
- * note-on event - or null if it is not one the synthesiser can play. Returning
- * the note rather than a success flag is deliberate: it lets a caller display
- * and publish what crossed this boundary instead of restating what it asked
- * for, which is the only way an interface can be observed to have played the
- * right pitch rather than merely to have intended one.
+ * note-on event - or **null if no note was handed over at all**. Returning the
+ * note rather than a success flag is deliberate: it lets a caller display and
+ * publish what crossed this boundary instead of restating what it asked for,
+ * which is the only way an interface can be observed to have played the right
+ * pitch rather than merely to have intended one.
+ *
+ * THE NULL IS THE WHOLE OF THAT GUARANTEE, and it was once not kept. This used
+ * to end `return noteOn ? noteOn.noteKey : key` - falling back to the INPUT when
+ * no note-on could be found, which is the one number this function must never
+ * report, because reporting it makes "sounded the note" and "sounded nothing"
+ * the same answer. Removing the note-on event therefore left every caller and
+ * every test seeing exactly what it expected: fifteen tests catch this module
+ * being UNAVAILABLE and not one caught it running and sounding nothing. An
+ * absent note-on means nothing was handed to the synthesiser, and there is no
+ * honest number to give back.
+ *
+ * That matters beyond any one caller. This is the shared audition path, and it
+ * is where the capo defect lived - the interface displaying one pitch while the
+ * synthesiser played another, both agreeing with each other while being wrong.
+ * A fallback here reporting the request as though it were the result is that
+ * same defect one layer down, pre-armed for every future caller.
  *
  * Rejects if the synthesiser could not be loaded, so a caller can say so rather
  * than leaving a silent click looking like a working one.
+ *
+ * `voice` is a raw (0-based) midi program and `seconds` is how long the note is
+ * held. Both default to what checking a tuning wants, and both are parameters
+ * rather than constants because a caller with a different task should not
+ * inherit values chosen for that one.
  *
  * Note that the synthesiser is equal-tempered around A440 and takes no
  * reference pitch, so an instrument defined at A415 has its frequencies shown
  * at A415 but is auditioned at A440. Fine for finding a note by ear against
  * itself; not yet a period-pitch reference.
  */
-export async function playPitch(midi) {
+export async function playPitch(
+  midi,
+  { voice = AUDITION_PROGRAM, seconds = AUDITION_SECONDS } = {},
+) {
   const key = Math.round(Number(midi));
   if (!Number.isFinite(key) || key < MIN_MIDI || key > MAX_MIDI) return null;
   const player = await auditionPlayer();
@@ -630,11 +664,11 @@ export async function playPitch(midi) {
     NoteOffEvent,
     EndOfTrackEvent,
   } = alphaTab.midi;
-  const end = Math.round(AUDITION_SECONDS * TICKS_PER_SECOND);
+  const end = Math.round(Math.max(0.1, Number(seconds) || AUDITION_SECONDS) * TICKS_PER_SECOND);
   const file = new MidiFile();
   file.division = TICKS_PER_QUARTER;
   file.addEvent(new TempoChangeEvent(0, MICROSECONDS_PER_QUARTER));
-  file.addEvent(new ProgramChangeEvent(0, 0, AUDITION_CHANNEL, AUDITION_PROGRAM));
+  file.addEvent(new ProgramChangeEvent(0, 0, AUDITION_CHANNEL, Math.round(Number(voice)) || 0));
   // The channel is fresh each time only in the sense that the file is; the
   // synth's channel volume is whatever the last thing to play left behind, so
   // it is set rather than assumed.
@@ -649,8 +683,11 @@ export async function playPitch(midi) {
   player.playOneTimeMidiFile(file);
   // Read back off the events that were handed over rather than off the input,
   // so what this reports is the note the synthesiser actually received.
+  //
+  // NULL, never `key`, when there is no note-on. See the guarantee above: the
+  // input is the one value that must not be reported here.
   const noteOn = file.events.find((e) => e instanceof NoteOnEvent);
-  return noteOn ? noteOn.noteKey : key;
+  return noteOn ? noteOn.noteKey : null;
 }
 
 // ------------------------------------------------- the practice metronome

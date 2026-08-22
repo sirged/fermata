@@ -178,7 +178,11 @@
     try {
       const sounded = await auditionPitch(string.sounding_midi);
       if (sounded == null) {
-        auditionError = "That pitch is outside what can be played.";
+        // playPitch answers null both for a pitch it will not play and for a
+        // note that never reached the synthesiser at all, and this cannot tell
+        // which - so it says what it knows rather than naming the likelier
+        // cause as though it had checked.
+        auditionError = "That string was not sounded.";
         return;
       }
       const hz = instrument ? instrument.reference_pitch : reference;

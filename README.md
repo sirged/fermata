@@ -84,6 +84,17 @@ them.
   section work or a run-through, and how it went. Practice that is not a piece
   at all — technique, ear training, simply playing — is recorded the same way
   and in the same history ([the data model](docs/practice-data.md)).
+- **Hear a note, name it** — the first exercise: a pitch sounds, and you name it
+  from four. The three you did not hear are chosen to be worth confusing — a
+  semitone away, the same name an octave out, and one a step or two off — because
+  four notes far apart teaches nothing. Hear it again as often as you like,
+  before and after answering, and nothing counts that. With one instrument
+  defined the drill draws from that instrument's own range; with several it uses
+  a plain four octaves, because Fermata knows what you own and not which one is
+  in your hands. Two counts are stated and nothing is graded: there is no
+  accuracy percentage and no streak, and a note you could not name is what the
+  practice consists of. The time lands in your practice history as ear training
+  and counts towards a weekly goal like anything else.
 - **Weekly goals, and an honest review** — how many days you mean to practise
   and for how long, on what. While the week runs it says where you stand so the
   goal can still change it; afterwards it states plainly what happened and asks

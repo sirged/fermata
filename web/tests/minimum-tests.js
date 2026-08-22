@@ -68,7 +68,48 @@
 // mutation of the behaviour it claims - see the pull request. Two of them also
 // assert PLACEMENT and not only text, because both of those facts were rendered
 // in the wrong place while every assertion about their wording passed.
-export const MINIMUM_TESTS = 205;
+// Plus 31 for issue #61, the first exercise - hear a note, name it.
+//
+// 18 in tests/unit/ear-training.spec.js: which four notes get offered (that the
+// note heard is one of them exactly once, that the other three are one of each
+// kind worth confusing rather than four notes far apart, that which candidate of
+// each kind is taken is the caller's randomness rather than fixed, that no
+// choice ever leaves the range, and that a range with no octave in it still
+// offers four); what an instrument's own definition says its range is (strings
+// plus declared frets, moved by a capo, stopping at the strings when there are
+// no frets to declare, and absent rather than wrong when there are no strings);
+// a range too narrow to ask a question in at all; the note to sound never being
+// the note just heard; and every string the module can produce, checked against
+// practice.js's own forbidden-word list and against carrying a percentage - a
+// drill is the easiest place in a practice tool to start grading somebody, and
+// the rule against it is only real if something checks.
+//
+// 13 in tests/browser/ear-training.spec.js, which drive the real synthesiser
+// because the one property this exercise lives or dies by is that the question
+// is built from what was SOUNDED and not from what the component meant to
+// sound: the four choices are read back against data-sounded-midi, which is set
+// from the value playPitch resolved with, so deleting the audio path leaves no
+// answer to read and no choices to click. Then what happens on an answer either
+// way - the same words in the same place and, asserted on computed style, the
+// same colours, because a wrong answer in ear training is the practice and not a
+// shortfall; hearing a note again before and after answering and that not being
+// counted; the drill following a single defined instrument and never leaving its
+// range, not adopting one of two because which is in somebody's hands is not
+// known, and saying so when a definition spans one note or is pitched away from
+// the synthesiser's fixed A440; a soundfont that will not load saying so rather
+// than leaving a silent drill; and the session itself - one practice_sessions
+// row with activity 'ear_training', on the practice page, counted against a
+// weekly goal about ear training with no special case, and still logged when
+// somebody walks away from the drill mid-way.
+//
+// One of the 13 asserts PLACEMENT and not only text, because the statement about
+// what the note was renders above the four buttons: unless its space is held
+// open the whole question slides down at the moment a hand is over it, and every
+// assertion about the wording still passes.
+//
+// Raised deliberately, and every one of the 31 was shown to fail against a
+// mutation of the behaviour it claims - see the pull request.
+export const MINIMUM_TESTS = 236;
 
 export default class MinimumTests {
   constructor() {
