@@ -207,6 +207,16 @@ restore a backup taken before it.
 That is the message telling you a `git` rollback alone is not enough. Either go
 forward again, or restore the `config/` backup you took before upgrading.
 
+**The version that introduced missing-file tracking is one of those**, and it is
+worth knowing why rather than only that. Older versions deleted a score row
+whenever a scan did not find its file — taking the practice history, tags and
+transcriptions attached to it. Newer ones mark the row instead. An older version
+run against a newer database would not fail on the column it does not know
+about: it would ignore it, read every marked score as though its file should be
+there, not find it, and delete the lot. So the refusal above is not bureaucracy,
+it is the thing standing between a rollback and your practice history. If you
+need to go back, restore the `config/` backup as well.
+
 ## Current limitations
 
 This section is here so you can decide whether Fermata is ready for what you
@@ -390,18 +400,48 @@ docker compose logs fermata --tail 50
 ```
 
 You should find a line saying the scan "did not reconcile the library", with a
-reason. Fermata refuses to act on a walk of the library it cannot believe — a
-folder that suddenly holds no readable score files at all, or one that has lost
-more than half of what it had, is treated as a mount problem rather than as news
-about your music. Nothing is changed when that happens, and the message says so.
-Fix the mount and scan again; everything comes back.
+reason — and the library page will be showing you the same reason in a panel at
+the top, headed **Fermata did not update your library**. Fermata refuses to act
+on a walk of the library it cannot believe: a folder that suddenly holds no
+readable score files at all, one that has lost half or more of what it had in a
+single pass, or one that has lost half or more of what it held when it was last
+whole. All three are far more often a mount problem than news about your music,
+so nothing at all is changed — not one score added, updated or marked — and the
+panel lists the files it could not find so you can see which part of your library
+it means.
 
-If some of your scores are listed but marked as missing, that is the same
-mechanism working at a smaller scale. Fermata records that a file is no longer
-where it was, and keeps the score, its tags, its practice history and any
-hand-corrected transcription exactly as they were. Put the file back — under the
-old name or a new one — and the next scan clears the mark by itself. Nothing is
-ever deleted because a file went away.
+Fix the mount and scan again; everything comes back on its own.
+
+**If you did mean it**, press **Yes, I meant to do that** in that panel. Pruning
+your library, moving a collection to another drive, or re-exporting everything
+under new names all look exactly like a mount problem from the inside, and
+Fermata cannot tell the difference — so it asks once rather than guessing. There
+has to be a way to say yes: the same files are absent on every later scan, so
+without it the refusal would repeat for ever and nothing you could do would clear
+it. Confirming still deletes nothing. Files that have moved are matched back to
+their own score by content, and the rest are marked as missing.
+
+### A score marked "file missing"
+
+A score card showing **file missing** means Fermata cannot find the file, and
+nothing more than that. The score is still there and still opens; its tags, its
+practice history and any hand-corrected transcription are all still attached to
+it, and the sidebar shows how many of each collection's files are in this state.
+
+Put the file back — under the old name or a new one, Fermata matches it by
+content — and the next scan clears the mark by itself. Nothing is ever deleted
+because a file went away.
+
+Two things worth knowing about it:
+
+- If a file was **edited and moved** at the same time, Fermata cannot tell it is
+  the same piece: the content it would match on has changed. You get the old
+  score marked missing, holding your practice history and tags, and a new score
+  for the new file with none. Nothing is lost, but they are two scores until a
+  future release lets you merge them.
+- A score whose file is missing is left out of **Needs attention**, because it
+  cannot be practised. It stays in the main library view and in **Recently
+  practiced** — practice that happened does not stop having happened.
 
 If the files do show up in that listing but not in Fermata, the extension may
 not be one Fermata recognizes. It picks up `.pdf`, `.musicxml`, `.mxl`,

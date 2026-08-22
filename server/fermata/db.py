@@ -176,8 +176,37 @@ _PRACTICE_SCHEMA = (
     + "".join(f"{statement};\n" for statement in _PRACTICE_GOALS_INDEXES)
 )
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS scores (
+
+# The scores table's columns, written once, for the same reason
+# _PRACTICE_SESSIONS_COLUMNS is: SCHEMA builds the table from it, and any future
+# step that has to REBUILD the table (SQLite cannot alter a constraint in place,
+# so a rebuild is how any constraint change here will arrive) has the definition
+# to hand instead of restating it. #94's lesson was that two copies of a
+# definition are two chances for an upgraded database to differ from a fresh
+# one; this is the same lesson applied before it can bite.
+#
+# THAT IS NOT A TIDINESS POINT, it is what stops a mark from being lost. Before
+# this existed, `missing_since` lived only in COLUMN_ADDITIONS, so a rebuild
+# driven from the schema text would have created a scores table without it -
+# silently turning every missing score back into a present one, which is the
+# bug this column exists to prevent, reintroduced by a future migration nobody
+# would suspect. Anything added to scores from now on belongs HERE.
+#
+# missing_since: NULL means the file was there the last time a scan looked; a
+# timestamp means it was not, and says since when - which is the question
+# somebody actually asks about a row like this ("has that been gone since the
+# drive died, or since I tidied up in March?"). A boolean could not answer it.
+# Nothing filters on it: a missing row still appears in the library, still
+# carries its tags, practice and transcription, and still answers to its id,
+# because "your library is intact, these files are not reachable right now" is
+# the true thing to show somebody whose drive has not come back - and an empty
+# library is not. See scanner.py.
+#
+# instrument_id is deliberately NOT here and stays in COLUMN_ADDITIONS: it
+# references instruments(id), and that table is created further down this same
+# script, so a forward reference in the CREATE TABLE would depend on the order
+# of two statements rather than on anything either one says.
+_SCORES_COLUMNS = """(
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL,
     composer TEXT,
@@ -193,8 +222,13 @@ CREATE TABLE IF NOT EXISTS scores (
     size INTEGER NOT NULL,
     mtime REAL NOT NULL,
     last_page INTEGER NOT NULL DEFAULT 1,
+    missing_since TEXT,
     added_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+)"""
+
+SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS scores " + _SCORES_COLUMNS + ";\n"
+) + """
 CREATE INDEX IF NOT EXISTS idx_scores_collection ON scores(collection);
 CREATE INDEX IF NOT EXISTS idx_scores_title ON scores(title);
 
@@ -242,13 +276,23 @@ CREATE TABLE IF NOT EXISTS score_tags (
 -- WHAT ACTUALLY PROTECTS THIS WORK, then, is that the scanner no longer
 -- deletes a score row when its file goes: it sets scores.missing_since and
 -- leaves everything hanging off the row exactly where it was (see
--- scanner.py). A hand-corrected transcription is real work and is not
--- something to lose casually - the way to not lose it is to keep the row it
--- hangs from, and that also keeps it RE-ATTACHABLE, which nulling the link
--- could never do: the score row carries the content hash the rename relink
--- matches on, so a file that comes back finds its transcription again. A
--- transcription with score_id NULL could not be reunited with anything,
--- because nothing would record what it had been about.
+-- scanner.py). A hand-corrected transcription is real work, and the way to not
+-- lose it is to keep the row it hangs from - which a NULL link could not do,
+-- because nothing would then record what the notation had been about.
+--
+-- HOW FAR THAT GOES, stated exactly, because the easy version of this sentence
+-- is wrong. A file that comes back UNCHANGED finds its transcription again:
+-- either at the path it left from, or under a new name through the content-hash
+-- relink, and in both cases the row is the same row and the work is still on
+-- it. A file that was EDITED AND MOVED does not. Its content hash no longer
+-- matches anything on disk, so the relink has nothing to match; the new path
+-- becomes a new row with no transcription, and the old row keeps the
+-- transcription while matching no file. The work is preserved and readable
+-- against a score that is marked missing, which is better than the delete this
+-- replaced, but it is permanently detached from the file it describes and
+-- nothing can reunite them automatically. That is a real limit of this design
+-- and not an argument for nulling the link, which would lose the work outright
+-- instead of detaching it.
 --
 -- So the cascade now fires only for a deliberate, explicit deletion of a score
 -- by a person (#56) - never as a side effect of a filesystem walk coming back
@@ -345,7 +389,36 @@ CREATE INDEX IF NOT EXISTS idx_instruments_owner ON instruments(owner);
 #
 # Version 2 is the first change this file's ADD COLUMN mechanism could not
 # express, which is what the stamp was recorded for - see MIGRATIONS.
-SCHEMA_VERSION = 3
+#
+# VERSION 4 HAS NO MIGRATIONS STEP, AND THAT IS THE POINT OF IT. Every version
+# so far existed because a change could not be expressed as an ADD COLUMN. This
+# one exists for the OTHER half of the stamp's job, which is easy to forget:
+# _check_schema_version compares in both directions, and the number is what
+# makes an older release refuse to open a newer database.
+#
+# `missing_since` is nullable, carries no foreign key and needs no backfill, so
+# as an upgrade it is only an ADD COLUMN and COLUMN_ADDITIONS carries it - that
+# mechanism is right for it and it stays there. But the release BEFORE this one
+# still deletes every score row it did not see and still creates a missing
+# library folder. Pointing it at a database this release has written destroys
+# precisely what this change protects: it does not fail on the unknown column,
+# it ignores it, treats every marked row as present, finds no file, and deletes
+# the lot with the practice history, tags and transcriptions behind them.
+#
+# And this release makes a rollback MORE likely rather than less. Its new
+# failure mode is a container that refuses to start when the library folder is
+# absent, and the reflex answer to "the new version will not start" is to put
+# the old tag back - so the change actively steers people toward the one action
+# that would destroy their data. The stamp is what stops that: the old release
+# meets a version it does not understand and refuses, which is what
+# docs/deployment.md has always promised it would do.
+#
+# THE RULE THIS ESTABLISHES, since it is the first version of its kind: bump
+# when an older release running against the new database would do harm, not only
+# when the new schema cannot be expressed the old way. A version therefore need
+# not have a MIGRATIONS entry - SCHEMA_VERSION is stamped by init_db at the end
+# of startup regardless of which mechanism did the work.
+SCHEMA_VERSION = 4
 
 # Columns added to a table that had already shipped. CREATE TABLE IF NOT EXISTS
 # does nothing at all to a table that exists, so SCHEMA alone reaches only fresh
@@ -384,28 +457,17 @@ SCHEMA_VERSION = 3
 # standard six-string whatever instrument it names; and nothing revalidates a
 # score when its instrument is edited underneath it, so a reference can outlive
 # the shape it was chosen for (see api.update_instrument).
-#
-# missing_since separates "the file is gone" from "the record is gone", which
-# is the change #95 turns on. NULL means the file was there the last time a
-# scan looked; a timestamp means it was not, and says since when - which is the
-# question somebody asks about a row like this ("has that been gone since the
-# drive died, or since I tidied up in March?"). A boolean could not answer it.
-#
-# It is here rather than in MIGRATIONS because it is genuinely only an ADD
-# COLUMN: nullable, no foreign key, and needing no backfill, because NULL is
-# already the truth for every row that exists - they were all written by a
-# scanner that would have deleted them rather than mark them. That also means
-# SCHEMA_VERSION does not move: _add_missing_columns runs on every startup
-# regardless of the stamp, and a version bump with no MIGRATIONS step behind it
-# would record a history that never happened.
-#
-# READERS MUST NOT ASSUME THIS IS NULL. It is not a soft-delete flag and
-# nothing filters on it: a missing row still appears in the library, still
-# carries its tags, practice and transcription, and still answers to its id -
-# because "your library is intact, these files are not reachable right now" is
-# the true thing to show a person whose drive has not come back, and an empty
-# library is not. The file-serving endpoints already 404 on their own (they
-# check the path, not this column), so nothing had to learn to hide anything.
+# missing_since arrives this way for an existing database and from
+# _SCORES_COLUMNS for a fresh one, which is two statements of one column and so
+# needs saying: _SCORES_COLUMNS IS THE DEFINITION OF RECORD, and this entry
+# exists only because CREATE TABLE IF NOT EXISTS cannot reach a table that is
+# already there. It is exactly the kind of change this mechanism is for -
+# nullable, no foreign key, and needing no backfill, because NULL is already
+# true of every row that exists: they were all written by a scanner that would
+# have deleted them rather than mark them, so every one of them was present the
+# last time anything looked. The two definitions cannot drift unnoticed -
+# test_scanner.py compares an upgraded install's scores table against a fresh
+# one's, column for column, which is the check #94 wished it had had.
 COLUMN_ADDITIONS = {
     "scores": {
         "instrument_id": "INTEGER REFERENCES instruments(id) ON DELETE SET NULL",

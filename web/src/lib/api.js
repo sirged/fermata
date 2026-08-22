@@ -120,6 +120,15 @@ export const api = {
     fetch(`/api/practice/review?weeks=${weeks}&today=${today}`).then(j),
   scan: () => fetch("/api/scan", { method: "POST" }).then(j),
   scanStatus: () => fetch("/api/scan/status").then(j),
+  // Says "yes, I meant to remove that much" about ONE refused reconciliation.
+  // The token names the exact set of files the refusal was about, so consent
+  // cannot be replayed against a larger loss that arrived in the meantime.
+  acknowledgeScan: (token) =>
+    fetch("/api/scan/acknowledge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    }).then(j),
   upload: (file, folder = "Uploads") => {
     const fd = new FormData();
     fd.append("file", file);

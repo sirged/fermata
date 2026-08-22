@@ -397,6 +397,20 @@ def list_scores(
                          HAVING MAX({practice.LOCAL_DATE_SQL}) >= date('now', '-14 days'))"""
         )
     elif practiced == "neglected":
+        # A score whose file is not there is excluded from this one view, and
+        # only this one. "Needs attention" answers "what should I work on next",
+        # and it sorts unpractised scores first - so a score that was deleted
+        # months ago arrives at the top of the list and STAYS there for ever,
+        # because it cannot be opened, so it cannot be practised, so it never
+        # stops being neglected. The view whose whole job is to suggest the next
+        # thing to play was headed permanently by the one row that cannot be
+        # played.
+        #
+        # "Recently practiced" deliberately keeps them: that is a record of what
+        # happened, and practice that happened does not stop having happened
+        # because the file moved. Same reasoning as the sessions themselves
+        # outliving their score.
+        where.append("s.missing_since IS NULL")
         where.append(
             # NOT EXISTS, not NOT IN, and this is not a style preference. A
             # session can now have no score at all - a trainer, or a piece
@@ -427,16 +441,28 @@ def list_scores(
 
 @router.get("/duplicates")
 def list_duplicates():
+    """Copies of the same content that are BOTH ON DISK.
+
+    Rows whose file is missing are excluded, and that is not the same choice the
+    library grid makes. This view answers a question about files - "am I storing
+    the same arrangement twice, and can I delete one" - so a row with no file
+    behind it is not a copy of anything. Including them made this actively
+    wrong: two identical files in a folder that gets renamed leave two marked
+    rows plus two new ones, and this reported four copies of a hash that two
+    files on disk share, half of them failing to open when clicked.
+    """
     conn = connect()
     dupes = conn.execute(
         """SELECT hash, COUNT(*) AS count FROM scores
+           WHERE missing_since IS NULL
            GROUP BY hash HAVING COUNT(*) > 1
            ORDER BY count DESC, hash"""
     ).fetchall()
     groups = []
     for d in dupes:
         rows = conn.execute(
-            "SELECT * FROM scores WHERE hash = ? ORDER BY path", (d["hash"],)
+            "SELECT * FROM scores WHERE hash = ? AND missing_since IS NULL ORDER BY path",
+            (d["hash"],),
         ).fetchall()
         groups.append({"hash": d["hash"], "count": d["count"], "scores": _with_tags(conn, rows)})
     return groups
@@ -444,10 +470,29 @@ def list_duplicates():
 
 @router.get("/collections")
 def list_collections():
+    """Every collection, with how many of its scores are there and how many are not.
+
+    `count` is files actually on disk, and `missing` is the rest. Counting them
+    together produced a straightforwardly false sidebar: rename a folder and its
+    scores are marked missing under the old name while new rows appear under the
+    new one, so the old name went on standing in the sidebar with a full count
+    beside it - a collection that does not exist, which a person has no way to
+    remove and no reason to distrust.
+
+    A collection with nothing left on disk is still listed, with `count` zero,
+    rather than dropped. Dropping it would be the same mistake in the other
+    direction: those rows hold practice history and tags, they are still
+    reachable, and a name quietly disappearing from the sidebar is how somebody
+    concludes their library ate itself. Listed with a zero says what happened.
+    """
     conn = connect()
     rows = conn.execute(
-        """SELECT collection, COUNT(*) AS count FROM scores
-           WHERE collection IS NOT NULL GROUP BY collection ORDER BY collection"""
+        """SELECT collection,
+                  SUM(CASE WHEN missing_since IS NULL THEN 1 ELSE 0 END) AS count,
+                  SUM(CASE WHEN missing_since IS NULL THEN 0 ELSE 1 END) AS missing
+             FROM scores
+            WHERE collection IS NOT NULL
+         GROUP BY collection ORDER BY collection"""
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -1500,6 +1545,40 @@ def get_scan_status():
     return scanner.scan_status()
 
 
+class ScanAcknowledgement(BaseModel):
+    # The token from the refusal being acknowledged. Consent has to be about
+    # something specific, and this is what says which something - see
+    # scanner._acknowledge_token.
+    token: str = Field(min_length=1, max_length=128)
+
+
+@router.post("/scan/acknowledge")
+def acknowledge_scan(body: ScanAcknowledgement):
+    """Say, once, that a refused reconciliation was meant.
+
+    A guard with no way past it is its own defect, and a worse one than what it
+    prevents: the same paths are unmatched on every subsequent pass, so a person
+    who genuinely pruned their library would be refused for ever, with an error
+    logged on every startup and no way to clear the rows by hand either.
+
+    The token is checked against the live evidence inside the scan rather than
+    here, because the library can change between a person reading a message and
+    pressing a button. A token that no longer describes what is there does not
+    apply, and the scan refuses again with the new figures.
+    """
+    status = scanner.scan_status()
+    if not status["refused"] or not status["acknowledge_token"]:
+        raise HTTPException(409, "there is no refused scan to acknowledge")
+    if body.token != status["acknowledge_token"]:
+        raise HTTPException(
+            409,
+            "that acknowledgement is for a different set of missing files than the one "
+            "Fermata is now looking at - re-read the current scan status and confirm that",
+        )
+    started = scanner.start_scan(acknowledge=body.token)
+    return {"started": started, **scanner.scan_status()}
+
+
 _SAFE_SEGMENT = re.compile(r"^[^/\\]+$")
 
 
@@ -1512,6 +1591,23 @@ async def upload(file: UploadFile, folder: str = "Uploads"):
     if not all(_SAFE_SEGMENT.match(p) for p in parts):
         raise HTTPException(422, "invalid folder")
     name = Path(file.filename).name
+    # The library ROOT is never created here, and this check is the reason an
+    # upload cannot undo the one at startup. ensure_dirs refuses to invent a
+    # missing library folder because an empty one is indistinguishable from a
+    # library with nothing in it (#95) - and mkdir(parents=True) on a subfolder
+    # would have created the root on the way, turning that loud, harmless,
+    # self-correcting refusal into a silent start against an almost-empty
+    # library. In a container it is worse than pointless: the write lands in the
+    # image layer at the mountpoint, invisible from the host and gone on the next
+    # start.
+    if not LIBRARY_DIR.is_dir():
+        raise HTTPException(
+            503,
+            f"the library folder {LIBRARY_DIR} is not there, so there is nowhere to put "
+            "this file. Fermata does not create it - a missing library folder is usually a "
+            "drive or volume that did not mount, and creating an empty one would hide "
+            "that. See docs/deployment.md.",
+        )
     dest_dir = LIBRARY_DIR.joinpath(*parts)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / name

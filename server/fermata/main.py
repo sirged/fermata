@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,10 +12,30 @@ from .config import WEB_DIST, ensure_dirs
 from .db import init_db
 
 
+log = logging.getLogger("fermata.startup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    ensure_dirs()
-    init_db()
+    try:
+        ensure_dirs()
+        init_db()
+    except RuntimeError as exc:
+        # Said plainly BEFORE the exception propagates, because of what happens
+        # next in the real world. Uvicorn prints a traceback for anything raised
+        # in here, and a traceback above the explanation means the first thing a
+        # worried operator sees is a stack trace - at which point the obvious
+        # move is to put the previous image tag back. That is the single action
+        # that destroys their practice history (see db.SCHEMA_VERSION), so the
+        # readable sentence has to come first and the traceback second.
+        #
+        # Only RuntimeError, which is the type this application raises for the
+        # conditions it refuses to start under, each carrying a message written
+        # for a person: a library folder that is not there, a config folder it
+        # cannot write to, a database from a newer release. Anything else is a
+        # bug and should arrive as the traceback it is.
+        log.error("%s", exc)
+        raise
     scanner.start_scan()
     yield
 

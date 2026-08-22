@@ -26,6 +26,7 @@ stay about reconciliation rather than about PyMuPDF.
 
 import logging
 import sqlite3
+import time
 
 import pytest
 from fastapi import FastAPI
@@ -55,6 +56,19 @@ def client(library):
     app = FastAPI()
     app.include_router(api.router)
     return TestClient(app)
+
+
+def _wait_for_scan(timeout: float = 10.0) -> None:
+    """Wait out a scan started through the HTTP layer.
+
+    start_scan runs on a background thread. Most tests here call scanner._scan
+    directly and need none of this; the ones that go through an endpoint do.
+    """
+    deadline = time.monotonic() + timeout
+    while scanner.scan_status()["scanning"]:
+        if time.monotonic() > deadline:
+            raise AssertionError("the scan did not finish")
+        time.sleep(0.02)
 
 
 def put(root, rel: str, content: bytes = b"a score") -> None:
@@ -306,11 +320,20 @@ def test_a_file_that_comes_back_untouched_stops_being_missing(library):
 
 
 def test_a_file_that_comes_back_under_another_name_stops_being_missing(library):
-    """The relink path has to clear the mark too.
+    """The relink path has to clear the mark too - but must not claim a restore.
 
     A drive that comes back with things reorganised reaches its rows through
     the content-hash relink rather than by path, and a row whose file this scan
     is looking at is not missing whichever way it was found.
+
+    It is NOT counted in `restored`, and that distinction is the point of the
+    second half of this test. `restored` is presented as evidence that a remount
+    really did recover, and only a file reappearing at the path it left from
+    supports that. This branch matches on content alone: a row marked missing
+    stays a relink candidate indefinitely, so any later file with the same bytes
+    lands here and inherits that score's history. That is usually the right
+    answer, and it is a guess about identity either way - it must not be
+    reported as proof a drive came back.
     """
     for n in range(4):
         put(library, f"Classical/Study {n}.gp", f"score {n}".encode())
@@ -331,7 +354,8 @@ def test_a_file_that_comes_back_under_another_name_stops_being_missing(library):
     assert "Classical/Study 0.gp" not in after
     assert after["Baroque/Study 0.gp"]["id"] == original["id"]
     assert after["Baroque/Study 0.gp"]["missing_since"] is None
-    assert scanner.scan_status()["restored"] == 1
+    assert scanner.scan_status()["restored"] == 0, "a content-hash relink is not a remount"
+    assert scanner.scan_status()["updated"] == 1
     assert irreplaceable_counts() == work
 
 
@@ -354,7 +378,8 @@ def test_losing_more_than_half_the_library_in_one_pass_changes_nothing(library):
 
     status = scanner.scan_status()
     assert status["refused"] is True
-    assert "7 of the 12 score(s)" in status["refused_reason"]
+    assert "account for 5 of the 12 score(s)" in status["refused_reason"]
+    assert "7 more would be marked missing" in status["refused_reason"]
     assert status["missing"] == 0
     assert rows() == before
 
@@ -443,7 +468,7 @@ def test_rows_already_missing_do_not_dilute_the_proportion(library):
 
     status = scanner.scan_status()
     assert status["refused"] is True
-    assert "10 of the 20 score(s)" in status["refused_reason"]
+    assert "account for 10 of the 24 score(s)" in status["refused_reason"]
 
 
 def test_a_library_that_drains_slowly_below_the_floor_is_marked_and_not_refused(
@@ -484,6 +509,404 @@ def test_a_library_that_drains_slowly_below_the_floor_is_marked_and_not_refused(
     scanner._scan()
     assert scanner.scan_status()["refused"] is True
     assert sum(1 for r in rows().values() if r["missing_since"]) == 5
+
+
+def test_a_mount_that_lands_on_the_wrong_folder_is_refused(library):
+    """The case the guard exists for, and the one it could not originally see.
+
+    A mount that resolves to a DIFFERENT directory - the host path renamed and
+    something else now at the old one, a volume pointed at the wrong target - is
+    not an empty library. It is full of files, just not these files. Every
+    stored path is absent and every file on disk is new.
+
+    This was invisible while the guard read its numbers after the file loop: the
+    thirteen new rows counted towards "scores on record", inflating the
+    denominator while contributing nothing to the numerator, so twelve missing
+    out of twenty-five sat just under half and the guard said nothing at all.
+    The decision is now taken before a single row is touched.
+    """
+    for n in range(12):
+        put(library, f"Classical/Study {n:02d}.gp", f"score {n}".encode())
+    scanner._scan()
+    before = rows()
+    assert len(before) == 12
+
+    for path in library.rglob("*.gp"):
+        path.unlink()
+    for n in range(13):
+        put(library, f"Someone Elses Music/Thing {n:02d}.gp", f"unrelated {n}".encode())
+    scanner._scan()
+
+    status = scanner.scan_status()
+    assert status["refused"] is True
+    assert "account for 0 of the 12 score(s)" in status["refused_reason"]
+    # A refusal is a no-op, and that includes the files it DID see.
+    assert rows() == before
+    assert (status["added"], status["updated"], status["missing"]) == (0, 0, 0)
+
+
+def test_a_refused_scan_adds_nothing_even_though_it_saw_new_files(library):
+    """A refusal must be the no-op its own message claims.
+
+    The message says "nothing has been changed", and it used to be false: the
+    file loop inserted, updated and relinked with a commit per file, and only
+    then was the walk judged. So `refused: true` arrived beside `added: 1` in
+    the same dictionary. The composite case was worse - a library re-exported
+    and reorganised in one pass gave twenty-four rows for twelve pieces,
+    permanently doubled.
+    """
+    for n in range(12):
+        put(library, f"Classical/Study {n:02d}.gp", f"score {n}".encode())
+    scanner._scan()
+    before = rows()
+
+    # Six of twelve go (over the line), and two genuinely new files arrive at
+    # the same time.
+    for n in range(6):
+        (library / "Classical" / f"Study {n:02d}.gp").unlink()
+    put(library, "Classical/Brand New.gp", b"never seen before")
+    put(library, "Classical/Also New.gp", b"nor this")
+    scanner._scan()
+
+    status = scanner.scan_status()
+    assert status["refused"] is True
+    assert (status["added"], status["updated"], status["missing"]) == (0, 0, 0)
+    assert rows() == before, "a refused scan wrote something"
+
+
+def test_a_whole_library_re_export_is_refused_rather_than_doubled(library):
+    """Every file edited AND moved in one pass - "I re-exported everything".
+
+    Under the old order this produced twelve new rows beside twelve marked ones,
+    reported as a refusal, and by the fixed-point defect it then refused for
+    ever afterwards. Now it is caught before anything is written, and the person
+    is asked.
+    """
+    for n in range(12):
+        put(library, f"Classical/Study {n:02d}.gp", f"score {n}".encode())
+    scanner._scan()
+    before = rows()
+
+    for path in sorted(library.rglob("*.gp")):
+        path.unlink()
+    for n in range(12):
+        put(library, f"Exports/Study {n:02d}.gp", f"score {n} re-engraved".encode())
+    scanner._scan()
+
+    assert scanner.scan_status()["refused"] is True
+    assert rows() == before
+    assert len(rows()) == 12, "no doubling"
+
+
+# ---------------------------------------------------------------------------
+# A refusal has to have a way out, or it is worse than what it prevents.
+# ---------------------------------------------------------------------------
+
+
+def test_a_refusal_can_be_acknowledged_and_then_stops_refusing(library):
+    """The fixed point, which was the worst part of the guard as first written.
+
+    `unmatched` and `believed_present` recompute identically on every pass, so a
+    refusal was permanent: somebody who deliberately archived most of their
+    library was refused for ever, an error logged on every startup, the rows
+    sitting in the library failing to open, and - with no way to delete a score -
+    no way out at all. The only escape was to add roughly twice as many new
+    files as had gone.
+    """
+    for n in range(20):
+        put(library, f"Classical/Study {n:02d}.gp", f"score {n}".encode())
+    scanner._scan()
+    for n in range(20):
+        attach_irreplaceable_work(rows()[f"Classical/Study {n:02d}.gp"]["id"], tag=f"t{n}")
+    work = irreplaceable_counts()
+
+    # A deliberate archive: fifteen of twenty put away.
+    for n in range(15):
+        (library / "Classical" / f"Study {n:02d}.gp").unlink()
+    scanner._scan()
+    refused = scanner.scan_status()
+    assert refused["refused"] is True
+    assert refused["acknowledge_token"]
+    assert refused["unmatched_count"] == 15
+    assert len(refused["unmatched_paths"]) == 15
+
+    # It stays refused however many times it is asked - which is the defect, and
+    # the reason an acknowledgement has to exist.
+    scanner._scan()
+    assert scanner.scan_status()["refused"] is True
+
+    scanner._scan(acknowledge=refused["acknowledge_token"])
+    acknowledged = scanner.scan_status()
+    assert acknowledged["refused"] is False
+    assert acknowledged["missing"] == 15
+    assert len(rows()) == 20, "acknowledging marks; it never deletes"
+    assert irreplaceable_counts() == work
+
+    # And it does not start refusing all over again on the next ordinary pass.
+    scanner._scan()
+    assert scanner.scan_status()["refused"] is False
+    assert scanner.scan_status()["missing"] == 0
+
+
+def test_an_acknowledgement_for_different_evidence_does_not_apply(library):
+    """Consent is about something specific, or it is not consent.
+
+    The token names the exact set of unmatched paths. If the library changed
+    again between the message being read and the button being pressed, the old
+    token does not describe what is there now, and the safe way for stale
+    consent to fail is not to apply.
+    """
+    for n in range(20):
+        put(library, f"Classical/Study {n:02d}.gp", f"score {n}".encode())
+    scanner._scan()
+    for n in range(11):
+        (library / "Classical" / f"Study {n:02d}.gp").unlink()
+    scanner._scan()
+    stale = scanner.scan_status()["acknowledge_token"]
+    assert stale
+
+    # Two more disappear before anybody presses anything.
+    for n in range(11, 13):
+        (library / "Classical" / f"Study {n:02d}.gp").unlink()
+    before = rows()
+    scanner._scan(acknowledge=stale)
+
+    status = scanner.scan_status()
+    assert status["refused"] is True
+    assert status["acknowledge_token"] != stale
+    assert rows() == before
+    # The new token does work, because it describes what is actually there.
+    scanner._scan(acknowledge=status["acknowledge_token"])
+    assert scanner.scan_status()["refused"] is False
+    assert scanner.scan_status()["missing"] == 13
+
+
+def test_a_token_is_the_same_across_restarts_for_the_same_evidence(library):
+    """A refusal is usually produced by a startup scan, and will be produced
+    again by the next one. A token that changed each time could never be acted
+    on: the interface would be offering consent for something already stale."""
+    for n in range(20):
+        put(library, f"Classical/Study {n:02d}.gp", f"score {n}".encode())
+    scanner._scan()
+    for n in range(15):
+        (library / "Classical" / f"Study {n:02d}.gp").unlink()
+    scanner._scan()
+    first = scanner.scan_status()["acknowledge_token"]
+    scanner._scan()
+    assert scanner.scan_status()["acknowledge_token"] == first
+
+
+def test_the_endpoints_carry_a_refusal_and_take_the_acknowledgement(client, library):
+    for n in range(20):
+        put(library, f"Classical/Study {n:02d}.gp", f"score {n}".encode())
+    scanner._scan()
+    for n in range(15):
+        (library / "Classical" / f"Study {n:02d}.gp").unlink()
+    scanner._scan()
+
+    status = client.get("/api/scan/status").json()
+    assert status["refused"] is True
+    assert status["unmatched_count"] == 15
+    assert "confirm this message" in status["refused_reason"]
+
+    # A token for other evidence is refused rather than applied.
+    wrong = client.post("/api/scan/acknowledge", json={"token": "0" * 40})
+    assert wrong.status_code == 409
+    assert "different set of missing files" in wrong.json()["detail"]
+
+    accepted = client.post(
+        "/api/scan/acknowledge", json={"token": status["acknowledge_token"]}
+    )
+    assert accepted.status_code == 200
+    _wait_for_scan()
+    assert scanner.scan_status()["refused"] is False
+    assert scanner.scan_status()["missing"] == 15
+
+
+def test_acknowledging_when_nothing_was_refused_is_a_conflict(client, library):
+    put(library, "Classical/Study in C.gp")
+    scanner._scan()
+    assert scanner.scan_status()["refused"] is False
+    res = client.post("/api/scan/acknowledge", json={"token": "0" * 40})
+    assert res.status_code == 409
+    assert "no refused scan" in res.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# The ladder: many small permitted losses adding up to the whole library.
+# ---------------------------------------------------------------------------
+
+
+def test_losing_the_library_a_half_at_a_time_is_refused_on_the_second_pass(library):
+    """The single-pass test can be walked past a step at a time.
+
+    Each permitted pass shrinks the rows believed present, which shrinks the
+    next pass's denominator - so 24 scores can go 12, 6, 3, 1 and never trip a
+    test measured against the remainder. A flapping mount exposing a shrinking
+    subset walks that ladder unaided. Measured against the high-water mark
+    instead, the second rung is refused, because cumulatively more than half of
+    the library is gone however it got that way.
+    """
+    for n in range(24):
+        put(library, f"Classical/Study {n:02d}.gp", f"score {n}".encode())
+    scanner._scan()
+
+    # Rung one: eleven of twenty-four, just under half. Permitted.
+    for n in range(11):
+        (library / "Classical" / f"Study {n:02d}.gp").unlink()
+    scanner._scan()
+    assert scanner.scan_status()["refused"] is False
+    assert scanner.scan_status()["missing"] == 11
+
+    # Rung two: six of the thirteen that remain - under half of the REMAINDER,
+    # and the old guard permitted exactly this.
+    for n in range(11, 17):
+        (library / "Classical" / f"Study {n:02d}.gp").unlink()
+    scanner._scan()
+
+    status = scanner.scan_status()
+    assert status["refused"] is True
+    assert "account for 7 of the 24 score(s)" in status["refused_reason"]
+    assert status["missing"] == 0
+    assert sum(1 for r in rows().values() if r["missing_since"]) == 11
+
+
+def test_acknowledging_a_smaller_library_stops_it_being_asked_about_again(library):
+    """The high-water mark comes down when somebody says the library really is
+    smaller now. Without that, an acknowledged pruning would trip the cumulative
+    test on every subsequent scan for ever, against a library that no longer
+    exists."""
+    for n in range(24):
+        put(library, f"Classical/Study {n:02d}.gp", f"score {n}".encode())
+    scanner._scan()
+    for n in range(18):
+        (library / "Classical" / f"Study {n:02d}.gp").unlink()
+    scanner._scan()
+    token = scanner.scan_status()["acknowledge_token"]
+    scanner._scan(acknowledge=token)
+    assert scanner.scan_status()["missing"] == 18
+
+    # Now a further, ordinary loss: one of the six that are left. It must not be
+    # judged against the library as it was before the pruning was accepted.
+    (library / "Classical" / "Study 18.gp").unlink()
+    scanner._scan()
+    assert scanner.scan_status()["refused"] is False
+    assert scanner.scan_status()["missing"] == 1
+
+
+def test_an_acknowledged_pruning_is_not_asked_about_again_at_any_size(library):
+    """The fixed point, in the one band where the floor does not hide it.
+
+    A first attempt at the cumulative test counted everything ABSENT rather than
+    what remained, and that quietly put the permanent-refusal defect straight
+    back: archive most of a large library, confirm it, and those rows stay absent
+    for ever - so the test fires on every later scan, against a library that no
+    longer exists. It went unnoticed because the only test covering
+    acknowledgement used a library below the floor, where the proportional test
+    is switched off entirely and any formula passes.
+    """
+    for n in range(40):
+        put(library, f"Classical/Study {n:02d}.gp", f"score {n}".encode())
+    scanner._scan()
+    for n in range(30):
+        (library / "Classical" / f"Study {n:02d}.gp").unlink()
+    scanner._scan()
+    token = scanner.scan_status()["acknowledge_token"]
+    assert token
+    scanner._scan(acknowledge=token)
+    assert scanner.scan_status()["missing"] == 30
+
+    # Ten scores left, thirty rows absent for ever, and a high-water mark that
+    # is still well above the floor. Three ordinary further losses in a row must
+    # each be accepted rather than met with a refusal about a library that was
+    # already dealt with.
+    for n in range(30, 33):
+        (library / "Classical" / f"Study {n:02d}.gp").unlink()
+        scanner._scan()
+        status = scanner.scan_status()
+        assert status["refused"] is False, status["refused_reason"]
+        assert status["missing"] == 1
+
+
+def test_a_library_that_is_already_mostly_marked_is_not_refused_every_scan(library):
+    """A guard has to be quiet when it has nothing to say.
+
+    Once the marks are made - whether they were under the line or confirmed - a
+    later scan that would change nothing must not keep raising the alarm about
+    them. An error logged on every startup for ever is how somebody learns to
+    stop reading the log.
+    """
+    for n in range(20):
+        put(library, f"Classical/Study {n:02d}.gp", f"score {n}".encode())
+    scanner._scan()
+    for n in range(15):
+        (library / "Classical" / f"Study {n:02d}.gp").unlink()
+    scanner._scan()
+    scanner._scan(acknowledge=scanner.scan_status()["acknowledge_token"])
+    assert sum(1 for r in rows().values() if r["missing_since"]) == 15
+
+    for _ in range(3):
+        scanner._scan()
+        status = scanner.scan_status()
+        assert status["refused"] is False, status["refused_reason"]
+        assert status["missing"] == 0
+        assert status["refused_reason"] is None
+
+
+def test_the_guard_is_quiet_whenever_a_pass_would_change_nothing():
+    """_implausible's contract, checked directly rather than through a scan.
+
+    This one branch cannot be reached by driving the scanner, and that is worth
+    saying out loud rather than leaving as a gap. The proportional test refuses
+    any pass that would take the library below half of its high-water mark, and
+    an acknowledgement moves the mark down to the new size - so a database can
+    never actually arrive in the state "well below the mark, with nothing to
+    change". The guard is kept anyway, because it is the difference between that
+    being an invariant somebody has to preserve and it not mattering: if the
+    reset were ever removed or changed, this is what stops every scan for the
+    rest of the library's life from being an error in the log.
+
+    Tested at the function boundary because that is the only place the state is
+    constructible. A system-level test could not fail here, and a test that
+    cannot fail is worse than no test.
+    """
+    # Nothing to mark: quiet, whatever the proportions look like.
+    assert scanner._implausible(found=5, believed_present=5, unmatched=0, high_water=200) is None
+    assert scanner._implausible(found=0, believed_present=0, unmatched=0, high_water=200) is None
+    # One thing to mark, and the library still mostly there: also quiet.
+    assert scanner._implausible(found=99, believed_present=100, unmatched=1, high_water=100) is None
+    # The same figures with something to mark DO refuse - which is what makes
+    # the two assertions above about `unmatched` and not about anything else.
+    assert scanner._implausible(found=5, believed_present=5, unmatched=1, high_water=200) is not None
+
+
+def test_the_guard_below_its_floor_only_refuses_an_empty_library():
+    """The floor's exact effect, stated at the boundary.
+
+    A small library is exempt from the proportion entirely - losing three of
+    four scores is unremarkable - but never from the categorical test.
+    """
+    assert scanner._implausible(found=1, believed_present=4, unmatched=3, high_water=4) is None
+    assert scanner._implausible(found=0, believed_present=4, unmatched=4, high_water=4) is not None
+    # And one above the floor, for contrast: the same proportion now refuses.
+    assert scanner._implausible(found=3, believed_present=12, unmatched=9, high_water=12) is not None
+
+
+def test_the_high_water_mark_is_not_a_user_setting(client, library):
+    """It lives in the settings table because it has to outlive the process - the
+    ladder is walked by a sequence of STARTUPS - but it is Fermata's bookkeeping
+    and not a preference, so it must be neither readable nor writable as one."""
+    for n in range(4):
+        put(library, f"Classical/Study {n}.gp", f"score {n}".encode())
+    scanner._scan()
+    stored = db.connect().execute(
+        "SELECT value FROM settings WHERE key = ?", (scanner.HIGH_WATER_KEY,)
+    ).fetchone()
+    assert stored["value"] == "4"
+
+    assert scanner.HIGH_WATER_KEY not in client.get("/api/settings").json()
+    rejected = client.put("/api/settings", json={scanner.HIGH_WATER_KEY: "1"})
+    assert rejected.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -680,16 +1103,114 @@ def test_the_library_views_still_answer_with_missing_scores_present(client, libr
     (library / "Classical" / "Study 0.gp").unlink()
     scanner._scan()
 
+    # A missing score is NOT offered as the next thing to practise. It cannot be
+    # opened, so it can never be practised, so it would sit at the top of this
+    # list for ever - the one view whose entire job is to suggest what to play
+    # next, headed permanently by the one row that cannot be played.
     neglected = client.get("/api/scores?practiced=neglected").json()
     assert {s["path"] for s in neglected} == {
-        "Classical/Study 0.gp",
         "Classical/Study 2.gp",
         "Classical/Study 3.gp",
     }
+    # But it is still in the library, and still on record as practised - the
+    # exclusion above is one view's answer to one question, not a soft delete.
+    assert "Classical/Study 0.gp" in {s["path"] for s in client.get("/api/scores").json()}
+    # The sidebar tells the truth about how much of the collection is there,
+    # instead of counting a folder that has partly gone as though it were whole.
     assert client.get("/api/collections").json() == [
-        {"collection": "Classical", "count": 4}
+        {"collection": "Classical", "count": 3, "missing": 1}
     ]
     assert client.get("/api/tags").json() == [{"name": "wedding", "count": 1}]
+
+
+def test_the_duplicates_view_counts_files_and_not_marks(client, library):
+    """Marking rather than deleting made this view actively wrong for a while.
+
+    Two identical files in a folder, the folder renamed: the relink declines on
+    two candidates, so two rows are marked missing and two new ones inserted.
+    This view then reported four copies of a hash that two files on disk share,
+    half of them failing to open when clicked. It asks a question about FILES -
+    "am I storing this arrangement twice, can I delete one" - so a row with no
+    file behind it is not a copy of anything.
+    """
+    same = b"the very same arrangement"
+    put(library, "Classical/Prelude.gp", same)
+    put(library, "Classical/Prelude copy.gp", same)
+    put(library, "Classical/Study.gp", b"something else")
+    scanner._scan()
+    assert [g["count"] for g in client.get("/api/duplicates").json()] == [2]
+
+    (library / "Classical").rename(library / "Baroque")
+    scanner._scan()
+
+    groups = client.get("/api/duplicates").json()
+    assert [g["count"] for g in groups] == [2], "a marked row is not a copy of anything"
+    assert {s["path"] for s in groups[0]["scores"]} == {
+        "Baroque/Prelude.gp",
+        "Baroque/Prelude copy.gp",
+    }
+    # The four rows are all still there - this view's answer is a view, not a
+    # deletion.
+    assert len(rows()) == 5
+
+
+def test_a_ghost_collection_is_shown_as_empty_rather_than_as_full(client, library):
+    """A collection that does not exist used to stand in the sidebar with a full
+    count beside it - unremovable, and with no reason for a person to distrust
+    it. It is still listed, because those rows hold practice and tags and a name
+    quietly vanishing is its own kind of alarm, but it says nothing is there.
+
+    It takes DUPLICATE content to produce one, which is worth having in the test
+    rather than left implicit: a folder of uniquely-named music that gets renamed
+    relinks row for row and leaves no ghost at all. Only the copies the relink
+    declines to guess about stay behind under the old name.
+    """
+    same = b"the very same arrangement"
+    put(library, "Classical/Prelude.gp", same)
+    put(library, "Classical/Prelude copy.gp", same)
+    put(library, "Classical/Study.gp", b"something else")
+    scanner._scan()
+    assert client.get("/api/collections").json() == [
+        {"collection": "Classical", "count": 3, "missing": 0}
+    ]
+
+    (library / "Classical").rename(library / "Baroque")
+    scanner._scan()
+
+    assert client.get("/api/collections").json() == [
+        # Study relinked and moved with the folder; the two copies could not be
+        # told apart, so they stayed behind as marks.
+        {"collection": "Baroque", "count": 3, "missing": 0},
+        {"collection": "Classical", "count": 0, "missing": 2},
+    ]
+
+
+def test_a_pass_that_both_marks_and_adds_says_the_history_is_on_the_other_row(
+    library, caplog
+):
+    """Not an error, but not a clean pass either, and it used to read as one.
+
+    Marks and inserts together means files moved in a way the content-hash
+    relink could not match - a changed mount prefix over duplicated content, or
+    an edit and a move at once. Nothing is lost, but the library now holds two
+    rows for one piece and the practice is on the one nobody will open.
+    """
+    same = b"the very same arrangement"
+    put(library, "Classical/Prelude.gp", same)
+    put(library, "Classical/Prelude copy.gp", same)
+    put(library, "Classical/Study.gp", b"something else")
+    scanner._scan()
+
+    (library / "Classical").rename(library / "Baroque")
+    with caplog.at_level(logging.WARNING, logger="fermata.scanner"):
+        scanner._scan()
+
+    status = scanner.scan_status()
+    assert status["missing"] == 2 and status["added"] == 2
+    assert status["unmatched_moves"] == 2
+    messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "could not match to their existing scores" in messages
+    assert "not on the new one" in messages
 
 
 # ---------------------------------------------------------------------------
@@ -732,6 +1253,29 @@ def test_a_library_path_that_is_a_file_is_refused_and_says_which_it_is(
     assert "is a file, not a folder" in str(raised.value)
 
 
+def test_an_upload_will_not_recreate_the_library_folder_either(client, library, monkeypatch):
+    """One upload used to undo the whole startup refusal.
+
+    dest_dir.mkdir(parents=True) creates the ROOT on its way to the subfolder,
+    so a single upload turned a loud, harmless, self-correcting refusal into a
+    silent start against an almost-empty library - and the next scan then judged
+    that library. In a container it is worse than pointless: the write lands in
+    the image layer at the mountpoint, invisible from the host and gone on the
+    next start.
+    """
+    gone = library.parent / "unmounted"
+    monkeypatch.setattr(api, "LIBRARY_DIR", gone)
+
+    res = client.post(
+        "/api/upload?folder=Uploads",
+        files={"file": ("thing.gp", b"a score", "application/octet-stream")},
+    )
+
+    assert res.status_code == 503
+    assert "is not there" in res.json()["detail"]
+    assert not gone.exists(), "the upload created the library folder"
+
+
 def test_the_config_folder_is_still_ours_to_create(tmp_path, monkeypatch):
     """The asymmetry is the point, so it is asserted rather than implied.
 
@@ -759,12 +1303,17 @@ def test_the_config_folder_is_still_ours_to_create(tmp_path, monkeypatch):
 def _previous_release_database(path, monkeypatch):
     """A database exactly as the released code before this change made it.
 
-    Built by running the real init_db with missing_since removed from
-    COLUMN_ADDITIONS rather than by restating a schema by hand: a hand-written
-    copy is a second definition that can quietly stop matching, and what has to
-    be tested is the upgrade from what the previous release actually produced.
+    Built by running the real init_db with missing_since taken out of BOTH
+    places it now comes from - the SCHEMA text for a fresh table, and
+    COLUMN_ADDITIONS for an existing one - rather than by restating a schema by
+    hand. A hand-written copy is a second definition that can quietly stop
+    matching, and what has to be tested is the upgrade from what the previous
+    release actually produced. The stamp is wound back to 3 for the same reason:
+    that is the version this database would be carrying.
     """
-    previous = {
+    previous_schema = db.SCHEMA.replace("    missing_since TEXT,\n", "")
+    assert previous_schema != db.SCHEMA, "the column is no longer in SCHEMA as spelled here"
+    previous_additions = {
         table: {
             column: definition
             for column, definition in columns.items()
@@ -772,7 +1321,9 @@ def _previous_release_database(path, monkeypatch):
         }
         for table, columns in db.COLUMN_ADDITIONS.items()
     }
-    monkeypatch.setattr(db, "COLUMN_ADDITIONS", previous)
+    monkeypatch.setattr(db, "SCHEMA", previous_schema)
+    monkeypatch.setattr(db, "COLUMN_ADDITIONS", previous_additions)
+    monkeypatch.setattr(db, "SCHEMA_VERSION", 3)
     monkeypatch.setattr(db, "DB_PATH", path)
     db._local.conn = None
     db.init_db()
@@ -780,6 +1331,7 @@ def _previous_release_database(path, monkeypatch):
     assert "missing_since" not in {
         r["name"] for r in conn.execute("PRAGMA table_info(scores)")
     }
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
     return conn
 
 
@@ -858,11 +1410,40 @@ def test_an_upgraded_database_ends_up_with_the_same_scores_table_as_a_fresh_one(
     the author happens to have.
     """
 
+    # BY NAME, NOT BY POSITION, and the exclusion of order is deliberate rather
+    # than convenient. ALTER TABLE ADD COLUMN can only append, and two of this
+    # table's columns arrive that way - instrument_id on every install, and
+    # missing_since on an upgraded one - so an upgraded database ends
+    # `added_at, instrument_id, missing_since` while a fresh one ends
+    # `missing_since, added_at, instrument_id`. No reordering of _SCORES_COLUMNS
+    # can reconcile those, because the upgraded database already had
+    # instrument_id appended before missing_since existed.
+    #
+    # That is safe here, and it is safe for a checkable reason rather than by
+    # assumption: nothing reads a score row positionally. Every reader goes
+    # through sqlite3.Row by column name, and db._rebuild_carrying_rows - the one
+    # thing that copies a whole table - works out its column list from PRAGMA
+    # table_info on both sides and never uses SELECT *. What must match is the
+    # set of columns and what each one IS, which is what this compares.
     def shape(conn):
-        return [
-            (r["name"], r["type"].upper(), r["notnull"], r["dflt_value"], r["pk"])
-            for r in conn.execute("PRAGMA table_info(scores)")
-        ]
+        return {
+            "columns": {
+                r["name"]: (r["type"].upper(), r["notnull"], r["dflt_value"], r["pk"])
+                for r in conn.execute("PRAGMA table_info(scores)")
+            },
+            # The indexes too, which an upgrade path is just as capable of
+            # leaving behind as a column.
+            "indexes": {
+                row["name"]: [
+                    r["name"] for r in conn.execute(f"PRAGMA index_info({row['name']})")
+                ]
+                for row in conn.execute("PRAGMA index_list(scores)")
+            },
+            "foreign_keys": sorted(
+                (r["table"], r["from"], r["to"], r["on_delete"])
+                for r in conn.execute("PRAGMA foreign_key_list(scores)")
+            ),
+        }
 
     upgraded_path = tmp_path / "upgraded.db"
     _previous_release_database(upgraded_path, monkeypatch)
@@ -872,16 +1453,85 @@ def test_an_upgraded_database_ends_up_with_the_same_scores_table_as_a_fresh_one(
     db._local.conn = None
     db.init_db()
     upgraded = shape(db.connect())
+    upgraded_version = db.connect().execute("PRAGMA user_version").fetchone()[0]
 
     db._local.conn = None
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "fresh.db")
     db._local.conn = None
     db.init_db()
     fresh = shape(db.connect())
+    fresh_version = db.connect().execute("PRAGMA user_version").fetchone()[0]
     db._local.conn = None
 
     assert upgraded == fresh
-    assert ("missing_since", "TEXT", 0, None, 0) in fresh
+    assert fresh["columns"]["missing_since"] == ("TEXT", 0, None, 0)
+    # Both paths stamp the version that makes an older release refuse this
+    # database - see the SCHEMA_VERSION comment. An upgraded install getting the
+    # column but not the stamp would leave exactly the rollback hole the bump is
+    # for open on every database that mattered.
+    assert upgraded_version == fresh_version == db.SCHEMA_VERSION
+
+
+def test_the_release_before_this_one_refuses_to_open_this_database(tmp_path, monkeypatch):
+    """The rollback guard, which is the whole reason the version moved.
+
+    The previous release still deletes every score row it did not see and still
+    creates a missing library folder, so pointing it at a database this release
+    has written destroys exactly what this change protects. It would not fail on
+    the unknown column - it would ignore it, read every marked row as present,
+    find no file, and delete the lot with the practice history behind it.
+
+    And this release makes a rollback MORE likely: its new failure mode is a
+    container that refuses to start, and the reflex answer to that is to put the
+    old tag back. So the old release has to refuse, and the version stamp is the
+    only thing that makes it. docs/deployment.md has always promised this
+    behaviour; before the bump the promise was false.
+
+    `SCHEMA_VERSION` patched down to 3 IS the previous release, as far as this
+    check is concerned - _check_schema_version compares that constant against
+    the stamp and nothing else.
+    """
+    path = tmp_path / "written_by_this_release.db"
+    monkeypatch.setattr(db, "DB_PATH", path)
+    db._local.conn = None
+    db.init_db()
+    assert db.connect().execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    db._local.conn = None
+
+    monkeypatch.setattr(db, "SCHEMA_VERSION", 3)
+    db._local.conn = None
+    with pytest.raises(RuntimeError) as raised:
+        db.init_db()
+    assert "written by a newer release" in str(raised.value)
+    db._local.conn = None
+
+
+def test_startup_says_what_is_wrong_before_the_traceback(tmp_path, monkeypatch, caplog):
+    """A stack trace first is what sends an operator reaching for the old tag.
+
+    Uvicorn prints a traceback for anything raised in the lifespan hook, so
+    without this the first thing somebody sees when the library folder is
+    missing is a wall of Python - at which point the obvious move is to roll the
+    image back, which is the one action that destroys their practice history.
+    The readable sentence has to come first.
+    """
+    from fermata import main
+
+    absent = tmp_path / "library"
+    monkeypatch.setattr(config, "LIBRARY_DIR", absent)
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "config" / "cache")
+
+    with caplog.at_level(logging.ERROR, logger="fermata.startup"):
+        with pytest.raises(RuntimeError):
+            with TestClient(main.app):
+                pass
+
+    logged = [r.getMessage() for r in caplog.records if r.name == "fermata.startup"]
+    assert len(logged) == 1
+    assert "library folder" in logged[0]
+    assert "will not create this folder" in logged[0]
+    assert str(absent) in logged[0]
 
 
 def test_the_cascades_are_what_this_change_decided_they_should_be(app_env):
@@ -950,17 +1600,21 @@ def test_a_deliberate_deletion_is_the_only_thing_left_that_reaches_the_cascade(a
     assert conn.execute("SELECT COUNT(*) FROM transcriptions").fetchone()[0] == 0
 
 
-def test_the_missing_column_is_not_a_foreign_key_and_needs_no_migration(app_env):
-    """Why this change is an ADD COLUMN and not a MIGRATIONS step.
+def test_the_missing_column_is_an_add_column_and_the_version_still_moved(app_env):
+    """Two decisions that look contradictory, pinned together so they read as one.
 
-    db.py's COLUMN_ADDITIONS comment is explicit that it expresses ADD COLUMN
-    and nothing else - nullable, no foreign key, no backfill - and that a change
-    that CAN go there should, because it re-runs on every startup and repairs a
-    half-upgraded database. This asserts missing_since really is that kind of
-    change, and that SCHEMA_VERSION was therefore left where it was.
+    The column arrives through COLUMN_ADDITIONS, because it is exactly what that
+    mechanism is for: nullable, no foreign key, no backfill needed. But
+    SCHEMA_VERSION moved anyway, past the highest MIGRATIONS step, which no
+    previous version did. That is not an oversight - it is the downgrade guard.
+    The release before this one deletes every score row it did not see, so a
+    rollback onto this database destroys what the column exists to protect, and
+    the stamp is the only thing that makes the old release refuse.
     """
     assert db.COLUMN_ADDITIONS["scores"]["missing_since"] == "TEXT"
-    assert db.SCHEMA_VERSION == max(db.MIGRATIONS)
+    assert db.SCHEMA_VERSION > max(db.MIGRATIONS), (
+        "the version was bumped without a migration step on purpose; see SCHEMA_VERSION"
+    )
     conn = db.connect()
     keyed = {r["from"] for r in conn.execute("PRAGMA foreign_key_list(scores)")}
     assert "missing_since" not in keyed
