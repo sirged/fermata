@@ -6,6 +6,7 @@ attach to, and what did that make its duration", which is far clearer to pin
 down from explicit coordinates than from a synthesised engraving.
 """
 import io
+import struct
 
 import pytest
 
@@ -245,6 +246,132 @@ def test_stem_selection_prefers_the_closest_candidate():
     far = G.Stem(105.9, 176.0, 200.2)
     chosen = G._best_stem([near, far], [103.0, 105.9], 96.0, 103.0, 200.0, tol)
     assert chosen == near
+
+
+def _best(stems, x0, x1, yc, tol):
+    ordered = sorted(stems, key=lambda s: s.x)
+    return G._best_stem(ordered, [s.x for s in ordered], x0, x1, yc, tol)
+
+
+def test_a_melody_note_over_a_chord_keeps_its_own_stem_not_the_chords():
+    """The commonest two-voice figure in this repertoire, and the geometry is
+    measured off the page it was found wrong on: page 60 of the library's
+    Christmas collection, bar 322, where a melody quarter sits directly above
+    a stem-down bass chord on the same beat.
+
+    Both voices' stems are at the SAME place horizontally - one at each side
+    of the notehead - so the x distances differ by 0.16pt, a stem stroke's
+    width. The y distances differ by 4.8pt, a whole staff space. Ranking on x
+    and using y only to break its ties therefore handed this notehead to the
+    bass chord's down-stem: the melody lost its third beat, the chord gained a
+    fourth note, and the bar came out 3 quarters against 4."""
+    tol = _tol(spacing=4.975)
+    yc = 167.253
+    ink_x0, ink_x1 = 417.19, 423.72
+    own_up = G.Stem(423.398, 149.891, 166.322)       # ends 0.93pt from yc
+    chords_down = G.Stem(417.333, 172.992, 206.938)  # ends 5.74pt from yc
+    assert abs(chords_down.x - ink_x0) < abs(own_up.x - ink_x1), (
+        "the losing stem really is the nearer one in x")
+    assert _best([own_up, chords_down], ink_x0, ink_x1, yc, tol) == own_up
+
+
+def test_an_up_stem_is_not_measured_from_the_advance_width(monkeypatch):
+    """Measured off page 2 of Dalza's Recercar, score measure 11: a filled
+    eighth with its own up-stem, one staff space above a stem-down half-note
+    chord. This is the same figure as the test above with the font's side
+    bearing added on top - Opus's notehead box overhangs its ink by 0.324
+    staff spaces on the RIGHT and not at all on the left, so against the box
+    the up-stem at the ink's right edge measures 1.75pt away while the other
+    voice's down-stem at the left edge measures 0.16pt.
+
+    With that bar read wrong the 2/2 measure emitted one voice of 6 half-note
+    units and no second voice at all - a fourfold duration error."""
+    tol = _tol(spacing=5.05)
+    yc = 548.382
+    box_x0, box_x1 = 89.16, 97.67
+    ink_x0, ink_x1 = 89.16, 96.04
+    own_up = G.Stem(95.92, 533.452, 547.606)
+    chords_down = G.Stem(89.316, 554.211, 584.878)
+    head = G.GlyphEvent("Opus", 210, "notehead_filled",
+                        (box_x0, yc - 10.0, box_x1, yc + 10.0), 0,
+                        baseline_y=yc, ink=(yc - 2.5, yc + 2.5),
+                        ink_x=(ink_x0, ink_x1))
+    assert head.stem_edges == (ink_x0, ink_x1)
+    assert box_x1 - ink_x1 > 0.3 * tol.spacing, "the side bearing under test"
+    assert _best([own_up, chords_down], *head.stem_edges, yc, tol) == own_up
+
+
+def test_a_notehead_with_no_readable_outline_still_uses_its_metrics_box():
+    """An unreadable outline must cost precision, not the attachment: the box
+    edges are what the whole decoder used before the ink was available."""
+    head = G.GlyphEvent("Maestro", 210, "notehead_filled",
+                        (96.0, 190.0, 103.0, 210.0), 0, baseline_y=200.0)
+    assert head.stem_edges == (96.0, 103.0)
+    tol = _tol()
+    own = G.Stem(103.0, 175.0, 200.5)
+    assert _best([own], *head.stem_edges, 200.0, tol) == own
+
+
+class _StubFont:
+    """One glyph's `glyf` header, as _InkBoxes reads it: five int16s of
+    (numberOfContours, xMin, yMin, xMax, yMax) at 1000 units per em."""
+
+    def __init__(self, xmin, ymin, xmax, ymax, contours=1):
+        self._data = struct.pack(">hhhhh", contours, xmin, ymin, xmax, ymax)
+
+    def getTableData(self, tag):
+        assert tag == "glyf"
+        return self._data
+
+    def __getitem__(self, tag):
+        if tag == "loca":
+            return [0, len(self._data)]
+        if tag == "head":
+            return type("_H", (), {"unitsPerEm": 1000})()
+        raise KeyError(tag)
+
+
+def test_the_ink_reader_answers_for_each_axis_separately():
+    """A glyph drawn as a single vertical stroke has a degenerate x extent and
+    a perfectly good y one, so the two axes have to be refused independently -
+    folding them into one usability test would take the vertical reading, and
+    the half-or-whole rest turns on that."""
+    boxes = G._InkBoxes(_StubFont(-120, -250, 130, 260))
+    assert boxes.xspan(0) == (-0.120, 0.130)
+    assert boxes.span(0) == (-0.250, 0.260)
+    flat = G._InkBoxes(_StubFont(40, -250, 40, 260))
+    assert flat.xspan(0) is None
+    assert flat.span(0) == (-0.250, 0.260)
+    absurd = G._InkBoxes(_StubFont(-120, -32000, 130, 260))
+    assert absurd.span(0) is None
+    assert absurd.xspan(0) == (-0.120, 0.130)
+
+
+def test_the_horizontal_ink_scales_out_from_the_glyphs_origin():
+    """Page x and font x both grow rightward, so unlike the vertical twin this
+    is a straight scale with no flip - getting that backwards would put every
+    notehead's ink on the wrong side of where it was drawn."""
+    boxes = G._InkBoxes(_StubFont(-120, -250, 130, 260))
+    assert G._ink_x_on_page(boxes, 0, 400.0, 20.0) == (400.0 - 2.4, 400.0 + 2.6)
+    assert G._ink_span_on_page(boxes, 0, 400.0, 20.0) == (400.0 - 5.2, 400.0 + 5.0)
+    assert G._ink_x_on_page(boxes, 0, None, 20.0) is None
+    assert G._ink_x_on_page(None, 0, 400.0, 20.0) is None
+
+
+def test_a_stem_further_in_x_does_not_win_on_a_hair_of_y():
+    """The other half of the ranking, and why y cannot decide alone. A
+    NEIGHBOURING note's stem, a notehead-width away in x, can end nearer this
+    notehead's centre than its own stem does - here by 0.02 staff spaces
+    against 0.63 spaces of x. Weighting each distance by its own tolerance
+    keeps the attachment; ranking on y first loses it."""
+    tol = _tol()
+    yc = 246.0
+    ink_x0, ink_x1 = 232.08, 238.72
+    own_up = G.Stem(238.8, 224.4, 250.5)        # touching the right edge
+    neighbours_up = G.Stem(228.85, 224.4, 245.3)  # 3.2pt clear of the left edge
+    assert abs(neighbours_up.y1 - yc) < abs(own_up.y1 - yc), (
+        "the losing stem really is the nearer one in y")
+    assert _best([own_up, neighbours_up], ink_x0, ink_x1, yc, tol) == own_up
 
 
 # ---------------------------------------------------------------------------
@@ -722,14 +849,21 @@ def test_the_reading_holds_at_every_line_of_the_grid():
             _whole_rest_under(line), _REST_LINES, _REST_SPACING) == (4.0, True), line
 
 
-def test_a_staff_with_no_detected_lines_is_undecided_rather_than_a_crash():
-    """There is no grid to measure against. The spacing helper beside this one
-    deliberately tolerates an empty line list, and the rest reading used to
-    raise on it instead - `min(range(0))` - so a staff whose lines were not
-    detected failed the whole page rather than degrading."""
-    assert G.half_or_whole_rest(207.5, [], _REST_SPACING) == (2.0, False)
-    assert G.half_or_whole_rest(207.5, _REST_LINES, 0) == (2.0, False)
-    assert G.half_or_whole_rest(207.5, _REST_LINES, None) == (2.0, False)
+def test_a_non_positive_spacing_never_reaches_the_rest_reading():
+    """half_or_whole_rest guards against a zero or negative spacing, and this
+    records that the guard is DEFENCE and not a live path, because a test
+    asserting the guard's return value would pass whether the guard worked or
+    not - nothing can call it that way.
+
+    decode_note_events resolves every tolerance through _Tol, which floors a
+    missing, zero or negative spacing to the reference value before the rest
+    reading ever sees it. That floor is the reachable behaviour, so it is what
+    is pinned here."""
+    for bad in (0, 0.0, -1.0, None):
+        assert G._Tol(bad).spacing == G.REFERENCE_STAFF_SPACING
+    # ...which is why the helper's own guard is unreachable from the decode:
+    # the only argument it is ever passed is a floored _Tol.spacing.
+    assert _tol().spacing > 0
 
 
 @pytest.mark.parametrize("yc", [210.0, 207.5])
@@ -788,6 +922,17 @@ def test_a_rest_whose_outline_could_not_be_read_is_counted_not_guessed(monkeypat
                       (300.0, 199.5, 306.0, 219.5), 0, baseline_y=210.0)
     assert not ev.ink_measured
     notes, stats = _decode_rests([ev], monkeypatch)
+    assert [n.base_units for n in notes] == [2.0]
+    assert stats["undecided_rests"] == 1
+
+
+def test_a_staff_with_no_detected_lines_decodes_undecided_rather_than_failing(monkeypatch):
+    """There is no grid to measure the rest's parity against. This is the
+    reachable route into that: decode_note_events tolerates an empty line list
+    the way the spacing helper beside it does, and the rest reading used to
+    raise on it - `min(range(0))` - so a staff whose lines were not detected
+    failed the whole page instead of degrading to a counted guess."""
+    notes, stats = _decode_rests([_rest_glyph(205.0, 207.5)], monkeypatch, line_ys=[])
     assert [n.base_units for n in notes] == [2.0]
     assert stats["undecided_rests"] == 1
 

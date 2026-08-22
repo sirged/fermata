@@ -106,6 +106,15 @@ How this works (full validation detail):
   cancels, and it was deciding whether a rest was a half or a whole - a
   twofold difference in duration - from a measurement that was never the
   rest's position.
+
+  The horizontal edges a notehead's stem attaches at come from the same
+  outline, for the same reason: one calibrated font puts its whole side
+  bearing on one side, so against the metrics box "which of these two stems
+  is closer" was a third of a space out for every up-stem on such a page.
+  See GlyphEvent.stem_edges and _best_stem, which ranks candidate stems on
+  both distances together - x alone, with y only breaking its ties, handed a
+  melody note to the accompaniment's stem whenever the two voices shared a
+  beat.
 """
 import bisect
 import collections
@@ -604,17 +613,17 @@ def maestro_fingerprint_ok(tt, digests=None, min_glyphs=None):
     return True, f"{len(matched)} glyph outlines match the calibrated Maestro subset"
 
 
-# A glyph's ink never runs more than a couple of ems from the baseline (the
+# A glyph's ink never runs more than a couple of ems from its origin (the
 # tallest thing measured in the calibrated vocabulary is a clef, at 2.2 em), so
 # a `glyf` header claiming more than this is a stale or corrupt box rather than
 # a shape - and a wrong ink box is worse than none, because none degrades to
-# the baseline while a wrong one is believed.
+# the metrics box while a wrong one is believed.
 _INK_MAX_EM = 8.0
 
 
 class _InkBoxes:
-    """Where each glyph's INK is, vertically, in one embedded font - as a
-    fraction of the em, so it scales with whatever size the page drew at.
+    """Where each glyph's INK is in one embedded font - as a fraction of the
+    em, so it scales with whatever size the page drew at.
 
     A TrueType glyph record starts with its own bounding box
     (numberOfContours, xMin, yMin, xMax, yMax, five int16s), so this needs no
@@ -632,12 +641,17 @@ class _InkBoxes:
         self._upem = tt["head"].unitsPerEm or 1000
         self._cache = {}
 
-    def span(self, gid):
-        """(yMin, yMax) in em fractions, or None where this font has nothing
-        to say about that glyph: a gid past the end of `loca`, a slot the
-        subset left empty (which is most of them - a Maestro subset keeps all
-        204 slots and fills the handful a page uses), or a header whose box is
-        degenerate or implausible."""
+    def _header(self, gid):
+        """This glyph's raw `glyf` bounding box as (xMin, yMin, xMax, yMax) in
+        em fractions, or None where this font has nothing to say about that
+        glyph: a gid past the end of `loca`, or a slot the subset left empty
+        (which is most of them - a Maestro subset keeps all 204 slots and
+        fills the handful a page uses).
+
+        Whether the box is USABLE is asked per axis by span and xspan, because
+        the two axes fail independently: a glyph drawn as a single vertical
+        stroke has a degenerate x extent and a perfectly good y one.
+        """
         if gid in self._cache:
             return self._cache[gid]
         out = None
@@ -645,12 +659,33 @@ class _InkBoxes:
         if gid >= 0 and gid + 1 < len(loca):
             seg = self._glyf[loca[gid]:loca[gid + 1]]
             if len(seg) >= 10:
-                _n, _x0, ymin, _x1, ymax = struct.unpack(">hhhhh", seg[:10])
-                limit = _INK_MAX_EM * self._upem
-                if ymax > ymin and abs(ymin) <= limit and abs(ymax) <= limit:
-                    out = (ymin / self._upem, ymax / self._upem)
+                _n, xmin, ymin, xmax, ymax = struct.unpack(">hhhhh", seg[:10])
+                upem = self._upem
+                out = (xmin / upem, ymin / upem, xmax / upem, ymax / upem)
         self._cache[gid] = out
         return out
+
+    def span(self, gid):
+        """(yMin, yMax) in em fractions, or None where the box is missing (see
+        _header) or its vertical extent is degenerate or implausible."""
+        box = self._header(gid)
+        if box is None:
+            return None
+        ymin, ymax = box[1], box[3]
+        if ymax > ymin and abs(ymin) <= _INK_MAX_EM and abs(ymax) <= _INK_MAX_EM:
+            return ymin, ymax
+        return None
+
+    def xspan(self, gid):
+        """(xMin, xMax) in em fractions, or None - the horizontal twin of
+        span, tested against the same implausibility limit."""
+        box = self._header(gid)
+        if box is None:
+            return None
+        xmin, xmax = box[0], box[2]
+        if xmax > xmin and abs(xmin) <= _INK_MAX_EM and abs(xmax) <= _INK_MAX_EM:
+            return xmin, xmax
+        return None
 
 
 def _ink_boxes(tt):
@@ -864,13 +899,24 @@ class GlyphEvent:
     them, because the metrics box is the right box for the two things that use
     it: the advance width for horizontal gaps, and a font-wide row height for
     grouping digits into a numeral.
+
+    HORIZONTALLY the same warning applies, in one font and to one decision.
+    x0/x1 come from the advance width, and a font's two side bearings need not
+    match: measured over the library's noteheads, Maestro's and MScore's boxes
+    sit within 0.02 staff spaces of the ink on both sides (97,489 and 8,254 of
+    them), but OPUS overhangs the ink by 0.324 spaces on the RIGHT and not at
+    all on the left (8,917 of them). A notehead's stem attaches at one side or
+    the other, so on an Opus page "how far is this stem from the notehead" came
+    out a third of a space larger for an up-stem, at its right edge, than for a
+    down-stem at its left - which is the whole margin _best_stem was deciding
+    two-voice writing on. Hence `stem_edges`.
     """
 
     __slots__ = ("family", "gid", "category", "x0", "y0", "x1", "y1", "code",
-                 "smufl", "baseline_y", "ink_y0", "ink_y1")
+                 "smufl", "baseline_y", "ink_y0", "ink_y1", "ink_x0", "ink_x1")
 
     def __init__(self, family, gid, category, bbox, code, smufl=False,
-                 baseline_y=None, ink=None):
+                 baseline_y=None, ink=None, ink_x=None):
         self.family = family
         self.gid = gid
         self.category = category
@@ -882,6 +928,7 @@ class GlyphEvent:
         # supply one.
         self.baseline_y = baseline_y
         self.ink_y0, self.ink_y1 = ink if ink is not None else (None, None)
+        self.ink_x0, self.ink_x1 = ink_x if ink_x is not None else (None, None)
 
     @property
     def calibration_key(self):
@@ -902,6 +949,21 @@ class GlyphEvent:
         half_or_whole_rest); the fallbacks below are good to a fraction of a
         space, which is not the same thing."""
         return self.ink_y0 is not None
+
+    @property
+    def stem_edges(self):
+        """The two x positions a stem may attach at: the drawn shape's left and
+        right edges, from the embedded outline where it could be read, and the
+        metrics box's where it could not.
+
+        A stem is drawn touching the notehead, so the distance from a stem to
+        the nearer of these is a measurement of whether it attaches here - but
+        only once both edges are the ink's. Against the advance-width box that
+        distance carries the side bearing, which one calibrated font applies to
+        one side only (see the class docstring)."""
+        if self.ink_x0 is not None:
+            return self.ink_x0, self.ink_x1
+        return self.x0, self.x1
 
     @property
     def yc(self):
@@ -1129,6 +1191,19 @@ def _ink_span_on_page(reader, gid, origin_y, size):
     return origin_y - ymax * size, origin_y - ymin * size
 
 
+def _ink_x_on_page(reader, gid, origin_x, size):
+    """(ink left, ink right) in page points, or None. Page x and font x both
+    grow rightward, so unlike the vertical twin above this is a straight scale
+    out from the glyph's origin with no flip."""
+    if reader is None or size is None or origin_x is None:
+        return None
+    em = reader.xspan(gid)
+    if em is None:
+        return None
+    xmin, xmax = em
+    return origin_x + xmin * size, origin_x + xmax * size
+
+
 def _smufl_music_fonts(doc, page, trace):
     """Which fonts on this page may be read as SMuFL music fonts?
 
@@ -1249,10 +1324,12 @@ def extract_glyph_events(page):
                     # (rehearsal marks, fingerings); those are not music
                     # symbols and must not count as unrecognised ones.
                     continue
+                ox = origin[0] if origin else None
                 oy = origin[1] if origin else None
                 ev = GlyphEvent(fname, gid, SMUFL_CODE_MAP.get(code), bbox, code, smufl=True,
                                 baseline_y=oy,
-                                ink=_ink_span_on_page(reader, gid, oy, size))
+                                ink=_ink_span_on_page(reader, gid, oy, size),
+                                ink_x=_ink_x_on_page(reader, gid, ox, size))
                 events.append(ev)
                 if ev.category is None:
                     unknown.append(ev)
@@ -1279,9 +1356,11 @@ def extract_glyph_events(page):
                 # An unrecognised glyph still has a position, and with one
                 # resource on the page there is no doubt about whose it is.
                 reader = candidates[0].ink
+            ox = origin[0] if origin else None
             oy = origin[1] if origin else None
             ev = GlyphEvent(fname, gid, cat, bbox, code, baseline_y=oy,
-                            ink=_ink_span_on_page(reader, gid, oy, size))
+                            ink=_ink_span_on_page(reader, gid, oy, size),
+                            ink_x=_ink_x_on_page(reader, gid, ox, size))
             events.append(ev)
             if cat is None:
                 unknown.append(ev)
@@ -1613,14 +1692,36 @@ def _bounds(sorted_keys, lo, hi):
 
 
 def _best_stem(stems, stem_xs, x0, x1, yc, tol, x_tol=None, y_tol=None):
-    """The stem this notehead actually hangs off.
+    """The stem this notehead actually hangs off. x0/x1 are the notehead's ink
+    edges where the font could supply them - see GlyphEvent.stem_edges.
 
-    Stems attach at one SIDE of a notehead (left edge for a down-stem,
-    right edge for an up-stem) at roughly the notehead's vertical centre -
-    not at its bbox centre-x or top/bottom edge. In dense/chordal writing
-    more than one stem can plausibly sit near a given notehead, so pick the
-    single closest one: nearest in x to either notehead edge, then nearest
-    in y to the notehead's centre.
+    Stems attach at one SIDE of a notehead (left edge for a down-stem, right
+    edge for an up-stem) at roughly the notehead's vertical centre - not at its
+    bbox centre-x or top/bottom edge. In dense/chordal writing more than one
+    stem can plausibly sit near a given notehead, so pick the single closest
+    one, BY BOTH DISTANCES TOGETHER, each measured as a fraction of the slack
+    its own axis is allowed.
+
+    RANKING ON x FIRST AND USING y ONLY TO BREAK ITS TIES IS WRONG, and gets
+    the commonest two-voice figure in this repertoire backwards. Where a melody
+    note sits above a stem-down chord on the same beat, the two voices' stems
+    are at the SAME place horizontally - one at each side of the notehead - so
+    the x distances differ by the width of a stem stroke, 0.03 staff spaces,
+    which is noise; the y distances differ by a whole space, which is the
+    answer. Measured over the library's 98,737 notehead-to-stem lookups, the
+    attaching stem sits 0.037 spaces from the notehead's edge at the median
+    (0.348 at the 99th percentile) and its end sits 0.175 spaces from the ink
+    centre (0.179 at the 90th). Both are sharp; neither decides alone, and
+    letting the noisier margin overrule the other picked a stem further away in
+    y than the alternative for 51 noteheads across 20 scores, in 49 cases the
+    other VOICE's stem. That is a duration error of up to fourfold and a lost
+    voice, not a near miss - see the two-voice bars of Dalza's Recercar.
+
+    Nor can y rank them alone: a neighbouring note's stem one notehead-width
+    away in x can end nearer this notehead's centre than its own stem does, by
+    a few thousandths of a space. Weighting each axis by its own tolerance -
+    the numbers already calibrated for how much slack each direction needs -
+    picks the note's own stem in both figures without a third constant to tune.
 
     Selecting on "which candidate has the highest flag/beam count" instead
     is what silently upgraded genuine quarters to eighths and sixteenths -
@@ -1642,7 +1743,11 @@ def _best_stem(stems, stem_xs, x0, x1, yc, tol, x_tol=None, y_tol=None):
         if dy > yt:
             continue
         dx = min(abs(s.x - x0), abs(s.x - x1))
-        key = (round(dx, 3), round(dy, 3))
+        # Rounded so two candidates a floating-point hair apart cannot swap on
+        # the platform's last bit, and tie-broken on y: two stems the same
+        # distance away are two voices, and the one whose end lands on this
+        # notehead is the one it hangs off.
+        key = (round(math.hypot(dx / xt, dy / yt), 6), round(dy, 3))
         if best_key is None or key < best_key:
             best, best_key = s, key
     return best
@@ -1790,6 +1895,13 @@ def _assign_stem_directions(notes, stems_by_key):
     satisfy. Such a stem is dropped rather than believed - the notehead keeps
     no stem at all and is placed by position instead, which can lose
     information but cannot invert it.
+
+    This check is a net, not a ranking, and it cannot be moved into
+    _best_stem to do the choosing: the side test needs the MEAN x of every
+    notehead on the stem, which is exactly what one candidate notehead does
+    not have. Applied per candidate it rejects the right stem too - measured
+    over the library, it leaves 344 noteheads with no consistent candidate at
+    all and changes 38 selections, and the selections it changes are wrong.
 
     This catches only the contradictory subset. A neighbouring voice's stem
     that happens to sit where this notehead's own stem WOULD sit is
@@ -2032,25 +2144,30 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
                 #
                 # KNOWN RESIDUAL RISK, accepted deliberately: _best_stem
                 # accepts any stem end within about a staff space of the
-                # notehead's centre, and a real half note's own stem end is
-                # measured at up to 0.94 spacings from it (median 0.44, over
-                # 2004 of them), so the window cannot be tightened without
-                # losing real attachments - at 0.5 spacings it loses 46% of
-                # them. Where this note's own stem is missing from the vector
-                # pass entirely, a neighbouring voice's stem can therefore be
-                # picked, and if it sits in a position consistent with the
-                # engraving convention nothing here can tell. That yields a
-                # wrong voice for the note and breaks both voices' arithmetic
-                # for that bar, which shows up in the overfull-bar count.
+                # notehead's ink centre, and a real stem end is measured at up
+                # to the full 1.17 spacings from it (median 0.175, 90th
+                # percentile 0.179, over 86819 attachments), so the window
+                # cannot be tightened to the bulk of that distribution without
+                # losing the tail of real attachments. Where this note's own
+                # stem is missing from the vector pass entirely, a neighbouring
+                # voice's stem can therefore be picked, and if it sits in a
+                # position consistent with the engraving convention nothing
+                # here can tell. That yields a wrong voice for the note and
+                # breaks both voices' arithmetic for that bar, which shows up
+                # in the overfull-bar count. What _best_stem no longer does is
+                # PREFER such a stem to this note's own: it ranks on both
+                # distances together rather than on x alone.
                 # _assign_stem_directions rejects the subset where the
                 # stem's side and its overhang contradict each other; the
                 # consistent-looking case remains.
                 base, flags = 2.0, 0
-                stem = _best_stem(stems, stem_xs, ev.x0, ev.x1, ev.yc, tol)
+                ex0, ex1 = ev.stem_edges
+                stem = _best_stem(stems, stem_xs, ex0, ex1, ev.yc, tol)
             else:
                 base = 1.0  # filled/x/diamond head: quarter-or-shorter
                 flags = 0
-                stem = _best_stem(stems, stem_xs, ev.x0, ev.x1, ev.yc, tol)
+                ex0, ex1 = ev.stem_edges
+                stem = _best_stem(stems, stem_xs, ex0, ex1, ev.yc, tol)
                 if stem is not None:
                     hooks = _flag_count_near(flag_events, flag_xs, stem, ev.yc, tol)
                     beam_levels = _beam_count_near(beams, stem, ev.yc, tol)
@@ -2061,7 +2178,10 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
                 # the duration it was given above stands, and a chord's
                 # duration is recomposed from all its members together (see
                 # tabextract._stem_group_duration).
-                stem = _stem_through_notehead(stems, stem_xs, ev.x0, ev.x1, ev.yc, tol)
+                # Same edges as the stem-END lookup above, so a notehead cannot
+                # pass one x gate and fail the other.
+                ex0, ex1 = ev.stem_edges
+                stem = _stem_through_notehead(stems, stem_xs, ex0, ex1, ev.yc, tol)
             key = None
             if stem is not None:
                 key = _stem_key(stem)
