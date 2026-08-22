@@ -318,6 +318,27 @@ back. See the Backups section of [deployment.md](deployment.md).
   inventing its shape before one exists would be guessing. What the `activity`
   vocabulary guarantees is that when a trainer arrives, the time it accounts
   for lands in the same history and the same goals as everything else.
+
+  One now has. *Hear a note, name it* (`web/src/lib/EarTraining.svelte`) writes
+  one ordinary session with `activity = 'ear_training'`, and everything it knows
+  beyond the time goes in the `note`: how many notes were asked, how many were
+  named as heard, and the range they were drawn from. Nothing about the drill is
+  special-cased anywhere - it shows on the practice page and counts towards a
+  goal exactly as a piece does, which was the whole point of there being one
+  session table.
+
+  That is deliberately still not a per-attempt schema. One exercise is not
+  enough to know what such a table needs: the second and third - fret-to-note,
+  chord recognition - are what should decide whether the unit is a position, an
+  interval, or a pitch, and designing it around the first would be the same
+  guess this section was written to avoid. What the note already proves is that
+  a drill's time and a drill's counts can live here without one.
+
+  Note that a drill records **counts and never a rate**. There is no accuracy
+  percentage in the note, on the page, or anywhere a query could produce one,
+  for the same reason there is no best week: a number out of a hundred is a mark
+  rather than a fact, and it invites a colour. Nothing counts consecutive
+  correct answers either.
 - **Key, tempo and difficulty per score** - musical metadata about the piece
   rather than about the practice.
 - **Achievements** - looking back at what has been accomplished, where a goal

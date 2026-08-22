@@ -482,7 +482,8 @@
         </div>
         <p class="hint">
           Technique, ear training, or simply playing. Practice at a score is timed in the
-          viewer; this is for everything else.
+          viewer, and <a class="ear-training-link" href="#/ear-training">hear a note, name it</a>
+          logs its own time; this is for everything else.
         </p>
         <div class="row">
           <select bind:value={otherActivity} class="other-activity">
