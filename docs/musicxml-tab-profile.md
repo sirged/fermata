@@ -478,10 +478,9 @@ that needs it has to get it from the producer.
   measures fall from 5,931 to 5,600 and identifiable inferred silence from
   5,450.5 to 3,848.2 quarter notes, so **331 measures this profile reports
   defective read as conforming to anything downstream of that save**. The
-  agreement between a
-  producer's figures and an independent check holds for the file *as the
-  producer wrote it*. Verify against that file, not against a round trip
-  through an editor — see [Checking a file](#checking-a-file).
+  agreement between a producer's figures and an independent check holds for the
+  file *as the producer wrote it*. Verify against that file, not against a
+  round trip through an editor — see [Checking a file](#checking-a-file).
 
 **In the other direction.** Fermata also emits the same music as alphaTex for
 its transcription editor. That format has no editorial mechanism for this and
