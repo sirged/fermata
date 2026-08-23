@@ -1725,9 +1725,9 @@ def _resolve_rhythm_source(page, std_staff, pair_reason, decoded):
         # Reported however few there are, and NOT ratio-gated, for the same
         # reason an unrecognised notehead above is not: how dense the staff
         # around it happens to be is not evidence about this note. Measured
-        # over the library that degrades 493 of 2749 notation staves, which
-        # is the honest size of the problem rather than a threshold chosen to
-        # keep the count down.
+        # over the library that degrades 493 of the 2657 notation staves that
+        # supplied glyph durations at all, which is the honest size of the
+        # problem rather than a threshold chosen to keep the count down.
         return _RhythmSource(
             PROV_GLYPHS_DEGRADED, note_events, stats=stats,
             detail=(
@@ -2010,8 +2010,8 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
             warnings.append(
                 f"{degraded} staff system(s) were read from the engraved notation but not "
                 "everything on them could be read - a music-font glyph this decoder has not "
-                "been calibrated for, a notehead with no stem to count flags on, or a rest "
-                "whose printed position did not say which value it was - so treat their "
+                "been calibrated for, a notehead with no stem this decoder could find, or a "
+                "rest whose printed position did not say which value it was - so treat their "
                 f"durations as medium confidence.{where}"
             )
         warnings.append(_TUPLET_WARNING)
@@ -2040,13 +2040,21 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
     # said. A count of degraded staves cannot be turned back into it: one
     # stemless notehead on a staff and forty of them read identically there.
     if no_stem_notes:
+        # This count is honest for the GATE - the stem was not found, so both
+        # the duration and the voice are a guess either way - but not for a
+        # claim about what got emitted. A stemless head is folded into any
+        # host stem within onset tolerance by the absorb pass in
+        # `_stem_groups`, and most of them ARE attached that way: of the
+        # heads this counts, most inherit a duration from that host rather
+        # than going out at the plain-quarter floor. Only say what is true of
+        # every one of them.
         warnings.append(
             f"{no_stem_notes} notehead(s) across {no_stem_staves} staff system(s) were read with "
-            "no stem attached to them. A note's flags and beams hang off its stem, so for those "
-            "notes there was nothing to count: each was emitted as a plain quarter, the LONGEST "
-            "duration its notehead on its own allows. Any of them the score wrote as an eighth "
-            "or shorter therefore plays long and overfills its bar, and each also lost the stem "
-            "direction that says which of a bar's voices it belongs to"
+            "no stem this decoder could find. A note's flags and beams hang off its stem, so for "
+            "those notes both the duration and which of a bar's voices they belong to rest on a "
+            "guess rather than a reading: where such a head could not be attached to a "
+            "neighbouring stem, it was emitted at the plain quarter, the LONGEST duration its "
+            "notehead on its own allows"
         )
 
     # Bars that don't add up outrank how the durations were obtained: a
@@ -2126,10 +2134,16 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
             f"({defective}) or hold nothing that was read from the score ({len(unread_bars)})"
         )
     if bars and unreliable / bars >= 0.25:
-        confidence = (
-            "low overall - individual durations were read from the score's own engraving, but "
-            + reason
-        )
+        # Compose onto whatever `confidence` already says, the same way the
+        # branch below does - not replace it. Replacing it here with a fresh
+        # "durations were read from the score's own engraving" reasserted the
+        # exact claim a degraded or spacing-derived score had just finished
+        # disclosing as NOT fully true, which is the headline flatly
+        # contradicting the sentence right below it. The threshold still
+        # decides the LABEL (this is the one place "low overall" gets said),
+        # but the clause after it stays whatever the disclosure above earned.
+        _, _, rest = confidence.partition(" - ")
+        confidence = f"low overall - {rest}; {reason}" if rest else f"low overall; {reason}"
     elif bars and unreliable:
         # Below the threshold is not the same as clean, and a binary gate threw
         # away everything the counts above just established: sixteen of the

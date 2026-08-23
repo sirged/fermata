@@ -1063,7 +1063,7 @@ def test_the_stemless_count_is_zero_when_every_head_found_its_stem(zanarkand_pdf
     assert result.notes_no_stem == 0
     assert result.staves_no_stem == 0
     assert result.rhythm_provenance == {tabextract.PROV_GLYPHS: 10}
-    assert not any("no stem attached" in w for w in result.warnings)
+    assert not any("no stem this decoder could find" in w for w in result.warnings)
 
 
 # ---------------------------------------------------------------------------

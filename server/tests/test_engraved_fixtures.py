@@ -36,11 +36,11 @@ coverage and is not is worse than none:
     the real examples live only in the maintainer's library.
   * A filled notehead whose stem the vector pass cannot see. This engraver
     draws every stem as a clean vector line, so all twelve fixtures here
-    report zero of them, while 493 of the library's 2749 notation staves
-    carry at least one. The counter and the disclosure for that state
-    (see #115) are exercised against a real score in
-    test_tabextract.py and against explicit geometry in
-    test_glyph_rhythm.py; nothing here can reach it.
+    report zero of them, while 493 of the 2657 notation staves in the
+    library that supplied glyph durations at all carry at least one. The
+    counter and the disclosure for that state (see #115) are exercised
+    against a real score in test_tabextract.py and against explicit
+    geometry in test_glyph_rhythm.py; nothing here can reach it.
   * Scale. The library's reference score is 50 bars of real two-voice
     fingerstyle writing; the fixture with two voices is eight contrived bars.
     A regression that only shows up in density will still only show up

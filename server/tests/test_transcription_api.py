@@ -576,3 +576,33 @@ def test_the_api_transcribes_a_real_engraved_score(
     fetched = api.get_transcription(score_id)
     assert fetched["content"] == posted["content"]
     assert fetched["warnings"] == posted["warnings"]
+
+
+def test_floored_note_durations_survive_the_api_round_trip(
+    app_env, hymn_of_the_fayth_pdf, monkeypatch, insert_score
+):
+    """`test_which_bars_were_not_read_from_glyphs_survives_a_reload` above only
+    ever checks `notes_no_stem` / `staves_no_stem` against zero, on a fixture
+    with no notation staff to read a stem off at all. A persistence bug that
+    unconditionally wrote 0 into that column would pass every test in this
+    file and still be silently discarding the #115 disclosure on reload.
+
+    That state - a genuinely non-zero floored-duration count - does not arise
+    in anything engraved in this repository (see test_engraved_fixtures.py's
+    "what these cannot reach" list), so this runs against the same real
+    library score the extractor-level test does."""
+    pdf = hymn_of_the_fayth_pdf
+    monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    assert posted["notes_no_stem"] == 73
+    assert posted["staves_no_stem"] == 4
+
+    fetched = api.get_transcription(score_id)
+    assert fetched["notes_no_stem"] == posted["notes_no_stem"]
+    assert fetched["staves_no_stem"] == posted["staves_no_stem"]
+    assert fetched["notes_no_stem"] > 0, "the whole point: this must not be the zero case"
+    assert fetched["warnings"] == posted["warnings"]
+    assert any("no stem this decoder could find" in w for w in fetched["warnings"])

@@ -1200,6 +1200,22 @@ def test_a_staff_whose_heads_all_found_a_stem_is_still_fully_read(monkeypatch):
     assert src.provenance == tabextract.PROV_GLYPHS
 
 
+def test_the_no_stem_gate_sits_at_the_end_of_the_resolution_ladder(monkeypatch):
+    """`no_stem_noteheads` is checked LAST, after every unknown-vocabulary
+    branch, and that ordering is deliberate rather than incidental: a staff
+    whose glyphs are mostly unrecognised has nothing this decoder can trust at
+    all, so it must fall back to the spacing heuristic outright rather than
+    being reported as `glyphs-degraded` - which still claims the glyphs
+    themselves were read - just because it also happens to carry a few
+    stemless noteheads. Pinned here so a reordering that moved the no-stem
+    check ahead of the ratio fallback would be caught by a single assertion
+    rather than only by a drop in some library-wide count nobody is watching."""
+    src = _resolve_with_stats(monkeypatch, _stats(
+        unknown_glyphs=36, unknown_ratio=0.9, band_glyphs=40, no_stem_noteheads=3))
+    assert src.provenance == tabextract.PROV_SPACING
+    assert not src.uses_glyphs
+
+
 def test_no_decoded_events_falls_back_with_the_font_reason(monkeypatch):
     src = _resolve_with_stats(
         monkeypatch, _stats(font_warnings=["Opus is embedded with 'cff' outlines"]), notes=[])
@@ -1467,9 +1483,17 @@ def test_floored_durations_are_counted_and_disclosed_on_a_real_score(hymn_of_the
     # have been read from the glyphs.
     assert result.rhythm_provenance == {tabextract.PROV_GLYPHS_DEGRADED: 4}
     assert not result.confidence["rhythm"].startswith("high")
+    # The headline itself must not contradict the disclosure: every staff on
+    # this file is floored and the defective-bar ratio crosses the gate, so
+    # the confidence string used to be REPLACED with "durations were read
+    # from the score's own engraving" - the exact claim this file's own
+    # warnings withdraw. Composing onto the existing disclosure instead means
+    # the stem caveat has to survive into the final headline.
+    assert "stem" in result.confidence["rhythm"], result.confidence["rhythm"]
     # ...and it is SAID, not just counted. The interface loops over the warning
     # strings; a field on its own reaches nobody.
-    said = [w for w in result.warnings if "no stem attached" in w]
+    said = [w for w in result.warnings if "no stem this decoder could find" in w
+            and "notehead(s) across" in w]
     assert len(said) == 1, result.warnings
     assert "73 notehead(s) across 4 staff system(s)" in said[0]
     # The per-staff reasons are surfaced too, and they name the mechanism
@@ -1533,7 +1557,7 @@ def test_floored_note_durations_are_said_out_loud_with_their_count():
     warnings, _c = tabextract._rhythm_report(
         counts, {}, tabextract._BarConformance(0, 0, 0, 20),
         no_stem_notes=37, no_stem_staves=4)
-    said = [w for w in warnings if "no stem attached" in w]
+    said = [w for w in warnings if "notehead(s) across" in w and "no stem this decoder" in w]
     assert len(said) == 1, warnings
     assert "37 notehead(s) across 4 staff system(s)" in said[0]
     assert "plain quarter" in said[0]
@@ -1541,7 +1565,7 @@ def test_floored_note_durations_are_said_out_loud_with_their_count():
     # Nothing is said when every notehead found its stem.
     quiet, _c = tabextract._rhythm_report(
         counts, {}, tabextract._BarConformance(0, 0, 0, 20))
-    assert not any("no stem attached" in w for w in quiet)
+    assert not any("notehead(s) across" in w and "no stem this decoder" in w for w in quiet)
 
 
 def test_a_quarter_note_count_is_exact_not_rounded():

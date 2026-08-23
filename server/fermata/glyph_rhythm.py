@@ -178,6 +178,13 @@ MAESTRO_GID_MAP = {
     # table's own "rendered and eyeballed" standard. A signature that would
     # need digit0 correctly falls through to "not detected" (see
     # decode_time_signature) rather than silently emitting a wrong value.
+    #
+    # gid 174 (notehead_diamond, harmonics) is bucketed with notehead_filled
+    # as of #115: `duration_needs_stem` is True for it, so an unfound stem
+    # floors it at a quarter the same way a filled head does. Quarter-vs-half
+    # is unpinned for a diamond - unlike notehead_half it carries no shape
+    # that says which, so a diamond engraved as a half is read as a quarter
+    # whenever its stem is not found, not just left undecided.
 }
 
 # Fingerprint for the calibrated Maestro subset: GID -> sha256 of that

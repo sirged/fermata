@@ -1333,8 +1333,10 @@ _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
 # `spacing_bars` / `degraded_bars` are the same kind of list for the same
 # reason: which bars' durations came from the gaps between noteheads rather
 # than the noteheads, and which came off a staff something on it could not be
-# read. The staff counts in `rhythm_provenance` say how much; only these say
-# which, and a bar number is what a reader can carry back to the PDF.
+# read. `rhythm_provenance` on the extraction result says how many staves
+# resolved each way, but that field is not one this module stores or exposes
+# - only these bar-number lists carry the fact out to a consumer, and a bar
+# number is what a reader can carry back to the PDF.
 _BAR_LIST_KEYS = ("padded_bars", "unread_bars", "spacing_bars", "degraded_bars")
 _BAR_AMOUNT_KEYS = ("inferred_rest_quarters",)
 
