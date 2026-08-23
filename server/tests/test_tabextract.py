@@ -210,6 +210,48 @@ def test_glyph_decoded_alphatex_parses_with_dotted_beats(zanarkand_pdf):
     assert parsed["voices"] > parsed["bars"], parsed
 
 
+def _measure_voice_quarters(xml: str, number: int) -> dict:
+    """{voice: quarter notes} for one emitted measure, chord members counted
+    once because they sound with the note they hang off."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(xml)
+    for part in root.findall("part"):
+        for m in part.findall("measure"):
+            if int(m.get("number")) != number:
+                continue
+            divisions = None
+            for attrs in part.iter("attributes"):
+                d = attrs.findtext("divisions")
+                if d:
+                    divisions = int(d)
+                    break
+            out = collections.defaultdict(float)
+            for note in m.findall("note"):
+                if note.find("chord") is not None:
+                    continue
+                out[(note.findtext("voice") or "1").strip()] += (
+                    int(note.findtext("duration") or 0) / divisions)
+            return dict(out)
+    raise AssertionError(f"measure {number} is not in the emitted score")
+
+
+def test_a_melody_over_a_chord_stays_a_separate_voice(dalza_pdf):
+    """End-to-end for the notehead-to-stem attachment this file is full of: a
+    melody eighth one staff space above a stem-down half-note chord, sharing
+    its beat. Attaching the melody note to the CHORD's stem folds the two
+    voices into one, and the bar then reports 6 half-note units of a single
+    voice in 2/2 - a fourfold duration error with the second voice gone, not a
+    near miss. Every one of these bars carries the figure."""
+    result = tabextract.extract(dalza_pdf)
+    assert result.extractable
+    assert result.time_signature == (2, 2)
+    for bar in (7, 11, 12, 13, 14):
+        voices = _measure_voice_quarters(result.musicxml, bar)
+        assert len(voices) == 2, f"bar {bar} lost a voice: {voices}"
+        assert voices["1"] == 4.0, f"bar {bar} voice 1: {voices}"
+
+
 def test_notation_only_pdf_has_no_tab_staves(tarrega_pdf):
     info = tabextract.analyze(tarrega_pdf)
     assert info["extractable"] is False
@@ -1122,6 +1164,20 @@ def test_high_unknown_ratio_alone_downgrades(monkeypatch):
     src = _resolve_with_stats(monkeypatch, _stats(
         unknown_glyphs=8, unknown_ratio=0.20, band_glyphs=40))
     assert src.provenance == tabextract.PROV_GLYPHS_DEGRADED
+
+
+def test_a_rest_read_as_the_likelier_of_two_values_is_not_reported_as_read(monkeypatch):
+    """Maestro and Opus draw the half and the whole rest with ONE glyph, so a
+    rest whose position says neither (no detected staff lines to measure it
+    against, or an outline that could not be read) is read as the commoner of
+    the two. That is a twofold difference in one rest's duration, which is the
+    whole bar's arithmetic - so it caps what may be claimed about this staff
+    rather than sitting in the stats unread."""
+    src = _resolve_with_stats(monkeypatch, _stats(undecided_rests=1))
+    assert src.provenance == tabextract.PROV_GLYPHS_DEGRADED
+    assert src.uses_glyphs, "every other duration on the staff was still read"
+    assert "1 rest(s)" in src.detail
+    assert "read as a half rest" in src.detail
 
 
 def test_no_decoded_events_falls_back_with_the_font_reason(monkeypatch):
