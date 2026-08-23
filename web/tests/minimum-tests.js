@@ -109,7 +109,13 @@
 //
 // Raised deliberately, and every one of the 31 was shown to fail against a
 // mutation of the behaviour it claims - see the pull request.
-export const MINIMUM_TESTS = 236;
+//
+// Plus 2 for issue #119, in tests/browser/version.spec.js: the build
+// indicator is on screen with no interaction, and its text agrees with what
+// GET /api/version actually reports rather than a hand-copied string. Both
+// were shown to fail against a mutation of the behaviour they claim - hiding
+// the indicator, and breaking the endpoint - see the pull request.
+export const MINIMUM_TESTS = 238;
 
 export default class MinimumTests {
   constructor() {

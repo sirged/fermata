@@ -171,6 +171,8 @@ git pull
 docker compose up --build -d
 ```
 
+Check the build tag in the sidebar (or `GET /api/version`) before assuming an upgrade didn't take or reporting a bug for a feature you expect to see — a container that is still on the old image looks exactly like a missing feature, and this is the fastest way to tell the two apart.
+
 Fermata's database applies its own schema changes automatically on startup —
 new tables and columns an upgrade needs are created the first time the new
 version starts, and a change too large for that (rebuilding a table to carry
