@@ -368,12 +368,17 @@ def test_edit_format_is_read_off_the_content(content, expected):
 
 
 BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
-            "bars_padded", "bars_unread")
+            "bars_padded", "bars_unread", "notes_no_stem", "staves_no_stem")
 # Which bars, and how much silence - the figures that only exist as data. The
 # warning prose caps its bar list, and the profile document promises a consumer
 # that `inferred_rest_quarters` is the sum of the `<forward>` durations in the
 # file, so the application has to actually offer the number.
-BAR_DETAIL_KEYS = ("padded_bars", "unread_bars", "inferred_rest_quarters")
+#
+# `spacing_bars` / `degraded_bars` are here for the same reason: the staff
+# counts in the confidence string say how much of a score's rhythm was not read
+# from its glyphs, and only these say which of it.
+BAR_DETAIL_KEYS = ("padded_bars", "unread_bars", "inferred_rest_quarters",
+                   "spacing_bars", "degraded_bars")
 
 
 def test_bar_conformance_survives_a_reload(app_env, engraved, monkeypatch, insert_score):
@@ -419,6 +424,34 @@ def test_bar_conformance_survives_a_reload(app_env, engraved, monkeypatch, inser
     assert fetched["bars_defective"] <= fetched["bars_measured"]
     assert max(fetched["bars_overfull"], fetched["bars_short"]) <= fetched["bars_defective"]
     assert fetched["warnings"] == posted["warnings"]
+
+
+def test_which_bars_were_not_read_from_glyphs_survives_a_reload(
+        app_env, engraved, monkeypatch, insert_score):
+    """`bars_padded`'s round trip is asserted against a score where the figures
+    are non-zero, on purpose - all-zeros would have looked identical to a
+    persistence bug that dropped everything. The same has to hold for which
+    bars' durations came out of the gaps between noteheads rather than the
+    noteheads themselves, so this runs against a tab-only edition, where all
+    twelve bars did.
+
+    A staff count alone cannot answer "which of this is in question", and the
+    confidence string is where the staff counts live - so if these lists do not
+    survive the reload, every visit to the score after the extracting one is
+    back to being unable to say."""
+    pdf = engraved("tab_only")
+    monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    fetched = api.get_transcription(score_id)
+
+    assert posted["spacing_bars"] == list(range(1, 13))
+    assert fetched["spacing_bars"] == posted["spacing_bars"]
+    assert fetched["degraded_bars"] == []
+    assert fetched["notes_no_stem"] == 0, "no notation staff here to read a stem off"
+    assert fetched["staves_no_stem"] == 0
 
 
 def test_a_row_stored_before_the_bar_figures_reports_them_unrecorded(app_env, insert_score):

@@ -1180,6 +1180,26 @@ def test_a_rest_read_as_the_likelier_of_two_values_is_not_reported_as_read(monke
     assert "read as a half rest" in src.detail
 
 
+def test_a_notehead_whose_duration_was_floored_is_not_reported_as_read(monkeypatch):
+    """A filled notehead with no stem has no flag or beam to count, so it is
+    emitted at the longest value its head alone allows. That is a guess, and
+    one that always errs long, so it caps what may be claimed about the staff
+    the same way an unreadable rest does - rather than sitting in the stats
+    while the staff reports its rhythm as read from the glyphs."""
+    src = _resolve_with_stats(monkeypatch, _stats(no_stem_noteheads=3))
+    assert src.provenance == tabextract.PROV_GLYPHS_DEGRADED
+    assert src.uses_glyphs, "every notehead that did find its stem was still read"
+    assert "3 notehead(s)" in src.detail
+    assert "no stem" in src.detail
+
+
+def test_a_staff_whose_heads_all_found_a_stem_is_still_fully_read(monkeypatch):
+    """The gate must not fire on zero, or every staff in the library degrades
+    and the distinction it exists to draw is gone."""
+    src = _resolve_with_stats(monkeypatch, _stats(no_stem_noteheads=0))
+    assert src.provenance == tabextract.PROV_GLYPHS
+
+
 def test_no_decoded_events_falls_back_with_the_font_reason(monkeypatch):
     src = _resolve_with_stats(
         monkeypatch, _stats(font_warnings=["Opus is embedded with 'cff' outlines"]), notes=[])
@@ -1424,6 +1444,104 @@ def test_the_padded_bars_are_named_not_just_counted():
     quiet, _c = tabextract._rhythm_report(
         counts, {}, tabextract._BarConformance(0, 0, 0, 20))
     assert not any("deduced from the time signature" in w for w in quiet)
+
+
+def test_floored_durations_are_counted_and_disclosed_on_a_real_score(hymn_of_the_fayth_pdf):
+    """The end-to-end half of #115, and the reason it needs a real score.
+
+    Every notation staff in this file carries filled noteheads whose stems the
+    vector pass never sees, so their durations are floored at a quarter. That
+    state does not arise in anything engraved in this repository - MuseScore
+    draws every stem as a clean vector line and all twelve committed fixtures
+    report zero - so a test built only on those would have exercised a branch
+    no real input reaches, which is the mistake #108 shipped and had to have
+    removed.
+
+    The numbers are exact on purpose. A counter that fires on the wrong branch,
+    or one wired to the notehead count rather than to the stemless ones, still
+    produces a non-zero figure and a plausible-looking sentence."""
+    result = tabextract.extract(str(hymn_of_the_fayth_pdf))
+    assert result.notes_no_stem == 73
+    assert result.staves_no_stem == 4
+    # Every staff on the file is degraded by it, so nothing here can claim to
+    # have been read from the glyphs.
+    assert result.rhythm_provenance == {tabextract.PROV_GLYPHS_DEGRADED: 4}
+    assert not result.confidence["rhythm"].startswith("high")
+    # ...and it is SAID, not just counted. The interface loops over the warning
+    # strings; a field on its own reaches nobody.
+    said = [w for w in result.warnings if "no stem attached" in w]
+    assert len(said) == 1, result.warnings
+    assert "73 notehead(s) across 4 staff system(s)" in said[0]
+    # The per-staff reasons are surfaced too, and they name the mechanism
+    # rather than the symptom.
+    assert any("no stem this decoder could find" in w for w in result.warnings)
+
+
+def test_spacing_derived_rhythm_names_the_bars_it_produced():
+    """A count of staff systems says how much of a score's rhythm came out of
+    the gaps between noteheads instead of the noteheads. It does not say WHICH
+    music that was, so "treat those sections as low confidence" was an
+    instruction a reader had no way to follow - the padded-bars message names
+    its bars for exactly this reason, and this is the same fact about the same
+    score."""
+    counts = collections.Counter({tabextract.PROV_GLYPHS: 3, tabextract.PROV_SPACING: 2})
+    warnings, confidence = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 0, 0, 12),
+        prov_bars={tabextract.PROV_SPACING: [5, 6, 7, 11]})
+    said = [w for w in warnings if "rougher estimate from note spacing" in w]
+    assert len(said) == 1, warnings
+    assert "2 staff system(s) could not be read that way" in said[0]
+    assert "The bars they produced are: 5, 6, 7, 11." in said[0]
+    # ...and a score with any spacing-derived staff cannot present as read.
+    assert not confidence.startswith("high")
+
+
+def test_a_degraded_staff_names_its_bars_and_does_not_claim_one_cause():
+    """A degraded staff was read from the engraving with something on it left
+    unread, and the cause is no longer only an uncalibrated glyph - a notehead
+    with no stem lands here too. Naming one cause in the summary sentence
+    described the wrong problem for most of the staves it covered."""
+    counts = collections.Counter({tabextract.PROV_GLYPHS: 1,
+                                  tabextract.PROV_GLYPHS_DEGRADED: 2})
+    warnings, confidence = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 0, 0, 8),
+        prov_bars={tabextract.PROV_GLYPHS_DEGRADED: [3, 4]})
+    said = [w for w in warnings if "2 staff system(s) were read from the engraved" in w]
+    assert len(said) == 1, warnings
+    assert "no stem" in said[0]
+    assert "not been calibrated" in said[0]
+    assert "The bars they produced are: 3, 4." in said[0]
+    assert confidence.startswith("medium")
+
+
+def test_bar_numbers_are_not_invented_when_none_were_collected():
+    """Absent bar numbers must produce no sentence about bar numbers, rather
+    than an empty list that reads as "no bars were affected"."""
+    counts = collections.Counter({tabextract.PROV_GLYPHS: 3, tabextract.PROV_SPACING: 2})
+    warnings, _c = tabextract._rhythm_report(counts, {})
+    said = next(w for w in warnings if "rougher estimate from note spacing" in w)
+    assert "The bars they produced" not in said
+
+
+def test_floored_note_durations_are_said_out_loud_with_their_count():
+    """The interface consumes warnings as strings and loops over them, so prose
+    reaches a reader on its own; a count field does not. This count therefore
+    has to exist as a SENTENCE, and it has to be the number of notes - the
+    staff counts beside it cannot be turned back into it, because one stemless
+    notehead on a staff and forty of them read identically there."""
+    counts = collections.Counter({tabextract.PROV_GLYPHS_DEGRADED: 4})
+    warnings, _c = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 0, 0, 20),
+        no_stem_notes=37, no_stem_staves=4)
+    said = [w for w in warnings if "no stem attached" in w]
+    assert len(said) == 1, warnings
+    assert "37 notehead(s) across 4 staff system(s)" in said[0]
+    assert "plain quarter" in said[0]
+
+    # Nothing is said when every notehead found its stem.
+    quiet, _c = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 0, 0, 20))
+    assert not any("no stem attached" in w for w in quiet)
 
 
 def test_a_quarter_note_count_is_exact_not_rounded():

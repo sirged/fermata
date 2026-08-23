@@ -35,6 +35,14 @@ _FIXTURE_RELATIVE_PATHS = {
     # chord: the figure notehead-to-stem attachment gets wrong, and an Opus
     # engraving, so it also exercises the side bearing that only that font has.
     "dalza": "Classical/PrimoGuitar Misc/Dalza-Recercar-Guitar-2019.pdf",
+    # Filled noteheads whose stems the vector pass never sees, on every one of
+    # its notation staves. Nothing engraved in this repository reproduces that
+    # - MuseScore draws every stem as a clean vector line, so all twelve
+    # committed fixtures report zero - and it is the state that floors a
+    # notehead's duration at a quarter, so the counter for it needs a real
+    # score to be exercised on at all.
+    "hymn_of_the_fayth": (
+        "Patreon/John Oeth/Final Fantasy/FF X/Hymn of the Fayth (Final Fantasy X).pdf"),
 }
 
 # Skips for want of a library are COUNTED HERE as they happen, rather than
@@ -148,6 +156,15 @@ def dalza_pdf() -> Path:
     p = _fixture_path("dalza")
     if p is None:
         skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Dalza fixture)")
+    return p
+
+
+@pytest.fixture
+def hymn_of_the_fayth_pdf() -> Path:
+    p = _fixture_path("hymn_of_the_fayth")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Hymn of the Fayth' fixture)")
     return p
 
 

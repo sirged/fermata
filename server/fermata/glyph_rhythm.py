@@ -2087,7 +2087,10 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
     where a flag would attach - the shape of "this piece uses 32nd flags,
     grace notes or an articulation we never calibrated", which decodes as
     systematically wrong durations while looking perfectly healthy - and
-    undecided_rests counts rests whose value was guessed rather than read.
+    undecided_rests counts rests whose value was guessed rather than read,
+    and no_stem_noteheads counts filled noteheads that came out of the decode
+    with no stem at all, whose duration is therefore a floor rather than a
+    reading.
     """
     tol = _Tol(spacing if spacing else _spacing_from_lines(line_ys),
                staff_bottom - staff_top, staff_x1 - staff_x0)
@@ -2107,6 +2110,24 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         # the caller can say the durations on this staff were partly guessed
         # rather than read - see _resolve_rhythm_source.
         "undecided_rests": 0,
+        # Filled (or x / diamond) noteheads that reached the end of the decode
+        # with NO stem - neither a stem end near the head nor a stem passing
+        # through it. Such a head can be a quarter, an eighth, a sixteenth or
+        # shorter, and the flag or beam that would say which attaches to the
+        # stem that was not found, so nothing here can count one: the head is
+        # emitted at its unflagged floor value. The floor is the longest of
+        # the possible readings, so one of these reads LONG, never short, and
+        # takes its bar's arithmetic with it. Counted for the same reason
+        # undecided_rests is - so the caller can say the durations on this
+        # staff were partly floored rather than read (see
+        # tabextract._resolve_rhythm_source).
+        #
+        # A half or whole notehead is deliberately NOT counted here even
+        # though its stem can be missing just as easily: neither shape can
+        # carry a flag or a beam in any notation, so its value is fully
+        # determined by the head and a missing stem costs only the voice
+        # signal, not the duration.
+        "no_stem_noteheads": 0,
         "font_warnings": list(glyphs.warnings),
     }
     if not glyphs.events:
@@ -2153,9 +2174,13 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
     notes = []
     stems_by_key = {}
     undecided_rests = 0
+    no_stem_noteheads = 0
     for ev in staff_events:
         if ev.category in NOTEHEAD_CATS:
             stem = None
+            # Whether this head's DURATION depends on finding its stem. Set
+            # only for the quarter-or-shorter shapes; see no_stem_noteheads.
+            duration_needs_stem = False
             if ev.category == "notehead_whole":
                 # whole notes never take a stem, flag or beam by definition -
                 # don't even look for one (a nearby unrelated stem in a dense
@@ -2195,6 +2220,7 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
             else:
                 base = 1.0  # filled/x/diamond head: quarter-or-shorter
                 flags = 0
+                duration_needs_stem = True
                 ex0, ex1 = ev.stem_edges
                 stem = _best_stem(stems, stem_xs, ex0, ex1, ev.yc, tol)
                 if stem is not None:
@@ -2211,6 +2237,11 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
                 # pass one x gate and fail the other.
                 ex0, ex1 = ev.stem_edges
                 stem = _stem_through_notehead(stems, stem_xs, ex0, ex1, ev.yc, tol)
+                if stem is None and duration_needs_stem:
+                    # Both stem lookups came up empty on a head whose value
+                    # only its stem could have settled. `flags` is still 0 and
+                    # will stay 0, so this head goes out at its floor.
+                    no_stem_noteheads += 1
             key = None
             if stem is not None:
                 key = _stem_key(stem)
@@ -2289,6 +2320,7 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         "beam_segment_count": len(beams),
         "curve_count": len(curves),
         "undecided_rests": undecided_rests,
+        "no_stem_noteheads": no_stem_noteheads,
     })
     return notes, stats
 

@@ -1314,8 +1314,14 @@ def _transcription_row(conn, score_id: int):
 # holding silence that was deduced from the meter rather than read from the
 # page, or holding nothing that was read at all, is not the reading the other
 # figures make it look like, and neither is recoverable from them.
+#
+# `notes_no_stem` / `staves_no_stem` belong with them too. A filled notehead
+# whose stem the decoder never found has no flag or beam to count, so it was
+# emitted at the longest duration its notehead alone allows - a floor, not a
+# reading, and one that always errs long. That is the same kind of fact as a
+# padded bar and is recoverable from nothing else here.
 _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
-             "bars_padded", "bars_unread")
+             "bars_padded", "bars_unread", "notes_no_stem", "staves_no_stem")
 
 # WHICH bars those were, as data and not only inside the warning prose. The
 # prose names them, but it caps the list, and the profile document states that a
@@ -1323,7 +1329,13 @@ _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
 # `inferred_rest_quarters` - a claim the application has to actually make good
 # on. `padded_bars` / `unread_bars` are lists of bar numbers;
 # `inferred_rest_quarters` is a quarter-note count and can be fractional.
-_BAR_LIST_KEYS = ("padded_bars", "unread_bars")
+#
+# `spacing_bars` / `degraded_bars` are the same kind of list for the same
+# reason: which bars' durations came from the gaps between noteheads rather
+# than the noteheads, and which came off a staff something on it could not be
+# read. The staff counts in `rhythm_provenance` say how much; only these say
+# which, and a bar number is what a reader can carry back to the PDF.
+_BAR_LIST_KEYS = ("padded_bars", "unread_bars", "spacing_bars", "degraded_bars")
 _BAR_AMOUNT_KEYS = ("inferred_rest_quarters",)
 
 
@@ -1515,6 +1527,10 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             "padded_bars": result.padded_bars,
             "unread_bars": result.unread_bars,
             "inferred_rest_quarters": result.inferred_rest_quarters,
+            "notes_no_stem": result.notes_no_stem,
+            "staves_no_stem": result.staves_no_stem,
+            "spacing_bars": result.spacing_bars,
+            "degraded_bars": result.degraded_bars,
             "time_signature": list(result.time_signature) if result.time_signature else None,
             "time_signature_source": result.time_signature_source,
             "key_fifths": result.key_fifths,
