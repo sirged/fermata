@@ -48,10 +48,19 @@ const baseNote = (page) => page.locator(".metronome-base");
 const limitNote = (page) => page.locator(".metronome-limit");
 const playButton = (page) => page.locator(".player button.primary");
 
-// Halfway between METRONOME_TICK_HZ (950) and METRONOME_ACCENT_HZ (1500) in
-// metronome-engine.js - a threshold rather than an exact match, so this suite
-// is coupled only to "clearly the higher one".
+// ABOVE METRONOME_BEAT_HZ (1180) in metronome-engine.js - a threshold rather
+// than an exact match, so this suite is coupled only to "clearly the highest
+// of the three".
 const ACCENT_HZ_THRESHOLD = 1200;
+// Halfway between METRONOME_TICK_HZ (950) and METRONOME_BEAT_HZ (1180) -
+// "clearly the middle one, not the plain tick".
+const BEAT_HZ_THRESHOLD = 1065;
+
+/** The three-level name for a real oscillator frequency, read off the same
+ * two thresholds every test in this file uses. */
+function levelOf(frequency) {
+  return frequency > ACCENT_HZ_THRESHOLD ? "downbeat" : frequency > BEAT_HZ_THRESHOLD ? "beat" : "tick";
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -232,6 +241,111 @@ test("turning the accent off makes every real click identical, and turning it ba
     restored.some((s) => s.frequency > ACCENT_HZ_THRESHOLD),
     `frequencies: ${restored.map((s) => s.frequency).join(",")}`,
   ).toBe(true);
+});
+
+// -------------------------------------------- issue #121: a bar with no bar
+
+test("in 6/8 the bar is audible, not only the grouping - a third, distinct click marks where it starts", async ({
+  page,
+}) => {
+  await page.goto("/#/metronome");
+  await meterSelect(page).selectOption("6/8");
+  await bpmInput(page).fill("240");
+  await bpmInput(page).press("Tab");
+  await subdivisionSelect(page).selectOption("1");
+  await startButton(page).click();
+
+  // Two bars and one click over, so the third downbeat proves the pattern
+  // repeats rather than being a fluke of where the run happened to start -
+  // the standalone page always starts fresh at phase 0 (start() resets
+  // freeRunPhase), so this sequence is deterministic from the very first
+  // click.
+  const starts = await oscillatorStarts(page, 13);
+  const levels = starts.map((s) => levelOf(s.frequency));
+  expect(levels, `frequencies: ${starts.map((s) => s.frequency).join(",")}`).toEqual([
+    "downbeat", "tick", "tick", "beat", "tick", "tick",
+    "downbeat", "tick", "tick", "beat", "tick", "tick",
+    "downbeat",
+  ]);
+
+  // Stated directly on the real frequencies too, in the exact shape the
+  // issue's own report used: the downbeat (index 0) is higher than the beat
+  // (index 3), which is itself higher than a plain tick (index 1). Red today
+  // at the first inequality alone - phase 0 and phase 3 were byte-identical,
+  // both 1500 Hz.
+  expect(starts[0].frequency).toBeGreaterThan(starts[3].frequency);
+  expect(starts[3].frequency).toBeGreaterThan(starts[1].frequency);
+});
+
+test("compound meters of different lengths do not sound the same - 6/8 and 9/8 are not the same click stream wearing different labels", async ({
+  page,
+}) => {
+  await page.goto("/#/metronome");
+  await meterSelect(page).selectOption("6/8");
+  await bpmInput(page).fill("300");
+  await bpmInput(page).press("Tab");
+  await subdivisionSelect(page).selectOption("1");
+  await startButton(page).click();
+  const sixEight = (await oscillatorStarts(page, 25)).map((s) => levelOf(s.frequency));
+
+  await startButton(page).click(); // stop
+  await page.evaluate(() => window.__resetOscillatorStarts());
+  await meterSelect(page).selectOption("9/8");
+  await startButton(page).click(); // a fresh start - phase resets to the downbeat
+
+  const nineEight = (await oscillatorStarts(page, 25)).map((s) => levelOf(s.frequency));
+
+  // Red today for a reason no threshold constant can dodge: both meters
+  // produce the literal same level string - "downbeat, tick, tick, beat,
+  // tick, tick, ..." repeating - because there was nothing but the grouping
+  // to click, and the grouping repeats identically in every compound meter
+  // regardless of how many groups the bar actually holds. This is the
+  // sharpest of the three tests here: it cannot be satisfied by anything
+  // short of the bar itself becoming audible.
+  expect(nineEight, `6/8: ${sixEight.join(",")} / 9/8: ${nineEight.join(",")}`).not.toEqual(sixEight);
+});
+
+test("the subdivision option that names the eighth really clicks the eighth, not the sixteenth underneath it", async ({
+  page,
+}) => {
+  await page.goto("/#/metronome");
+  await meterSelect(page).selectOption("6/8");
+
+  // Read the picker's own option labels rather than assuming which numeric
+  // value carries "Eighths" - written against the OBSERVABLE (the label, and
+  // the rate it produces), not the mechanism, so this passes whichever way
+  // the label defect gets fixed: relabelling the rungs to match what they
+  // always clicked, or remapping the factors so "Eighths" becomes the
+  // meter's own ×1 in 6/8.
+  const options = await subdivisionSelect(page)
+    .locator("option")
+    .evaluateAll((opts) => opts.map((o) => ({ value: o.value, label: o.textContent })));
+  const eighths = options.find((o) => o.label === "Eighths");
+  expect(eighths, `options: ${JSON.stringify(options)}`).toBeTruthy();
+  await subdivisionSelect(page).selectOption(eighths.value);
+
+  await bpmInput(page).fill("100");
+  await bpmInput(page).press("Tab");
+  await startButton(page).click();
+
+  // Paired with the count below, so a relabel that leaves the audio
+  // untouched (the option renamed but still clicking sixteenths) cannot pass
+  // this: 6/8 read as eighths at box 100 has to measure ~100 clicks a
+  // minute, not the 200 the mislabelled "Eighths" used to produce.
+  const rate = await measuredRate(page, 6);
+  expect(rate, `measured ${rate}`).toBeGreaterThan(97);
+  expect(rate, `measured ${rate}`).toBeLessThan(103);
+
+  // And the count between downbeats has to be six - a bar of 6/8 clicked on
+  // the eighth, not twelve (sixteenths, what "Eighths" used to actually
+  // click) or eighteen (sixteenth triplets).
+  const starts = await oscillatorStarts(page, 13);
+  const downbeats = [];
+  starts.forEach((s, i) => {
+    if (levelOf(s.frequency) === "downbeat") downbeats.push(i);
+  });
+  expect(downbeats.length, `frequencies: ${starts.map((s) => s.frequency).join(",")}`).toBeGreaterThanOrEqual(2);
+  expect(downbeats[1] - downbeats[0], `downbeats at: ${downbeats.join(",")}`).toBe(6);
 });
 
 test("standing on its own, the metronome arrives at what it was last left at - the only context it has", async ({

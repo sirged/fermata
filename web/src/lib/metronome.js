@@ -141,6 +141,41 @@ export function metronomePattern(numerator, denominator) {
   };
 }
 
+/**
+ * Which of three sounds a click at `phase` gets: `"downbeat"` (the first
+ * click of the bar), `"beat"` (the start of a group inside the bar - the
+ * dotted-quarter pulse in a compound meter), or `"tick"` (everything else).
+ *
+ * `accentEvery` here is `metronomePattern`'s own, UN-multiplied by
+ * subdivision - this is the one place that multiplication happens, so a
+ * caller (metronome-engine.js's `resolve()`) hands over the pattern's raw
+ * grouping and the subdivision separately rather than pre-combining them.
+ *
+ * In a simple meter `accentEvery === clicksPerBar`, so the only phase
+ * satisfying the beat test is phase 0 - already claimed by the downbeat
+ * check above it - and this always answers `"tick"` for everything else.
+ * That is what keeps a simple meter down to two sounds: the beat tier exists
+ * only where a bar actually contains more than one group, which is
+ * precisely a compound meter's reason for having accentEvery lower than
+ * clicksPerBar in the first place.
+ *
+ * `clicksPerBar` is used only to validate `phase` against - a degenerate or
+ * out-of-range bar answers `"tick"` rather than propagating a bad modulus,
+ * the same defensive stance clickPhaseInBar takes for the same inputs.
+ */
+export function clickLevel(phase, clicksPerBar, accentEvery, subdivision) {
+  const cpb = Number(clicksPerBar);
+  const p = Number(phase);
+  if (!Number.isFinite(p) || !(cpb > 0)) return "tick";
+  const normalized = ((p % cpb) + cpb) % cpb;
+  if (normalized === 0) return "downbeat";
+  const ae = Number(accentEvery);
+  const sub = Number.isInteger(Number(subdivision)) && Number(subdivision) >= 1 ? Number(subdivision) : 1;
+  const beatEvery = Number.isFinite(ae) && ae > 0 ? ae * sub : 0;
+  if (beatEvery > 0 && normalized % beatEvery === 0) return "beat";
+  return "tick";
+}
+
 /** Seconds between one click and the next, at a click RATE already in clicks
  * per minute (see effectiveClickRate) - there is no meter or mode left to
  * convert here, which is deliberate: the rate handed in is already the

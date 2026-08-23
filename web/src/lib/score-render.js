@@ -1105,6 +1105,7 @@ export function createScoreView(host, opts = {}) {
   if (host) {
     delete host.dataset.metronomeClicks;
     delete host.dataset.metronomeAccent;
+    delete host.dataset.metronomeLevel;
     delete host.dataset.metronomeNumerator;
     delete host.dataset.metronomeDenominator;
     delete host.dataset.metronomePhase;
@@ -1114,10 +1115,16 @@ export function createScoreView(host, opts = {}) {
   // Reflects each scheduled click onto the host, the same way publish() below
   // reflects layout and theme - so a test can assert on a click that actually
   // happened rather than on a value this module only intended to produce.
-  function publishMetronomeClick(accent, numerator, denominator, phase) {
+  // `level` is "downbeat" | "beat" | "tick" (see clickLevel in metronome.js);
+  // `metronomeAccent` stays a plain boolean rather than being removed, so
+  // nothing already reading it as "was this click accented at all" changes
+  // meaning - it is just now `level !== "tick"` instead of the old two-level
+  // flag.
+  function publishMetronomeClick(level, numerator, denominator, phase) {
     if (!host) return;
     host.dataset.metronomeClicks = String((Number(host.dataset.metronomeClicks) || 0) + 1);
-    host.dataset.metronomeAccent = String(accent);
+    host.dataset.metronomeLevel = level;
+    host.dataset.metronomeAccent = String(level !== "tick");
     host.dataset.metronomeNumerator = String(numerator);
     host.dataset.metronomeDenominator = String(denominator);
     host.dataset.metronomePhase = String(phase);

@@ -44,11 +44,15 @@ const bpmInput = (page) => page.locator("input.metronome-bpm");
 const speedSelect = (page) => page.locator('select[title="Playback speed"]');
 const loopButton = (page) => page.locator('button:has-text("Loop")');
 const countInButton = (page) => page.locator('button:has-text("Count-in")');
-// Roughly halfway between METRONOME_TICK_HZ (950) and METRONOME_ACCENT_HZ
-// (1500) in score-render.js - a threshold rather than an exact match so this
-// suite is not coupled to the precise constants, only to "clearly the higher
-// one".
+// ABOVE METRONOME_BEAT_HZ (1180) in metronome-engine.js - a threshold rather
+// than an exact match so this suite is not coupled to the precise constants,
+// only to "clearly the highest of the three". Below this is the downbeat's
+// own tier; at or below it is the beat tier or the plain tick, told apart by
+// BEAT_HZ_THRESHOLD next.
 const ACCENT_HZ_THRESHOLD = 1200;
+// Halfway between METRONOME_TICK_HZ (950) and METRONOME_BEAT_HZ (1180) -
+// "clearly the middle one, not the plain tick".
+const BEAT_HZ_THRESHOLD = 1065;
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript((accentThreshold) => {
@@ -224,7 +228,7 @@ test("the live tempo shown is the actual click RATE - clicks per minute, matchin
   }
 });
 
-test("6/8 accents every third eighth, exactly where the real phase says it should - verified against the real oscillator frequency, not just the dataset flag reported alongside it", async ({
+test("6/8 sounds three distinct levels, exactly where the real phase says it should - verified against the real oscillator frequency, not just the dataset flag reported alongside it", async ({
   page,
 }) => {
   // Deliberately does not assume which phase slot the run happens to start
@@ -252,11 +256,18 @@ test("6/8 accents every third eighth, exactly where the real phase says it shoul
     expect(phases[i], `phases: ${phases.join(", ")}`).toBe((phases[i - 1] + 1) % 6);
   }
 
-  // The real oscillator frequency, not the dataset accent flag alongside
-  // it, has to agree with what the real phase says should be accented -
-  // every third slot (0, 3) starting from the downbeat.
-  const accents = starts.map((s) => s.frequency > ACCENT_HZ_THRESHOLD);
-  expect(accents).toEqual(phases.map((p) => p % 3 === 0));
+  // The real oscillator frequency, not the dataset accent flag alongside it,
+  // has to agree with what the real phase says the sound should be: the
+  // downbeat only at phase 0 (issue #121 - a bare "every third slot" accent
+  // left 6/8, 9/8 and 12/8 sounding identical, because phase 3 got the exact
+  // same click as phase 0), the beat tier at the other dotted-quarter pulse
+  // (phase 3), and a plain tick at the four phases that are neither.
+  const levels = starts.map((s) =>
+    s.frequency > ACCENT_HZ_THRESHOLD ? "downbeat" : s.frequency > BEAT_HZ_THRESHOLD ? "beat" : "tick",
+  );
+  expect(levels, `phases: ${phases.join(", ")}, frequencies: ${starts.map((s) => s.frequency).join(", ")}`).toEqual(
+    phases.map((p) => (p === 0 ? "downbeat" : p === 3 ? "beat" : "tick")),
+  );
 });
 
 test("fixed-BPM mode clicks the typed rate itself, in every meter - not a quarter-note tempo converted onto the meter's unit", async ({
