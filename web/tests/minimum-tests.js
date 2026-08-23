@@ -110,6 +110,12 @@
 // Raised deliberately, and every one of the 31 was shown to fail against a
 // mutation of the behaviour it claims - see the pull request.
 //
+// Plus 2 for issue #119, in tests/browser/version.spec.js: the build
+// indicator is on screen with no interaction, and its text agrees with what
+// GET /api/version actually reports rather than a hand-copied string. Both
+// were shown to fail against a mutation of the behaviour they claim - hiding
+// the indicator, and breaking the endpoint - see the pull request.
+//
 // Plus 13 for issue #106, in tests/browser/toolbar-responsive.spec.js: the
 // score toolbar hard-clipping below its ~869px intrinsic width, which on a
 // portrait tablet - 834 and 768 are ordinary widths for one, and the
@@ -154,7 +160,7 @@
 // guard behaviour - gig mode's HUD, and the toolbar above the wrap
 // breakpoint - that this fix was never meant to change, and a fix that
 // turned any of those red would itself be a regression.
-export const MINIMUM_TESTS = 249;
+export const MINIMUM_TESTS = 251;
 
 export default class MinimumTests {
   constructor() {
