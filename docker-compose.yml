@@ -1,6 +1,15 @@
 services:
   fermata:
-    build: .
+    build:
+      context: .
+      # See the Dockerfile's own comment. Both default to "dev" when nothing
+      # sets BUILD_COMMIT / BUILD_DATE in the environment `docker compose
+      # build` runs in, e.g.:
+      #   BUILD_COMMIT=$(git rev-parse --short HEAD) BUILD_DATE=$(date -u +%Y-%m-%d) \
+      #     docker compose up --build -d
+      args:
+        BUILD_COMMIT: ${BUILD_COMMIT:-dev}
+        BUILD_DATE: ${BUILD_DATE:-dev}
     container_name: fermata
     ports:
       - "8080:8080"

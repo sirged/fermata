@@ -139,5 +139,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Build args passed here so this job exercises the same path a real
+      # build would - GET /api/version reporting an actual commit and date
+      # rather than the "dev" fallback every other test run sees.
       - name: Build
-        run: docker build -t fermata:ci .
+        run: |
+          docker build \
+            --build-arg BUILD_COMMIT=$(git rev-parse --short HEAD) \
+            --build-arg BUILD_DATE=$(date -u +%Y-%m-%d) \
+            -t fermata:ci .

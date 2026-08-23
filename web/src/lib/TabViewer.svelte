@@ -441,9 +441,30 @@
     flex-direction: column;
   }
 
+  /* Below ~869px this row no longer fits in one line at all (issue #106):
+     on a portrait tablet - 834 and 768 are ordinary widths for one, and the
+     project's own stated primary form factor - the row used to hold its
+     width and let flex-shrink squeeze individual controls instead. That
+     shrinking hit `.seg` hardest, because `.seg` has its own overflow:hidden
+     for its rounded corners: shrunk below its buttons' combined width, the
+     buttons it couldn't show were not just squeezed, they were clipped away
+     entirely - present in the DOM, invisible, and unreachable by touch or
+     mouse alike. Narrower still (430px), the whole row stopped fitting even
+     after every control had shrunk as far as it could, and the toolbar
+     itself overflowed the page, taking Metronome/Count-in/Ladder off the
+     right edge with no scrollbar reachable by touch.
+
+     The fix is to never shrink a control at all and instead let the row
+     wrap - vertical space is what a tablet on a stand has to spare, reach
+     across a clipped or off-screen button is what it does not. `.player`
+     and `.practice` below get the same treatment, so the wrap cascades:
+     first the toolbar's own top-level groups, then the transport row's
+     controls, then the loop/metronome/count-in/ladder cluster - each only
+     drops to a new line once it, not something it contains, stops fitting. */
   .toolbar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 12px;
     padding: 10px 16px;
     border-bottom: 1px solid var(--line);
@@ -456,6 +477,21 @@
      whole point (see chooseTheme above). */
   .theme-picker {
     flex-shrink: 0;
+  }
+
+  /* Play, speed and Loop are what a player reaches for mid-piece (#106), so
+     below the width where anything has to move to a second line, this is
+     the row that stays first and whole - not the profile switch or the
+     theme picker, neither of which anyone reaches for while a piece is
+     running. flex-basis: 100% forces everything after it (`.seg`,
+     `.theme-picker`) onto a line of their own rather than sharing this one
+     and leaving less room for it to wrap internally in a sensible order. */
+  @media (max-width: 900px) {
+    .player {
+      order: -1;
+      flex-basis: 100%;
+      margin-left: 0;
+    }
   }
 
   .gig-hud {
@@ -508,16 +544,21 @@
   .player {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
     /* pushed to the far edge now that .toolbar no longer uses
        justify-content: space-between - the theme picker sits between it and
-       .seg instead of splitting the row in two */
+       .seg instead of splitting the row in two. Only holds at widths where
+       the whole row fits on one line - the narrow-width rule above resets
+       it, since a row forced flush left by wrapping has nothing to be
+       pushed away from. */
     margin-left: auto;
   }
 
   .practice {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 6px;
     padding-left: 8px;
     border-left: 1px solid var(--line);

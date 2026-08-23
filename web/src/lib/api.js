@@ -182,6 +182,7 @@ export const api = {
       body: JSON.stringify(body),
     }).then(j),
   deleteInstrument: (id) => fetch(`/api/instruments/${id}`, { method: "DELETE" }).then(j),
+  version: () => fetch("/api/version").then(j),
   settings: () => fetch("/api/settings").then(j),
   putSettings: (values) =>
     fetch("/api/settings", {
