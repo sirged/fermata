@@ -115,7 +115,52 @@
 // GET /api/version actually reports rather than a hand-copied string. Both
 // were shown to fail against a mutation of the behaviour they claim - hiding
 // the indicator, and breaking the endpoint - see the pull request.
-export const MINIMUM_TESTS = 238;
+//
+// Plus 13 for issue #106, in tests/browser/toolbar-responsive.spec.js: the
+// score toolbar hard-clipping below its ~869px intrinsic width, which on a
+// portrait tablet - 834 and 768 are ordinary widths for one, and the
+// project's own stated primary form factor - left some practice controls
+// unreachable with nothing on screen to say they existed.
+//
+// 10 check for zero clipping (and the page never growing a horizontal
+// scrollbar) at each of 1280/1024/834/768/430, in both the ordinary toolbar
+// and gig mode's HUD - checked separately because gig mode is the layout
+// most likely to be running on a stand, and it turned out unaffected by
+// this bug both before and after the fix, which is itself worth a standing
+// check rather than an assumption.
+//
+// 2 drive every control - the profile switch, theme picker, play, speed,
+// loop, metronome, count-in, ladder and its own follow-on inputs - with a
+// REAL click at 768 and 430, and not via Playwright's own `locator.click()`:
+// that method still fired a covered button's handler in a state where
+// `document.elementFromPoint()` at the button's own center resolved to a
+// different control sitting on top of it - confirmed by hand against the
+// pre-fix build, and exactly the gap a "does the element exist" assertion
+// would also have missed. Each of these two checks first that the point a
+// finger would land on really does hit the control before ever clicking it.
+//
+// 1 checks placement, not just presence: below the wrap breakpoint, the
+// transport row (Play/Speed/Loop - what a player reaches for mid-piece) has
+// to render above the profile switch and theme picker, not merely
+// somewhere on screen. This one is not a bare "which y is smaller" check -
+// pre-fix, `.seg` and `.player` sit in the very same unwrapped row, and
+// `align-items: center` alone put `.player`'s top a few pixels above
+// `.seg`'s alone (`.player` was simply the taller item that row, its own
+// "Count-in" button wrapped onto two lines) - a bare top-vs-top comparison
+// passed against the pre-fix layout for that wrong reason, which is exactly
+// the shape of test this project does not want. The assertion that
+// actually distinguishes "two separate rows" from "one row, uneven
+// heights" is that they must not vertically overlap at all.
+//
+// 6 of the 13 (the toolbar's own clipping checks at 834/768/430, both
+// reachability checks at 768/430, and the placement check) were each shown
+// to fail against the pre-fix layout - see the pull request. The other 7
+// (the toolbar's clipping checks at 1280/1024, and gig mode's clipping
+// check at all five widths) stay green throughout, deliberately: they
+// guard behaviour - gig mode's HUD, and the toolbar above the wrap
+// breakpoint - that this fix was never meant to change, and a fix that
+// turned any of those red would itself be a regression.
+export const MINIMUM_TESTS = 251;
 
 export default class MinimumTests {
   constructor() {
