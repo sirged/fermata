@@ -101,6 +101,38 @@ def emitted_bars(alphatex):
     return bars
 
 
+def emitted_meters(musicxml):
+    """The meter in force in each measure of the emitted MusicXML.
+
+    Read out of the canonical output rather than off the ExtractionResult,
+    because a consumer gets the meter of a measure from the file - a score
+    reporting one opening meter while its measures declare another is exactly
+    the failure this reads for."""
+    meters = []
+    current = None
+    for measure in ET.fromstring(musicxml).findall("./part/measure"):
+        time = measure.find("./attributes/time")
+        if time is not None:
+            current = (int(time.findtext("beats")), int(time.findtext("beat-type")))
+        meters.append(current)
+    return meters
+
+
+def source_meters(name):
+    """The same thing from the MusicXML the fixture was engraved FROM: the
+    meter each measure was asked for, meter by meter, as ground truth. An
+    invisible `<time>` counts - it is still the meter the music is in."""
+    meters = []
+    current = None
+    for measure in ET.parse(ENGRAVED_DIR / f"{name}.musicxml").getroot().findall(
+            "./part/measure"):
+        time = measure.find("./attributes/time")
+        if time is not None:
+            current = (int(time.findtext("beats")), int(time.findtext("beat-type")))
+        meters.append(current)
+    return meters
+
+
 TYPE_QUARTERS = {"whole": 4.0, "half": 2.0, "quarter": 1.0, "eighth": 0.5,
                  "16th": 0.25, "32nd": 0.125}
 
@@ -1184,6 +1216,112 @@ def test_a_rasterised_score_is_refused_as_a_scan(engraved):
 
 
 # ---------------------------------------------------------------------------
+# Reading the printed meter, and barring each bar in its own
+# ---------------------------------------------------------------------------
+
+
+def test_a_meter_behind_a_key_signature_is_still_read(engraved):
+    """Issue #90, first half. The clef, four sharps and the meter in a row
+    put the meter's digits about ten and a half staff spaces into the staff,
+    and a search window measured from the staff's left edge stopped at
+    eight-and-a-bit - so the printed meter was never looked at and the score
+    was barred as 4/4. This one is in 3/4, so that failure misplaces every
+    barline rather than landing on the right answer by luck."""
+    result = tabextract.extract(engraved("four_sharps_in_three_four"))
+    assert result.time_signature == (3, 4)
+    assert result.time_signature_source == "glyph-decoded"
+    assert result.confidence["time_signature"].startswith("high")
+    # the key signature it is engraved behind is read too, and from the same
+    # run of glyphs - the meter is what bounds it on the right
+    assert result.key_fifths == 4
+    assert result.key_signature_source == "glyph-decoded"
+    # and the score is BARRED in it: ground truth from the engraver's input
+    assert emitted_meters(result.musicxml) == source_meters("four_sharps_in_three_four")
+    assert (result.bars, result.bars_defective, result.bars_unread) == (8, 0, 0)
+    for bar in emitted_bars(result.alphatex):
+        for voice in bar:
+            assert sum(q for q, _n in voice) == 3.0, bar
+
+
+def test_a_meter_read_later_is_not_backdated_over_an_unread_opening(engraved):
+    """Issue #90, second half. This score's opening meter is engraved
+    invisibly and a 3/4 is printed part-way through, so exactly one meter can
+    be read - and the one that can is not the opening one.
+
+    Taking the first meter read anywhere as the opening meter reported this
+    score as 3/4 throughout, at "read directly from the time-signature digit
+    glyphs" confidence, over four bars written in 4/4 - and said nothing
+    about a meter change either, because one meter recorded is not a change.
+    """
+    result = tabextract.extract(engraved("hidden_opening_meter"))
+    # the 3/4 does not become the score's opening meter...
+    assert result.time_signature == (4, 4)
+    assert result.time_signature_source == "not detected (assumed 4/4)"
+    # ...and an assumed meter is not reported as a read one
+    assert result.confidence["time_signature"].startswith("low")
+    # the bars before it are barred as the assumed 4/4, the ones after it in
+    # the 3/4 that WAS read - which is what the source asked for, invisible
+    # opening `<time>` and all
+    assert emitted_meters(result.musicxml) == source_meters("hidden_opening_meter")
+    assert emitted_meters(result.musicxml) == [(4, 4)] * 4 + [(3, 4)] * 4
+    assert (result.bars, result.bars_defective) == (8, 0)
+    # both things a reader needs told: the opening was not read, and the
+    # meter changes part-way through
+    assert any("the meter printed at the start of this score was not read" in w
+               for w in result.warnings), result.warnings
+    assert any("changes time signature part-way through" in w
+               for w in result.warnings), result.warnings
+
+
+def test_a_meter_printed_part_way_along_a_system_starts_where_it_is_printed(engraved):
+    """Issue #104. The meter used to be resolved once per staff system, so a
+    change engraved part-way along one applied to the bars ahead of it as
+    well: they were measured against a length nobody wrote, and a voice
+    falling short of it was padded with silence towards a meter it was not in.
+
+    Every bar here adds up exactly to its own printed meter and the 2/4 bars
+    hold half what the 4/4 bars do, so a bar budgeted against its system's
+    meter instead of its own cannot come out conformant."""
+    result = tabextract.extract(engraved("mid_system_meter_change"))
+    assert result.time_signature == (4, 4)
+    assert emitted_meters(result.musicxml) == source_meters("mid_system_meter_change")
+    assert emitted_meters(result.musicxml) == [(4, 4)] * 2 + [(2, 4)] * 2 + [(4, 4)] * 4
+    # The change is inside the first system, not at the start of one - which
+    # is the whole point of the fixture, and would go unnoticed if a
+    # re-engraving moved the system break.
+    page = fitz.open(engraved("mid_system_meter_change"))[0]
+    staves, _ = tabextract._detect_staves(page)
+    tops = sorted(s.top for s in staves if s.kind == "standard")
+    changes = [entry for entry in tabextract._build_time_signature_timeline(
+        [(0, page, [s for s in staves if s.kind == "tab"],
+          [s for s in staves if s.kind == "standard"])])[0]
+        if entry[2] != tabextract._SYSTEM_START_X]
+    assert [entry[3] for entry in changes[:1]] == [(2, 4)]
+    assert changes[0][1] == tops[0], "read from the first system, not the second"
+    # nothing is measured against the wrong budget, so nothing is defective
+    # and nothing is padded towards a meter it is not in
+    assert (result.bars, result.bars_defective, result.bars_padded) == (8, 0, 0)
+    assert result.inferred_rest_quarters == 0
+    for bar, (num, den) in zip(emitted_bars(result.alphatex),
+                               emitted_meters(result.musicxml)):
+        for voice in bar:
+            assert sum(q for q, _n in voice) == num * 4.0 / den, bar
+
+
+@pytest.mark.parametrize("name", ("notation_and_tab", "rests_and_flags", "two_voices",
+                                  "tuplet_and_tie", "volta", "defective_bars"))
+def test_no_meter_change_is_invented_where_none_is_printed(name, engraved):
+    """The other direction, and the reason the mid-system reader only looks
+    just past a barline: the same digit glyphs spell tuplet numbers and
+    string numbers all over a staff, and a score in one meter from end to end
+    must stay in it. `tuplet_and_tie` prints a triplet number; `volta` prints
+    "1." and "2." over its endings."""
+    result = tabextract.extract(engraved(name))
+    assert set(emitted_meters(result.musicxml)) == {(4, 4)}, name
+    assert not any("changes time signature" in w for w in result.warnings), result.warnings
+
+
+# ---------------------------------------------------------------------------
 # The fixtures themselves
 # ---------------------------------------------------------------------------
 
@@ -1191,7 +1329,8 @@ def test_a_rasterised_score_is_refused_as_a_scan(engraved):
 ENGRAVED_NAMES = (
     "notation_and_tab", "rests_and_flags", "tab_only", "tab_only_short_last_system",
     "two_voices", "tuplet_and_tie", "drop_d", "defective_bars", "volta",
-    "harmonics_dense", "notation_only",
+    "harmonics_dense", "notation_only", "four_sharps_in_three_four",
+    "hidden_opening_meter", "mid_system_meter_change",
 )
 SYNTHESISED_NAMES = ("raster_scan", "fake_music_font")
 

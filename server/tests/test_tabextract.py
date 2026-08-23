@@ -1343,13 +1343,67 @@ def test_mid_score_meter_change_is_carried_into_the_transcription():
 
 
 def test_ts_timeline_lookup_uses_the_last_meter_printed_before_a_position():
-    timeline = [(0, 100.0, (4, 4)), (1, 200.0, (7, 8)), (3, 50.0, (4, 4))]
-    assert tabextract._ts_at(timeline, 0, 150.0) == (4, 4)
-    assert tabextract._ts_at(timeline, 1, 100.0) == (4, 4)   # before the change
-    assert tabextract._ts_at(timeline, 1, 250.0) == (7, 8)
-    assert tabextract._ts_at(timeline, 2, 999.0) == (7, 8)   # carried forward
-    assert tabextract._ts_at(timeline, 3, 60.0) == (4, 4)
-    assert tabextract._ts_at(timeline, 0, 10.0) is None      # before anything
+    start = tabextract._SYSTEM_START_X
+    timeline = [(0, 100.0, start, (4, 4)), (1, 200.0, start, (7, 8)),
+                (3, 50.0, start, (4, 4))]
+    assert tabextract._ts_at(timeline, 0, 150.0, 60.0) == (4, 4)
+    assert tabextract._ts_at(timeline, 1, 100.0, 60.0) == (4, 4)   # before the change
+    assert tabextract._ts_at(timeline, 1, 250.0, 60.0) == (7, 8)
+    assert tabextract._ts_at(timeline, 2, 999.0, 60.0) == (7, 8)   # carried forward
+    assert tabextract._ts_at(timeline, 3, 60.0, 60.0) == (4, 4)
+    assert tabextract._ts_at(timeline, 0, 10.0, 60.0) is None      # before anything
+    # A meter printed at the START of a system governs its first bar, whose
+    # left boundary is measured off the tab staff and can land left of the
+    # notation staff's own x0.
+    assert tabextract._ts_at(timeline, 0, 100.0, -1e6) == (4, 4)
+
+
+def test_a_meter_further_along_a_bar_is_not_a_meter_at_this_barline(mitsuha_pdf):
+    """What is offered as a barline is every vertical that spans the staff,
+    and on a notation staff most of those are stems. So the mid-system meter
+    reader is asked about positions a bar ahead of the meter it can see, and
+    a meter accepted at one of those starts a bar too early.
+
+    A meter is printed before the music it governs, which is the test: a
+    notehead between the position asked about and the digits proves the
+    digits belong to a later barline. This score is engraved densely enough
+    for that to happen - 10 of the library's 21,680 candidate positions, none
+    of them reproducible by the engraver the committed fixtures use.
+    """
+    page = fitz.open(mitsuha_pdf)[0]
+    staves, _ = tabextract._detect_staves(page)
+    std = sorted((s for s in staves if s.kind == "standard"), key=lambda s: s.top)[0]
+    vseg = tabextract._vertical_segments(page)
+    opening = std.x0 + std.spacing * glyph_rhythm.TS_LEAD_SPACINGS
+
+    refused, accepted = [], []
+    for bx in tabextract._detect_barlines(vseg, std):
+        if bx <= opening or bx >= std.x1 - std.spacing:
+            continue
+        ts, why = glyph_rhythm.decode_meter_after_barline(
+            page, std.top, std.bottom, bx, std.spacing)
+        if ts is not None:
+            accepted.append((bx, ts))
+        elif "behind a note or a rest" in why:
+            refused.append((bx, why))
+
+    assert refused, "this page has a stem within reading distance of a printed meter"
+    # Nothing is lost by refusing: the same meter is accepted at a position
+    # further right - the barline it was actually printed at.
+    for bx, _why in refused:
+        assert any(later > bx for later, _ts in accepted), (bx, accepted)
+
+
+def test_ts_timeline_lookup_is_per_bar_not_per_system():
+    """A meter printed part-way along a system governs the bars after it and
+    not the ones before it - the whole of issue #104."""
+    timeline = [(0, 100.0, tabextract._SYSTEM_START_X, (4, 4)),
+                (0, 100.0, 300.0, (3, 4))]
+    assert tabextract._ts_at(timeline, 0, 100.0, 80.0) == (4, 4)    # first bar
+    assert tabextract._ts_at(timeline, 0, 100.0, 299.0) == (4, 4)   # bar before it
+    assert tabextract._ts_at(timeline, 0, 100.0, 300.0) == (3, 4)   # the bar itself
+    assert tabextract._ts_at(timeline, 0, 100.0, 480.0) == (3, 4)   # after it
+    assert tabextract._ts_at(timeline, 1, 60.0, 80.0) == (3, 4)     # next page
 
 
 # ---------------------------------------------------------------------------

@@ -482,7 +482,14 @@ that needs it has to get it from the producer.
   downstream of that save**. The agreement between a producer's figures and an
   independent check holds for the file *as the producer wrote it*. Verify
   against that file, not against a round trip through an editor — see
-  [Checking a file](#checking-a-file).
+  [Checking a file](#checking-a-file). (The two absolute counts here were
+  measured before the printed meter could be read behind a key signature and
+  before each measure was budgeted against the meter in force at its own
+  position. On the same library the producer's own defective count is now
+  5,477, from 5,863; the round trip has not been re-measured since, so the
+  before-and-after pair above is left as it was taken rather than half
+  updated. What the paragraph is about — that the marking does not survive
+  the save — is unaffected either way.)
 
 **In the other direction.** Fermata also emits the same music as alphaTex for
 its transcription editor. That format has no editorial mechanism for this and

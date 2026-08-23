@@ -2483,27 +2483,109 @@ def _signature_from_window(window, mid):
     return ts, "stacked digit glyphs (multi-digit aware)"
 
 
+# How far into the staff a clef and the meter behind it reach when nothing is
+# engraved between them.
+TS_LEAD_SPACINGS = 8.8  # was a flat 45pt at the reference staff size
+# The furthest the search may reach even so. Seven accidentals plus the meter
+# fit inside this - it is the window decode_key_signature reads for the same
+# run of glyphs (_KEY_LEAD_SPACINGS).
+_TS_MAX_LEAD_SPACINGS = 20.0
+# How far past the last key-signature accidental the meter's own digits can
+# start. Measured on the library's four-sharp staves, the gap from the last
+# sharp's right edge to the numerator's left edge is about 1.6 staff spaces;
+# this is generous against that and is capped by the first note anyway.
+_TS_AFTER_ACCIDENTALS_SPACINGS = 4.0
+
+
 def decode_time_signature(page, staff_top, staff_bottom, staff_x0, spacing=None):
     """The time signature printed at the START of this staff, or (None, why).
 
-    Only the leading window is read. A meter change engraved mid-system is
-    not picked up here: the same digit glyphs also spell tuplet numbers and
-    other numerals across a staff, and scanning the full width traded a
-    known blind spot for confidently-wrong signatures. Changes engraved at a
-    system's start - which is where the sampled library's changes land - are
-    caught, because this runs per standard staff and tabextract carries the
-    results forward as a timeline (see _time_signature_timeline).
+    The window has to hold the clef, the KEY SIGNATURE and the meter, in that
+    order, and a flat distance from the staff's left edge cannot: three or
+    four accidentals push the digits past 8.8 staff spaces and the meter is
+    simply never looked at. Measured on the sampled library, that lost the
+    printed meter on 49 of 292 first pages - every one of them a score whose
+    key signature has three or more accidentals - and each of those scores was
+    then barred as 4/4 from end to end.
+
+    So the window ends at whichever comes first of: a fixed reach past the
+    last key-signature accidental, and the first thing on the staff that
+    SOUNDS. The second half is what makes widening safe rather than merely
+    wider. A meter is always engraved before the music it governs, so nothing
+    beyond the first notehead or rest can be one, and simply enlarging the
+    flat distance would instead start reading numerals out of the music -
+    a fingering, a tuplet number, a string number - and returning them as a
+    confident meter, which is a worse failure than the one being fixed.
+
+    Only the leading window is read. A meter change engraved part-way along a
+    system is read by decode_meter_after_barline, which has its own reasons
+    for being careful; tabextract carries both forward as a timeline (see
+    _build_time_signature_timeline).
     """
     tol = _Tol(spacing if spacing else (staff_bottom - staff_top) / 4.0)
     glyphs = extract_glyph_events(page)
     if not glyphs.events:
         return None, "no music glyphs found"
-    lead = tol.spacing * 8.8  # was a flat 45pt at the reference staff size
     mid = (staff_top + staff_bottom) / 2
+    band = [e for e in glyphs.events
+            if staff_top - tol.spacing <= e.yc <= staff_bottom + tol.spacing
+            and staff_x0 - tol.drawing_x_pad <= e.x0
+            <= staff_x0 + tol.spacing * _TS_MAX_LEAD_SPACINGS]
+    lead = staff_x0 + tol.spacing * TS_LEAD_SPACINGS
+    accidentals = [e for e in band if e.category in KEY_ACCIDENTAL_CATS]
+    if accidentals:
+        lead = max(lead, max(e.x1 for e in accidentals)
+                   + tol.spacing * _TS_AFTER_ACCIDENTALS_SPACINGS)
+    played = [e.x0 for e in band if e.category in NOTEHEAD_CATS or e.category in REST_CATS]
+    if played:
+        lead = min(lead, min(played))
+    return _signature_from_window([e for e in band if e.x0 <= lead], mid)
+
+
+# How far past a barline a meter change printed at it can start. It is the
+# first thing after the barline, so this is small on purpose - see
+# decode_meter_after_barline.
+_MID_SYSTEM_LEAD_SPACINGS = 5.0
+
+
+def decode_meter_after_barline(page, staff_top, staff_bottom, barline_x, spacing=None):
+    """The time signature printed immediately after a barline part-way along
+    this staff, or (None, why).
+
+    A meter change is engraved where it takes effect, and that can be a
+    barline in the middle of a system - the bars before it in the same system
+    are still in the previous meter. Reading it needs a window that is not the
+    staff's opening one; reading it safely needs the window to be short AND
+    the meter to be the first thing in it. The same digit glyphs spell tuplet
+    numbers, and the numerator/denominator overlap test on its own would
+    accept a pair of those in two voices as a meter. A meter is always printed
+    before the music it governs, so a notehead or rest to the left of the
+    candidate proves it is not one.
+    """
+    tol = _Tol(spacing if spacing else (staff_bottom - staff_top) / 4.0)
+    glyphs = extract_glyph_events(page)
+    if not glyphs.events:
+        return None, "no music glyphs found"
     window = [e for e in glyphs.events
               if staff_top - tol.spacing <= e.yc <= staff_bottom + tol.spacing
-              and staff_x0 - tol.drawing_x_pad <= e.x0 <= staff_x0 + lead]
-    return _signature_from_window(window, mid)
+              and barline_x < e.x0 <= barline_x + tol.spacing * _MID_SYSTEM_LEAD_SPACINGS]
+    if not window:
+        return None, "nothing is printed just after this barline"
+    mid = (staff_top + staff_bottom) / 2
+    ts, why = _signature_from_window(window, mid)
+    if ts is None:
+        return None, why
+    meter_x0, why_no_meter = _meter_left_edge(window, mid)
+    if meter_x0 is None:
+        return None, why_no_meter
+    played = [e.x0 for e in window
+              if e.category in NOTEHEAD_CATS or e.category in REST_CATS]
+    if played and min(played) < meter_x0:
+        return None, (
+            "digit glyphs just after this barline sit behind a note or a rest, so they are "
+            "not a meter printed at the barline"
+        )
+    return ts, why
 
 
 # ---------------------------------------------------------------------------
@@ -2515,10 +2597,10 @@ def decode_time_signature(page, staff_top, staff_bottom, staff_x0, spacing=None)
 # of one.
 KEY_ACCIDENTAL_CATS = {"sharp": 1, "flat": -1}
 # How far into the staff the clef + up to seven accidentals + the meter
-# reach. Wider than decode_time_signature's own lead window, because a
-# seven-accidental signature pushes the meter further right than the 8.8
-# spacings that window allows for.
-_KEY_LEAD_SPACINGS = 20.0
+# reach. The same reach decode_time_signature allows itself for the same run
+# of glyphs, and for the same reason: a seven-accidental signature pushes the
+# meter well past the 8.8 spacings a clef and a meter alone need.
+_KEY_LEAD_SPACINGS = _TS_MAX_LEAD_SPACINGS
 # A key signature holds at most seven accidentals (C flat major / C sharp
 # major). More than that in the leading window is not a key signature.
 _MAX_KEY_ACCIDENTALS = 7

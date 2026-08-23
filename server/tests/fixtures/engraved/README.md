@@ -44,6 +44,9 @@ gap this directory exists to close was created.
 | `volta` | a repeat with "1." / "2." ending brackets close under the staff |
 | `harmonics_dense` | two uncalibrated harmonic noteheads on a system dense enough that the unknown-glyph ratio cannot see them |
 | `notation_only` | standard notation with no tablature — refused, with the reason |
+| `four_sharps_in_three_four` | four sharps between the clef and the meter, pushing the meter's digits past the window a clef and a meter alone need — in 3/4, so failing to read it misplaces every barline |
+| `hidden_opening_meter` | an invisible opening `<time>` and a printed 3/4 later: the only meter that can be read is not the opening one |
+| `mid_system_meter_change` | a change to 2/4 engraved part-way along the first system, and back to 4/4 at the second — the bars ahead of a change are not in it |
 
 Two fixtures are **synthesised** rather than engraved, because no engraver
 produces them on purpose. The script builds both, and their `/Creator` says
@@ -78,6 +81,11 @@ looks like coverage and is not is worse than none:
   exactly; that geometry is covered by a synthetic page built inside
   `test_engraved_fixtures.py` instead, and the real examples are in the
   maintainer's library.
+- **Crowded engraving.** A system compressed enough that a stem lands within
+  reading distance of the next bar's printed meter — which is what makes a
+  mid-system meter change attributable to the wrong barline. This engraver
+  spaces the fixtures too generously for it; the shape lives in the
+  maintainer's library and is covered by a test that skips without one.
 - **Scale.** The library's reference score is 50 bars of real two-voice
   fingerstyle writing. The fixture with two voices is eight contrived bars,
   and a regression that only appears in density will still only appear

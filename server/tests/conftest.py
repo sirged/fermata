@@ -43,6 +43,11 @@ _FIXTURE_RELATIVE_PATHS = {
     # score to be exercised on at all.
     "hymn_of_the_fayth": (
         "Patreon/John Oeth/Final Fantasy/FF X/Hymn of the Fayth (Final Fantasy X).pdf"),
+    # Meter changes engraved part-way ALONG a system, over and over, on a
+    # system compressed enough that a stem lands within reading distance of
+    # the next meter's digits. Nothing engraved here reproduces that
+    # crowding - see test_a_meter_further_along_a_bar_is_not_a_meter_at_this_barline.
+    "mitsuha": "Patreon/John Oeth/Anime/Your Name/Theme of Mitsuha (Your Name.).pdf",
 }
 
 # Skips for want of a library are COUNTED HERE as they happen, rather than
@@ -165,6 +170,15 @@ def hymn_of_the_fayth_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing 'Hymn of the Fayth' fixture)")
+    return p
+
+
+@pytest.fixture
+def mitsuha_pdf() -> Path:
+    p = _fixture_path("mitsuha")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Theme of Mitsuha' fixture)")
     return p
 
 
