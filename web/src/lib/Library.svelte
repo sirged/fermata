@@ -15,6 +15,18 @@
   let uploadInput;
   let showDuplicates = $state(false);
   let duplicates = $state([]);
+  // Which build is actually running (issue #119) - fetched once, quietly, so
+  // a stale deployment is diagnosable at a glance instead of by guessing from
+  // which features seem to be missing. null until it arrives, which renders
+  // as nothing rather than a placeholder worth reading twice.
+  let buildInfo = $state(null);
+  const buildLabel = $derived(
+    buildInfo
+      ? buildInfo.commit === "dev"
+        ? `v${buildInfo.version} (dev)`
+        : `v${buildInfo.version} (${buildInfo.commit}, ${buildInfo.built})`
+      : "",
+  );
 
   const KINDS = [
     ["", "All"],
@@ -47,6 +59,10 @@
   $effect(() => {
     if (!showDuplicates) return;
     api.duplicates().then((d) => (duplicates = d));
+  });
+
+  $effect(() => {
+    api.version().then((v) => (buildInfo = v));
   });
 
   $effect(() => {
@@ -224,6 +240,12 @@
       <a class="demo-link" href="#/demo">Notation/tab demo →</a>
       <a class="demo-link" href="#/settings">⚙ Settings</a>
     </div>
+
+    {#if buildLabel}
+      <!-- Quiet and always on screen - no hover, this app's primary form
+           factor is a tablet with no pointer to hover with (issue #119). -->
+      <div class="build-tag" title="Fermata build">{buildLabel}</div>
+    {/if}
   </aside>
 
   <main>
@@ -476,6 +498,15 @@
 
   .demo-link:hover {
     color: var(--brass-bright);
+  }
+
+  .build-tag {
+    text-align: center;
+    font-size: 11px;
+    color: var(--ink-dim);
+    opacity: 0.65;
+    padding-top: 10px;
+    letter-spacing: 0.02em;
   }
 
   main {

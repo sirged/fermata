@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, StrictInt
 
 from . import instruments, practice, scanner
+from . import version as version_info
 from .config import FILE_TYPES, LIBRARY_DIR
 from .db import DEFAULT_OWNER, connect, tx, write_tx
 from .glyph_rhythm import VALID_TS_DENOMINATORS
@@ -134,6 +135,12 @@ def _with_tags(conn, rows):
 @router.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@router.get("/version")
+def get_version():
+    """What build is actually running - see fermata/version.py."""
+    return version_info.info()
 
 
 @router.get("/settings")
