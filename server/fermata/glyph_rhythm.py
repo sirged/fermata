@@ -175,9 +175,32 @@ MAESTRO_GID_MAP = {
     # Maestro-subset pages (Finale only embeds glyphs actually used, and no
     # sampled piece has a time signature needing '0'), so there is no real
     # outline to confirm a GID against - guessing one would violate this
-    # table's own "rendered and eyeballed" standard. A signature that would
-    # need digit0 correctly falls through to "not detected" (see
-    # decode_time_signature) rather than silently emitting a wrong value.
+    # table's own "rendered and eyeballed" standard. Unlike Opus's PUA names,
+    # a Maestro GID carries no naming rule to extrapolate from - it means
+    # only what one export pipeline's glyph order says it means - so there is
+    # no rule-derived fallback available here the way there is for Opus's
+    # missing digits above.
+    #
+    # THIS IS STILL AN OPEN GAP, not a safe default: a numerator or
+    # denominator that needs a '0' does not fall through to "not detected"
+    # the way an earlier version of this docstring claimed. The unmapped '0'
+    # glyph resolves to no category at all, so `_stacked_digit_pairs` simply
+    # never sees it - a Finale 10/8 loses its '0' the same way a Sibelius
+    # 12/8 used to lose its '1', and is returned as a confident (1, 8). Fixing
+    # that for real needs the decoder to refuse whenever an UNCATEGORISED
+    # glyph sits among the digits it did read, not another table entry - see
+    # issue #84 - and is out of scope for this table-filling change, so it is
+    # recorded here rather than silently left for the next reader to
+    # rediscover.
+    #
+    # flag32, rest16 and rest32 are likewise NOT mapped for Maestro: the same
+    # full-library GID rescan that turned up no evidence for digit0 also
+    # hashed every OTHER glyph ID any Maestro resource in the library fills
+    # (not only the ones already in this table) and found nine extra stable
+    # outlines - none of them a third flag hook or a second/third rest shape.
+    # No sampled Finale export in this library draws an unbeamed 32nd or a
+    # sixteenth/thirty-second rest, so there is nothing to confirm a GID
+    # against for any of the three.
     #
     # gid 174 (notehead_diamond, harmonics) is bucketed with notehead_filled
     # as of #115: `duration_needs_stem` is True for it, so an unfound stem
@@ -260,10 +283,29 @@ MAESTRO_FINGERPRINT_MIN_GLYPHS = 4
 # Sibelius "Opus" / "OpusSpecial" / "OpusText": keyed by glyph NAME (the PUA
 # label), stable across files even though GIDs are not (Opus subsets are
 # tightly per-file, unlike Maestro's fixed-size subset).
+#
+# THE DIGITS. Opus names its ten time-signature digits "uniF03X", where X is
+# the ASCII character for the digit itself (uniF032 is '2' -> 0x32, uniF038
+# is '8' -> 0x38, and so on) - a rule, not ten unrelated labels. Five of the
+# ten (2, 3, 4, 6, 8) were directly observed filled in real library Opus
+# subsets, which is what confirms the rule holds for this font rather than
+# being a guess about it. The other five (0, 1, 5, 7, 9) are filled in below
+# by the SAME rule rather than left absent: unlike a Maestro GID, which means
+# nothing outside the accident of one export pipeline's glyph order and so
+# can never be extrapolated, an Opus PUA name is the font's own fixed
+# labelling scheme, and a rule confirmed on five of ten instances of it is
+# sound to apply to the rest. A rescan of every Opus/OpusSpecial resource in
+# the library (281 files with a hit) found uniF030/031/035/037/039 filled in
+# none of them - no sampled Sibelius score prints a time signature needing a
+# 0, 1, 5, 7 or 9 - so these five are RULE-DERIVED, not directly observed;
+# say so if this table is ever re-justified from the library alone.
 OPUS_NAME_MAP = {
     "uniF023": "sharp", "uniF026": "clef", "uniF02E": "dot",
-    "uniF032": "digit2", "uniF033": "digit3", "uniF034": "digit4",
-    "uniF036": "digit6", "uniF038": "digit8", "uniF03E": "accent",
+    "uniF030": "digit0", "uniF031": "digit1", "uniF032": "digit2",
+    "uniF033": "digit3", "uniF034": "digit4", "uniF035": "digit5",
+    "uniF036": "digit6", "uniF037": "digit7", "uniF038": "digit8",
+    "uniF039": "digit9",
+    "uniF03E": "accent",
     "uniF043": "cut_time", "uniF04A": "flag8", "uniF055": "fermata",
     "uniF062": "flat", "uniF063": "common_time", "uniF065": "note_pictograph",
     "uniF068": "note_pictograph", "uniF06A": "note_pictograph",
@@ -273,6 +315,22 @@ OPUS_NAME_MAP = {
     "uniF0CE": "flag8_or_rest_quarter",  # disambiguated by stem proximity
     "uniF0CF": "notehead_filled", "uniF0DC": "notehead_x",
     "uniF0E4": "rest8", "uniF0EE": "rest_half_whole", "uniF0FA": "notehead_half",
+    # flag16 is NOT mapped: the same full-library rescan that justified the
+    # five rule-derived digits above also walked every uni-prefixed glyph
+    # name any Opus resource in the library actually fills (not only the
+    # names already in this table), and none of them is a second flag hook -
+    # every sampled Sibelius sixteenth is beamed. There is no numeric
+    # sibling of uniF04A ("flag8") the way there is for the digits, so this
+    # is not a rule extension, it is a guess, and guessing a PUA name risks
+    # colliding with some other real glyph's meaning. An unbeamed Sibelius
+    # sixteenth still falls through to the flagless default until either a
+    # library sample turns one up or Opus's flag-hook naming is confirmed
+    # some other way (see issue #84).
+    #
+    # rest16 and rest32 are NOT mapped for the same reason: the rescan found
+    # no Opus resource filling a second rest shape beyond the eighth
+    # rest/rest_half_whole/flag8_or_rest_quarter glyphs already listed above
+    # - no sampled Sibelius score prints a sixteenth or thirty-second rest.
 }
 OPUS_SPECIAL_NAME_MAP = {
     "uniF0AA": "dot", "uniF0DA": "tab_label", "uniF0A1": "tuplet_bracket",
