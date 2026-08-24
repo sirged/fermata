@@ -1222,18 +1222,23 @@ def test_a_dot_a_whole_space_from_every_note_belongs_to_none_of_them():
 def test_a_three_note_chord_gives_one_dot_to_each_notehead():
     """A three-note chord, geometry taken from "Courage" (Final Fantasy XVI)
     rather than invented: three half notes a third and a fourth apart, each
-    with its own raised dot. Ranking each dot against every note independently
-    let the middle note win two of them - one from its own space above, one
-    that was really the bottom note's, offered because the bottom note's own
-    tier for that same dot loses the ranking to the middle note's - leaving
-    the middle note double-dotted and the bottom note with none.
+    with its own raised dot. The middle note's own dot and the bottom note's
+    own dot are each unambiguous - only one note is close enough to fit
+    either. The TOP note's dot is not: it fits the top note itself (the space
+    BELOW it, deviation 0.0125 spaces) and it ALSO fits the middle note (the
+    space ABOVE it - the same physical space, since the two notes are a
+    third apart - deviation 0.0175 spaces) almost as well. Ranked in
+    isolation, "space above" outranks "space below" regardless of which fits
+    tighter, so this dot went to the middle note every time - leaving the
+    middle note double-dotted and the top note with none.
 
-    Fixed by refusing to let an owner already given a dot at one tier
-    supply a SECOND, different tier to another dot: once the bottom note's
-    only reachable dot is forced onto it by elimination (nothing else can
-    reach it), the middle note's ambiguous dot no longer has a competing
-    claim from an owner already spoken for, and settles on the middle note
-    by elimination too."""
+    Fixed by refusing to let an owner already given a dot at one tier supply
+    a SECOND, different tier to another dot: the middle note's OWN dot (the
+    space BELOW it, which the bottom note is too far away to reach) is
+    unambiguous and settles first, locking the middle note to "space below".
+    That disqualifies the middle note from the top note's ambiguous dot,
+    which would need "space above" from it instead, leaving the top note as
+    the only owner still able to take it."""
     tol = _tol(5.125)
     top = _dotted(250.07, x0=232.19)
     middle = _dotted(255.20, x0=232.19)

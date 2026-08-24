@@ -510,23 +510,26 @@ def fixture_mid_system_key_and_meter_change():
 def fixture_stacked_dotted_chord():
     """A three-note chord on one stem, every member an identical dotted half:
     E4, then a third up to G4 (both on lines, a third apart), then a second
-    further to A4. A4 sits close enough to G4 that MuseScore shifts its
+    further to A4. G4 sits close enough to A4 that MuseScore shifts G4's own
     notehead left of the shared stem column to keep the two from touching -
-    the same offset #112 describes - and that shift carries A4's dot glyph
-    out of this decoder's reach for the OTHER two notes' dots, which is what
-    turns "nearest notehead" into "wrong notehead" here: G4's own dot glyph
-    fits A4's expected offset too, and nearest-distance handed it to A4
-    outright, giving A4 two dots and G4 none.
+    the offset #112 describes - and that shift carries G4's own dot glyph
+    out of this decoder's x-reach entirely: no notehead is close enough to
+    it, on `main` or fixed.
 
-    A chord shares one duration for every member (MusicXML has no way to
-    write three different rhythms for notes struck together), so the whole
-    chord comes out at whichever dot count the worst-assigned member reaches:
-    double-dotted (3.5 quarters) on `main`, correctly single-dotted (3
-    quarters) once each dot is required to be the SAME relative position as
-    every other dot bound to its note rather than whichever is nearest. G4's
-    own dot glyph is left unassigned either way - it never was in reach of
-    the notehead it belongs to - which is the anomaly path in the same
-    fixture: reported rather than bound to A4 a second time."""
+    That is not, on its own, this issue's defect - it is a genuine, orphaned
+    dot. The defect is what "main" does with A4's OWN dot once G4's is
+    unreachable: nearest-distance has nothing else nearby to rank A4's dot
+    against, so A4 takes it, and separately takes the *next* dot along too
+    (the one at the offset A4's own tier ranking prefers) with no check that
+    A4 already has one. A4 ends up with two dots from two different relative
+    positions - not a real double dot, which is two ink marks at the SAME
+    position - and the chord reads as double-dotted (3.5 quarters) instead
+    of the 3 every member is actually written as, since a chord shares one
+    duration for all its members. Refusing to let an owner already given a
+    dot at one tier take a second, different tier leaves A4 with its own one
+    dot and reports G4's orphaned dot rather than inventing a home for it -
+    the anomaly path, exercised here by the same fixture rather than only a
+    synthetic one."""
     bar = _bar([note(("E", 4), "half", dots=1),
                 note(("G", 4), "half", dots=1, chord=True),
                 note(("A", 4), "half", dots=1, chord=True),

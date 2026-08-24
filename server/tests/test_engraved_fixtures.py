@@ -251,16 +251,23 @@ def test_a_stacked_chords_dot_does_not_bind_to_the_nearest_notehead(engraved):
     """A three-note chord, dotted half E4/G4/A4 (#89): G4 sits a second below
     A4, close enough that this engraver shifts G4's own notehead left of the
     shared stem to keep the two noteheads from touching - the offset #112
-    describes. That shift also carries G4's own dot glyph out of reach of
-    G4's notehead, so the ONLY dot glyph in G4's own reach binds it into an
-    ambiguous claim on A4's dot too: nearest-distance handed A4 both, so this
-    chord decoded as double-dotted (3.5 quarters) instead of the 3 quarters
-    every member is actually written as.
+    describes - and that shift carries G4's own dot glyph out of this
+    decoder's x-reach entirely. That is a genuine, orphaned dot on its own,
+    not this issue's defect.
+
+    The defect is what nearest-distance did to A4's OWN dot with G4's out of
+    the running: nothing else was near enough to rank it against, so A4 took
+    it, and separately took the next dot along too - two dots from two
+    different relative positions, which is not a real double dot (that is
+    two ink marks at the SAME position) - so this chord decoded as
+    double-dotted (3.5 quarters) instead of the 3 every member is actually
+    written as.
 
     Read directly off decode_note_events, before the beat model recombines
-    the chord's members - see glyph_rhythm._assign_dots and #89. G4's own dot
-    is a genuine anomaly rather than something to bind to A4 a second time:
-    it is reported (dots_unassigned), not invented onto the wrong note."""
+    the chord's members - see glyph_rhythm._assign_dots. Refusing to let an
+    owner already given a dot at one tier take a second, different tier
+    leaves A4 with its own one dot; G4's orphaned dot is reported
+    (dots_unassigned) rather than invented onto A4 a second time."""
     doc = fitz.open(engraved("stacked_dotted_chord"))
     page = doc[0]
     staff = next(s for s in tabextract._detect_staves(page)[0] if s.kind == "standard")
