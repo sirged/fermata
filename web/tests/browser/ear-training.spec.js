@@ -93,6 +93,52 @@ test.beforeEach(async ({ page, request }) => {
     }
   });
 
+  // Independent evidence that a sample actually left the synthesiser, not
+  // just that a note-on was handed to it. A soundfont with no voiceable
+  // presets accepts a note-on, runs to completion and reports success while
+  // rendering nothing but zeros - see the root-cause notes on issue #120 -
+  // so `data-sounded-count` moving is not proof anything was heard. This taps
+  // whatever node alphaTab connects to the audio destination (an
+  // AudioWorkletNode normally, a ScriptProcessorNode on the fallback path)
+  // with an AnalyserNode and tracks the largest sample magnitude seen on it.
+  // `--mute-audio` (this suite's own launch option) silences the OUTPUT
+  // DEVICE, not the graph, so this reads real amplitude either way.
+  await page.addInitScript(() => {
+    window.__audioPeak = 0;
+    const tap = (node, ctx) => {
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      node.connect(analyser);
+      const frame = new Float32Array(analyser.fftSize);
+      setInterval(() => {
+        analyser.getFloatTimeDomainData(frame);
+        for (const sample of frame) {
+          window.__audioPeak = Math.max(window.__audioPeak, Math.abs(sample));
+        }
+      }, 25);
+    };
+    const Worklet = window.AudioWorkletNode;
+    if (Worklet) {
+      window.AudioWorkletNode = class extends Worklet {
+        constructor(ctx, name, options) {
+          super(ctx, name, options);
+          tap(this, ctx);
+        }
+      };
+    }
+    // The fallback path when AudioWorklet is unavailable - same synth, same
+    // graph, a different node type doing the connecting.
+    for (const proto of [window.AudioContext?.prototype, window.OfflineAudioContext?.prototype]) {
+      if (!proto?.createScriptProcessor) continue;
+      const original = proto.createScriptProcessor;
+      proto.createScriptProcessor = function (...args) {
+        const node = original.apply(this, args);
+        tap(node, this);
+        return node;
+      };
+    }
+  });
+
   await page.goto("/#/ear-training");
   await expect(drill(page)).toBeVisible();
 });
@@ -631,4 +677,61 @@ test("a synthesiser that will not load says so rather than leaving a silent dril
   await expect(drill(page)).toHaveAttribute("data-sounded-count", "1", { timeout: 30_000 });
   await expect(choices(page)).toHaveCount(4);
   await expect(notices(page)).toHaveCount(0);
+});
+
+test("a sounded note is actually audible - not a note-on handed to a synth with nothing to voice it", async ({
+  page,
+}) => {
+  // The defect issue #120 is about: a soundfont with no voiceable presets
+  // takes a note-on, runs the sequencer to completion and reports success at
+  // every step, while the synthesiser renders nothing but zeros. Every other
+  // test in this file reads its answer off data-sounded-midi/-count, which
+  // is set from what playPitch resolved with - correct even in the silent
+  // case, because the number written into the note-on event is genuinely
+  // what was handed over. Only the audio-peak tap installed in beforeEach can
+  // tell the two apart: it lives downstream, on the node the synthesiser's
+  // samples actually flow through, and only a real sample can move it above
+  // zero.
+  await startDrill(page);
+  await expect
+    .poll(() => page.evaluate(() => window.__audioPeak), {
+      message: "expected a non-zero sample to have reached the audio graph",
+      timeout: 10_000,
+    })
+    .toBeGreaterThan(0.01);
+});
+
+test("the tab stays responsive through a sounding - a heartbeat kept ticking, before and after", async ({
+  page,
+}) => {
+  // From the freeze report on issue #120: the freeze itself never reproduced,
+  // and the positive evidence against it was a 50 ms heartbeat interval that
+  // kept advancing across a sounding, with evaluation answering in
+  // single-digit milliseconds throughout. This is that check, standing.
+  //
+  // Asserted FIRST and unconditionally: a backgrounded tab has its timers
+  // throttled to around 1 Hz by the browser itself, nothing this application
+  // does. Without ruling that out first, a heartbeat that genuinely advanced
+  // - just far slower than a healthy foreground tab - could read as a false
+  // failure of a page that was never frozen at all.
+  await expect
+    .poll(() => page.evaluate(() => document.visibilityState))
+    .toBe("visible");
+
+  await page.evaluate(() => {
+    window.__heartbeats = 0;
+    window.__heartbeatTimer = setInterval(() => {
+      window.__heartbeats += 1;
+    }, 50);
+  });
+
+  const before = await page.evaluate(() => window.__heartbeats);
+  await startDrill(page);
+  // Once more, across a SECOND sounding - "before and after a sounding" is
+  // what the investigation measured, not only before the first one.
+  await page.locator(".hear-again").click();
+  await expect(drill(page)).toHaveAttribute("data-sounded-count", "2", { timeout: 30_000 });
+  const after = await page.evaluate(() => window.__heartbeats);
+
+  expect(after, `heartbeats stalled: ${before} before, ${after} after`).toBeGreaterThan(before);
 });
