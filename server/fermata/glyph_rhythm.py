@@ -2636,6 +2636,25 @@ def decode_meter_after_barline(page, staff_top, staff_bottom, barline_x, staff_x
     denominator and time_signature_is_valid rejects it upstream.) A meter is
     always printed before the music it governs, so a notehead or rest to the
     left of the candidate proves the digits found are not one.
+
+    That guard is blind on the UP-STEM side: what `_detect_barlines` offers as
+    a candidate position is often not a barline at all but a stem, and an
+    up-stem attaches at its own notehead's RIGHT edge, so the notehead that
+    owns the stem sits to the LEFT of the candidate x - outside the window
+    this function ever looks at (`barline_x < e.x0`, strictly right). A stem
+    mistaken for a barline is therefore never caught by its own note.
+
+    Measured rather than extended on a guess: across the library, 152 of
+    21,680 candidate positions are accepted as a meter, and 23 of those 152
+    have a notehead within one staff spacing to the LEFT of the candidate.
+    That is not 23 hazards - it is what a REAL barline looks like too, since
+    the previous bar's last note routinely ends close to the barline that
+    follows it. Proximity on the left does not distinguish "this candidate is
+    that note's own stem" from "this candidate is a genuine barline with an
+    ordinary note before it", so a look-back guard built on it would refuse
+    correct meters about as often as it caught wrong ones. Left undone for
+    that reason rather than fixed; a real fix needs a way to tell a stem from
+    a barline that does not yet exist at this layer.
     """
     tol = _Tol(spacing if spacing else (staff_bottom - staff_top) / 4.0)
     glyphs = extract_glyph_events(page)

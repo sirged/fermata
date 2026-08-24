@@ -1534,6 +1534,40 @@ def test_ts_timeline_lookup_is_per_bar_not_per_system():
     assert tabextract._ts_at(timeline, 1, 60.0, 80.0) == (3, 4)     # next page
 
 
+def test_ts_at_sorts_an_unsorted_timeline_before_reading_it():
+    """_ts_at's own reading depends on the timeline being in (page, y, x)
+    order - the loop stops at the first entry it finds "later" than the
+    query, so one entry out of order can hide a genuinely earlier one that
+    comes after it in the list. Fed out of order on purpose here; the answer
+    must be the same as for the correctly-ordered timeline in the previous
+    test, not "whatever the input order happened to produce"."""
+    unsorted_timeline = [(0, 100.0, 300.0, (3, 4)),
+                          (0, 100.0, tabextract._SYSTEM_START_X, (4, 4))]
+    assert tabextract._ts_at(unsorted_timeline, 0, 100.0, 80.0) == (4, 4)
+    assert tabextract._ts_at(unsorted_timeline, 0, 100.0, 300.0) == (3, 4)
+
+
+def test_ts_at_anchor_must_match_a_recorded_system_top_exactly():
+    """A documented hazard, not a fixed one (see _ts_at's docstring): an
+    anchor `y` even a hair GREATER than the system's own recorded top makes
+    the 3-tuple comparison decide on `y` alone, before `x` is ever looked
+    at, and every entry in that system compares as "at or before" the query
+    regardless of its own x. A bar asking about its own early position gets
+    back the system's LAST meter instead.
+
+    This is exactly the shape of the `anchor_y` fallback in `_extract`: a
+    tab staff with no paired notation staff anchors on its OWN top, which is
+    not guaranteed to equal any notation system's recorded y."""
+    timeline = [(0, 100.0, tabextract._SYSTEM_START_X, (4, 4)),
+                (0, 100.0, 300.0, (3, 4))]
+    # The correctly-anchored reading: the first bar (x=80) is still in the
+    # opening meter, matching test_ts_timeline_lookup_is_per_bar_not_per_system.
+    assert tabextract._ts_at(timeline, 0, 100.0, 80.0) == (4, 4)
+    # A hair-high anchor collapses that distinction: x=80 now reads back the
+    # system's LAST meter, not its first.
+    assert tabextract._ts_at(timeline, 0, 100.0 + 1e-9, 80.0) == (3, 4)
+
+
 # ---------------------------------------------------------------------------
 # Fingerprint rejection, end to end (finding 1)
 # ---------------------------------------------------------------------------

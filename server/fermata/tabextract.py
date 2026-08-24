@@ -2375,9 +2375,33 @@ def _ts_at(timeline, page_idx, y, x):
     change engraved part-way along a system governs the bars after it and not
     the ones before it, and asking this about the system's position instead
     of the bar's applied it to the whole system (issue #104).
+
+    PRECONDITION: `timeline` must already be in (page, y, x) order - the same
+    order _build_time_signature_timeline emits it in. Sorted here defensively
+    rather than trusted, since silently reading an unsorted timeline in
+    document order does not raise, it just answers wrong: the loop below
+    stops at the first entry it finds "later" than the query, so one
+    out-of-order entry hides everything genuinely at-or-before the query that
+    comes after it in the list.
+
+    A second, sharper hazard sits in the lexicographic comparison itself even
+    on a correctly-sorted timeline: `y` is expected to equal EXACTLY the top
+    of the system the query's bar belongs to - the same value the matching
+    timeline entries were recorded with - because comparing 3-tuples degrades
+    to comparing `entry_y` against `y` ALONE whenever they differ, deciding
+    the whole comparison without ever looking at `x`. A `y` that is even a
+    hair GREATER than the true system top (the `anchor_y` fallback in
+    `_extract` uses a tab staff's own top when it has no paired notation
+    staff, which is not guaranteed to equal any recorded system's y) makes
+    every entry in that system compare as "at or before" regardless of `x`,
+    silently returning that system's LAST meter for a bar that asked about
+    its first. `y` a hair SMALLER fails safe instead, refusing that whole
+    system's entries and falling back to whatever caller-provided default
+    the caller falls back to - wrong, but not silently wrong in the way that
+    matters here.
     """
     best = None
-    for entry_page, entry_y, entry_x, ts in timeline:
+    for entry_page, entry_y, entry_x, ts in sorted(timeline):
         if (entry_page, entry_y, entry_x) <= (page_idx, y, x):
             best = ts
         else:
