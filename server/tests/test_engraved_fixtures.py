@@ -1308,6 +1308,24 @@ def test_a_meter_printed_part_way_along_a_system_starts_where_it_is_printed(engr
             assert sum(q for q, _n in voice) == num * 4.0 / den, bar
 
 
+def test_a_key_change_at_the_same_mid_system_barline_does_not_hide_the_meter(engraved):
+    """The mid-system counterpart of test_a_meter_behind_a_key_signature_is_still_read
+    (issue #90's window defect, again): four sharps printed right after a
+    barline push the numerator's own left edge to 5.77 staff spaces past that
+    barline, past the flat 5.0-space reach a mid-system reader sized only for
+    "nothing between the barline and the meter" used to allow - so the
+    printed 3/4 was dropped and the bars after it kept the previous 4/4
+    budget."""
+    result = tabextract.extract(engraved("mid_system_key_and_meter_change"))
+    assert emitted_meters(result.musicxml) == source_meters("mid_system_key_and_meter_change")
+    assert emitted_meters(result.musicxml) == [(4, 4)] * 2 + [(3, 4)] * 6
+    assert (result.bars, result.bars_defective) == (8, 0)
+    for bar, (num, den) in zip(emitted_bars(result.alphatex),
+                               emitted_meters(result.musicxml)):
+        for voice in bar:
+            assert sum(q for q, _n in voice) == num * 4.0 / den, bar
+
+
 @pytest.mark.parametrize("name", ("notation_and_tab", "rests_and_flags", "two_voices",
                                   "tuplet_and_tie", "volta", "defective_bars"))
 def test_no_meter_change_is_invented_where_none_is_printed(name, engraved):
@@ -1330,7 +1348,7 @@ ENGRAVED_NAMES = (
     "notation_and_tab", "rests_and_flags", "tab_only", "tab_only_short_last_system",
     "two_voices", "tuplet_and_tie", "drop_d", "defective_bars", "volta",
     "harmonics_dense", "notation_only", "four_sharps_in_three_four",
-    "hidden_opening_meter", "mid_system_meter_change",
+    "hidden_opening_meter", "mid_system_meter_change", "mid_system_key_and_meter_change",
 )
 SYNTHESISED_NAMES = ("raster_scan", "fake_music_font")
 

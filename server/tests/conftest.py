@@ -48,6 +48,21 @@ _FIXTURE_RELATIVE_PATHS = {
     # the next meter's digits. Nothing engraved here reproduces that
     # crowding - see test_a_meter_further_along_a_bar_is_not_a_meter_at_this_barline.
     "mitsuha": "Patreon/John Oeth/Anime/Your Name/Theme of Mitsuha (Your Name.).pdf",
+    # A meter change printed part-way along a system, behind a key change at
+    # the SAME barline: three flats push the numerator's left edge to 6.18
+    # staff spaces past the barline, past the flat reach a mid-system reader
+    # sized only for "nothing between the barline and the meter" allows.
+    # Nothing engraved here carries a key change at a mid-system barline at
+    # all - see test_a_key_change_at_a_mid_system_barline_does_not_hide_the_meter.
+    "wild_arms": "Patreon/John Oeth/Wild Arms/Into the Wilderness (Wild Arms).pdf",
+    # A courtesy time signature - the key and meter for the NEXT system,
+    # printed as the last thing on THIS one - behind four sharps, about 7
+    # staff spaces past the system's own last barline. Widening the
+    # mid-system window enough to read a key change at a barline (see
+    # `wild_arms` above) also brings this within reach, and reading it there
+    # would start the change a system early - see
+    # test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early.
+    "kaine_salvation": "Patreon/John Oeth/NieR/Kaine Salvation (NieR).pdf",
 }
 
 # Skips for want of a library are COUNTED HERE as they happen, rather than
@@ -179,6 +194,24 @@ def mitsuha_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing 'Theme of Mitsuha' fixture)")
+    return p
+
+
+@pytest.fixture
+def wild_arms_pdf() -> Path:
+    p = _fixture_path("wild_arms")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Into the Wilderness' fixture)")
+    return p
+
+
+@pytest.fixture
+def kaine_salvation_pdf() -> Path:
+    p = _fixture_path("kaine_salvation")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Kaine Salvation' fixture)")
     return p
 
 

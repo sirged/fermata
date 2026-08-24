@@ -461,11 +461,36 @@ def fixture_mid_system_meter_change():
     return score("Guitar", measures)
 
 
+def fixture_mid_system_key_and_meter_change():
+    """A meter change engraved at the SAME barline as a key change, part-way
+    along a system - the mid-system counterpart of
+    fixture_four_sharps_in_three_four.
+
+    Four sharps printed right after the barline push the numerator's own
+    left edge out exactly as they do at a staff's own start: a mid-system
+    reader sized only for "nothing between the barline and the meter" drops
+    this the same way the opening reader used to drop a key-signature-fronted
+    meter (issue #90). The change is to 3/4 so a bar barred in the wrong
+    meter is visible in the conformance figures rather than landing on the
+    right answer by luck, and every bar adds up exactly to its own printed
+    meter."""
+    four = _bar([note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+                 note(("G", 4), "quarter"), note(("A", 4), "quarter")], 4.0)
+    three = _bar([note(("F", 4, 1), "quarter"), note(("G", 4, 1), "quarter"),
+                  note(("A", 4), "quarter")], 3.0)
+    to_three_sharps = ("<attributes><key><fifths>4</fifths></key>"
+                        + time_signature((3, 4)) + "</attributes>")
+    measures = [attributes() + four, four, to_three_sharps + three,
+                three, three, three, three, three]
+    return score("Guitar", measures)
+
+
 FIXTURES = {
     "notation_and_tab": fixture_notation_and_tab,
     "four_sharps_in_three_four": fixture_four_sharps_in_three_four,
     "hidden_opening_meter": fixture_hidden_opening_meter,
     "mid_system_meter_change": fixture_mid_system_meter_change,
+    "mid_system_key_and_meter_change": fixture_mid_system_key_and_meter_change,
     "rests_and_flags": fixture_rests_and_flags,
     "tab_only": fixture_tab_only,
     "tab_only_short_last_system": fixture_tab_only_short_last_system,

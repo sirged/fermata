@@ -14,6 +14,22 @@ from fermata import musicxml
 from fermata import tabextract
 
 
+def emitted_meters(musicxml_text):
+    """The meter in force in each measure of emitted MusicXML - read out of
+    the canonical output rather than off the ExtractionResult, because a
+    consumer gets the meter of a measure from the file (see the identical
+    helper in test_engraved_fixtures.py)."""
+    import xml.etree.ElementTree as ET
+    meters = []
+    current = None
+    for measure in ET.fromstring(musicxml_text).findall("./part/measure"):
+        time = measure.find("./attributes/time")
+        if time is not None:
+            current = (int(time.findtext("beats")), int(time.findtext("beat-type")))
+        meters.append(current)
+    return meters
+
+
 def _parse_with_alphatab(tex: str) -> dict:
     """Parse `tex` with the real alphaTab JS importer the web player uses -
     not a Python re-implementation of alphaTex's grammar - via
@@ -1369,29 +1385,111 @@ def test_a_meter_further_along_a_bar_is_not_a_meter_at_this_barline(mitsuha_pdf)
     digits belong to a later barline. This score is engraved densely enough
     for that to happen - 10 of the library's 21,680 candidate positions, none
     of them reproducible by the engraver the committed fixtures use.
+
+    Three things are checked for each refusal, not only that it happened: the
+    exact meter its own window would have read with the guard bypassed (the
+    value being refused, not merely a refusal), that the NEAREST accepted
+    candidate to its right - not just some later one - reads a meter at all,
+    and that it is the SAME meter. That is what proves the refusal loses
+    nothing: the digits belong to the barline actually printed just after
+    them, one bar later, and reading them there gives the identical answer.
+
+    Refusals from the end-of-system guard are excluded here on purpose - a
+    courtesy signature is not recovered at a nearby LATER barline candidate
+    the way a stem hazard is; it is recovered at the NEXT system's own
+    opening, which is a different reader entirely and has its own coverage
+    (see test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early).
     """
     page = fitz.open(mitsuha_pdf)[0]
     staves, _ = tabextract._detect_staves(page)
     std = sorted((s for s in staves if s.kind == "standard"), key=lambda s: s.top)[0]
     vseg = tabextract._vertical_segments(page)
     opening = std.x0 + std.spacing * glyph_rhythm.TS_LEAD_SPACINGS
+    tol = glyph_rhythm._Tol(std.spacing)
+    glyphs = glyph_rhythm.extract_glyph_events(page)
+    mid = (std.top + std.bottom) / 2
 
     refused, accepted = [], []
     for bx in tabextract._detect_barlines(vseg, std):
         if bx <= opening or bx >= std.x1 - std.spacing:
             continue
         ts, why = glyph_rhythm.decode_meter_after_barline(
-            page, std.top, std.bottom, bx, std.spacing)
+            page, std.top, std.bottom, bx, std.x1, std.spacing)
         if ts is not None:
             accepted.append((bx, ts))
-        elif "behind a note or a rest" in why:
+        elif "courtesy signature" not in why:
             refused.append((bx, why))
 
     assert refused, "this page has a stem within reading distance of a printed meter"
-    # Nothing is lost by refusing: the same meter is accepted at a position
-    # further right - the barline it was actually printed at.
     for bx, _why in refused:
-        assert any(later > bx for later, _ts in accepted), (bx, accepted)
+        # The value the guard is refusing: the same window, read without the
+        # notehead-or-rest check (or the clamp that pre-empts it) that
+        # decode_meter_after_barline applies.
+        window = [e for e in glyphs.events
+                  if std.top - tol.spacing <= e.yc <= std.bottom + tol.spacing
+                  and bx < e.x0
+                  <= bx + tol.spacing * glyph_rhythm._MID_SYSTEM_MAX_LEAD_SPACINGS]
+        refused_ts, why_no_ts = glyph_rhythm._signature_from_window(window, mid)
+        assert refused_ts is not None, (bx, "nothing for the guard to be refusing", why_no_ts)
+
+        later = sorted((x, t) for x, t in accepted if x > bx)
+        assert later, (bx, "nothing accepted after this refused position")
+        nearest_x, nearest_ts = later[0]
+        assert nearest_ts == refused_ts, (
+            bx, refused_ts, "nearest accepted position", nearest_x, nearest_ts)
+
+
+def test_a_key_change_at_a_mid_system_barline_does_not_hide_the_meter(wild_arms_pdf):
+    """Issue #90's window defect, again, but for a meter change printed
+    part-way ALONG a system instead of at its start: three flats behind the
+    barline push the numerator's left edge to 6.18 staff spaces past it, past
+    the flat 5.0-space reach the mid-system reader used to allow, so the
+    printed 6/4 was dropped and bars 27-28 were barred in whatever meter
+    carried over instead.
+
+    `emitted_meters` reads the sequence back out of the emitted MusicXML, not
+    off the ExtractionResult, so a consumer's own view of the file is what is
+    being checked."""
+    result = tabextract.extract(wild_arms_pdf)
+    meters = emitted_meters(result.musicxml)
+    assert meters == [(4, 4)] * 25 + [(2, 4)] * 1 + [(6, 4)] * 2 + [(4, 4)] * 23
+    assert any("changes time signature part-way through" in w for w in result.warnings), (
+        result.warnings)
+
+
+def test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early(kaine_salvation_pdf):
+    """The shape that forbids naive widening: a courtesy 6/8 is printed
+    behind four sharps at the end of a system, about 7 staff spaces past that
+    system's LAST barline, to preview the meter the NEXT system opens in. It
+    is well within reach of the accidental-anchored window a key change at a
+    mid-system barline needs (see the previous test) - reading it AT that
+    barline would start the 6/8 a whole system early.
+
+    The real 6/8 is still read correctly: at the NEXT system's own opening,
+    by decode_time_signature, which is a different reader with no
+    end-of-system guard to apply (there is no "later system" for an opening
+    meter to be mistaken for). So the fix here is checked both ways: the
+    courtesy signature produces no premature mid-system entry, AND the
+    timeline still carries exactly one real change, to (6, 8), at a system's
+    own start."""
+    page = fitz.open(kaine_salvation_pdf)[0]
+    staves, _ = tabextract._detect_staves(page)
+    stds = sorted((s for s in staves if s.kind == "standard"), key=lambda s: s.top)
+    vseg = tabextract._vertical_segments(page)
+    # The system carrying the courtesy signature, verified once by inspecting
+    # the page directly: its own opening meter is 3/4, and the courtesy
+    # signature behind four sharps sits near its right edge.
+    courtesy_staff = stds[0]
+    for x, ts in tabextract._mid_system_meters(page, courtesy_staff, vseg):
+        assert ts != (6, 8), (
+            "the courtesy signature at the end of this system was read as a change here", x)
+
+    result = tabextract.extract(kaine_salvation_pdf)
+    meters = emitted_meters(result.musicxml)
+    changes = [(i + 1, m) for i, m in enumerate(meters) if i == 0 or m != meters[i - 1]]
+    assert changes == [(1, (3, 4)), (28, (6, 8))], changes
+    assert any("changes time signature part-way through" in w for w in result.warnings), (
+        result.warnings)
 
 
 def test_ts_timeline_lookup_is_per_bar_not_per_system():

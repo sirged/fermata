@@ -2407,7 +2407,12 @@ def _mid_system_meters(page, staff, vseg):
     only that space is read - see glyph.decode_meter_after_barline for why
     scanning a whole staff width instead invents meters out of tuplet
     numbers. The staff's own opening window is skipped because the meter
-    there is read by decode_time_signature.
+    there is read by decode_time_signature. `staff.x1` is passed through so
+    that reader can tell a change at THIS barline from a courtesy signature
+    for the system that follows, printed as the last thing on this one - see
+    its own docstring for why the barline's distance from staff.x1 alone is
+    not enough to tell the two apart once the reach is wide enough to see
+    past a key change.
 
     The x recorded sits one staff space LEFT of the barline the meter was
     printed at. The bar boundaries this is later compared against are
@@ -2423,7 +2428,7 @@ def _mid_system_meters(page, staff, vseg):
         if bx <= opening or bx >= staff.x1 - staff.spacing:
             continue
         ts, _why = glyph.decode_meter_after_barline(
-            page, staff.top, staff.bottom, bx, staff.spacing)
+            page, staff.top, staff.bottom, bx, staff.x1, staff.spacing)
         if ts is not None:
             out.append((bx - staff.spacing, ts))
     return out
