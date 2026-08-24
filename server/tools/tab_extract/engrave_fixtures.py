@@ -388,6 +388,27 @@ def fixture_rests_and_flags():
     return score("Guitar", [attributes() + b1, b2, b3, b4, b5, b6, b1, b2])
 
 
+def fixture_multidigit_meter():
+    """A meter whose numerator needs TWO digit glyphs stacked at the same x
+    column - 12/8 - which is exactly the shape a single missing digit in a
+    font's calibration table breaks (issue #84): lose the '1' and the
+    numerator's remaining glyph, a lone '2', is still a perfectly plausible
+    single-digit numerator, so the failure is a confident WRONG meter, not a
+    detected gap. Nothing before this fixture engraved a real two-digit
+    numerator through the full PDF pipeline - the multi-digit clustering
+    itself was only ever exercised with hand-built glyph coordinates (see
+    test_glyph_rhythm.py), never against actual font glyphs extracted from a
+    real page. Twelve eighths per bar (6.0 quarters) makes a wrong reading
+    show up in the bar arithmetic too, not only in the reported meter."""
+    bar = _bar([note(("E", 4), "eighth"), note(("F", 4), "eighth"),
+                note(("G", 4), "eighth"), note(("A", 4), "eighth"),
+                note(("B", 4), "eighth"), note(("A", 4), "eighth"),
+                note(("G", 4), "eighth"), note(("F", 4), "eighth"),
+                note(("E", 4), "eighth"), note(("D", 4), "eighth"),
+                note(("E", 4), "eighth"), note(("D", 4), "eighth")], 6.0)
+    return score("Guitar", [attributes(time=(12, 8)) + bar] + [bar] * 7)
+
+
 def fixture_four_sharps_in_three_four():
     """Four sharps between the clef and the meter, and a meter that is not
     4/4.
@@ -546,6 +567,7 @@ FIXTURES = {
     "hidden_opening_meter_matches_the_default": fixture_hidden_opening_meter_matches_the_default,
     "mid_system_meter_change": fixture_mid_system_meter_change,
     "mid_system_key_and_meter_change": fixture_mid_system_key_and_meter_change,
+    "multidigit_meter": fixture_multidigit_meter,
     "rests_and_flags": fixture_rests_and_flags,
     "tab_only": fixture_tab_only,
     "tab_only_short_last_system": fixture_tab_only_short_last_system,

@@ -49,6 +49,7 @@ gap this directory exists to close was created.
 | `hidden_opening_meter_matches_the_default` | the same shape, but the only meter read anywhere is a 4/4 that happens to match the assumed default — the "opening not read" warning must stay quiet |
 | `mid_system_meter_change` | a change to 2/4 engraved part-way along the first system, and back to 4/4 at the second — the bars ahead of a change are not in it |
 | `mid_system_key_and_meter_change` | four sharps printed behind a barline, pushing a mid-system meter change's digits past the flat reach a mid-system reader alone needs — the mid-system counterpart of `four_sharps_in_three_four` |
+| `multidigit_meter` | a 12/8 meter — a numerator that needs two digit glyphs stacked at one x column, which is exactly the shape a missing digit in a font's calibration table (issue #84) turns into a confident wrong meter instead of a detected gap |
 
 Two fixtures are **synthesised** rather than engraved, because no engraver
 produces them on purpose. The script builds both, and their `/Creator` says

@@ -1292,6 +1292,33 @@ def test_a_meter_behind_a_key_signature_is_still_read(engraved):
             assert sum(q for q, _n in voice) == 3.0, bar
 
 
+def test_a_two_digit_numerator_assembles_correctly(engraved):
+    """Issue #84. A numerator needing two stacked digit glyphs - 12/8 - is
+    exactly the shape a single missing digit turns into a confident WRONG
+    meter rather than a detected gap: drop the '1' and the remaining lone
+    '2' is still a perfectly plausible one-digit numerator. Nothing before
+    this fixture engraved a real two-digit numerator through the full PDF
+    pipeline; the multi-digit clustering itself was previously only ever
+    exercised against hand-built glyph coordinates.
+
+    This exercises the SMuFL digit table only (MuseScore engraves SMuFL) -
+    all ten of its digits were already complete before this change, so this
+    fixture was already green on main. It stays here as the missing
+    real-PDF proof that the multi-digit assembly this project relies on for
+    every double-digit meter actually holds, and as the regression lock for
+    it - see the Opus digit gap this issue's fix closes instead, which
+    cannot be exercised this way because no free engraver draws Opus."""
+    result = tabextract.extract(engraved("multidigit_meter"))
+    assert result.time_signature == (12, 8)
+    assert result.time_signature_source == "glyph-decoded"
+    assert result.confidence["time_signature"].startswith("high")
+    assert emitted_meters(result.musicxml) == source_meters("multidigit_meter")
+    assert (result.bars, result.bars_defective, result.bars_unread) == (8, 0, 0)
+    for bar in emitted_bars(result.alphatex):
+        for voice in bar:
+            assert sum(q for q, _n in voice) == 6.0, bar
+
+
 def test_a_meter_read_later_is_not_backdated_over_an_unread_opening(engraved):
     """Issue #90, second half. This score's opening meter is engraved
     invisibly and a 3/4 is printed part-way through, so exactly one meter can
@@ -1420,6 +1447,7 @@ ENGRAVED_NAMES = (
     "harmonics_dense", "notation_only", "four_sharps_in_three_four",
     "hidden_opening_meter", "hidden_opening_meter_matches_the_default",
     "mid_system_meter_change", "mid_system_key_and_meter_change",
+    "multidigit_meter",
 )
 SYNTHESISED_NAMES = ("raster_scan", "fake_music_font")
 

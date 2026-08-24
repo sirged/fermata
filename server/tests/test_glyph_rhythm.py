@@ -539,6 +539,109 @@ def test_valid_stacked_signature_is_still_read():
 
 
 # ---------------------------------------------------------------------------
+# Calibrated table completeness (issue #84): a glyph the decoder does not
+# recognise must never become a confident wrong answer.
+# ---------------------------------------------------------------------------
+
+
+def test_opus_digit_map_covers_all_ten_digits_by_the_confirmed_naming_rule():
+    """Opus names its time-signature digits "uniF03X", X the ASCII digit
+    character - a rule confirmed by five real library instances (2, 3, 4, 6,
+    8), not a guess. Before this fix, half the digits (0, 1, 5, 7, 9) were
+    simply absent, so a Sibelius 12/8 lost its '1' and the surviving lone '2'
+    read as a confident, wrong 2/8. Removing this loop's assertions and
+    OPUS_NAME_MAP's five rule-derived entries reproduces exactly that."""
+    for d in range(10):
+        name = f"uniF03{d}"
+        assert name in G.OPUS_NAME_MAP, f"{name} (digit{d}) missing from OPUS_NAME_MAP"
+        assert G.OPUS_NAME_MAP[name] == f"digit{d}"
+
+
+def test_opus_font_resolves_a_previously_unmapped_digit_by_gid():
+    """The same lookup a real page's glyph events go through: a GID resolved
+    to a glyph NAME via the font's own glyph order, then to a category via
+    OPUS_NAME_MAP. tt=None mimics a resource this test builds by hand rather
+    than reading a font file, per MusicFont's own fallback for a missing tt."""
+    mf = G.MusicFont("Opus", xref=1, tt=None)
+    mf.glyph_order = ["uniF030", "uniF031", "uniF039"]
+    assert mf.category(0) == "digit0"
+    assert mf.category(1) == "digit1"
+    assert mf.category(2) == "digit9"
+
+
+def test_opus_12_8_assembles_once_digit1_exists():
+    """End to end for the Sibelius half of issue #84: the PUA names Opus
+    actually embeds, resolved through MusicFont.category exactly as
+    extract_glyph_events would, stacked into a numerator and read as a
+    meter. Before uniF031 was mapped, event two below had category None -
+    invisible to _stacked_digit_pairs - so only the '2' survived as the
+    numerator and this returned (2, 8), not (12, 8)."""
+    mf = G.MusicFont("Opus", xref=1, tt=None)
+    mf.glyph_order = ["uniF031", "uniF032", "uniF038"]
+    mid = 224.0
+    window = [
+        _ev(mf.category(0), 60.0, 212.0, 66.0, 220.0, family="Opus"),   # '1'
+        _ev(mf.category(1), 66.2, 212.0, 74.0, 220.0, family="Opus"),   # '2'
+        _ev(mf.category(2), 62.0, 226.0, 70.0, 234.0, family="Opus"),   # '8'
+    ]
+    assert None not in [e.category for e in window]
+    ts, reason = G._signature_from_window(window, mid)
+    assert ts == (12, 8)
+
+
+def test_opus_flag16_and_rests_remain_an_acknowledged_gap():
+    """The coverage limit stated in OPUS_NAME_MAP's own comment: a
+    full-library rescan found no Opus resource filling a second flag hook or
+    a second/third rest shape, so none is mapped - guessing a PUA name risks
+    colliding with some other glyph's real meaning. This pins that the gap is
+    still there rather than silently guessed shut; closing it for real needs
+    a library sample or another way to confirm the name (see issue #84)."""
+    assert "flag16" not in G.OPUS_NAME_MAP.values()
+    assert "rest16" not in G.OPUS_NAME_MAP.values()
+    assert "rest32" not in G.OPUS_NAME_MAP.values()
+
+
+def test_maestro_digit0_flag32_and_rests_remain_an_acknowledged_gap():
+    """The Maestro-side twin of the Opus test above. A Maestro GID carries no
+    naming rule to extrapolate from (unlike Opus's uniF03X), so an entry
+    absent from every library sample cannot be rule-derived - only guessed,
+    which this table's own discipline refuses to do. This is the residual
+    gap the module docstring now states plainly: a Finale 10/8 still decodes
+    as a confident (1, 8), because the '0' glyph resolves to no category and
+    is invisible to the digit clustering rather than blocking it."""
+    assert "digit0" not in G.MAESTRO_GID_MAP.values()
+    assert "flag32" not in G.MAESTRO_GID_MAP.values()
+    assert "rest16" not in G.MAESTRO_GID_MAP.values()
+    assert "rest32" not in G.MAESTRO_GID_MAP.values()
+
+
+def test_a_finale_ten_eight_still_silently_loses_its_zero():
+    """Documents, rather than fixes, the residual Maestro gap: the digit0 GID
+    genuinely has no library evidence to confirm (see MAESTRO_GID_MAP's
+    comment), so this reproduces the exact wrong-not-refused shape the
+    review on issue #84 measured, using the same category-level mechanism
+    test_opus_12_8_assembles_once_digit1_exists proves fixed for Opus. If
+    this ever starts returning (10, 8) or None, MAESTRO_GID_MAP grew a real,
+    library-verified digit0 entry and this test's docstring is stale, not
+    the assertion."""
+    mid = 224.0
+    window = [
+        _ev("digit1", 60.0, 212.0, 66.0, 220.0),
+        _ev(None, 66.2, 212.0, 74.0, 220.0),         # the unmapped '0'
+        _ev("digit8", 62.0, 226.0, 70.0, 234.0),
+    ]
+    ts, reason = G._signature_from_window(window, mid)
+    # The wrong, confident answer issue #84 measured - not the desired one.
+    # A future fix (refusing whenever an uncategorised glyph sits among the
+    # digits that WERE read, per the issue's review) should change this to
+    # (None, ...); until then this pins the actual, documented behaviour.
+    assert ts == (1, 8), (
+        f"expected the documented (1, 8) mis-read - got {ts!r} ({reason!r}); "
+        "if this changed, MAESTRO_GID_MAP or the refusal behaviour moved and "
+        "this test's docstring needs updating too")
+
+
+# ---------------------------------------------------------------------------
 # fontTools availability (A2)
 # ---------------------------------------------------------------------------
 
