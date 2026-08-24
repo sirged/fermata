@@ -186,7 +186,29 @@
 //
 // Raised deliberately, and every one of the 11 was shown to fail against a
 // mutation of the behaviour it claims - see the pull request.
-export const MINIMUM_TESTS = 262;
+//
+// Plus 3 for issue #120 - the shared audition path had never produced a
+// sample: a loaded soundfont is not a playable instrument, and the audition
+// player waited on soundFontLoaded instead of a readiness that meant
+// anything, so every note-on found an empty preset table and the
+// synthesiser rendered digital silence while reporting success at every
+// step.
+//
+// 2 audio-peak checks - one in tests/browser/ear-training.spec.js, one in
+// tests/browser/instruments.spec.js, because the string audition runs
+// through the exact same path and was silent by the same mechanism - each
+// tapping the node alphaTab connects to the audio destination with an
+// AnalyserNode and asserting a real sample crossed it, which is the one
+// thing data-sounded-midi/-count and data-audition-midi/-count cannot show:
+// both are set from the note HANDED to the synthesiser, correct even when
+// nothing came out the other end. Measured red (peak 0.000) against
+// unmodified main and green (peak >0.01, actually ~0.387) with the fix.
+//
+// 1 heartbeat watchdog in tests/browser/ear-training.spec.js, standing
+// evidence against the freeze this issue also reported, which never
+// reproduced: a heartbeat interval kept advancing across a sounding in the
+// investigation, and this keeps that fact checked rather than assumed.
+export const MINIMUM_TESTS = 265;
 
 export default class MinimumTests {
   constructor() {

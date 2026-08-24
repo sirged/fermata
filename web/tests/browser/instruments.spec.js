@@ -85,6 +85,54 @@ test.beforeEach(async ({ page, request }) => {
     }
   });
 
+  // Independent evidence that a sample actually left the synthesiser, not
+  // just that a note-on was handed to it. The string audition runs through
+  // the exact same shared audition path ear-training.spec.js's own copy of
+  // this tap guards - see the root-cause notes on issue #120 - so it is
+  // blind to the same defect in exactly the same way: a soundfont with no
+  // voiceable presets accepts a note-on, runs to completion and reports
+  // success while rendering nothing but zeros. This taps whatever node
+  // alphaTab connects to the audio destination (an AudioWorkletNode
+  // normally, a ScriptProcessorNode on the fallback path) with an
+  // AnalyserNode and tracks the largest sample magnitude seen on it.
+  // `--mute-audio` (this suite's own launch option) silences the OUTPUT
+  // DEVICE, not the graph, so this reads real amplitude either way.
+  await page.addInitScript(() => {
+    window.__audioPeak = 0;
+    const tap = (node, ctx) => {
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      node.connect(analyser);
+      const frame = new Float32Array(analyser.fftSize);
+      setInterval(() => {
+        analyser.getFloatTimeDomainData(frame);
+        for (const sample of frame) {
+          window.__audioPeak = Math.max(window.__audioPeak, Math.abs(sample));
+        }
+      }, 25);
+    };
+    const Worklet = window.AudioWorkletNode;
+    if (Worklet) {
+      window.AudioWorkletNode = class extends Worklet {
+        constructor(ctx, name, options) {
+          super(ctx, name, options);
+          tap(this, ctx);
+        }
+      };
+    }
+    // The fallback path when AudioWorklet is unavailable - same synth, same
+    // graph, a different node type doing the connecting.
+    for (const proto of [window.AudioContext?.prototype, window.OfflineAudioContext?.prototype]) {
+      if (!proto?.createScriptProcessor) continue;
+      const original = proto.createScriptProcessor;
+      proto.createScriptProcessor = function (...args) {
+        const node = original.apply(this, args);
+        tap(node, this);
+        return node;
+      };
+    }
+  });
+
   await page.goto("/#/settings");
   await expect(section(page)).toBeVisible();
 });
@@ -159,6 +207,29 @@ test("clicking a string reaches the synthesiser", async ({ page }) => {
 
   expect(soundfontRequests.length).toBeGreaterThan(0);
   expect(await page.evaluate(() => window.__audioContexts)).toBeGreaterThan(0);
+});
+
+test("a string audition is actually audible - not a note-on handed to a synth with nothing to voice it", async ({
+  page,
+}) => {
+  // With no fret to aim at, a heard pitch IS the interface for an unfretted
+  // instrument - not a convenience - which is exactly why this suite cannot
+  // settle for data-audition-midi/-count. Both are set from what playPitch
+  // resolved with, and that number is correct even when nothing sounded: it
+  // is the note handed to the synthesiser, not a report that a sample of it
+  // ever reached the audio graph. See the root-cause notes on issue #120 -
+  // the string audition runs through the exact same shared audition path
+  // ear-training's drill does, and was silent by the same mechanism since it
+  // was written. Only the audio-peak tap installed in beforeEach can tell a
+  // real sample apart from a soundfont with nothing voiceable to play it.
+  await choosePreset(page, "guitar-standard");
+  await editorRows(page).first().locator("button.play").click();
+  await expect
+    .poll(() => page.evaluate(() => window.__audioPeak), {
+      message: "expected a non-zero sample to have reached the audio graph",
+      timeout: 10_000,
+    })
+    .toBeGreaterThan(0.01);
 });
 
 test("a definition saves and survives a reload", async ({ page, request }) => {

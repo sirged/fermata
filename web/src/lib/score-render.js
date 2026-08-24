@@ -562,16 +562,44 @@ function auditionPlayer() {
   }
   auditionApi = api;
 
-  // Waits on the soundfont rather than on playerReady, which is the renderer's
-  // "ready to play THIS SCORE" and needs a midi file generated from one. There
-  // is no score here and never will be, so it would never fire; a loaded
-  // soundfont is the whole of what a one-shot note needs.
+  // "playerReady would never fire without a midi" was true, and was exactly
+  // the trap: a loaded soundfont is not a playable instrument. alphaTab turns
+  // a parsed soundfont into voiceable presets in exactly one place -
+  // AlphaSynth._checkReadyForPlayback() - and that only runs once a midi has
+  // ALSO been loaded, because it is the midi that says which programs are
+  // worth building presets for. playOneTimeMidiFile never loads one, so with
+  // nothing waited on but soundFontLoaded this used to resolve into a player
+  // with a soundfont and an empty preset table - every note-on finding
+  // nothing to voice, and the synthesiser rendering digital silence for
+  // exactly as long as the note was meant to last, while every event on the
+  // way through kept reporting success.
+  //
+  // So a midi is loaded here, once, naming every melodic program (0-127) on
+  // the audition channel - there is no score to draw it from, but a midi
+  // naming every program is all _checkReadyForPlayback needs to build the
+  // full preset table - and THEN playerReady is the thing waited on. It is
+  // now the honest signal: it fires only once presets actually exist to
+  // voice a note with. Measured once, on load: 12 ms for all 128 programs.
   //
   // Failure comes from the synth's own soundFontLoadFailed where there is one,
   // rather than from api.error: that fires for anything at all, and a render
-  // complaint has no business disabling playback.
+  // complaint has no business disabling playback. Both guards, and the
+  // timeout below, cover the primer load too: a soundfont that loads but
+  // yields nothing voiceable now fails loudly instead of resolving into
+  // silence.
   const ready = new Promise((resolve, reject) => {
-    api.soundFontLoaded.on(() => resolve(api.player));
+    api.soundFontLoaded.on(() => {
+      const primer = new alphaTab.midi.MidiFile();
+      primer.division = TICKS_PER_QUARTER;
+      for (let program = 0; program <= MAX_MIDI; program++) {
+        primer.addEvent(
+          new alphaTab.midi.ProgramChangeEvent(0, 0, AUDITION_CHANNEL, program),
+        );
+      }
+      primer.addEvent(new alphaTab.midi.EndOfTrackEvent(0, 1));
+      api.player.loadMidiFile(primer);
+    });
+    api.playerReady.on(() => resolve(api.player));
     const failed = api.player?.soundFontLoadFailed;
     if (failed) {
       failed.on((e) => reject(toError(e, "the synthesiser's soundfont could not be loaded")));
@@ -610,12 +638,19 @@ function toError(e, fallback) {
 /**
  * Sound one pitch on its own, as a MIDI note number.
  *
- * Resolves with THE MIDI NOTE ACTUALLY SOUNDED - the number written into the
- * note-on event - or **null if no note was handed over at all**. Returning the
- * note rather than a success flag is deliberate: it lets a caller display and
+ * Resolves with THE MIDI NOTE HANDED TO THE SYNTHESISER - the number written
+ * into the note-on event - or **null if no note was handed over at all**.
+ * That is a claim about this boundary, not about the speaker: it is the
+ * number this function gave the synthesiser to play, not a promise that a
+ * sample carrying it ever reached the audio graph. Whether the synthesiser
+ * had anything voiceable to play it with is exactly the gap the audition
+ * player used to fall into silently (see auditionPlayer's own comment) and
+ * is what the audio-peak checks in the browser suites test for - audibility
+ * is their job, not this docstring's to promise. Returning the note rather
+ * than a success flag is deliberate even so: it lets a caller display and
  * publish what crossed this boundary instead of restating what it asked for,
- * which is the only way an interface can be observed to have played the right
- * pitch rather than merely to have intended one.
+ * which is the only way an interface can be observed to have handed off the
+ * right pitch rather than merely to have intended one.
  *
  * THE NULL IS THE WHOLE OF THAT GUARANTEE, and it was once not kept. This used
  * to end `return noteOn ? noteOn.noteKey : key` - falling back to the INPUT when
