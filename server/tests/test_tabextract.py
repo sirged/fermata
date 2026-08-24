@@ -1472,17 +1472,47 @@ def test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early(kaine_salv
     courtesy signature produces no premature mid-system entry, AND the
     timeline still carries exactly one real change, to (6, 8), at a system's
     own start."""
-    page = fitz.open(kaine_salvation_pdf)[0]
+    # The courtesy signature is on the score's SECOND page, verified once by
+    # inspecting the page directly: its first system's own opening meter is
+    # 3/4, and the courtesy signature behind four sharps sits near that
+    # system's right edge, previewing the second system's 6/8.
+    page = fitz.open(kaine_salvation_pdf)[1]
     staves, _ = tabextract._detect_staves(page)
     stds = sorted((s for s in staves if s.kind == "standard"), key=lambda s: s.top)
     vseg = tabextract._vertical_segments(page)
-    # The system carrying the courtesy signature, verified once by inspecting
-    # the page directly: its own opening meter is 3/4, and the courtesy
-    # signature behind four sharps sits near its right edge.
     courtesy_staff = stds[0]
+
+    # No ACCEPTED mid-system entry may read (6, 8) here at all.
     for x, ts in tabextract._mid_system_meters(page, courtesy_staff, vseg):
         assert ts != (6, 8), (
             "the courtesy signature at the end of this system was read as a change here", x)
+
+    # That is not merely "nothing was found": the courtesy signature is a
+    # real, refused candidate, not an untested one. At least one barline
+    # candidate on this system decodes to (6, 8) with the guard bypassed
+    # (the bare window, no end-of-system check) and is refused by the real
+    # reader specifically as a courtesy signature.
+    tol = glyph_rhythm._Tol(courtesy_staff.spacing)
+    glyphs = glyph_rhythm.extract_glyph_events(page)
+    mid = (courtesy_staff.top + courtesy_staff.bottom) / 2
+    opening = courtesy_staff.x0 + courtesy_staff.spacing * glyph_rhythm.TS_LEAD_SPACINGS
+    found_and_refused = False
+    for bx in tabextract._detect_barlines(vseg, courtesy_staff):
+        if bx <= opening or bx >= courtesy_staff.x1 - courtesy_staff.spacing:
+            continue
+        window = [e for e in glyphs.events
+                  if courtesy_staff.top - tol.spacing <= e.yc <= courtesy_staff.bottom + tol.spacing
+                  and bx < e.x0
+                  <= bx + tol.spacing * glyph_rhythm._MID_SYSTEM_MAX_LEAD_SPACINGS]
+        bare_ts, _why = glyph_rhythm._signature_from_window(window, mid)
+        if bare_ts != (6, 8):
+            continue
+        ts, why = glyph_rhythm.decode_meter_after_barline(
+            page, courtesy_staff.top, courtesy_staff.bottom, bx, courtesy_staff.x1,
+            courtesy_staff.spacing)
+        assert ts is None and "courtesy signature" in why, (bx, ts, why)
+        found_and_refused = True
+    assert found_and_refused, "this page's first system carries no (6, 8) candidate to refuse"
 
     result = tabextract.extract(kaine_salvation_pdf)
     meters = emitted_meters(result.musicxml)
