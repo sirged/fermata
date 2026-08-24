@@ -51,6 +51,15 @@ ExtractionResult.warnings, .confidence and .rhythm_provenance rather than
 papered over; callers can also offer a manual time-signature override (see
 extract()'s time_signature argument) for when auto-detection comes up empty.
 
+Every one of those gaps is stated TWICE, and both halves are required. The
+count is a field on ExtractionResult, so the data stays queryable; the same
+fact is also written into .warnings as a sentence, because that is the only
+one of the two anything downstream reads on its own - a list of strings gets
+looped over and displayed, a new field gets ignored by every consumer written
+before it existed. A count added without its sentence is a measurement nobody
+is ever told; see .bars_padded / "bar(s) contain silence" for the shape both
+halves take.
+
 VOICES: classical and fingerstyle guitar is polyphonic - a melody sounding
 OVER an independent bass line - so a bar's notes are not one sequence. Each
 notehead is grouped with the others on ITS OWN STEM (a chord is one beat),
@@ -227,6 +236,26 @@ class ExtractionResult:
     # constants). Reported so a caller can see the mix directly instead of
     # having to parse it back out of the confidence string.
     rhythm_provenance: dict = field(default_factory=dict)
+    # WHICH bars the staves behind those counts produced. A count of staves
+    # says how much of a score's rhythm was not read from its glyphs; only
+    # these say which music that was, and a bar number is the one coordinate a
+    # reader can carry back to the PDF - same reason `padded_bars` exists
+    # beside `bars_padded`. `spacing_bars` are bars whose durations came from
+    # the horizontal gaps between noteheads rather than from the noteheads;
+    # `degraded_bars` are bars read from the engraving with something on their
+    # staff left unread. Both are stated in the warning prose as well, because
+    # a field on its own reaches nobody.
+    spacing_bars: list[int] = field(default_factory=list)
+    degraded_bars: list[int] = field(default_factory=list)
+    # Filled noteheads that came out of the decode with no stem, and how many
+    # notation staves carried at least one. Such a head can be a quarter or
+    # anything shorter, and the flag or beam that would say which attaches to
+    # the stem that was not found, so it is emitted at its unflagged floor - a
+    # duration that is a guess, and one that always errs LONG. Counted here for
+    # the same reason `bars_padded` is: it is the size of what was invented,
+    # and it cannot be recovered from any other figure on this result.
+    notes_no_stem: int = 0
+    staves_no_stem: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -261,6 +290,10 @@ class ExtractionResult:
             "confidence": self.confidence,
             "warnings": self.warnings,
             "rhythm_provenance": self.rhythm_provenance,
+            "spacing_bars": list(self.spacing_bars),
+            "degraded_bars": list(self.degraded_bars),
+            "notes_no_stem": self.notes_no_stem,
+            "staves_no_stem": self.staves_no_stem,
         }
 
 
@@ -1679,6 +1712,32 @@ def _resolve_rhythm_source(page, std_staff, pair_reason, decoded):
                 "be short by two quarter notes of silence"
             ),
         )
+    no_stem = stats.get("no_stem_noteheads", 0)
+    if no_stem:
+        # A filled notehead with no stem cannot have its flags or beams
+        # counted, because both attach to the stem that was not found, so it
+        # goes out at its unflagged floor: a quarter where the page may say
+        # an eighth, a sixteenth or shorter. The floor is the LONGEST of the
+        # candidate readings, so this always reads long and always takes the
+        # bar's arithmetic with it, and the note has lost its voice signal
+        # besides (see glyph.decode_note_events, no_stem_noteheads).
+        #
+        # Reported however few there are, and NOT ratio-gated, for the same
+        # reason an unrecognised notehead above is not: how dense the staff
+        # around it happens to be is not evidence about this note. Measured
+        # over the library that degrades 493 of the 2657 notation staves that
+        # supplied glyph durations at all, which is the honest size of the
+        # problem rather than a threshold chosen to keep the count down.
+        return _RhythmSource(
+            PROV_GLYPHS_DEGRADED, note_events, stats=stats,
+            detail=(
+                f"{no_stem} notehead(s) on the paired notation staff have no stem this "
+                "decoder could find, so no flag or beam could be counted for them - each "
+                "was given the longest duration its notehead alone allows (a quarter) "
+                "rather than a read one, and reads long wherever the score wrote it "
+                "shorter"
+            ),
+        )
     return _RhythmSource(PROV_GLYPHS, note_events, stats=stats)
 
 
@@ -1876,7 +1935,8 @@ def _overfull_bars(measures) -> tuple[int, int]:
     return bars.overfull, bars.counted
 
 
-def _rhythm_report(counts, details, conformance=None, unread_bars=()):
+def _rhythm_report(counts, details, conformance=None, unread_bars=(),
+                   prov_bars=None, no_stem_notes=0, no_stem_staves=0):
     """Derive the document's rhythm warnings and confidence string from the
     collected per-staff provenances - the single place that decides both, so
     they cannot drift out of step with each other or with the measure loop.
@@ -1886,8 +1946,22 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=()):
     `conformance` is a _BarConformance, or None where no bars were measured.
     `unread_bars` is the numbers of bars nothing was read from at all - see the
     warning below for why they are reported here rather than as Rule 8 defects.
+
+    `prov_bars` maps a PROV_* value to the numbers of the bars the staves that
+    resolved to it produced. A count of staves says HOW MUCH of a score's
+    rhythm was not read from its glyphs; only the bar numbers say WHICH music
+    that was, which is what lets somebody check those bars against the PDF -
+    the same reason the padded-bars warning names its bars rather than only
+    counting them. Empty, or absent, means no bar numbers were collected and
+    the prose says nothing it cannot support.
+
+    `no_stem_notes` / `no_stem_staves` are how many filled noteheads across
+    how many notation staves came out of the decode with no stem, and so with
+    their duration floored at a quarter rather than read - see
+    glyph.decode_note_events.
     """
     conformance = conformance or _BarConformance(0, 0, 0, 0)
+    prov_bars = prov_bars or {}
     overfull, short = conformance.overfull, conformance.short
     defective, bars = conformance.defective, conformance.counted
     padded, padded_bars = conformance.padded, conformance.padded_bars
@@ -1895,6 +1969,8 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=()):
     glyphs = counts.get(PROV_GLYPHS, 0)
     degraded = counts.get(PROV_GLYPHS_DEGRADED, 0)
     spacing = counts.get(PROV_SPACING, 0)
+    spacing_bars = sorted(prov_bars.get(PROV_SPACING) or ())
+    degraded_bars = sorted(prov_bars.get(PROV_GLYPHS_DEGRADED) or ())
     warnings = []
 
     if not glyphs and not degraded:
@@ -1905,17 +1981,38 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=()):
         confidence = "low - inferred from note spacing only, no dotted notes or ties modeled"
     else:
         if spacing:
+            # WHICH bars those systems produced, not just how many systems
+            # there were. "treat those sections as low confidence" was
+            # unanswerable without them: a reader was told that some fraction
+            # of the score's durations came out of the gaps between noteheads
+            # rather than the noteheads themselves, and given no way to find
+            # out which fraction. Spacing-derived rhythm is only as good as
+            # the engraver's spacing being proportional, which a justified or
+            # hand-adjusted system is not, so these are the bars to check
+            # first.
+            where = (f" The bars they produced are: {_bar_list(spacing_bars)}."
+                     if spacing_bars else "")
             warnings.append(
                 f"durations were read from the engraved notation for {glyphs + degraded} staff "
                 f"system(s); {spacing} staff system(s) could not be read that way and use a "
                 "rougher estimate from note spacing instead - treat those sections as low "
-                "confidence"
+                f"confidence.{where}"
             )
         if degraded:
+            # Named the same way, and for the same reason. A degraded staff was
+            # read from the engraving, but something on it was not: an
+            # uncalibrated glyph, a rest whose value its position did not
+            # settle, or a notehead whose stem was never found. The
+            # per-staff reason is appended below as "rhythm source: ..."; this
+            # says how much of the score it applies to and where.
+            where = (f" The bars they produced are: {_bar_list(degraded_bars)}."
+                     if degraded_bars else "")
             warnings.append(
-                f"{degraded} staff system(s) were read from the engraved notation but contain "
-                "music-font glyphs this decoder has not been calibrated for - treat their "
-                "durations as medium confidence"
+                f"{degraded} staff system(s) were read from the engraved notation but not "
+                "everything on them could be read - a music-font glyph this decoder has not "
+                "been calibrated for, a notehead with no stem this decoder could find, or a "
+                "rest whose printed position did not say which value it was - so treat their "
+                f"durations as medium confidence.{where}"
             )
         warnings.append(_TUPLET_WARNING)
         warnings.append(_TIE_WARNING)
@@ -1926,14 +2023,39 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=()):
             )
         elif degraded:
             confidence = (
-                "medium - decoded from the score's engraving, but some music-font glyphs used by "
-                "this score are outside the decoder's calibrated vocabulary"
+                "medium - decoded from the score's engraving, but not all of it was read: some "
+                "staves carry a music-font glyph outside the decoder's calibrated vocabulary, a "
+                "notehead whose stem it could not find, or a rest whose printed position did not "
+                "say which value it was"
             )
         else:
             confidence = (
                 "high - decoded directly from the notehead/stem/flag/beam/dot glyphs in the score's "
                 "own engraving"
             )
+
+    # Noteheads whose duration is a FLOOR rather than a reading. Stated as its
+    # own sentence, with its own count, because the provenance sentence above
+    # counts staves and this is the only place the number of affected NOTES is
+    # said. A count of degraded staves cannot be turned back into it: one
+    # stemless notehead on a staff and forty of them read identically there.
+    if no_stem_notes:
+        # This count is honest for the GATE - the stem was not found, so both
+        # the duration and the voice are a guess either way - but not for a
+        # claim about what got emitted. A stemless head is folded into any
+        # host stem within onset tolerance by the absorb pass in
+        # `_stem_groups`, and most of them ARE attached that way: of the
+        # heads this counts, most inherit a duration from that host rather
+        # than going out at the plain-quarter floor. Only say what is true of
+        # every one of them.
+        warnings.append(
+            f"{no_stem_notes} notehead(s) across {no_stem_staves} staff system(s) were read with "
+            "no stem this decoder could find. A note's flags and beams hang off its stem, so for "
+            "those notes both the duration and which of a bar's voices they belong to rest on a "
+            "guess rather than a reading: where such a head could not be attached to a "
+            "neighbouring stem, it was emitted at the plain quarter, the LONGEST duration its "
+            "notehead on its own allows"
+        )
 
     # Bars that don't add up outrank how the durations were obtained: a
     # confident reading of every notehead still produces a wrong bar when its
@@ -2012,10 +2134,16 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=()):
             f"({defective}) or hold nothing that was read from the score ({len(unread_bars)})"
         )
     if bars and unreliable / bars >= 0.25:
-        confidence = (
-            "low overall - individual durations were read from the score's own engraving, but "
-            + reason
-        )
+        # Compose onto whatever `confidence` already says, the same way the
+        # branch below does - not replace it. Replacing it here with a fresh
+        # "durations were read from the score's own engraving" reasserted the
+        # exact claim a degraded or spacing-derived score had just finished
+        # disclosing as NOT fully true, which is the headline flatly
+        # contradicting the sentence right below it. The threshold still
+        # decides the LABEL (this is the one place "low overall" gets said),
+        # but the clause after it stays whatever the disclosure above earned.
+        _, _, rest = confidence.partition(" - ")
+        confidence = f"low overall - {rest}; {reason}" if rest else f"low overall; {reason}"
     elif bars and unreliable:
         # Below the threshold is not the same as clean, and a binary gate threw
         # away everything the counts above just established: sixteen of the
@@ -2463,6 +2591,19 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     # (see _rhythm_report) rather than from a branch here.
     prov_counts = collections.Counter()
     prov_details = collections.defaultdict(list)
+    # WHICH bars each provenance produced, keyed by PROV_* value. A count of
+    # staves says how much of a score's rhythm was not read from its glyphs;
+    # only these say which music that was, and a bar number is the one
+    # coordinate a reader can carry back to the PDF. See _rhythm_report.
+    prov_bars = collections.defaultdict(list)
+    # Filled noteheads that came out of the decode with no stem, and how many
+    # notation staves carried at least one. Summed over the DECODES rather than
+    # over the tab staves so a notation staff read by two tab staves is not
+    # counted twice - the memo in `decoded` is per page, so the same set of
+    # noteheads is only ever visited once here.
+    no_stem_notes = 0
+    no_stem_staves = 0
+    no_stem_seen = set()
     unmatched_columns_glyph = 0
     unmatched_glyph_notes_total = 0
     # How many bars were transcribed as concurrent voices. How much of the
@@ -2521,6 +2662,19 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             for fw in source.stats.get("font_warnings") or []:
                 if fw not in font_warnings_seen:
                     font_warnings_seen.append(fw)
+            if source.uses_glyphs:
+                # Counted per NOTATION staff, and only where its decode is
+                # what the durations were actually taken from: a staff that
+                # fell all the way back to spacing threw its decode away, so
+                # its stemless noteheads never reached the transcription and
+                # reporting them would overstate what is wrong with it.
+                seen_key = (page_idx, id(std_staff))
+                if seen_key not in no_stem_seen:
+                    no_stem_seen.add(seen_key)
+                    staff_no_stem = source.stats.get("no_stem_noteheads", 0)
+                    if staff_no_stem:
+                        no_stem_notes += staff_no_stem
+                        no_stem_staves += 1
 
             # The meter in effect for this staff: from the notation staff it
             # reads, or from its own position when it reads none.
@@ -2544,6 +2698,10 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                 for col in columns:
                     col["xc"] = col["x"] + avg_digit_w / 2
 
+            # Where this staff's bars start in the document's numbering. Every
+            # iteration of the loop below appends exactly one measure, in both
+            # branches, so the staff owns the whole run from here to the end.
+            staff_first_bar = len(all_measures) + 1
             for i, m_cols in enumerate(measures_for_staff):
                 m_lo, m_hi = bounds[i], bounds[i + 1]
                 if source.uses_glyphs:
@@ -2595,12 +2753,18 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                 durations_q = _infer_measure_rhythm(m_cols, measure_quarter_len, m_hi)
                 beats = [(_snap_duration(dq), 0, col["notes"]) for col, dq in zip(m_cols, durations_q)]
                 all_measures.append((beats, staff_ts))
+            prov_bars[source.provenance].extend(
+                range(staff_first_bar, len(all_measures) + 1))
 
     # Rhythm warnings and confidence: derived once, from what the staves
     # actually resolved to.
     conformance = _bar_conformance(all_measures)
+    spacing_bars = sorted(prov_bars.get(PROV_SPACING, ()))
+    degraded_bars = sorted(prov_bars.get(PROV_GLYPHS_DEGRADED, ()))
     rhythm_warnings, rhythm_confidence = _rhythm_report(
-        prov_counts, prov_details, conformance, tuple(unread_bars)
+        prov_counts, prov_details, conformance, tuple(unread_bars),
+        prov_bars=prov_bars, no_stem_notes=no_stem_notes,
+        no_stem_staves=no_stem_staves,
     )
     warnings.extend(rhythm_warnings)
     # Font-level problems that weren't already the reason a staff degraded
@@ -2752,4 +2916,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         confidence=confidence,
         warnings=warnings,
         rhythm_provenance=dict(prov_counts),
+        spacing_bars=spacing_bars,
+        degraded_bars=degraded_bars,
+        notes_no_stem=no_stem_notes,
+        staves_no_stem=no_stem_staves,
     )

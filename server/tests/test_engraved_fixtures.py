@@ -34,6 +34,13 @@ coverage and is not is worse than none:
     geometry is covered by a synthetic page built here instead - see
     test_abutting_furniture_below_a_staff_is_not_welded_into_a_line - and
     the real examples live only in the maintainer's library.
+  * A filled notehead whose stem the vector pass cannot see. This engraver
+    draws every stem as a clean vector line, so all twelve fixtures here
+    report zero of them, while 493 of the 2657 notation staves in the
+    library that supplied glyph durations at all carry at least one. The
+    counter and the disclosure for that state (see #115) are exercised
+    against a real score in test_tabextract.py and against explicit
+    geometry in test_glyph_rhythm.py; nothing here can reach it.
   * Scale. The library's reference score is 50 bars of real two-voice
     fingerstyle writing; the fixture with two voices is eight contrived bars.
     A regression that only shows up in density will still only show up
@@ -872,6 +879,28 @@ def test_tablature_alone_falls_back_to_spacing_and_says_which(engraved):
     assert any("own system" in w for w in result.warnings)
     assert any("inferred from horizontal spacing" in w for w in result.warnings)
     assert result.time_signature_source.startswith("not detected")
+    # WHICH bars those are, as data - one entry per emitted bar, so a consumer
+    # can mark them without parsing the prose. The staff count in
+    # rhythm_provenance says how much of the score came from spacing; only this
+    # says which of it, and the two have to agree.
+    assert result.spacing_bars == list(range(1, 13))
+    assert result.degraded_bars == []
+
+
+def test_a_degraded_system_names_the_bars_it_produced(engraved):
+    """The same thing for a staff that WAS read from the engraving with
+    something on it left unread. Four bars of this fixture come off the staff
+    carrying two uncalibrated harmonics, and until these were collected a
+    reader was told that some fraction of the score was in question with no way
+    to find out which fraction."""
+    result = tabextract.extract(engraved("harmonics_dense"))
+    assert result.rhythm_provenance == {tabextract.PROV_GLYPHS_DEGRADED: 1,
+                                        tabextract.PROV_GLYPHS: 1}
+    assert result.degraded_bars == [1, 2, 3, 4]
+    assert result.spacing_bars == []
+    named = next(w for w in result.warnings
+                 if "1 staff system(s) were read from the engraved" in w)
+    assert "The bars they produced are: 1, 2, 3, 4." in named
 
 
 def test_a_final_system_too_short_to_detect_loses_its_bars(engraved):

@@ -100,7 +100,7 @@ export const TWO_VOICE_WARNINGS = [
 export const TWO_VOICE_CONFIDENCE = {
   frets: "high - read directly from vector text spans positioned against detected tab staff lines",
   rhythm:
-    "low overall - individual durations were read from the score's own engraving, but 9 of 12 bar(s) do not add up to their time signature",
+    "low overall - decoded directly from the notehead/stem/flag/beam/dot glyphs in the score's own engraving; 9 of 12 bar(s) do not add up to their time signature",
   time_signature: "high - read directly from the time-signature digit glyphs printed on the score",
 };
 

@@ -56,6 +56,29 @@ const UNREAD_BARS_SENTENCE =
   "time signature and so pass every arithmetic check, but nothing in them was read: " +
   "they are not evidence that the score was transcribed, and a bar that is genuinely " +
   "silent in the source cannot be told from one whose contents were missed";
+// Score-specific sentences #115/#117 added or reworded. Each starts with a
+// digit the way the bar-arithmetic sentences above do (or, for the spacing
+// sentence, names bars the same way they do), so each is its own regression
+// fixture against the same failure mode: a rewording that made one of these
+// start matching BAR_RE would fold it into the headline bar count and
+// silently drop it from the per-score list.
+const FLOORED_NOTE_DURATIONS_SENTENCE =
+  "73 notehead(s) across 4 staff system(s) were read with no stem this decoder could " +
+  "find. A note's flags and beams hang off its stem, so for those notes both the " +
+  "duration and which of a bar's voices they belong to rest on a guess rather than a " +
+  "reading: where such a head could not be attached to a neighbouring stem, it was " +
+  "emitted at the plain quarter, the LONGEST duration its notehead on its own allows";
+const SPACING_STAVES_SENTENCE =
+  "durations were read from the engraved notation for 3 staff system(s); 2 staff " +
+  "system(s) could not be read that way and use a rougher estimate from note spacing " +
+  "instead - treat those sections as low confidence. The bars they produced are: " +
+  "5, 6, 7, 11.";
+const DEGRADED_STAVES_SENTENCE =
+  "2 staff system(s) were read from the engraved notation but not everything on them " +
+  "could be read - a music-font glyph this decoder has not been calibrated for, a " +
+  "notehead with no stem this decoder could find, or a rest whose printed position " +
+  "did not say which value it was - so treat their durations as medium confidence. " +
+  "The bars they produced are: 3, 4.";
 
 const problems = [];
 
@@ -83,6 +106,25 @@ if (BAR_RE.test(UNREAD_BARS_SENTENCE)) {
       "folded into the headline bar count and dropped from the per-score list",
   );
 }
+// Same failure mode again for the three sentences #115/#117 added or
+// reworded: none of them is bar-arithmetic prose, so none of them may ever
+// start matching BAR_RE, on pain of being folded into the headline bar count
+// and silently dropped from the per-score list.
+for (const [name, sentence] of [
+  ["floored-note-durations", FLOORED_NOTE_DURATIONS_SENTENCE],
+  ["spacing-derived-staves", SPACING_STAVES_SENTENCE],
+  ["degraded-staves", DEGRADED_STAVES_SENTENCE],
+]) {
+  if (BAR_RE.test(sentence)) {
+    problems.push(
+      `BAR_RE now matches _rhythm_report's ${name} sentence - it would be folded into ` +
+        "the headline bar count and dropped from the per-score list",
+    );
+  }
+  if (STANDING_LIMITS.some((lim) => lim.test.test(sentence))) {
+    problems.push(`_rhythm_report's ${name} sentence reads as a standing limit`);
+  }
+}
 for (const [name, sentence] of [
   ["inferred-silence", PADDED_BARS_SENTENCE],
   ["bars-read-as-nothing", UNREAD_BARS_SENTENCE],
@@ -93,8 +135,13 @@ for (const [name, sentence] of [
   if (!/The bars are: \d+/.test(sentence)) {
     problems.push(`_rhythm_report's ${name} sentence no longer names the bars`);
   }
-  if (STANDING_LIMITS.some((lim) => lim.test.test(sentence))) {
-    problems.push(`_rhythm_report's ${name} sentence reads as a standing limit`);
+}
+for (const [name, sentence] of [
+  ["spacing-derived-staves", SPACING_STAVES_SENTENCE],
+  ["degraded-staves", DEGRADED_STAVES_SENTENCE],
+]) {
+  if (!/The bars they produced are: \d+/.test(sentence)) {
+    problems.push(`_rhythm_report's ${name} sentence no longer names the bars it produced`);
   }
 }
 
