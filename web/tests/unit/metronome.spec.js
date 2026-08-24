@@ -10,6 +10,7 @@ import {
   MIN_METRONOME_BPM,
   barAtTick,
   clampBpm,
+  clickLevel,
   clickPhaseInBar,
   effectiveClickRate,
   metronomePattern,
@@ -155,7 +156,14 @@ test("simple meters click one per beat, only the downbeat accented", () => {
   }
 });
 
-test("compound meters click the eighth-note subdivision, accented in threes", () => {
+test("compound meters click the eighth-note subdivision, grouped in threes - accentEvery marks where each GROUP starts, not on its own how loud a click sounds", () => {
+  // accentEvery === 3 says where the dotted-quarter pulses fall (1, 4, 7,
+  // ...); it does not say the bar has only two sounds in it. Issue #121: a
+  // metronome built on accentEvery alone as a bare on/off accent leaves 6/8,
+  // 9/8 and 12/8 clicking byte-identical streams, because every one of those
+  // pulses got the same sound regardless of which pulse STARTS the bar. See
+  // clickLevel below for the function that actually decides the sound -
+  // downbeat only at phase 0, this grouping everywhere else it recurs.
   for (const [num, den] of [
     [6, 8],
     [9, 8],
@@ -224,15 +232,28 @@ test("only denominators 8 and 16 are ever treated as compound, across every nume
   }
 });
 
-test("an accented click recurs every accentEvery ticks, across more than one bar", () => {
-  // What a scheduler actually uses accentEvery for: is click index i accented?
+test("a group start recurs every accentEvery ticks, across more than one bar - but only the FIRST one each bar is the downbeat", () => {
+  // What a scheduler actually uses accentEvery for: is click index i the
+  // start of a group? That is a weaker claim than "is it accented" - group
+  // starts 3 and 9 below are not the bar's own downbeat, and clickLevel (see
+  // metronome.spec.js's own tests) is what tells the two apart by sound.
   const p = metronomePattern(6, 8);
-  const accented = (i) => i % p.accentEvery === 0;
-  const overTwoBars = Array.from({ length: p.clicksPerBar * 2 }, (_, i) => accented(i));
+  const groupStart = (i) => i % p.accentEvery === 0;
+  const overTwoBars = Array.from({ length: p.clicksPerBar * 2 }, (_, i) => groupStart(i));
   expect(overTwoBars).toEqual([
-    true, false, false, true, false, false, // bar 1: 1, 4
-    true, false, false, true, false, false, // bar 2: 1, 4 again
+    true, false, false, true, false, false, // bar 1: group starts at 1, 4 - only 1 is the downbeat
+    true, false, false, true, false, false, // bar 2: 1, 4 again - only 1 is the downbeat
   ]);
+  // The distinction stated as sound, using clickLevel directly: index 0 (bar
+  // 1's downbeat) and index 6 (bar 2's downbeat) are "downbeat"; index 3 and
+  // 9 - group starts that are NOT the downbeat - are only "beat".
+  const levels = Array.from({ length: p.clicksPerBar * 2 }, (_, i) =>
+    clickLevel(i, p.clicksPerBar, p.accentEvery, 1),
+  );
+  expect(levels[0]).toBe("downbeat");
+  expect(levels[3]).toBe("beat");
+  expect(levels[6]).toBe("downbeat");
+  expect(levels[9]).toBe("beat");
 });
 
 test("a malformed time signature falls back to 4/4 rather than producing nonsense clicks", () => {
@@ -240,6 +261,71 @@ test("a malformed time signature falls back to 4/4 rather than producing nonsens
   expect(metronomePattern(4, 0)).toEqual({ clicksPerBar: 4, accentEvery: 4, unit: 4 });
   expect(metronomePattern(Number.NaN, 4)).toEqual({ clicksPerBar: 4, accentEvery: 4, unit: 4 });
   expect(metronomePattern(4.5, 4)).toEqual({ clicksPerBar: 4, accentEvery: 4, unit: 4 });
+});
+
+// -------------------------------------------------------------- click level
+//
+// Issue #121: with only two sounds (accent and tick), a bare metronome in
+// compound meter had nothing to mark where the BAR starts, as opposed to
+// where each dotted-quarter group inside it starts - 6/8, 9/8 and 12/8
+// clicked byte-identical streams. clickLevel is the third sound's decision,
+// factored out of metronome-engine.js's resolve() into one named, tested
+// place: "downbeat" | "beat" | "tick", from phase and the pattern alone, no
+// audio and no browser required.
+
+test("6/8 gets all three sounds - downbeat at the bar, beat at the other dotted-quarter pulse, tick at the two plain eighths between them", () => {
+  // metronomePattern(6, 8) is { clicksPerBar: 6, accentEvery: 3, unit: 8 }.
+  const levels = Array.from({ length: 12 }, (_, i) => clickLevel(i, 6, 3, 1));
+  expect(levels).toEqual([
+    "downbeat", "tick", "tick", "beat", "tick", "tick",
+    "downbeat", "tick", "tick", "beat", "tick", "tick",
+  ]);
+});
+
+test("a simple meter never reaches the beat tier - accentEvery equals clicksPerBar, so nothing but phase 0 can ever satisfy either test", () => {
+  // metronomePattern(4, 4) is { clicksPerBar: 4, accentEvery: 4, unit: 4 }.
+  // This is the whole reason 4/4 stays two sounds: clickLevel(i, 4, 4, ...)
+  // for i = 1, 2, 3 fails BOTH the downbeat test (i !== 0) and the beat test
+  // (i is not a multiple of accentEvery, which here is the same number as
+  // clicksPerBar) - there is no phase left over for a third sound to occupy.
+  const levels = Array.from({ length: 8 }, (_, i) => clickLevel(i, 4, 4, 1));
+  expect(levels).toEqual(["downbeat", "tick", "tick", "tick", "downbeat", "tick", "tick", "tick"]);
+});
+
+test("subdivision multiplies the beat's spacing along with the downbeat's - splitting 6/8 into sixteenths still marks the same two dotted-quarter pulses, just with twice as many ticks between them", () => {
+  // 6/8 at subdivision 2: clicksPerBar becomes 12 (metronome-engine.js's
+  // resolve() does that multiplication), but accentEvery is handed to
+  // clickLevel UN-multiplied (metronomePattern's raw 3) with subdivision
+  // passed alongside it - phase % (accentEvery * subdivision) is clickLevel's
+  // own job, not something a caller pre-computes.
+  const levels = Array.from({ length: 12 }, (_, i) => clickLevel(i, 12, 3, 2));
+  expect(levels).toEqual([
+    "downbeat", "tick", "tick", "tick", "tick", "tick",
+    "beat", "tick", "tick", "tick", "tick", "tick",
+  ]);
+});
+
+test("phase is normalised into range before either test runs, the same defensive stance clickPhaseInBar takes on its own input", () => {
+  expect(clickLevel(6, 6, 3, 1)).toBe("downbeat"); // wraps to 0
+  expect(clickLevel(-3, 6, 3, 1)).toBe("beat"); // wraps to 3
+  expect(clickLevel(-6, 6, 3, 1)).toBe("downbeat"); // wraps to 0
+});
+
+test("clickLevel guards a degenerate bar or a bad accentEvery rather than propagating NaN into a modulus", () => {
+  expect(clickLevel(0, 0, 3, 1)).toBe("tick");
+  expect(clickLevel(3, -6, 3, 1)).toBe("tick");
+  expect(clickLevel(Number.NaN, 6, 3, 1)).toBe("tick");
+  // No usable accentEvery still answers correctly for phase 0 (still the
+  // downbeat, tested first) and never claims "beat" for anything else.
+  expect(clickLevel(0, 6, Number.NaN, 1)).toBe("downbeat");
+  expect(clickLevel(3, 6, Number.NaN, 1)).toBe("tick");
+  expect(clickLevel(3, 6, 0, 1)).toBe("tick");
+});
+
+test("a subdivision that is not a positive integer is treated as 1 rather than corrupting the beat spacing", () => {
+  for (const bad of [0, -1, Number.NaN, undefined, null, "two"]) {
+    expect(clickLevel(3, 6, 3, bad), `subdivision ${String(bad)}`).toBe("beat");
+  }
 });
 
 // -------------------------------------------------------------- click timing

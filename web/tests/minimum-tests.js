@@ -160,7 +160,33 @@
 // guard behaviour - gig mode's HUD, and the toolbar above the wrap
 // breakpoint - that this fix was never meant to change, and a fix that
 // turned any of those red would itself be a regression.
-export const MINIMUM_TESTS = 251;
+//
+// Plus 11 for issue #121 - a compound meter's bar had no sound of its own,
+// and the subdivision labels named the wrong note.
+//
+// 3 in tests/browser/metronome-everywhere.spec.js, all driven through the
+// standalone page's own controls: 6/8 sounding three distinct levels rather
+// than the two that made every dotted-quarter pulse identical; 6/8 and 9/8
+// no longer producing byte-identical click streams (the sharpest of the
+// three - satisfiable only by the bar itself becoming audible); and the
+// subdivision option that names the eighth actually clicking six times a bar
+// in 6/8, paired with a rate assertion so a relabel that leaves the audio
+// untouched cannot pass it.
+//
+// 6 in tests/unit/metronome.spec.js, for clickLevel: the three sounds it
+// gives 6/8, a simple meter never reaching the beat tier, subdivision
+// scaling the beat's spacing along with the downbeat's, phase normalised
+// into range the same way clickPhaseInBar's own input is, and two guarding
+// a degenerate bar and a non-integer subdivision from corrupting either.
+//
+// 2 in tests/unit/metronome-engine.spec.js: changing the subdivision, and
+// separately the meter, while the click is running puts the very next click
+// back on the downbeat rather than at whatever offset the free-running
+// counter had reached.
+//
+// Raised deliberately, and every one of the 11 was shown to fail against a
+// mutation of the behaviour it claims - see the pull request.
+export const MINIMUM_TESTS = 262;
 
 export default class MinimumTests {
   constructor() {

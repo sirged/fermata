@@ -10,6 +10,16 @@
 // it at the Web Audio boundary. Nothing here should ever be read as evidence
 // that a click happened; currentRate() is the number the scheduler consumes,
 // and these tests only check that it is the right number.
+//
+// The phase-realignment tests at the bottom are the one deliberate exception:
+// proving freeRunPhase actually gets reset needs it to have moved off zero
+// first, and it only ever moves inside tick()'s real scheduling loop - there
+// is no seam that advances it any other way, on purpose, since a counter
+// divorced from real scheduling is the exact bug metronome-engine.js's own
+// header warns against. So those two tests install a minimal Web Audio stand-
+// in on `window` (a fake AudioContext whose clock is real wall-clock time, and
+// oscillators that do nothing) and wait on the real scheduler's own onClick
+// calls - still no browser, no page, and no real sound, but real timers.
 import { expect, test } from "@playwright/test";
 
 import { MAX_METRONOME_BPM, MIN_METRONOME_BPM } from "../../src/lib/metronome.js";
@@ -379,5 +389,126 @@ test("the ceiling is reachable from ordinary meters at ordinary presets, not onl
     e.setBaseTempo(tempo);
     e.setMeter(meter[0], meter[1]);
     expect(e.currentLimit(), `100% of ${tempo} in ${meter[0]}/${meter[1]}`).toBeNull();
+  }
+});
+
+// ------------------------------------- reaching for a setting while running
+//
+// Issue #121's third finding: freeRunPhase (the counter used only when no
+// pulse source is installed) was never realigned when clicksPerBar changed
+// mid-run, so the first click after a meter or subdivision change landed at
+// an arbitrary offset rather than on the downbeat - the interval stayed
+// correct, so nothing drifted, but the very next click was not where a
+// player had just told it to be.
+//
+// See the file header for why these two need a fake AudioContext where the
+// rest of this file needs none.
+
+/** A minimal Web Audio stand-in: real wall-clock time as the audio clock, and
+ * oscillators/gains that do nothing. Installed on `window` (which does not
+ * otherwise exist in this Node-run file) only for the lifetime of one test. */
+function installFakeAudio() {
+  const startedAt = Date.now();
+  class FakeAudioParam {
+    setValueAtTime() {}
+    linearRampToValueAtTime() {}
+    exponentialRampToValueAtTime() {}
+  }
+  class FakeGainNode {
+    constructor() {
+      this.gain = new FakeAudioParam();
+    }
+    connect() {}
+  }
+  class FakeOscillatorNode {
+    constructor(ctx) {
+      this.context = ctx;
+      this.frequency = { value: 0 };
+    }
+    connect() {}
+    start() {}
+    stop() {}
+  }
+  class FakeAudioContext {
+    get currentTime() {
+      return (Date.now() - startedAt) / 1000;
+    }
+    createOscillator() {
+      return new FakeOscillatorNode(this);
+    }
+    createGain() {
+      return new FakeGainNode();
+    }
+    resume() {
+      return Promise.resolve();
+    }
+    close() {
+      return Promise.resolve();
+    }
+  }
+  global.window = { AudioContext: FakeAudioContext };
+  return () => {
+    delete global.window;
+  };
+}
+
+/** Polls (there is no fake-timer seam here, only real wall-clock time - see
+ * installFakeAudio) until at least `n` real onClick calls have landed. */
+async function waitForClicks(calls, n, timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
+  while (calls.length < n) {
+    if (Date.now() > deadline) {
+      throw new Error(`timed out waiting for ${n} clicks, got ${calls.length}: ${JSON.stringify(calls)}`);
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+test("changing the subdivision mid-run puts the very next click on the downbeat, not wherever the free-running counter had reached", async () => {
+  const uninstall = installFakeAudio();
+  try {
+    const calls = [];
+    const e = createMetronomeEngine({ onClick: (level, numerator, denominator, phase) => calls.push({ level, phase }) });
+    e.setMode("bpm");
+    e.setBpm(MAX_METRONOME_BPM); // the fastest the click can run, so the wait below stays short
+    e.setMeter(4, 4);
+    e.setEnabled(true);
+
+    await waitForClicks(calls, 2);
+    // Sanity: the counter genuinely has moved off the downbeat by the second
+    // click - a reset that happened to already show phase 0 here would prove
+    // nothing about the change made below.
+    expect(calls[1].phase, JSON.stringify(calls)).not.toBe(0);
+
+    e.setSubdivision(2);
+    await waitForClicks(calls, 3);
+    expect(calls[2].phase, JSON.stringify(calls)).toBe(0);
+
+    e.setEnabled(false);
+  } finally {
+    uninstall();
+  }
+});
+
+test("changing the meter mid-run puts the very next click on the downbeat the same way", async () => {
+  const uninstall = installFakeAudio();
+  try {
+    const calls = [];
+    const e = createMetronomeEngine({ onClick: (level, numerator, denominator, phase) => calls.push({ level, phase }) });
+    e.setMode("bpm");
+    e.setBpm(MAX_METRONOME_BPM);
+    e.setMeter(4, 4);
+    e.setEnabled(true);
+
+    await waitForClicks(calls, 2);
+    expect(calls[1].phase, JSON.stringify(calls)).not.toBe(0);
+
+    e.setMeter(6, 8);
+    await waitForClicks(calls, 3);
+    expect(calls[2].phase, JSON.stringify(calls)).toBe(0);
+
+    e.setEnabled(false);
+  } finally {
+    uninstall();
   }
 });

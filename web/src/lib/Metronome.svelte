@@ -254,6 +254,13 @@
     return { numerator: Number(m[1]), denominator: Number(m[2]) };
   }
 
+  // The subdivision picker's own options, by the CURRENT meter's click unit -
+  // see SUBDIVISION_LABELS in metronome-engine.js for why "Eighths" cannot be
+  // a fixed list. Falls back to the x/4 rung for a meter string that does not
+  // yet parse (mid-edit, or unset), the same default metronomePattern itself
+  // uses for a malformed denominator.
+  const subdivisionLabels = $derived(SUBDIVISION_LABELS(meterParts(meter)?.denominator ?? 4));
+
   // Pushes every setting at `c`, in the order the engine needs them: enabled
   // LAST, because setEnabled is the call that can start the click running and
   // it must not do that against stale values for the instant before the rest
@@ -674,7 +681,7 @@
           onchange={(ev) => chooseSubdivision(ev.target.value)}
           title="How finely each beat is clicked"
         >
-          {#each SUBDIVISION_LABELS as [value, label]}
+          {#each subdivisionLabels as [value, label]}
             <option {value}>{label}</option>
           {/each}
         </select>

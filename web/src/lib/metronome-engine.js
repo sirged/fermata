@@ -45,6 +45,7 @@ import {
   MAX_METRONOME_BPM,
   MIN_METRONOME_BPM,
   clampBpm,
+  clickLevel,
   clickPhaseInBar,
   metronomePattern,
   rawClickRate,
@@ -54,14 +55,34 @@ import {
 export const METRONOME_LOOKAHEAD_MS = 25;
 export const METRONOME_SCHEDULE_AHEAD_S = 0.12;
 export const METRONOME_CLICK_SECONDS = 0.05;
-// Accent is both higher-pitched and louder than a plain subdivision tick -
-// pitch alone survives a quiet room or a cheap speaker better than volume
-// alone does, so the two are stacked rather than picking one. Gains are
-// sized so the two can never clip even in the pathological case of one
-// click's tail overlapping the next one's attack: 0.6 + 0.35 = 0.95, under
-// unity with headroom to spare. MAX_METRONOME_BPM keeps that overlap from
-// ever actually happening in practice - see its own comment in metronome.js.
+// Three sounds, not two: the downbeat (the first click of the bar), the beat
+// (the start of a group inside the bar - a compound meter's dotted-quarter
+// pulse), and the plain tick everything else gets. In a simple meter the
+// beat tier never fires (clickLevel never answers "beat" there - see its own
+// comment), so a simple meter is exactly the two sounds it always was.
+//
+// The downbeat is both higher-pitched and louder than the other two - pitch
+// alone survives a quiet room or a cheap speaker better than volume alone
+// does, so the two are stacked rather than picking one. The beat tier is
+// distinguished by PITCH ALONE, at the tick's own gain: giving it a gain
+// between the two would put the worst adjacent pair (downbeat immediately
+// followed by beat) at 0.6 + 0.48 = 1.08, over the headroom the comment below
+// establishes, where pitch survives a bad speaker better than volume does
+// anyway. And it has to sit below METRONOME_ACCENT_HZ by enough that a
+// listener - and a test - can call it "clearly the lower one": both browser
+// suites' own ACCENT_HZ_THRESHOLD is 1200, so anything at or above that reads
+// as the downbeat, which is why the beat tier is well under it rather than
+// merely different from it.
+//
+// Gains are sized so the loudest two can never clip even in the pathological
+// case of one click's tail overlapping the next one's attack: 0.6 + 0.35 =
+// 0.95, under unity with headroom to spare. MAX_METRONOME_BPM keeps that
+// overlap from ever actually happening in practice - see its own comment in
+// metronome.js. Revisiting the beat tier's gain (if pitch alone turns out too
+// subtle in a real room) means re-deriving this arithmetic, not editing
+// around it.
 export const METRONOME_ACCENT_HZ = 1500;
+export const METRONOME_BEAT_HZ = 1180;
 export const METRONOME_TICK_HZ = 950;
 export const METRONOME_ACCENT_GAIN = 0.6;
 export const METRONOME_TICK_GAIN = 0.35;
@@ -84,13 +105,15 @@ export const MAX_SUBDIVISION = 4;
  * proportion moves (a tempo change written mid-piece, or the meter itself
  * changing - which changes the rate even when the tempo does not).
  *
- * `onClick(accent, numerator, denominator, phase)` fires once per click ONLY
+ * `onClick(level, numerator, denominator, phase)` fires once per click ONLY
  * from inside the real scheduling call that creates its oscillator - not
  * merely alongside it - so deleting that function's body silences this too;
  * nothing downstream of it can report a click that scheduleClick never
- * actually attempted. `phase` is the bar-relative slot the click landed in -
- * exposed separately from `accent` so a caller can tell the phase is really
- * being derived from a playhead each time, not merely incrementing.
+ * actually attempted. `level` is `"downbeat" | "beat" | "tick"` - see
+ * clickLevel in metronome.js for what decides it - and `phase` is the
+ * bar-relative slot the click landed in, exposed separately from `level` so a
+ * caller can tell the phase is really being derived from a playhead each
+ * time, not merely incrementing.
  *
  * `ready` gates onTempo. It defaults to true, because a metronome standing on
  * its own always has a real number to report from the instant it exists. A
@@ -161,11 +184,11 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
 
   /**
    * Everything one click needs, resolved together from one reading of the
-   * context - the meter, the rate, the slot in the bar, and whether that slot
-   * is accented. Resolved together rather than by four separate lookups on
-   * purpose: the rate depends on the meter's unit and the accent depends on
-   * the same pattern the phase is taken modulo, so two readings of a context
-   * that moves under them can disagree.
+   * context - the meter, the rate, the slot in the bar, and which of the
+   * three sounds that slot gets. Resolved together rather than by four
+   * separate lookups on purpose: the rate depends on the meter's unit and the
+   * level depends on the same pattern the phase is taken modulo, so two
+   * readings of a context that moves under them can disagree.
    */
   function resolve(live) {
     const bar = live?.bar ?? null;
@@ -173,7 +196,6 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
     const denominator = bar?.denominator ?? meterDenominator;
     const pattern = metronomePattern(numerator, denominator);
     const clicksPerBar = pattern.clicksPerBar * subdivision;
-    const accentEvery = pattern.accentEvery * subdivision;
     // Subdivision is folded into effectiveClickRate's INPUTS rather than
     // multiplied onto its output, so MAX_METRONOME_BPM still lands on the
     // rate actually scheduled. Multiplying afterwards would let a
@@ -218,7 +240,11 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
       clicksPerBar,
       phase,
       limit,
-      accent: accentEnabled && phase % accentEvery === 0,
+      // setAccent(false) has to flatten BOTH upper tiers, not just the
+      // downbeat - "turning the accent off makes every real click identical"
+      // is the property this is for, and it would go on being false for the
+      // beat tier if that check lived inside clickLevel instead of here.
+      level: accentEnabled ? clickLevel(phase, clicksPerBar, pattern.accentEvery, subdivision) : "tick",
       // Rounded ONCE, here, and used unrounded nowhere else: both the
       // scheduler and the readout consume exactly this number. A display that
       // rounds separately from what the scheduler consumes is exactly the
@@ -251,14 +277,17 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
   // click that gets reported without a real audio node behind it is exactly
   // the failure this project has shipped before: a test - or a player - that
   // trusts a value the interface merely intended to produce.
-  function scheduleClick(time, accent, numerator, denominator, phase) {
+  function scheduleClick(time, level, numerator, denominator, phase) {
     const ctx = audioCtx;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.frequency.value = accent ? METRONOME_ACCENT_HZ : METRONOME_TICK_HZ;
+    osc.frequency.value =
+      level === "downbeat" ? METRONOME_ACCENT_HZ : level === "beat" ? METRONOME_BEAT_HZ : METRONOME_TICK_HZ;
     osc.connect(gain);
     gain.connect(ctx.destination);
-    const peak = accent ? METRONOME_ACCENT_GAIN : METRONOME_TICK_GAIN;
+    // The beat tier is distinguished by pitch alone, at the tick's own gain -
+    // see the headroom comment above METRONOME_BEAT_HZ.
+    const peak = level === "downbeat" ? METRONOME_ACCENT_GAIN : METRONOME_TICK_GAIN;
     // A short percussive envelope, not a sustained tone: near-instant attack
     // so the click reads as a transient a note can be placed against, then an
     // exponential decay - linear ramps to silence read as a cut-off, not a
@@ -274,7 +303,7 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
     // way of this function actually running - createOscillator, the gain
     // envelope and this call all have to happen first - so deleting
     // scheduleClick's body still silences onClick exactly as intended.
-    onClick(accent, numerator, denominator, phase);
+    onClick(level, numerator, denominator, phase);
     osc.start(time);
     osc.stop(time + METRONOME_CLICK_SECONDS + 0.02);
     pendingOscillators.push(osc);
@@ -311,7 +340,7 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
       // playhead fresh again - so the cost is an occasional single click's
       // accent placed a slot off near a boundary, not a drift that persists.
       const click = resolve(context());
-      scheduleClick(nextClickTime, click.accent, click.numerator, click.denominator, click.phase);
+      scheduleClick(nextClickTime, click.level, click.numerator, click.denominator, click.phase);
       freeRunPhase += 1;
       nextClickTime += secondsPerClick(click.rate);
     }
@@ -439,11 +468,23 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
       report();
     },
     /** How many clicks each notated click is split into - 1 for the plain
-     * beat, 2 for eighths against a quarter-note beat, and so on. */
+     * beat, 2 for eighths against a quarter-note beat, and so on.
+     *
+     * Realigns freeRunPhase to the downbeat when no pulse source is
+     * installed - i.e. when the phase above is a counter rather than
+     * something derived fresh from a playhead. Without this, a change made
+     * mid-run leaves the very next click at whatever offset the OLD
+     * clicksPerBar happened to have counted up to, rather than on the
+     * downbeat: the interval is still right, so nothing drifts, but the first
+     * click after the change is not where a player just told it to be. A
+     * caller WITH a pulse source has nothing to realign - the phase is
+     * recomputed from the playhead on every click regardless of what this
+     * setting just did. */
     setSubdivision(next) {
       const v = Math.round(Number(next));
       if (!Number.isInteger(v) || v < 1 || v > MAX_SUBDIVISION) return;
       subdivision = v;
+      if (!pulseSource) freeRunPhase = 0;
       report();
     },
     /** Whether the first click of each bar is accented at all. Off makes every
@@ -452,12 +493,14 @@ export function createMetronomeEngine({ onTempo = () => {}, onClick = () => {}, 
     setAccent(v) {
       accentEnabled = !!v;
     },
-    /** The meter to click when no pulse source supplies one. */
+    /** The meter to click when no pulse source supplies one. See
+     * setSubdivision above for why this also realigns freeRunPhase. */
     setMeter(numerator, denominator) {
       const n = Math.round(Number(numerator));
       const d = Math.round(Number(denominator));
       if (Number.isInteger(n) && n > 0) meterNumerator = n;
       if (Number.isInteger(d) && d > 0) meterDenominator = d;
+      if (!pulseSource) freeRunPhase = 0;
       report();
     },
     /** The quarter-note tempo a proportion is taken of. */
@@ -543,13 +586,51 @@ export const PROPORTION_PRESETS = [15, 25, 35, 50, 60, 70, 80, 90, 100, 110, 125
  * slow-practice crawl to a fast one. */
 export const BPM_PRESETS = [40, 50, 60, 72, 84, 96, 108, 120, 132, 144, 160, 176, 200];
 
-/** Subdivisions offered in the interface, by name. */
-export const SUBDIVISION_LABELS = [
-  [1, "Beat"],
-  [2, "Eighths"],
-  [3, "Triplets"],
-  [4, "Sixteenths"],
-];
+// The note each subdivision setting actually clicks, by the meter's OWN
+// click unit (metronomePattern's `unit` - the denominator, an eighth for
+// .../8) - not a fixed absolute-note ladder. `subdivision` multiplies that
+// unit, so what ×2 clicks in 6/8 (an eighth-note meter: sixteenths) is not
+// what it clicks in 4/4 (a quarter-note meter: eighths), and a label that
+// does not move with the meter names the wrong note. "Beat" is gone
+// entirely: it was only ever true in x/4, and in x/8 it named the
+// subdivision rather than the beat - the specific defect this table exists
+// to fix. ×3 is a triplet of the next rung down (×1), the same relationship
+// a dotted note's triplet always has to the plainer value beside it.
+const SUBDIVISION_TABLE = {
+  2: [
+    [1, "Halves"],
+    [2, "Quarters"],
+    [3, "Quarter triplets"],
+    [4, "Eighths"],
+  ],
+  4: [
+    [1, "Quarters"],
+    [2, "Eighths"],
+    [3, "Eighth triplets"],
+    [4, "Sixteenths"],
+  ],
+  8: [
+    [1, "Eighths"],
+    [2, "Sixteenths"],
+    [3, "Sixteenth triplets"],
+    [4, "Thirty-seconds"],
+  ],
+  16: [
+    [1, "Sixteenths"],
+    [2, "Thirty-seconds"],
+    [3, "32nd triplets"],
+    [4, "Sixty-fourths"],
+  ],
+};
+
+/** Subdivisions offered in the interface, by name - a function of the
+ * meter's own click unit (the denominator), not a fixed list: see
+ * SUBDIVISION_TABLE above for why "Eighths" cannot mean the same interval in
+ * every meter. An unlisted unit falls back to the x/4 rung, the same default
+ * metronomePattern itself uses for a malformed denominator. */
+export function SUBDIVISION_LABELS(unit) {
+  return SUBDIVISION_TABLE[unit] ?? SUBDIVISION_TABLE[4];
+}
 
 /** Time signatures offered as a pre-fill when there is no piece to read one
  * from. Not a limit on what is possible - metronomePattern handles any meter
