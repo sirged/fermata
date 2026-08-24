@@ -109,11 +109,12 @@ def mirror_to_tab(body):
     own staff carrying its own notes, so a score that shows both writes each
     note twice. Rewriting the notation staff's own text is what keeps the
     two halves from drifting apart as these fixtures are edited. Only voices
-    1 and 2 are ever generated (see `note`/`rest` above), so only those two
-    need remapping here."""
+    1, 2 and 3 are ever generated (see `note`/`rest` above), so only those
+    three need remapping here."""
     return (body.replace("<staff>1</staff>", "<staff>2</staff>")
                 .replace("<voice>1</voice>", "<voice>5</voice>")
-                .replace("<voice>2</voice>", "<voice>6</voice>"))
+                .replace("<voice>2</voice>", "<voice>6</voice>")
+                .replace("<voice>3</voice>", "<voice>7</voice>"))
 
 
 def staff_details(tuning, number=2):
@@ -240,6 +241,37 @@ def fixture_two_voices():
     upper = "".join(note(("E", 5), "quarter", voice=1) for _ in range(4))
     lower = "".join(note(("E", 4), "eighth", voice=2) for _ in range(8))
     body = upper + backup(4.0) + lower
+    bar = body + backup(4.0) + mirror_to_tab(body)
+    return score("Guitar", [attributes() + bar] + [bar] * 7)
+
+
+def fixture_three_voices():
+    """A melody in quarters (stems up) over an arpeggiated accompaniment in
+    eighths (stems down), with a sustained bass held under both as a whole
+    note every bar - issue #133's measured shape (melody, arpeggio and bass,
+    each with its own rhythm) reduced to its smallest engraveable form.
+
+    The bass is written as a WHOLE note deliberately, not because a real bass
+    line only ever holds one note a bar, but because a whole note is the one
+    duration that never takes a stem in any notation - _stem_groups' own
+    chord-fold only merges two groups sharing a stem DIRECTION, and a
+    stemless group's "whole" signal matches neither "up" nor "down", so this
+    third voice's one note a bar reaches voice assignment as its own group
+    rather than being silently absorbed into whichever of the other two it
+    happens to share an onset with. All three voices attack together on beat
+    one, which is exactly where a ceiling of two loses the bass: with only
+    two voices available it is folded into whichever of the melody or the
+    arpeggio it lands nearest, so its four quarters of silence for the rest
+    of the bar are never accounted for and that voice overfills.
+
+    Each voice fills the bar on its own (4 quarters, 8 eighths, 1 whole are
+    all four quarter-notes long), so a bar that does not read as three voices
+    each summing to 4.0 means the third voice vanished into one of the
+    other two."""
+    melody = "".join(note(("E", 5), "quarter", voice=1) for _ in range(4))
+    arpeggio = "".join(note(("E", 4), "eighth", voice=2) for _ in range(8))
+    bass = note(("E", 3), "whole", voice=3)
+    body = melody + backup(4.0) + arpeggio + backup(4.0) + bass
     bar = body + backup(4.0) + mirror_to_tab(body)
     return score("Guitar", [attributes() + bar] + [bar] * 7)
 
@@ -572,6 +604,7 @@ FIXTURES = {
     "tab_only": fixture_tab_only,
     "tab_only_short_last_system": fixture_tab_only_short_last_system,
     "two_voices": fixture_two_voices,
+    "three_voices": fixture_three_voices,
     "tuplet_and_tie": fixture_tuplet_and_tie,
     "drop_d": fixture_drop_d,
     "defective_bars": fixture_defective_bars,

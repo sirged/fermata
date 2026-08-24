@@ -38,6 +38,7 @@ gap this directory exists to close was created.
 | `tab_only` | tablature with no notation staff — the honest fall back to spacing-inferred rhythm |
 | `tab_only_short_last_system` | eight bars of which six are read: an unstretched final system falls under the length floor and is lost silently |
 | `two_voices` | a melody stems-up over an accompaniment stems-down in one bar |
+| `three_voices` | a melody, an arpeggiated accompaniment and a sustained whole-note bass, all three attacking together on beat one (issue #133) |
 | `tuplet_and_tie` | a triplet (not detected, so its bar is reported overfull) and a tie across a barline |
 | `drop_d` | a non-standard tuning named in the score's text, and a metronome mark |
 | `defective_bars` | bars over their meter, bars under it, and a bar wrong in both directions at once |

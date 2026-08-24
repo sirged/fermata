@@ -335,6 +335,11 @@ def test_voice_durations_is_the_left_hand_side_of_rule_8_for_every_shape():
         ([[(4, 0, [(1, 78)])]], [D]),
         # two voices, in voice order
         ([[(2, 0, [(1, 0)])], [(4, 0, [(5, 0)]), (4, 0, [(5, 2)])]], [2 * D, 2 * D]),
+        # three voices (issue #133) - this sums a list of lists exactly the
+        # same way regardless of how many of them there are, which is the
+        # point: nothing here is hardcoded to two
+        ([[(4, 0, [(1, 0)])] * 2, [(4, 0, [(5, 0)]), (4, 0, [(5, 2)])],
+          [(2, 0, [(6, 0)])]], [2 * D, 2 * D, 2 * D]),
         # a flat list of beats is the one-voice case
         ([(4, 0, [(1, 0)]), (8, 0, [(1, 2)])], [D + D // 2]),
         ([], []),
