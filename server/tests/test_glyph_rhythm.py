@@ -842,6 +842,54 @@ def test_meter_left_edge_takes_the_leftmost_stacked_pair():
 
 
 # ---------------------------------------------------------------------------
+# Time signature - the notehead/rest clamp (F2)
+# ---------------------------------------------------------------------------
+
+
+def _decode_ts(events, monkeypatch):
+    """Run decode_time_signature over a synthetic glyph set, on the same
+    staff geometry the key-signature tests use."""
+    page = object()
+    monkeypatch.setattr(
+        G, "extract_glyph_events",
+        lambda _page: G.PageGlyphs(list(events), {"Opus": []}, [], []))
+    return G.decode_time_signature(page, _KS_TOP, _KS_BOTTOM, 48.0, 5.0)
+
+
+def test_a_stray_digit_pair_beyond_a_ledger_line_note_is_refused(monkeypatch):
+    """The notehead/rest clamp used to be read from the same +-1 staff-space
+    band as the accidentals and the meter's own digits, so it never saw a
+    note sitting on a ledger line - guitar's open low strings on a
+    treble-8vb staff routinely do (see _SOUNDING_BAND_SPACINGS). Blind to
+    that note, the old window kept reaching past it and could read a stray
+    digit pair beyond it as a confident meter. The clamp's own band is wider
+    now, so the same note still stops the window even though it never enters
+    the staff-height band the digits themselves are read from.
+
+    Both glyphs sit well inside the FLAT reach (8.8 spacings = 44pt past
+    staff_x0=48, i.e. up to x=92) on purpose: if the clamp were not doing
+    anything, the flat window alone would already reach the stray pair and
+    accept it, which would make this test pass for the wrong reason."""
+    ledger_note = _ev("notehead_filled", 70.0, 228.0, 76.0, 232.0)  # yc=230, 2.0 spacings below
+    stray_pair = _ks_meter(x0=80.0)  # further right than the note, still inside the flat reach
+    events = [_ks_clef(), ledger_note] + stray_pair
+    ts, why = _decode_ts(events, monkeypatch)
+    assert ts is None, (ts, why)
+
+
+def test_a_meter_before_a_ledger_line_note_is_still_read(monkeypatch):
+    """The other direction: widening the clamp's own band must not cost a
+    meter that genuinely is the first thing on the staff. A note past it -
+    even one deep enough on a ledger line to need the wider band to be seen
+    at all - changes nothing, because the window never reaches that far."""
+    meter = _ks_meter(x0=70.0)
+    ledger_note = _ev("notehead_filled", 90.0, 228.0, 96.0, 232.0)  # after the meter
+    events = [_ks_clef()] + meter + [ledger_note]
+    ts, why = _decode_ts(events, monkeypatch)
+    assert ts == (4, 4), why
+
+
+# ---------------------------------------------------------------------------
 # Half rest or whole rest (finding 88)
 # ---------------------------------------------------------------------------
 
