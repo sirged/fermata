@@ -841,6 +841,32 @@ into the reported confidence instead. That confidence also states any known
 defect below the threshold at which it changes label, so an unqualified
 high-confidence string means no measure was in question rather than not many.
 
+**How each measure's durations were obtained** is reported alongside them.
+`rhythm_provenance` counts staff systems by source: `glyphs` means flags,
+beams, dots and rest shapes were decoded; `spacing` means durations were
+inferred from the horizontal gaps between noteheads, which is only as good as
+the engraver's spacing being proportional and is wrong wherever a system was
+justified to the margin or spaced by hand; `glyphs-degraded` means the staff
+was read from its engraving with something on it left unread. `spacing_bars`
+and `degraded_bars` are the measure numbers those systems produced. The counts
+say how much of a transcription is in question, and only the lists say which of
+it — which is the form of the fact a reader comparing against the PDF can use.
+
+`notes_no_stem` is how many filled noteheads were read with no stem attached,
+across `staves_no_stem` notation staves. A note's flags and beams hang off its
+stem, so for those notes there was nothing to count and each was emitted at the
+longest duration its notehead alone allows — a quarter. That is a floor rather
+than a reading, and because it is the longest of the candidate values such a
+note always plays long and always pushes its measure towards Rule 8's overfull
+side; it has also lost the stem direction that assigns it to a voice. A staff
+carrying any of them is reported as `glyphs-degraded` rather than `glyphs`.
+
+Every one of these figures is also stated in the warning prose, in the same
+numbers. That is deliberate duplication rather than redundancy: a consumer
+written before a field existed does not read it, and the warnings are a list of
+strings that gets displayed as it is, so a count added without its sentence is
+a measurement nobody is ever told.
+
 **How the meter and key were obtained** is reported the same way, and for the
 same reason: `time_signature` with `time_signature_source`, and `key_fifths`
 with `key_signature_source`. A source of `glyph-decoded` or `auto-detected`

@@ -1016,6 +1016,57 @@ def test_a_staff_with_no_detected_lines_decodes_undecided_rather_than_failing(mo
 
 
 # ---------------------------------------------------------------------------
+# A notehead with no stem has its duration floored, and says so (#115)
+# ---------------------------------------------------------------------------
+
+
+def _head_glyph(category, yc=207.5, x0=300.0):
+    """A notehead as extract_glyph_events builds one, with its outline read."""
+    return G.GlyphEvent("Maestro", 207, category,
+                        (x0, yc - 4.0, x0 + 7.0, yc + 4.0), 0,
+                        baseline_y=yc, ink=(yc - 2.5, yc + 2.5))
+
+
+def test_a_filled_notehead_with_no_stem_is_counted_not_just_floored(monkeypatch):
+    """A filled notehead can be a quarter or anything shorter, and the flag or
+    beam that says which hangs off its stem. With no stem there is nothing to
+    count, so it goes out at the LONGEST of the candidate readings - which
+    means it reads long and overfills its bar. Emitting that is sometimes
+    unavoidable; not counting it is what let a score be built on floored
+    durations and still report its rhythm as read from the glyphs."""
+    notes, stats = _decode_rests([_head_glyph("notehead_filled")], monkeypatch)
+    assert [n.base_units for n in notes] == [1.0]
+    assert [n.flags for n in notes] == [0], "no stem, so no flag could be counted"
+    assert notes[0].stem_key is None
+    assert stats["no_stem_noteheads"] == 1
+
+
+def test_a_stemless_notehead_that_cannot_carry_a_flag_is_not_counted(monkeypatch):
+    """A half or whole notehead's value is settled by the head alone - neither
+    shape takes a flag or a beam in any notation - so a missing stem costs the
+    voice signal and nothing about the duration. Counting those here would
+    inflate the figure with notes whose durations were read correctly, and the
+    figure is only worth stating if it means what it says."""
+    notes, stats = _decode_rests(
+        [_head_glyph("notehead_half", x0=300.0),
+         _head_glyph("notehead_whole", x0=400.0)], monkeypatch)
+    assert [n.base_units for n in notes] == [2.0, 4.0]
+    assert all(n.stem_key is None for n in notes), "no stems on this page at all"
+    assert stats["no_stem_noteheads"] == 0
+
+
+def test_the_stemless_count_is_zero_when_every_head_found_its_stem(zanarkand_pdf):
+    """The counter has to be able to report nothing, or it says nothing. This
+    score's noteheads all attach, so a counter wired to fire on every filled
+    head - or on the wrong branch - shows up here rather than in the aggregate."""
+    result = tabextract.extract(str(zanarkand_pdf))
+    assert result.notes_no_stem == 0
+    assert result.staves_no_stem == 0
+    assert result.rhythm_provenance == {tabextract.PROV_GLYPHS: 10}
+    assert not any("no stem this decoder could find" in w for w in result.warnings)
+
+
+# ---------------------------------------------------------------------------
 # A flag is joined to its stem's tip, not centred on it (finding 88)
 # ---------------------------------------------------------------------------
 
