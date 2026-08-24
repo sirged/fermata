@@ -996,13 +996,25 @@ _ONSET_SHARE_SPACINGS = 0.6
 # onset short of digits eats its neighbour's column.
 _CHORD_SPLIT_SPACINGS = 0.6
 
-# Guitar fingerstyle and classical writing is two voices: a melody over an
-# accompaniment. Three genuinely independent voices on one guitar staff are
-# rare enough that a third simultaneous stem is far more likely to be a chord
-# whose shared stem was not found than a real third voice, so extra groups
-# join the lower voice and the bar reports itself as overfull rather than
-# inventing a voice.
-_MAX_VOICES = 2
+# Guitar fingerstyle and classical writing is usually a melody over an
+# accompaniment, but classical guitar arrangements genuinely go to three: a
+# melody, an arpeggiated inner voice and a sustained bass, each with its own
+# rhythm (Spanish-Romance-Guitar-Free.pdf, measured for issue #133 - with a
+# ceiling of two the bass had nowhere to live and folded into the melody's
+# chord). Measured across the whole library at the coincident-notehead
+# binding this project currently has, a literal three-way onset collision -
+# the strongest evidence a bar needs more than two voices - appears in
+# exactly one score, and that one is a known missing-stem case, not a real
+# third voice: the same mis-binding load-bearing for Spanish Romance (#116)
+# hides the third voice's own collisions everywhere else, which is why this
+# count cannot be pushed higher than "guitar rarely needs more than three"
+# by measurement alone. Nothing in the library shows any need for a fourth,
+# so the ceiling moves to three and no further; a fourth simultaneous stem
+# is still far more likely to be a chord whose shared stem was not found
+# than a real fourth voice, and extra groups past the ceiling join the
+# lowest voice - the bar reports itself as overfull rather than this
+# inventing a voice nothing engraved.
+_MAX_VOICES = 3
 
 
 class _StemGroup:
@@ -1178,6 +1190,20 @@ def _assign_group_voices(groups, onset_tol):
     has folded chords back together means two stems saying different things -
     and stem direction is used to sort the notes into voices only once that
     is established.
+
+    A third voice (issue #133) is not a third stem direction - there are only
+    two, up and down - so _stemless_voice's own return value only ever being
+    0 or 1 looks like the hardcoded-pair bug a raised ceiling would need
+    fixing, and was checked as one: it is not. A stem-bearing group's voice
+    is fixed by which way its stem points, so it can never collide with a
+    group going the other way UNLESS a third, direction-sharing voice is
+    genuinely present - and that collision is exactly what the loop below
+    catches and re-ranks by pitch, uncapped at two by _MAX_VOICES rather
+    than the literal 1 this used to read. A stemless group's own initial
+    guess only has to be WRONG (any value that collides) for that rescue to
+    fire; it does not have to already be 0, 1 or 2. Verified on an engraved
+    three-voice fixture (melody, arpeggio, sustained bass) with no change
+    below this function: the ceiling was the only hard limit.
     """
     onsets = _onsets(groups, onset_tol)
     if not any(len(o) > 1 for o in onsets):

@@ -1039,6 +1039,66 @@ def test_the_second_voice_really_sounds_at_the_same_time(engraved):
 
 
 # ---------------------------------------------------------------------------
+# Three voices in one bar (issue #133)
+# ---------------------------------------------------------------------------
+
+
+def test_three_voices_are_separated_and_every_voice_sums_to_the_meter(engraved):
+    """A melody in quarters (stems up), an arpeggiated accompaniment in
+    eighths (stems down), and a sustained bass held as one whole note - all
+    three attacking together on beat one, which is exactly where a ceiling of
+    two loses the bass (RED on an unraised ceiling: see
+    test_a_ceiling_of_two_voices_loses_the_third_below). Flattened into two
+    voices the bass has nowhere to live and one of them holds 12 quarters
+    against the 4/4 meter; separated, all three hold exactly 4 - this is
+    Rule 8 held per voice for three voices, not just two."""
+    result = tabextract.extract(engraved("three_voices"))
+    assert result.extractable
+    assert result.bars == 8
+    assert result.notes == 104, "4 quarters + 8 eighths + 1 whole, eight times over"
+    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
+
+    bars = emitted_bars(result.alphatex)
+    assert all(len(voices) == 3 for voices in bars), bars
+    for melody, arpeggio, bass in bars:
+        assert [q for q, _n in melody] == [1.0] * 4
+        assert [q for q, _n in arpeggio] == [0.5] * 8
+        assert [q for q, _n in bass] == [4.0]
+        for voice in (melody, arpeggio, bass):
+            assert sum(q for q, _n in voice) == 4.0, (melody, arpeggio, bass)
+
+
+def test_the_third_voice_really_sounds_at_the_same_time_as_the_first_two(engraved):
+    """The three-voice counterpart of
+    test_the_second_voice_really_sounds_at_the_same_time: `\\voice` only means
+    concurrent voices under `\\voicemode barwise`, so a reader that fell back
+    to the default "next voice restarts the staff" reading would still parse
+    this - three times as many sounding voices as bars is what says all three
+    landed as CONCURRENT voices rather than three staves played one after the
+    other."""
+    result = tabextract.extract(engraved("three_voices"))
+    parsed = _parse_with_alphatab(result.alphatex)
+    assert parsed["voices"] == 3 * parsed["bars"], parsed
+
+
+def test_a_ceiling_of_two_voices_loses_the_third_below(engraved, monkeypatch):
+    """The RED this issue is about, pinned directly: with the ceiling held at
+    two, the bass has nowhere to live and is folded into whichever of the
+    melody or the arpeggio it lands nearest by pitch - here, the arpeggio's
+    voice, which then holds its own 8 eighths plus the bass's whole note: 8
+    quarters where the bar wants 4, overfull in all 8 bars. This is what
+    running the new fixture against an unmodified ceiling proves, without
+    reverting the source file to get there."""
+    monkeypatch.setattr(tabextract, "_MAX_VOICES", 2)
+    result = tabextract.extract(engraved("three_voices"))
+    assert result.extractable
+    assert result.bars == 8
+    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (8, 0, 8)
+    bars = emitted_bars(result.alphatex)
+    assert all(len(voices) == 2 for voices in bars), bars
+
+
+# ---------------------------------------------------------------------------
 # Tuplets and ties: known gaps, pinned as gaps
 # ---------------------------------------------------------------------------
 
@@ -1443,7 +1503,7 @@ def test_no_meter_change_is_invented_where_none_is_printed(name, engraved):
 
 ENGRAVED_NAMES = (
     "notation_and_tab", "rests_and_flags", "tab_only", "tab_only_short_last_system",
-    "two_voices", "tuplet_and_tie", "drop_d", "defective_bars", "volta",
+    "two_voices", "three_voices", "tuplet_and_tie", "drop_d", "defective_bars", "volta",
     "harmonics_dense", "notation_only", "four_sharps_in_three_four",
     "hidden_opening_meter", "hidden_opening_meter_matches_the_default",
     "mid_system_meter_change", "mid_system_key_and_meter_change",
