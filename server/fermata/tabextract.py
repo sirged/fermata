@@ -2478,6 +2478,18 @@ def _build_time_signature_timeline(pages_with_tab):
     part-way through recorded only the 3/4, called it the opening meter at
     full confidence, and - having recorded exactly one meter - never fired the
     "changes time signature part-way through" warning either (issue #90).
+
+    `first_staff` names the first notation staff among `pages_with_tab` -
+    which is already filtered to pages that carry a TAB staff, not the
+    score's pages in general. A score whose actual opening page is notation
+    only (a foreword, a single-staff intro before the tabbed arrangement
+    begins) is not in `pages_with_tab` at all, so "first" here means the
+    first notation staff on the first page that ALSO has tablature, not the
+    first notation staff in the document. Where the two differ, a meter
+    printed only on that earlier, tab-less page is never read as the
+    opening one - it is not read at all, since `pages_with_tab` never
+    reaches it - and this reports "not detected (assumed 4/4)" rather than
+    the meter that page actually shows.
     """
     timeline = []
     reasons = []
@@ -2666,14 +2678,21 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     if ts_timeline and not ts_opening_read:
         # Said out loud, because this is the shape that used to be silent AND
         # confident: the opening meter unread, a later one read, and that
-        # later one reported as the meter of the whole score.
+        # later one reported as the meter of the whole score. Suppressed
+        # when the later meter and the assumed opening happen to agree -
+        # "read as 4/4, assumed 4/4" is not a discrepancy worth surfacing,
+        # and `ts_source` is never interpolated into the sentence: it can
+        # itself be the string "not detected (assumed 4/4)", which nested
+        # inside prose about being "barred as 4/4 (not detected (assumed
+        # 4/4))" reads as a token dump rather than an explanation.
         later = ts_timeline[0][3]
-        warnings.append(
-            f"the meter printed at the start of this score was not read, but a {later[0]}/"
-            f"{later[1]} printed further into it was - the bars before that point are barred "
-            f"as {ts[0]}/{ts[1]} ({ts_source}) rather than measuring them against a meter "
-            "read from a later part of the score"
-        )
+        if later != ts:
+            warnings.append(
+                f"the meter printed at the start of this score was not read, but a {later[0]}/"
+                f"{later[1]} printed further into it was - the bars before that point are "
+                f"barred as {ts[0]}/{ts[1]} rather than measured against a meter read from a "
+                "later part of the score"
+            )
 
     if tuning_unread:
         # Said in the warnings as well as carried as data, because it is a

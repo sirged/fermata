@@ -46,6 +46,7 @@ gap this directory exists to close was created.
 | `notation_only` | standard notation with no tablature — refused, with the reason |
 | `four_sharps_in_three_four` | four sharps between the clef and the meter, pushing the meter's digits past the window a clef and a meter alone need — in 3/4, so failing to read it misplaces every barline |
 | `hidden_opening_meter` | an invisible opening `<time>` and a printed 3/4 later: the only meter that can be read is not the opening one |
+| `hidden_opening_meter_matches_the_default` | the same shape, but the only meter read anywhere is a 4/4 that happens to match the assumed default — the "opening not read" warning must stay quiet |
 | `mid_system_meter_change` | a change to 2/4 engraved part-way along the first system, and back to 4/4 at the second — the bars ahead of a change are not in it |
 | `mid_system_key_and_meter_change` | four sharps printed behind a barline, pushing a mid-system meter change's digits past the flat reach a mid-system reader alone needs — the mid-system counterpart of `four_sharps_in_three_four` |
 

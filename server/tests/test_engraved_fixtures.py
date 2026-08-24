@@ -1273,6 +1273,27 @@ def test_a_meter_read_later_is_not_backdated_over_an_unread_opening(engraved):
                for w in result.warnings), result.warnings
 
 
+def test_the_unread_opening_warning_is_quiet_when_the_default_agrees(engraved):
+    """The other direction (review finding F10): the opening meter is
+    invisible here too, but the only meter ever read anywhere in the score
+    is a 4/4 - which is exactly what "assumed 4/4" already guesses. Saying
+    "the opening was not read, but a 4/4 was found, so bars are barred as
+    4/4" is not a caveat, it is noise: there is no discrepancy for a reader
+    to act on. The warning used to fire regardless, and interpolated
+    `time_signature_source` straight into the sentence - itself the string
+    "not detected (assumed 4/4)" - which read as "barred as 4/4 (not
+    detected (assumed 4/4))", a token dump rather than an explanation."""
+    result = tabextract.extract(engraved("hidden_opening_meter_matches_the_default"))
+    assert result.time_signature == (4, 4)
+    assert set(emitted_meters(result.musicxml)) == {(4, 4)}
+    assert not any("the meter printed at the start of this score was not read" in w
+                   for w in result.warnings), result.warnings
+    assert not any("changes time signature" in w for w in result.warnings), result.warnings
+    # and no warning anywhere quotes time_signature_source's own parenthetical
+    # back into a sentence
+    assert not any("(not detected (assumed" in w for w in result.warnings), result.warnings
+
+
 def test_a_meter_printed_part_way_along_a_system_starts_where_it_is_printed(engraved):
     """Issue #104. The meter used to be resolved once per staff system, so a
     change engraved part-way along one applied to the bars ahead of it as
@@ -1348,7 +1369,8 @@ ENGRAVED_NAMES = (
     "notation_and_tab", "rests_and_flags", "tab_only", "tab_only_short_last_system",
     "two_voices", "tuplet_and_tie", "drop_d", "defective_bars", "volta",
     "harmonics_dense", "notation_only", "four_sharps_in_three_four",
-    "hidden_opening_meter", "mid_system_meter_change", "mid_system_key_and_meter_change",
+    "hidden_opening_meter", "hidden_opening_meter_matches_the_default",
+    "mid_system_meter_change", "mid_system_key_and_meter_change",
 )
 SYNTHESISED_NAMES = ("raster_scan", "fake_music_font")
 

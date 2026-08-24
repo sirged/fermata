@@ -433,6 +433,27 @@ def fixture_hidden_opening_meter():
     return score("Guitar", measures)
 
 
+def fixture_hidden_opening_meter_matches_the_default():
+    """The other direction from fixture_hidden_opening_meter: the opening
+    meter is invisible, decoding it fails, and the only meter read anywhere
+    in the score is a later, explicit 4/4 - printed again at the second
+    system for no musical reason, purely so there is something for the
+    decoder to read - which happens to be exactly what "assumed 4/4" already
+    guesses. The "meter printed at the start of this score was not read"
+    warning must not fire here: there is no discrepancy between the assumed
+    opening and the meter that was read, so saying so would be noise rather
+    than a caveat worth a reader's attention (PR #122's review, finding
+    F10). Every bar is in 4/4 throughout, so the "changes time signature"
+    warning must stay quiet too."""
+    four = _bar([note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+                 note(("G", 4), "quarter"), note(("A", 4), "quarter")], 4.0)
+    change = ('<print new-system="yes"/><attributes>'
+              + time_signature((4, 4)) + "</attributes>")
+    measures = ([attributes(time_printed=False) + four] + [four] * 3
+                + [change + four] + [four] * 3)
+    return score("Guitar", measures)
+
+
 def fixture_mid_system_meter_change():
     """A meter change engraved part-way ALONG a system, not at its start.
 
@@ -489,6 +510,7 @@ FIXTURES = {
     "notation_and_tab": fixture_notation_and_tab,
     "four_sharps_in_three_four": fixture_four_sharps_in_three_four,
     "hidden_opening_meter": fixture_hidden_opening_meter,
+    "hidden_opening_meter_matches_the_default": fixture_hidden_opening_meter_matches_the_default,
     "mid_system_meter_change": fixture_mid_system_meter_change,
     "mid_system_key_and_meter_change": fixture_mid_system_key_and_meter_change,
     "rests_and_flags": fixture_rests_and_flags,
