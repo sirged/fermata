@@ -1328,13 +1328,20 @@ def _transcription_row(conn, score_id: int):
 # reading, and one that always errs long. That is the same kind of fact as a
 # padded bar and is recoverable from nothing else here.
 #
-# `dots_unassigned` / `staves_dots_unassigned` too: an augmentation dot with
-# no notehead or rest at the offset an engraver would have placed one is left
-# out of every note's count rather than bound to the nearest candidate, and
-# that is a fact about the reading nothing else stored here can reconstruct.
+# `dots_unassigned` / `staves_dots_unassigned` too: an augmentation dot that
+# bound to no note is left out of every note's count rather than forced onto
+# the nearest candidate, and that is a fact about the reading nothing else
+# stored here can reconstruct. `dots_unassigned_no_candidate` and
+# `dots_unassigned_eliminated` split that total by WHY, since it is two
+# different claims and not one: the first never had a notehead or rest at an
+# offset an engraver would use at all; the second reached one, but it had
+# already been given a dot at a different, conflicting position - a note
+# that already has its own dot, not one with nothing nearby (see
+# tabextract._rhythm_report / glyph._assign_dots).
 _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
              "bars_padded", "bars_unread", "notes_no_stem", "staves_no_stem",
-             "dots_unassigned", "staves_dots_unassigned")
+             "dots_unassigned", "dots_unassigned_no_candidate",
+             "dots_unassigned_eliminated", "staves_dots_unassigned")
 
 # WHICH bars those were, as data and not only inside the warning prose. The
 # prose names them, but it caps the list, and the profile document states that a
@@ -1545,6 +1552,8 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             "notes_no_stem": result.notes_no_stem,
             "staves_no_stem": result.staves_no_stem,
             "dots_unassigned": result.dots_unassigned,
+            "dots_unassigned_no_candidate": result.dots_unassigned_no_candidate,
+            "dots_unassigned_eliminated": result.dots_unassigned_eliminated,
             "staves_dots_unassigned": result.staves_dots_unassigned,
             "spacing_bars": result.spacing_bars,
             "degraded_bars": result.degraded_bars,

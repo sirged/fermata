@@ -368,7 +368,15 @@ def test_edit_format_is_read_off_the_content(content, expected):
 
 
 BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
-            "bars_padded", "bars_unread", "notes_no_stem", "staves_no_stem")
+            "bars_padded", "bars_unread", "notes_no_stem", "staves_no_stem",
+            # dots_unassigned / staves_dots_unassigned were added to the real
+            # _BAR_KEYS in api.py alongside notes_no_stem/staves_no_stem, but
+            # never added HERE - so nothing ever exercised their reload path.
+            # dots_unassigned_no_candidate / dots_unassigned_eliminated split
+            # dots_unassigned by why a dot went unbound (see
+            # glyph._assign_dots) and belong in the same reload check.
+            "dots_unassigned", "dots_unassigned_no_candidate",
+            "dots_unassigned_eliminated", "staves_dots_unassigned")
 # Which bars, and how much silence - the figures that only exist as data. The
 # warning prose caps its bar list, and the profile document promises a consumer
 # that `inferred_rest_quarters` is the sum of the `<forward>` durations in the
@@ -452,6 +460,10 @@ def test_which_bars_were_not_read_from_glyphs_survives_a_reload(
     assert fetched["degraded_bars"] == []
     assert fetched["notes_no_stem"] == 0, "no notation staff here to read a stem off"
     assert fetched["staves_no_stem"] == 0
+    assert fetched["dots_unassigned"] == 0, "no notation staff here to read a dot off either"
+    assert fetched["dots_unassigned_no_candidate"] == 0
+    assert fetched["dots_unassigned_eliminated"] == 0
+    assert fetched["staves_dots_unassigned"] == 0
 
 
 def test_a_row_stored_before_the_bar_figures_reports_them_unrecorded(app_env, insert_score):
@@ -604,5 +616,41 @@ def test_floored_note_durations_survive_the_api_round_trip(
     assert fetched["notes_no_stem"] == posted["notes_no_stem"]
     assert fetched["staves_no_stem"] == posted["staves_no_stem"]
     assert fetched["notes_no_stem"] > 0, "the whole point: this must not be the zero case"
+    assert fetched["warnings"] == posted["warnings"]
+
+
+def test_unassigned_dots_survive_the_api_round_trip(
+    app_env, kaine_salvation_pdf, monkeypatch, insert_score
+):
+    """The same gap as `test_floored_note_durations_survive_the_api_round_trip`
+    above, but for `dots_unassigned` / `dots_unassigned_no_candidate` /
+    `dots_unassigned_eliminated` / `staves_dots_unassigned`:
+    `test_which_bars_were_not_read_from_glyphs_survives_a_reload` only ever
+    checks them against zero. A persistence bug that unconditionally wrote 0
+    into any one of those columns would pass every other test in this file
+    and still be silently discarding the disclosure on reload.
+
+    Nothing engraved in this repository reaches a genuinely non-zero count
+    (see test_engraved_fixtures.py's stacked-chord fixture, which measures
+    the split directly but at the extractor level, not through the API), so
+    this runs against a real library score - all sixteen of its unassigned
+    dots are the no-candidate kind, none eliminated."""
+    pdf = kaine_salvation_pdf
+    monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    assert posted["dots_unassigned"] == 16
+    assert posted["dots_unassigned_no_candidate"] == 16
+    assert posted["dots_unassigned_eliminated"] == 0
+    assert posted["staves_dots_unassigned"] == 4
+
+    fetched = api.get_transcription(score_id)
+    assert fetched["dots_unassigned"] == posted["dots_unassigned"]
+    assert fetched["dots_unassigned_no_candidate"] == posted["dots_unassigned_no_candidate"]
+    assert fetched["dots_unassigned_eliminated"] == posted["dots_unassigned_eliminated"]
+    assert fetched["staves_dots_unassigned"] == posted["staves_dots_unassigned"]
+    assert fetched["dots_unassigned"] > 0, "the whole point: this must not be the zero case"
     assert fetched["warnings"] == posted["warnings"]
     assert any("no stem this decoder could find" in w for w in fetched["warnings"])

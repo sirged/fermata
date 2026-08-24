@@ -108,11 +108,12 @@ def mirror_to_tab(body):
     A tab staff in MusicXML is not a view of the notation staff, it is its
     own staff carrying its own notes, so a score that shows both writes each
     note twice. Rewriting the notation staff's own text is what keeps the
-    two halves from drifting apart as these fixtures are edited."""
+    two halves from drifting apart as these fixtures are edited. Only voices
+    1 and 2 are ever generated (see `note`/`rest` above), so only those two
+    need remapping here."""
     return (body.replace("<staff>1</staff>", "<staff>2</staff>")
                 .replace("<voice>1</voice>", "<voice>5</voice>")
-                .replace("<voice>2</voice>", "<voice>6</voice>")
-                .replace("<voice>3</voice>", "<voice>7</voice>"))
+                .replace("<voice>2</voice>", "<voice>6</voice>"))
 
 
 def staff_details(tuning, number=2):

@@ -287,6 +287,13 @@ def test_a_stacked_chords_dot_does_not_bind_to_the_nearest_notehead(engraved):
     # of the same chord are in this decode's band - one reported anomaly per
     # bar counted, not just the first.
     assert stats["dots_unassigned"] == 7, "G4's dot is reported per bar, not dropped silently"
+    # G4's own notehead is out of this decoder's x-reach (the #112 shift),
+    # but its DOT glyph still falls inside A4's x-window - A4 is simply
+    # already committed to its own dot by the time G4's is considered, so
+    # this is the eliminated half of the split, not the no-candidate half
+    # (see glyph._assign_dots): a candidate WAS reached, and lost.
+    assert stats["dots_unassigned_no_candidate"] == 0
+    assert stats["dots_unassigned_eliminated"] == 7
 
 
 def test_the_bars_of_a_correct_score_all_add_up(engraved):
