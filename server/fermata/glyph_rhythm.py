@@ -2017,6 +2017,16 @@ _DOT_TIERS = (0.0, -0.5, 0.5)
 # just covers.
 _DOT_Y_SLACK = 0.25
 
+# How close two dots bound to the SAME owner may sit in x before they are the
+# same ink mark rather than two side-by-side ones. A real second dot sits a
+# dot's own width away from the first (roughly 0.5 spaces in the library's
+# double-dot fixtures); a duplicated glyph pair - the same notehead and dot
+# recorded twice at identical coordinates, an artifact seen once in the
+# library and unrelated to dot ranking - repeats at the SAME x. This sits
+# well below the smallest real gap and well above float jitter between two
+# copies of what is meant to be the same coordinate.
+_DOT_X_DUP_TOL = 0.05
+
 
 def _dot_fit(offset, spacing):
     """Which of the three places a dot can sit relative to a note is this, and
@@ -2031,7 +2041,7 @@ def _dot_fit(offset, spacing):
 
 def _assign_dots(owners, dot_events, tol):
     """Assign each augmentation-dot glyph to exactly ONE owner (notehead or
-    rest) and return {id(owner): dot_count}.
+    rest) and return ({id(owner): dot_count}, unassigned_count).
 
     Counting "every dot glyph in a window to my right" per notehead instead
     lets one dot be claimed by several noteheads and lets a neighbouring
@@ -2045,10 +2055,42 @@ def _assign_dots(owners, dot_events, tol):
     its note, in the order an engraver puts it there (see _DOT_TIERS), rather
     than by which notehead's centre is nearest - a question two noteheads a
     space apart answer with a tie.
+
+    Ranking each dot's owner INDEPENDENTLY of every other dot is not enough,
+    though, once three or more notes stack close together. A chord of three
+    dotted notes a third and a fourth apart, each note's dot placed wherever
+    the engraving actually had room for it (above, below, or in its own
+    space - the choice is the engraver's, not always the "default" tier),
+    lets the SAME notehead win two different dots at two different tiers -
+    one from "the space above me", one from "the space below me" - while
+    another note in the chord is left with none. That is not a double dot
+    (two ink marks at the SAME tier, side by side); it is one note absorbing
+    two different notes' dots because each was ranked in isolation.
+    Reproduced in the library ("Courage", Final Fantasy XVI): a half note
+    whose only reachable dot fits both "the space above the note a third
+    below it" and "the space below the note a fourth below it" equally well
+    in isolation, so ranking it alone always hands it to the same neighbour,
+    leaving that neighbour's own dot unaccounted for.
+
+    So an owner may accumulate more than one dot ONLY at the tier it was
+    first given - genuinely more ink at the same relative position, which is
+    what a real double or triple dot is - never at a second, conflicting
+    tier. Dots that fit only ONE live candidate are assigned outright; that
+    can eliminate a rival tier from an owner already spoken for, in turn
+    leaving some OTHER dot with only one candidate left, so this proceeds by
+    elimination (least-ambiguous dot first) rather than one independent
+    ranking per dot. Only once elimination stalls with several dots still
+    tied does this fall back to ranking by (tier, deviation, x-distance), the
+    same order a single dot was always ranked in.
+
+    A dot no owner in reach will take, even after every other dot has staked
+    its claim, is reported as UNASSIGNED rather than forced onto whichever
+    notehead happens to be nearest - that forcing is the defect this
+    replaces, not a fallback to keep in reserve.
     """
     counts = collections.Counter()
     if not owners or not dot_events:
-        return counts
+        return counts, 0
     # Still the metrics box's x1 here, not an ink edge - left inconsistent
     # with the notehead-to-stem lookups above on purpose, since it was
     # measured against the library and found to have no current effect on
@@ -2056,22 +2098,93 @@ def _assign_dots(owners, dot_events, tol):
     # window beside it was.
     owners = sorted(owners, key=lambda e: e.x1)
     owner_x1s = [e.x1 for e in owners]
+
+    # live[i]: the still-possible (owner_index, tier, deviation, xdist)
+    # candidates for dot_events[i]. Page y grows downward, so a dot ABOVE its
+    # notehead is a negative offset.
+    live = []
     for dot in dot_events:
         lo, hi = _bounds(owner_x1s, dot.xc - tol.dot_x_tol, dot.xc + tol.dot_x_back)
-        best = None
-        best_key = None
+        cands = []
         for i in range(lo, hi):
-            ev = owners[i]
-            # Page y grows downward, so a dot ABOVE its notehead is negative.
-            fit = _dot_fit(dot.yc - ev.yc, tol.spacing)
-            if fit is None:
+            fit = _dot_fit(dot.yc - owners[i].yc, tol.spacing)
+            if fit is not None:
+                cands.append((i, fit[0], fit[1], abs(dot.xc - owners[i].x1)))
+        live.append(cands)
+
+    n = len(dot_events)
+    resolved = [False] * n
+    owner_tier = {}  # owner index -> the one tier it has been given a dot at
+    # owner index -> x-coordinates of the dots already bound to it. A SECOND
+    # dot at the same tier is only a real double dot if it is a SEPARATE ink
+    # mark beside the first one - which is what "side by side" means. The
+    # library also contains a genuinely duplicated notehead-and-dot pair (the
+    # same ink recorded twice at IDENTICAL coordinates, nothing to do with
+    # dot ranking), and without this check that duplicate's two dot glyphs
+    # both bind to whichever of the two duplicate noteheads is ranked first,
+    # leaving the other - just as real - with none.
+    owner_dot_xs = collections.defaultdict(list)
+    unassigned = 0
+
+    def _drop_conflicting():
+        """Filter out candidates that can no longer be reached: an owner
+        already committed to one tier can never also supply a DIFFERENT tier
+        to another dot (one note cannot be in two relative positions at
+        once), and an owner already holding a dot at essentially this dot's
+        own x is not a second, distinct dot to bind - see owner_dot_xs.
+        Returns whether anything changed."""
+        changed = False
+        for i in range(n):
+            if resolved[i]:
                 continue
-            key = (fit[0], round(fit[1], 3), round(abs(dot.xc - ev.x1), 3))
-            if best_key is None or key < best_key:
-                best, best_key = ev, key
-        if best is not None:
-            counts[id(best)] += 1
-    return counts
+            dot_x = dot_events[i].xc
+            kept = [
+                c for c in live[i]
+                if owner_tier.get(c[0], c[1]) == c[1]
+                and not any(abs(dot_x - bx) <= _DOT_X_DUP_TOL * tol.spacing
+                            for bx in owner_dot_xs.get(c[0], ()))
+            ]
+            if len(kept) != len(live[i]):
+                live[i] = kept
+                changed = True
+        return changed
+
+    def _commit(dot_idx, owner_i, tier):
+        counts[id(owners[owner_i])] += 1
+        owner_tier.setdefault(owner_i, tier)
+        owner_dot_xs[owner_i].append(dot_events[dot_idx].xc)
+        resolved[dot_idx] = True
+
+    # Commit ONE dot at a time, and re-run the conflict filter before looking
+    # for the next one to commit. Committing every currently-forced dot in a
+    # single sweep is not safe: two dots can each be the sole candidate for
+    # the SAME owner at two DIFFERENT tiers before either commit happens, and
+    # a same-pass sweep would hand that owner both, right back to the
+    # two-tiers-at-once defect this function exists to refuse.
+    while True:
+        while _drop_conflicting():
+            pass
+        forced = next((i for i in range(n) if not resolved[i] and len(live[i]) == 1), None)
+        if forced is not None:
+            owner_i, tier, _dev, _x = live[forced][0]
+            _commit(forced, owner_i, tier)
+            continue
+        empty = next((i for i in range(n) if not resolved[i] and not live[i]), None)
+        if empty is not None:
+            resolved[empty] = True
+            unassigned += 1
+            continue
+        remaining = [i for i in range(n) if not resolved[i]]
+        if not remaining:
+            break
+        # Nothing left is forced by elimination - a genuine tie, exactly like
+        # a single dot ranked in isolation. Settle the single best-ranked
+        # (dot, owner) pair across all of them and let that possibly force
+        # the rest on the next pass.
+        i = min(remaining, key=lambda i: min(c[1:] for c in live[i]))
+        owner_i, tier, _dev, _x = min(live[i], key=lambda c: c[1:])
+        _commit(i, owner_i, tier)
+    return counts, unassigned
 
 
 def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_ys,
@@ -2095,9 +2208,11 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
     grace notes or an articulation we never calibrated", which decodes as
     systematically wrong durations while looking perfectly healthy - and
     undecided_rests counts rests whose value was guessed rather than read,
-    and no_stem_noteheads counts filled noteheads that came out of the decode
+    no_stem_noteheads counts filled noteheads that came out of the decode
     with no stem at all, whose duration is therefore a floor rather than a
-    reading.
+    reading, and dots_unassigned counts augmentation-dot glyphs no notehead
+    or rest sat at the expected offset from - a genuine anomaly rather than
+    something bound to the nearest candidate (see _assign_dots).
     """
     tol = _Tol(spacing if spacing else _spacing_from_lines(line_ys),
                staff_bottom - staff_top, staff_x1 - staff_x0)
@@ -2135,6 +2250,11 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         # determined by the head and a missing stem costs only the voice
         # signal, not the duration.
         "no_stem_noteheads": 0,
+        # An augmentation-dot glyph with no notehead or rest at the offset an
+        # engraver would have put it at (see _assign_dots) - a genuine
+        # anomaly, reported rather than bound to whichever notehead happens
+        # to sit nearest.
+        "dots_unassigned": 0,
         "font_warnings": list(glyphs.warnings),
     }
     if not glyphs.events:
@@ -2176,7 +2296,7 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
 
     # Dots first: one dot glyph belongs to exactly one note (see _assign_dots).
     dot_owners = [e for e in staff_events if e.category in NOTEHEAD_CATS or e.category in REST_CATS]
-    dot_counts = _assign_dots(dot_owners, dot_events, tol)
+    dot_counts, dots_unassigned = _assign_dots(dot_owners, dot_events, tol)
 
     notes = []
     stems_by_key = {}
@@ -2328,6 +2448,7 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         "curve_count": len(curves),
         "undecided_rests": undecided_rests,
         "no_stem_noteheads": no_stem_noteheads,
+        "dots_unassigned": dots_unassigned,
     })
     return notes, stats
 

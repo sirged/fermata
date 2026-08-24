@@ -1327,8 +1327,14 @@ def _transcription_row(conn, score_id: int):
 # emitted at the longest duration its notehead alone allows - a floor, not a
 # reading, and one that always errs long. That is the same kind of fact as a
 # padded bar and is recoverable from nothing else here.
+#
+# `dots_unassigned` / `staves_dots_unassigned` too: an augmentation dot with
+# no notehead or rest at the offset an engraver would have placed one is left
+# out of every note's count rather than bound to the nearest candidate, and
+# that is a fact about the reading nothing else stored here can reconstruct.
 _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
-             "bars_padded", "bars_unread", "notes_no_stem", "staves_no_stem")
+             "bars_padded", "bars_unread", "notes_no_stem", "staves_no_stem",
+             "dots_unassigned", "staves_dots_unassigned")
 
 # WHICH bars those were, as data and not only inside the warning prose. The
 # prose names them, but it caps the list, and the profile document states that a
@@ -1538,6 +1544,8 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             "inferred_rest_quarters": result.inferred_rest_quarters,
             "notes_no_stem": result.notes_no_stem,
             "staves_no_stem": result.staves_no_stem,
+            "dots_unassigned": result.dots_unassigned,
+            "staves_dots_unassigned": result.staves_dots_unassigned,
             "spacing_bars": result.spacing_bars,
             "degraded_bars": result.degraded_bars,
             "time_signature": list(result.time_signature) if result.time_signature else None,

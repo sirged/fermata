@@ -111,7 +111,8 @@ def mirror_to_tab(body):
     two halves from drifting apart as these fixtures are edited."""
     return (body.replace("<staff>1</staff>", "<staff>2</staff>")
                 .replace("<voice>1</voice>", "<voice>5</voice>")
-                .replace("<voice>2</voice>", "<voice>6</voice>"))
+                .replace("<voice>2</voice>", "<voice>6</voice>")
+                .replace("<voice>3</voice>", "<voice>7</voice>"))
 
 
 def staff_details(tuning, number=2):
@@ -506,8 +507,36 @@ def fixture_mid_system_key_and_meter_change():
     return score("Guitar", measures)
 
 
+def fixture_stacked_dotted_chord():
+    """A three-note chord on one stem, every member an identical dotted half:
+    E4, then a third up to G4 (both on lines, a third apart), then a second
+    further to A4. A4 sits close enough to G4 that MuseScore shifts its
+    notehead left of the shared stem column to keep the two from touching -
+    the same offset #112 describes - and that shift carries A4's dot glyph
+    out of this decoder's reach for the OTHER two notes' dots, which is what
+    turns "nearest notehead" into "wrong notehead" here: G4's own dot glyph
+    fits A4's expected offset too, and nearest-distance handed it to A4
+    outright, giving A4 two dots and G4 none.
+
+    A chord shares one duration for every member (MusicXML has no way to
+    write three different rhythms for notes struck together), so the whole
+    chord comes out at whichever dot count the worst-assigned member reaches:
+    double-dotted (3.5 quarters) on `main`, correctly single-dotted (3
+    quarters) once each dot is required to be the SAME relative position as
+    every other dot bound to its note rather than whichever is nearest. G4's
+    own dot glyph is left unassigned either way - it never was in reach of
+    the notehead it belongs to - which is the anomaly path in the same
+    fixture: reported rather than bound to A4 a second time."""
+    bar = _bar([note(("E", 4), "half", dots=1),
+                note(("G", 4), "half", dots=1, chord=True),
+                note(("A", 4), "half", dots=1, chord=True),
+                note(("E", 4), "quarter")], 4.0)
+    return score("Guitar", [attributes() + bar] + [bar] * 7)
+
+
 FIXTURES = {
     "notation_and_tab": fixture_notation_and_tab,
+    "stacked_dotted_chord": fixture_stacked_dotted_chord,
     "four_sharps_in_three_four": fixture_four_sharps_in_three_four,
     "hidden_opening_meter": fixture_hidden_opening_meter,
     "hidden_opening_meter_matches_the_default": fixture_hidden_opening_meter_matches_the_default,

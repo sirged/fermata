@@ -417,10 +417,11 @@ def test_one_dot_belongs_to_exactly_one_note():
     upper = _ev("notehead_half", 96.0, 197.0, 103.0, 203.0)   # yc 200
     lower = _ev("notehead_half", 96.0, 202.0, 103.0, 208.0)   # yc 205
     dot = _ev("dot", 105.0, 203.0, 107.0, 205.0)              # yc 204 - lower's
-    counts = G._assign_dots([upper, lower], [dot], tol)
+    counts, unassigned = G._assign_dots([upper, lower], [dot], tol)
     assert counts[id(lower)] == 1
     assert counts.get(id(upper), 0) == 0
     assert sum(counts.values()) == 1
+    assert unassigned == 0
 
 
 def test_double_dot_is_still_read_when_two_dots_really_are_there():
@@ -428,8 +429,9 @@ def test_double_dot_is_still_read_when_two_dots_really_are_there():
     head = _ev("notehead_half", 96.0, 197.0, 103.0, 203.0)  # yc 200
     d1 = _ev("dot", 104.0, 199.0, 106.0, 201.0)
     d2 = _ev("dot", 107.0, 199.0, 109.0, 201.0)
-    counts = G._assign_dots([head], [d1, d2], tol)
+    counts, unassigned = G._assign_dots([head], [d1, d2], tol)
     assert counts[id(head)] == 2
+    assert unassigned == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1192,9 +1194,10 @@ def test_a_chords_stacked_dots_go_one_to_each_notehead():
     upper = _dotted(200.0)
     lower = _dotted(200.0 + REF)
     dots = [_dot_at(200.0 - REF / 2), _dot_at(200.0 + REF / 2)]
-    counts = G._assign_dots([upper, lower], dots, tol)
+    counts, unassigned = G._assign_dots([upper, lower], dots, tol)
     assert counts[id(upper)] == 1
     assert counts[id(lower)] == 1
+    assert unassigned == 0
 
 
 def test_a_dot_in_the_space_below_its_note_still_belongs_to_it():
@@ -1203,15 +1206,45 @@ def test_a_dot_in_the_space_below_its_note_still_belongs_to_it():
     dropped the dot and left the bar short by a third of its length."""
     tol = _tol(REF)
     head = _dotted(200.0)
-    counts = G._assign_dots([head], [_dot_at(200.0 + REF / 2)], tol)
+    counts, unassigned = G._assign_dots([head], [_dot_at(200.0 + REF / 2)], tol)
     assert counts[id(head)] == 1
+    assert unassigned == 0
 
 
 def test_a_dot_a_whole_space_from_every_note_belongs_to_none_of_them():
     tol = _tol(REF)
     head = _dotted(200.0)
-    counts = G._assign_dots([head], [_dot_at(200.0 + REF)], tol)
+    counts, unassigned = G._assign_dots([head], [_dot_at(200.0 + REF)], tol)
     assert sum(counts.values()) == 0
+    assert unassigned == 1
+
+
+def test_a_three_note_chord_gives_one_dot_to_each_notehead():
+    """A three-note chord, geometry taken from "Courage" (Final Fantasy XVI)
+    rather than invented: three half notes a third and a fourth apart, each
+    with its own raised dot. Ranking each dot against every note independently
+    let the middle note win two of them - one from its own space above, one
+    that was really the bottom note's, offered because the bottom note's own
+    tier for that same dot loses the ranking to the middle note's - leaving
+    the middle note double-dotted and the bottom note with none.
+
+    Fixed by refusing to let an owner already given a dot at one tier
+    supply a SECOND, different tier to another dot: once the bottom note's
+    only reachable dot is forced onto it by elimination (nothing else can
+    reach it), the middle note's ambiguous dot no longer has a competing
+    claim from an owner already spoken for, and settles on the middle note
+    by elimination too."""
+    tol = _tol(5.125)
+    top = _dotted(250.07, x0=232.19)
+    middle = _dotted(255.20, x0=232.19)
+    bottom = _dotted(262.89, x0=232.19)
+    dots = [_dot_at(252.62, x0=238.96), _dot_at(257.75, x0=238.96),
+            _dot_at(262.87, x0=238.96)]
+    counts, unassigned = G._assign_dots([top, middle, bottom], dots, tol)
+    assert counts[id(top)] == 1
+    assert counts[id(middle)] == 1
+    assert counts[id(bottom)] == 1
+    assert unassigned == 0
 
 
 # ---------------------------------------------------------------------------
