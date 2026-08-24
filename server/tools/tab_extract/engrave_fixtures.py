@@ -108,7 +108,9 @@ def mirror_to_tab(body):
     A tab staff in MusicXML is not a view of the notation staff, it is its
     own staff carrying its own notes, so a score that shows both writes each
     note twice. Rewriting the notation staff's own text is what keeps the
-    two halves from drifting apart as these fixtures are edited."""
+    two halves from drifting apart as these fixtures are edited. Only voices
+    1 and 2 are ever generated (see `note`/`rest` above), so only those two
+    need remapping here."""
     return (body.replace("<staff>1</staff>", "<staff>2</staff>")
                 .replace("<voice>1</voice>", "<voice>5</voice>")
                 .replace("<voice>2</voice>", "<voice>6</voice>"))
@@ -527,8 +529,39 @@ def fixture_mid_system_key_and_meter_change():
     return score("Guitar", measures)
 
 
+def fixture_stacked_dotted_chord():
+    """A three-note chord on one stem, every member an identical dotted half:
+    E4, then a third up to G4 (both on lines, a third apart), then a second
+    further to A4. G4 sits close enough to A4 that MuseScore shifts G4's own
+    notehead left of the shared stem column to keep the two from touching -
+    the offset #112 describes - and that shift carries G4's own dot glyph
+    out of this decoder's x-reach entirely: no notehead is close enough to
+    it, on `main` or fixed.
+
+    That is not, on its own, this issue's defect - it is a genuine, orphaned
+    dot. The defect is what "main" does with A4's OWN dot once G4's is
+    unreachable: nearest-distance has nothing else nearby to rank A4's dot
+    against, so A4 takes it, and separately takes the *next* dot along too
+    (the one at the offset A4's own tier ranking prefers) with no check that
+    A4 already has one. A4 ends up with two dots from two different relative
+    positions - not a real double dot, which is two ink marks at the SAME
+    position - and the chord reads as double-dotted (3.5 quarters) instead
+    of the 3 every member is actually written as, since a chord shares one
+    duration for all its members. Refusing to let an owner already given a
+    dot at one tier take a second, different tier leaves A4 with its own one
+    dot and reports G4's orphaned dot rather than inventing a home for it -
+    the anomaly path, exercised here by the same fixture rather than only a
+    synthetic one."""
+    bar = _bar([note(("E", 4), "half", dots=1),
+                note(("G", 4), "half", dots=1, chord=True),
+                note(("A", 4), "half", dots=1, chord=True),
+                note(("E", 4), "quarter")], 4.0)
+    return score("Guitar", [attributes() + bar] + [bar] * 7)
+
+
 FIXTURES = {
     "notation_and_tab": fixture_notation_and_tab,
+    "stacked_dotted_chord": fixture_stacked_dotted_chord,
     "four_sharps_in_three_four": fixture_four_sharps_in_three_four,
     "hidden_opening_meter": fixture_hidden_opening_meter,
     "hidden_opening_meter_matches_the_default": fixture_hidden_opening_meter_matches_the_default,

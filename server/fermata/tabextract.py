@@ -256,6 +256,20 @@ class ExtractionResult:
     # and it cannot be recovered from any other figure on this result.
     notes_no_stem: int = 0
     staves_no_stem: int = 0
+    # Augmentation-dot glyphs that bound to no note, and how many notation
+    # staves carried at least one. Left unattached rather than bound to the
+    # nearest notehead - see glyph._assign_dots - so this is reported but
+    # affects no note's duration. `dots_unassigned` is the total; the two
+    # counts beside it split it by WHY, since the two are not the same claim:
+    # `dots_unassigned_no_candidate` never had a notehead or rest at an
+    # offset an engraver would use anywhere in reach, while
+    # `dots_unassigned_eliminated` reached one but lost it to an owner
+    # already given a dot at a different, conflicting position - a note that
+    # already has its own dot, not one with nothing nearby.
+    dots_unassigned: int = 0
+    dots_unassigned_no_candidate: int = 0
+    dots_unassigned_eliminated: int = 0
+    staves_dots_unassigned: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -294,6 +308,10 @@ class ExtractionResult:
             "degraded_bars": list(self.degraded_bars),
             "notes_no_stem": self.notes_no_stem,
             "staves_no_stem": self.staves_no_stem,
+            "dots_unassigned": self.dots_unassigned,
+            "dots_unassigned_no_candidate": self.dots_unassigned_no_candidate,
+            "dots_unassigned_eliminated": self.dots_unassigned_eliminated,
+            "staves_dots_unassigned": self.staves_dots_unassigned,
         }
 
 
@@ -1936,7 +1954,9 @@ def _overfull_bars(measures) -> tuple[int, int]:
 
 
 def _rhythm_report(counts, details, conformance=None, unread_bars=(),
-                   prov_bars=None, no_stem_notes=0, no_stem_staves=0):
+                   prov_bars=None, no_stem_notes=0, no_stem_staves=0,
+                   dots_unassigned=0, dots_unassigned_no_candidate=0,
+                   dots_unassigned_eliminated=0, dots_unassigned_staves=0):
     """Derive the document's rhythm warnings and confidence string from the
     collected per-staff provenances - the single place that decides both, so
     they cannot drift out of step with each other or with the measure loop.
@@ -1959,6 +1979,16 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
     how many notation staves came out of the decode with no stem, and so with
     their duration floored at a quarter rather than read - see
     glyph.decode_note_events.
+
+    `dots_unassigned` / `dots_unassigned_staves` are how many augmentation-dot
+    glyphs across how many notation staves bound to no note - see
+    glyph._assign_dots. Such a dot affects nothing in the emitted score (it
+    is simply not counted), but is worth saying out loud: it means either an
+    engraving convention this decoder does not model, or a note the rest of
+    the decode also missed. `dots_unassigned` is their sum;
+    `dots_unassigned_no_candidate` / `dots_unassigned_eliminated` split it by
+    WHY, since the two are not the same claim about the page - see
+    glyph._assign_dots's docstring.
     """
     conformance = conformance or _BarConformance(0, 0, 0, 0)
     prov_bars = prov_bars or {}
@@ -2055,6 +2085,28 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
             "guess rather than a reading: where such a head could not be attached to a "
             "neighbouring stem, it was emitted at the plain quarter, the LONGEST duration its "
             "notehead on its own allows"
+        )
+
+    # A dot that bound to nothing, stated with its own count for the same
+    # reason no_stem_notes is: a count of affected staves cannot say whether
+    # one score has one stray dot or forty. The two are not the same claim
+    # about the page, so the sentence says both rather than one thing true of
+    # only most of them - see glyph._assign_dots.
+    if dots_unassigned:
+        if dots_unassigned_eliminated:
+            reason = (
+                f"{dots_unassigned_no_candidate} had no notehead or rest at the position an "
+                f"engraver would have placed one next to; {dots_unassigned_eliminated} reached "
+                "one, but it had already been given a dot at a different position and could "
+                "not take a second"
+            )
+        else:
+            reason = "none had a notehead or rest at the position an engraver would have placed one next to"
+        warnings.append(
+            f"{dots_unassigned} augmentation dot(s) across {dots_unassigned_staves} staff "
+            f"system(s) could not be bound to a note - {reason}. Each was left unattached "
+            "rather than bound to the nearest notehead anyway, so no note's duration was "
+            "invented from it - but a note nearby may be missing a dot it should have"
         )
 
     # Bars that don't add up outrank how the durations were obtained: a
@@ -2754,6 +2806,17 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     no_stem_notes = 0
     no_stem_staves = 0
     no_stem_seen = set()
+    # Augmentation-dot glyphs that bound to no note - a genuine anomaly (see
+    # glyph.decode_note_events, dots_unassigned), summed the same way and
+    # over the same de-duplicated decodes as no_stem_notes above.
+    # `dots_unassigned_total` is the total; the two counts beside it split it
+    # by WHY (see glyph._assign_dots) - `dots_unassigned_staves` is not
+    # split, since it answers "how many staves had at least one anomaly of
+    # either kind", true regardless of which kind.
+    dots_unassigned_total = 0
+    dots_unassigned_no_candidate_total = 0
+    dots_unassigned_eliminated_total = 0
+    dots_unassigned_staves = 0
     unmatched_columns_glyph = 0
     unmatched_glyph_notes_total = 0
     # How many bars were transcribed as concurrent voices. How much of the
@@ -2825,6 +2888,14 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                     if staff_no_stem:
                         no_stem_notes += staff_no_stem
                         no_stem_staves += 1
+                    staff_dots_unassigned = source.stats.get("dots_unassigned", 0)
+                    if staff_dots_unassigned:
+                        dots_unassigned_total += staff_dots_unassigned
+                        dots_unassigned_no_candidate_total += source.stats.get(
+                            "dots_unassigned_no_candidate", 0)
+                        dots_unassigned_eliminated_total += source.stats.get(
+                            "dots_unassigned_eliminated", 0)
+                        dots_unassigned_staves += 1
 
             # Where to look the meter up: the notation staff this tab staff
             # reads from, or its own position when it reads none. The meter
@@ -2923,6 +2994,10 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         prov_counts, prov_details, conformance, tuple(unread_bars),
         prov_bars=prov_bars, no_stem_notes=no_stem_notes,
         no_stem_staves=no_stem_staves,
+        dots_unassigned=dots_unassigned_total,
+        dots_unassigned_no_candidate=dots_unassigned_no_candidate_total,
+        dots_unassigned_eliminated=dots_unassigned_eliminated_total,
+        dots_unassigned_staves=dots_unassigned_staves,
     )
     warnings.extend(rhythm_warnings)
     # Font-level problems that weren't already the reason a staff degraded
@@ -3078,4 +3153,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         degraded_bars=degraded_bars,
         notes_no_stem=no_stem_notes,
         staves_no_stem=no_stem_staves,
+        dots_unassigned=dots_unassigned_total,
+        dots_unassigned_no_candidate=dots_unassigned_no_candidate_total,
+        dots_unassigned_eliminated=dots_unassigned_eliminated_total,
+        staves_dots_unassigned=dots_unassigned_staves,
     )

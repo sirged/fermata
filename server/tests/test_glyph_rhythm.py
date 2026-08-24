@@ -417,10 +417,11 @@ def test_one_dot_belongs_to_exactly_one_note():
     upper = _ev("notehead_half", 96.0, 197.0, 103.0, 203.0)   # yc 200
     lower = _ev("notehead_half", 96.0, 202.0, 103.0, 208.0)   # yc 205
     dot = _ev("dot", 105.0, 203.0, 107.0, 205.0)              # yc 204 - lower's
-    counts = G._assign_dots([upper, lower], [dot], tol)
+    counts, no_cand, eliminated = G._assign_dots([upper, lower], [dot], tol)
     assert counts[id(lower)] == 1
     assert counts.get(id(upper), 0) == 0
     assert sum(counts.values()) == 1
+    assert no_cand == 0 and eliminated == 0
 
 
 def test_double_dot_is_still_read_when_two_dots_really_are_there():
@@ -428,8 +429,9 @@ def test_double_dot_is_still_read_when_two_dots_really_are_there():
     head = _ev("notehead_half", 96.0, 197.0, 103.0, 203.0)  # yc 200
     d1 = _ev("dot", 104.0, 199.0, 106.0, 201.0)
     d2 = _ev("dot", 107.0, 199.0, 109.0, 201.0)
-    counts = G._assign_dots([head], [d1, d2], tol)
+    counts, no_cand, eliminated = G._assign_dots([head], [d1, d2], tol)
     assert counts[id(head)] == 2
+    assert no_cand == 0 and eliminated == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1295,9 +1297,10 @@ def test_a_chords_stacked_dots_go_one_to_each_notehead():
     upper = _dotted(200.0)
     lower = _dotted(200.0 + REF)
     dots = [_dot_at(200.0 - REF / 2), _dot_at(200.0 + REF / 2)]
-    counts = G._assign_dots([upper, lower], dots, tol)
+    counts, no_cand, eliminated = G._assign_dots([upper, lower], dots, tol)
     assert counts[id(upper)] == 1
     assert counts[id(lower)] == 1
+    assert no_cand == 0 and eliminated == 0
 
 
 def test_a_dot_in_the_space_below_its_note_still_belongs_to_it():
@@ -1306,15 +1309,76 @@ def test_a_dot_in_the_space_below_its_note_still_belongs_to_it():
     dropped the dot and left the bar short by a third of its length."""
     tol = _tol(REF)
     head = _dotted(200.0)
-    counts = G._assign_dots([head], [_dot_at(200.0 + REF / 2)], tol)
+    counts, no_cand, eliminated = G._assign_dots([head], [_dot_at(200.0 + REF / 2)], tol)
     assert counts[id(head)] == 1
+    assert no_cand == 0 and eliminated == 0
 
 
 def test_a_dot_a_whole_space_from_every_note_belongs_to_none_of_them():
+    """No notehead ever fits this offset, so this is the no-candidate half of
+    the split, not the eliminated half - see _assign_dots."""
     tol = _tol(REF)
     head = _dotted(200.0)
-    counts = G._assign_dots([head], [_dot_at(200.0 + REF)], tol)
+    counts, no_cand, eliminated = G._assign_dots([head], [_dot_at(200.0 + REF)], tol)
     assert sum(counts.values()) == 0
+    assert no_cand == 1
+    assert eliminated == 0
+
+
+def test_an_eliminated_dot_is_distinct_from_one_with_no_candidate():
+    """A dot that DOES reach a candidate, and then loses it during
+    elimination, is a different fact from a dot that never reached one at
+    all: a notehead WAS in reach; it had simply already been given its own
+    dot at a different tier.
+
+    One owner, two dots, each the sole candidate for its OWN dot event before
+    anything commits: one dot fits only the note's own space (tier 0), the
+    other fits only the space above it (tier 1). Both look forced, so the
+    first one processed commits the owner to tier 0 - and the
+    tier-exclusivity check then drops the second dot's only candidate, since
+    that owner can no longer supply a different tier. That drop is what
+    unassigned_eliminated counts."""
+    tol = _tol(REF)
+    head = _dotted(200.0)
+    own_dot = _dot_at(200.0)              # tier 0: the note's own space
+    above_dot = _dot_at(200.0 - REF / 2)  # tier 1: the space above it
+    counts, no_cand, eliminated = G._assign_dots([head], [own_dot, above_dot], tol)
+    assert counts[id(head)] == 1, "the note keeps its own, unambiguous dot"
+    assert no_cand == 0, "the second dot DID reach a candidate"
+    assert eliminated == 1, "...and lost it to the tier-exclusivity lock, not to having none"
+
+
+def test_a_three_note_chord_gives_one_dot_to_each_notehead():
+    """A three-note chord, geometry taken from "Courage" (Final Fantasy XVI)
+    rather than invented: three half notes a third and a fourth apart, each
+    with its own raised dot. The middle note's own dot and the bottom note's
+    own dot are each unambiguous - only one note is close enough to fit
+    either. The TOP note's dot is not: it fits the top note itself (the space
+    BELOW it, deviation 0.0125 spaces) and it ALSO fits the middle note (the
+    space ABOVE it - the same physical space, since the two notes are a
+    third apart - deviation 0.0175 spaces) almost as well. Ranked in
+    isolation, "space above" outranks "space below" regardless of which fits
+    tighter, so this dot went to the middle note every time - leaving the
+    middle note double-dotted and the top note with none.
+
+    Fixed by refusing to let an owner already given a dot at one tier supply
+    a SECOND, different tier to another dot: the middle note's OWN dot (the
+    space BELOW it, which the bottom note is too far away to reach) is
+    unambiguous and settles first, locking the middle note to "space below".
+    That disqualifies the middle note from the top note's ambiguous dot,
+    which would need "space above" from it instead, leaving the top note as
+    the only owner still able to take it."""
+    tol = _tol(5.125)
+    top = _dotted(250.07, x0=232.19)
+    middle = _dotted(255.20, x0=232.19)
+    bottom = _dotted(262.89, x0=232.19)
+    dots = [_dot_at(252.62, x0=238.96), _dot_at(257.75, x0=238.96),
+            _dot_at(262.87, x0=238.96)]
+    counts, no_cand, eliminated = G._assign_dots([top, middle, bottom], dots, tol)
+    assert counts[id(top)] == 1
+    assert counts[id(middle)] == 1
+    assert counts[id(bottom)] == 1
+    assert no_cand == 0 and eliminated == 0
 
 
 # ---------------------------------------------------------------------------
