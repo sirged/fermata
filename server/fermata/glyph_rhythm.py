@@ -2483,27 +2483,225 @@ def _signature_from_window(window, mid):
     return ts, "stacked digit glyphs (multi-digit aware)"
 
 
+# How far into the staff a clef and the meter behind it reach when nothing is
+# engraved between them.
+TS_LEAD_SPACINGS = 8.8  # was a flat 45pt at the reference staff size
+# The furthest the search may reach even so. Seven accidentals plus the meter
+# fit inside this - it is the window decode_key_signature reads for the same
+# run of glyphs (_KEY_LEAD_SPACINGS).
+_TS_MAX_LEAD_SPACINGS = 20.0
+# How far past the last key-signature accidental the meter's own digits can
+# start. Measured on the library's four-sharp staves, the gap from the last
+# sharp's right edge to the numerator's left edge is about 1.6 staff spaces;
+# this is generous against that and is capped by the first note anyway.
+_TS_AFTER_ACCIDENTALS_SPACINGS = 4.0
+# How far off the staff a SOUNDING glyph (notehead or rest) is still looked
+# for, when deciding where the "nothing may be read past what already
+# sounds" clamp falls. A note is not always drawn ON the staff: guitar's open
+# strings on a treble-8vb staff sit low - E on the bottom line itself, A a
+# space below it, D one ledger line below that - and the deepest of those
+# measured on the sampled library (an open D) reads at up to 2.02 staff
+# spaces off the staff. Reading the clamp from the same +-1 spacing band as
+# the accidentals and the meter's own digits made it blind to exactly that
+# note, so it never fired for a part whose leading music is an open low
+# string - which is routine for guitar. This cannot widen the window itself,
+# only clamp it earlier, so there is no matching risk of pulling in a
+# neighbouring staff's key signature or meter the way widening `band` would.
+_SOUNDING_BAND_SPACINGS = 2.5
+
+
+def _first_sounding_x(events, staff_top, staff_bottom, x_lo, x_hi, tol):
+    """The x of the leftmost notehead or rest in [x_lo, x_hi], read from a
+    y-band wider than the staff itself - see _SOUNDING_BAND_SPACINGS - or
+    None if nothing sounds there."""
+    lo = staff_top - tol.spacing * _SOUNDING_BAND_SPACINGS
+    hi = staff_bottom + tol.spacing * _SOUNDING_BAND_SPACINGS
+    played = [e.x0 for e in events
+              if lo <= e.yc <= hi and x_lo <= e.x0 <= x_hi
+              and (e.category in NOTEHEAD_CATS or e.category in REST_CATS)]
+    return min(played) if played else None
+
+
 def decode_time_signature(page, staff_top, staff_bottom, staff_x0, spacing=None):
     """The time signature printed at the START of this staff, or (None, why).
 
-    Only the leading window is read. A meter change engraved mid-system is
-    not picked up here: the same digit glyphs also spell tuplet numbers and
-    other numerals across a staff, and scanning the full width traded a
-    known blind spot for confidently-wrong signatures. Changes engraved at a
-    system's start - which is where the sampled library's changes land - are
-    caught, because this runs per standard staff and tabextract carries the
-    results forward as a timeline (see _time_signature_timeline).
+    The window has to hold the clef, the KEY SIGNATURE and the meter, in that
+    order, and a flat distance from the staff's left edge cannot: three or
+    four accidentals push the digits past 8.8 staff spaces and the meter is
+    simply never looked at. Measured on the sampled library, that lost the
+    printed meter on 49 of 292 first pages - every one of them a score whose
+    key signature has three or more accidentals - and each of those scores was
+    then barred as 4/4 from end to end.
+
+    So the window ends at whichever comes first of: a fixed reach past the
+    last key-signature accidental, and the first thing on the staff that
+    SOUNDS. The second half is what makes widening safe rather than merely
+    wider: a meter is always engraved before the music it governs, so nothing
+    beyond the first notehead or rest can be one, and simply enlarging the
+    flat distance would instead start reading numerals out of the music -
+    a fingering, a tuplet number, a string number - and returning them as a
+    confident meter, which is a worse failure than the one being fixed. This
+    IS measured rather than assumed safe: removing both the clamp and the
+    accidental-keyed reach changes nothing on the sampled library (0 of 297
+    scores differ), which says the two guards have not yet been caught doing
+    their job here - not that either is free to drop. The clamp specifically
+    reads a wider band than the staff itself off to the side (see
+    _SOUNDING_BAND_SPACINGS) so a ledger-line note - an open low string on
+    guitar - still clamps it.
+
+    Only the leading window is read. A meter change engraved part-way along a
+    system is read by decode_meter_after_barline, which shares this
+    construction and adds its own guard against reading a courtesy signature
+    for the NEXT system as a change at THIS barline; tabextract carries both
+    forward as a timeline (see _build_time_signature_timeline).
     """
     tol = _Tol(spacing if spacing else (staff_bottom - staff_top) / 4.0)
     glyphs = extract_glyph_events(page)
     if not glyphs.events:
         return None, "no music glyphs found"
-    lead = tol.spacing * 8.8  # was a flat 45pt at the reference staff size
     mid = (staff_top + staff_bottom) / 2
-    window = [e for e in glyphs.events
-              if staff_top - tol.spacing <= e.yc <= staff_bottom + tol.spacing
-              and staff_x0 - tol.drawing_x_pad <= e.x0 <= staff_x0 + lead]
-    return _signature_from_window(window, mid)
+    band = [e for e in glyphs.events
+            if staff_top - tol.spacing <= e.yc <= staff_bottom + tol.spacing
+            and staff_x0 - tol.drawing_x_pad <= e.x0
+            <= staff_x0 + tol.spacing * _TS_MAX_LEAD_SPACINGS]
+    lead = staff_x0 + tol.spacing * TS_LEAD_SPACINGS
+    accidentals = [e for e in band if e.category in KEY_ACCIDENTAL_CATS]
+    if accidentals:
+        lead = max(lead, max(e.x1 for e in accidentals)
+                   + tol.spacing * _TS_AFTER_ACCIDENTALS_SPACINGS)
+    first_sound = _first_sounding_x(
+        glyphs.events, staff_top, staff_bottom,
+        staff_x0 - tol.drawing_x_pad, staff_x0 + tol.spacing * _TS_MAX_LEAD_SPACINGS, tol)
+    if first_sound is not None:
+        lead = min(lead, first_sound)
+    return _signature_from_window([e for e in band if e.x0 <= lead], mid)
+
+
+# How far past a barline a meter change printed at it can start when nothing
+# is engraved between the barline and the meter. It is the first thing after
+# the barline, so this is small on purpose - see decode_meter_after_barline.
+_MID_SYSTEM_LEAD_SPACINGS = 5.0
+# The furthest a mid-system reach may extend even so, for the same reason and
+# at the same size as the opening window's cap: a key change at the same
+# barline can push the meter's digits out exactly as it does at a staff's own
+# start (_TS_MAX_LEAD_SPACINGS), and this is the window decode_key_signature
+# would need if a key ever changed mid-system too.
+_MID_SYSTEM_MAX_LEAD_SPACINGS = _TS_MAX_LEAD_SPACINGS
+# How close the DECODED meter's own right edge may sit to the staff's right
+# edge before it is refused as a courtesy signature for the NEXT system
+# rather than a change at THIS barline. An end-of-system courtesy signature -
+# the key and meter for the system that follows, engraved as the last thing
+# on this one - sits well within a key-signature-anchored reach of a barline
+# several spaces earlier, so accepting it here would start that change a bar
+# early. Measured on the two scores this guard exists for: Kaine Salvation's
+# courtesy 6/8 (four sharps, then the meter, printed after the system's last
+# barline) ends 0.83 staff spaces short of the staff's own right edge; Into
+# the Wilderness's real mid-system 6/4 (three flats, printed the same way)
+# ends 55.8 spaces short of it. Two orders of magnitude apart, so this sits
+# generously between them.
+_END_OF_SYSTEM_GUARD_SPACINGS = 4.0
+
+
+def decode_meter_after_barline(page, staff_top, staff_bottom, barline_x, staff_x1,
+                                spacing=None):
+    """The time signature printed immediately after a barline part-way along
+    this staff, or (None, why).
+
+    A meter change is engraved where it takes effect, and that can be a
+    barline in the middle of a system - the bars before it in the same system
+    are still in the previous meter. This window shares decode_time_signature's
+    construction, for the same reason that reader needs it: a key change at
+    the SAME barline pushes the meter's digits out past a flat reach exactly
+    the way it does at a staff's own start, and a window sized only for
+    "nothing between the barline and the meter" drops the meter silently when
+    something is. So this reaches past the last accidental printed just after
+    the barline, capped, and clamped by the first thing that sounds (read from
+    a band wider than the staff itself - see _SOUNDING_BAND_SPACINGS).
+
+    That reach is not safe here on its own, the way it is at the opening: a
+    courtesy signature for the NEXT system - printed as the last thing on
+    THIS one, to preview a key or meter change before the system break - sits
+    well within reach of a barline several spaces earlier once the window can
+    see past a key change. Accepting it would start that change a bar early,
+    which is worse than not reading it at all. So a candidate whose own
+    decoded position lands within _END_OF_SYSTEM_GUARD_SPACINGS of the
+    staff's right edge is refused as a courtesy instead - see that constant
+    for the measurement this is keyed on.
+
+    The digit glyphs also spell tuplet numbers, and the numerator/denominator
+    overlap test on its own would accept an UNEQUAL pair of those as a meter:
+    a triplet "3" in one voice stacked against a "4" or "8" from a different
+    tuplet bracket, fingering, or string number in another. (An equal pair
+    such as two triplet "3"s cannot pass this far - 3/3 is not a usable
+    denominator and time_signature_is_valid rejects it upstream.) A meter is
+    always printed before the music it governs, so a notehead or rest to the
+    left of the candidate proves the digits found are not one.
+
+    That guard is blind on the UP-STEM side: what `_detect_barlines` offers as
+    a candidate position is often not a barline at all but a stem, and an
+    up-stem attaches at its own notehead's RIGHT edge, so the notehead that
+    owns the stem sits to the LEFT of the candidate x - outside the window
+    this function ever looks at (`barline_x < e.x0`, strictly right). A stem
+    mistaken for a barline is therefore never caught by its own note.
+
+    Measured rather than extended on a guess: across the library, 152 of
+    21,680 candidate positions are accepted as a meter, and 23 of those 152
+    have a notehead within one staff spacing to the LEFT of the candidate.
+    That is not 23 hazards - it is what a REAL barline looks like too, since
+    the previous bar's last note routinely ends close to the barline that
+    follows it. Proximity on the left does not distinguish "this candidate is
+    that note's own stem" from "this candidate is a genuine barline with an
+    ordinary note before it", so a look-back guard built on it would refuse
+    correct meters about as often as it caught wrong ones. Left undone for
+    that reason rather than fixed; a real fix needs a way to tell a stem from
+    a barline that does not yet exist at this layer.
+    """
+    tol = _Tol(spacing if spacing else (staff_bottom - staff_top) / 4.0)
+    glyphs = extract_glyph_events(page)
+    if not glyphs.events:
+        return None, "no music glyphs found"
+    mid = (staff_top + staff_bottom) / 2
+    band = [e for e in glyphs.events
+            if staff_top - tol.spacing <= e.yc <= staff_bottom + tol.spacing
+            and barline_x < e.x0
+            <= barline_x + tol.spacing * _MID_SYSTEM_MAX_LEAD_SPACINGS]
+    if not band:
+        return None, "nothing is printed just after this barline"
+    lead = barline_x + tol.spacing * _MID_SYSTEM_LEAD_SPACINGS
+    accidentals = [e for e in band if e.category in KEY_ACCIDENTAL_CATS]
+    if accidentals:
+        lead = max(lead, max(e.x1 for e in accidentals)
+                   + tol.spacing * _TS_AFTER_ACCIDENTALS_SPACINGS)
+    first_sound = _first_sounding_x(
+        glyphs.events, staff_top, staff_bottom, barline_x,
+        barline_x + tol.spacing * _MID_SYSTEM_MAX_LEAD_SPACINGS, tol)
+    if first_sound is not None:
+        lead = min(lead, first_sound)
+    window = [e for e in band if e.x0 <= lead]
+    if not window:
+        return None, "nothing is printed just after this barline"
+    ts, why = _signature_from_window(window, mid)
+    if ts is None:
+        return None, why
+    meter_x0, why_no_meter = _meter_left_edge(window, mid)
+    if meter_x0 is None:
+        return None, why_no_meter
+    played = [e.x0 for e in window
+              if e.category in NOTEHEAD_CATS or e.category in REST_CATS]
+    if played and min(played) < meter_x0:
+        return None, (
+            "digit glyphs just after this barline sit behind a note or a rest, so they are "
+            "not a meter printed at the barline"
+        )
+    meter_glyphs = [e for e in window
+                    if e.category in DIGIT_CATS or e.category in _METER_SYMBOL_CATS]
+    meter_x1 = max(e.x1 for e in meter_glyphs)
+    if staff_x1 - meter_x1 < tol.spacing * _END_OF_SYSTEM_GUARD_SPACINGS:
+        return None, (
+            "the printed meter sits at the end of the system, so it reads as a courtesy "
+            "signature for the system that follows rather than a change at this barline"
+        )
+    return ts, why
 
 
 # ---------------------------------------------------------------------------
@@ -2515,10 +2713,10 @@ def decode_time_signature(page, staff_top, staff_bottom, staff_x0, spacing=None)
 # of one.
 KEY_ACCIDENTAL_CATS = {"sharp": 1, "flat": -1}
 # How far into the staff the clef + up to seven accidentals + the meter
-# reach. Wider than decode_time_signature's own lead window, because a
-# seven-accidental signature pushes the meter further right than the 8.8
-# spacings that window allows for.
-_KEY_LEAD_SPACINGS = 20.0
+# reach. The same reach decode_time_signature allows itself for the same run
+# of glyphs, and for the same reason: a seven-accidental signature pushes the
+# meter well past the 8.8 spacings a clef and a meter alone need.
+_KEY_LEAD_SPACINGS = _TS_MAX_LEAD_SPACINGS
 # A key signature holds at most seven accidentals (C flat major / C sharp
 # major). More than that in the leading window is not a key signature.
 _MAX_KEY_ACCIDENTALS = 7

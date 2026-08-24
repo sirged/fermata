@@ -2365,42 +2365,152 @@ def extract(pdf_path, time_signature: tuple[int, int] | None = None) -> Extracti
         doc.close()
 
 
-def _ts_at(timeline, page_idx, y):
-    """The time signature in effect at (page, vertical position), from the
-    per-system timeline. Engravers print a meter once, at the point it
-    changes, so the value in effect is the last one printed at or before
-    this position - not the first one found in the document."""
+def _ts_at(timeline, page_idx, y, x):
+    """The time signature in effect at (page, vertical position, horizontal
+    position), from the timeline. Engravers print a meter once, at the point
+    it changes, so the value in effect is the last one printed at or before
+    this position - not the first one found in the document.
+
+    The horizontal position matters as much as the vertical one: a meter
+    change engraved part-way along a system governs the bars after it and not
+    the ones before it, and asking this about the system's position instead
+    of the bar's applied it to the whole system (issue #104).
+
+    PRECONDITION: `timeline` must already be in (page, y, x) order - the same
+    order _build_time_signature_timeline emits it in. Sorted here defensively
+    rather than trusted, since silently reading an unsorted timeline in
+    document order does not raise, it just answers wrong: the loop below
+    stops at the first entry it finds "later" than the query, so one
+    out-of-order entry hides everything genuinely at-or-before the query that
+    comes after it in the list.
+
+    A second, sharper hazard sits in the lexicographic comparison itself even
+    on a correctly-sorted timeline: `y` is expected to equal EXACTLY the top
+    of the system the query's bar belongs to - the same value the matching
+    timeline entries were recorded with - because comparing 3-tuples degrades
+    to comparing `entry_y` against `y` ALONE whenever they differ, deciding
+    the whole comparison without ever looking at `x`. A `y` that is even a
+    hair GREATER than the true system top (the `anchor_y` fallback in
+    `_extract` uses a tab staff's own top when it has no paired notation
+    staff, which is not guaranteed to equal any recorded system's y) makes
+    every entry in that system compare as "at or before" regardless of `x`,
+    silently returning that system's LAST meter for a bar that asked about
+    its first. `y` a hair SMALLER fails safe instead, refusing that whole
+    system's entries and falling back to whatever caller-provided default
+    the caller falls back to - wrong, but not silently wrong in the way that
+    matters here.
+    """
     best = None
-    for entry_page, entry_y, ts in timeline:
-        if (entry_page, entry_y) <= (page_idx, y):
+    for entry_page, entry_y, entry_x, ts in sorted(timeline):
+        if (entry_page, entry_y, entry_x) <= (page_idx, y, x):
             best = ts
         else:
             break
     return best
 
 
-def _build_time_signature_timeline(pages_with_tab):
-    """Read the printed time signature at the start of every notation staff
-    on every page that has tab, in document order.
+# The x recorded for a meter printed at a staff's own start: it governs every
+# bar of that system, including the first, whose left boundary is measured off
+# the TAB staff and can therefore land a hair left of the notation staff's.
+_SYSTEM_START_X = float("-inf")
 
-    Returns (timeline, reasons) where timeline is a list of
-    (page_index, staff_top, (num, den)) with consecutive duplicates
-    collapsed, and reasons is the decoder's own explanation for the staves
-    where nothing was found - surfaced to the user instead of being dropped,
-    so "assumed 4/4" can say what was actually looked at.
+
+def _append_ts(timeline, entry):
+    """Add one timeline entry unless it repeats the meter already in force -
+    a meter reprinted, or simply still running, is not a change."""
+    if timeline and timeline[-1][3] == entry[3]:
+        return
+    timeline.append(entry)
+
+
+def _mid_system_meters(page, staff, vseg):
+    """Meters engraved part-way along one notation staff, as (x, ts) in x
+    order.
+
+    A change is printed immediately after the barline it takes effect at, so
+    only that space is read - see glyph.decode_meter_after_barline for why
+    scanning a whole staff width instead invents meters out of tuplet
+    numbers. The staff's own opening window is skipped because the meter
+    there is read by decode_time_signature. `staff.x1` is passed through so
+    that reader can tell a change at THIS barline from a courtesy signature
+    for the system that follows, printed as the last thing on this one - see
+    its own docstring for why the barline's distance from staff.x1 alone is
+    not enough to tell the two apart once the reach is wide enough to see
+    past a key change.
+
+    The x recorded sits one staff space LEFT of the barline the meter was
+    printed at. The bar boundaries this is later compared against are
+    measured off the TAB staff's barlines rather than this staff's; the two
+    are drawn to the same x but not to the same rounding, and a bar boundary
+    landing a tenth of a point early would put the bar where the meter
+    changes into the previous meter. One staff space is orders of magnitude
+    below the width of a bar and orders above that jitter.
+    """
+    out = []
+    opening = staff.x0 + staff.spacing * glyph.TS_LEAD_SPACINGS
+    for bx in _detect_barlines(vseg, staff):
+        if bx <= opening or bx >= staff.x1 - staff.spacing:
+            continue
+        ts, _why = glyph.decode_meter_after_barline(
+            page, staff.top, staff.bottom, bx, staff.x1, staff.spacing)
+        if ts is not None:
+            out.append((bx - staff.spacing, ts))
+    return out
+
+
+def _build_time_signature_timeline(pages_with_tab):
+    """Read every printed time signature on every page that has tab, in
+    document order: the one at the start of each notation staff, and any
+    engraved part-way along it at a barline.
+
+    Returns (timeline, reasons, opening_read) where timeline is a list of
+    (page_index, staff_top, x, (num, den)) with consecutive duplicates
+    collapsed, reasons is the decoder's own explanation for the staves where
+    nothing was found - surfaced to the user instead of being dropped, so
+    "assumed 4/4" can say what was actually looked at - and opening_read says
+    whether the meter printed at the score's FIRST notation staff was one of
+    the ones read.
+
+    opening_read is what stops a meter read from a later system being
+    backdated over the opening. A staff that decodes to nothing is skipped,
+    so a score whose first system was not read used to take its opening meter
+    from whichever staff answered first: a piece in 4/4 that changes to 3/4
+    part-way through recorded only the 3/4, called it the opening meter at
+    full confidence, and - having recorded exactly one meter - never fired the
+    "changes time signature part-way through" warning either (issue #90).
+
+    `first_staff` names the first notation staff among `pages_with_tab` -
+    which is already filtered to pages that carry a TAB staff, not the
+    score's pages in general. A score whose actual opening page is notation
+    only (a foreword, a single-staff intro before the tabbed arrangement
+    begins) is not in `pages_with_tab` at all, so "first" here means the
+    first notation staff on the first page that ALSO has tablature, not the
+    first notation staff in the document. Where the two differ, a meter
+    printed only on that earlier, tab-less page is never read as the
+    opening one - it is not read at all, since `pages_with_tab` never
+    reaches it - and this reports "not detected (assumed 4/4)" rather than
+    the meter that page actually shows.
     """
     timeline = []
     reasons = []
+    opening_read = False
+    first_staff = True
     for page_idx, page, _tab_staves, std_staves in pages_with_tab:
+        # Computed once per page and reused across its staves - see
+        # _detect_barlines. The page's drawings are memoised, so this is a
+        # filter over an already-parsed content stream.
+        vseg = _vertical_segments(page) if std_staves else []
         for s in std_staves:
             ts, reason = glyph.decode_time_signature(page, s.top, s.bottom, s.x0, s.spacing)
             if ts is None:
                 reasons.append(reason)
-                continue
-            if timeline and timeline[-1][2] == ts:
-                continue  # same meter still in force - not a change
-            timeline.append((page_idx, s.top, ts))
-    return timeline, reasons
+            else:
+                opening_read = opening_read or first_staff
+                _append_ts(timeline, (page_idx, s.top, _SYSTEM_START_X, ts))
+            first_staff = False
+            for x, mid_ts in _mid_system_meters(page, s, vseg):
+                _append_ts(timeline, (page_idx, s.top, x, mid_ts))
+    return timeline, reasons, opening_read
 
 
 def _detect_key_signature(pages_with_tab) -> tuple[int, str, str | None]:
@@ -2521,17 +2631,27 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             warnings=warnings,
         )
 
-    # Time signature, now that we know there is tab worth extracting. Read
-    # per notation system so a meter CHANGE part-way through the score is
-    # seen, instead of taking whichever staff answered first and measuring
-    # every later bar against it (the library demonstrably contains pieces
-    # that change meter mid-score - e.g. 4/4 -> 12/16 -> 4/4).
+    # Time signature, now that we know there is tab worth extracting. Read at
+    # every position one is printed - the start of each notation system and
+    # each barline part-way along one - so a meter CHANGE is seen and each bar
+    # can be measured against the meter in force where THAT bar is, instead of
+    # taking whichever staff answered first and measuring every other bar in
+    # the score against it (the library demonstrably contains pieces that
+    # change meter mid-score - e.g. 4/4 -> 12/16 -> 4/4 - and 41 of them print
+    # a change part-way along a system rather than at its start).
     ts_timeline = []
     ts_reasons = []
+    ts_opening_read = False
     if override is None:
-        ts_timeline, ts_reasons = _build_time_signature_timeline(pages_with_tab)
-        if ts_timeline:
-            ts = ts_timeline[0][2]
+        ts_timeline, ts_reasons, ts_opening_read = _build_time_signature_timeline(
+            pages_with_tab)
+        if ts_timeline and ts_opening_read:
+            # The opening meter is the one printed at the score's own first
+            # notation staff, and ONLY that one. Indexing the first entry
+            # whatever staff it came from is the "whichever staff answered
+            # first" this timeline exists to avoid - see
+            # _build_time_signature_timeline.
+            ts = ts_timeline[0][3]
             ts_source = "glyph-decoded"
         else:
             for page_idx, page, _t, std_staves in pages_with_tab:
@@ -2555,6 +2675,25 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         for reason in list(dict.fromkeys(ts_reasons))[:3]:
             warnings.append(f"time signature: {reason}")
 
+    if ts_timeline and not ts_opening_read:
+        # Said out loud, because this is the shape that used to be silent AND
+        # confident: the opening meter unread, a later one read, and that
+        # later one reported as the meter of the whole score. Suppressed
+        # when the later meter and the assumed opening happen to agree -
+        # "read as 4/4, assumed 4/4" is not a discrepancy worth surfacing,
+        # and `ts_source` is never interpolated into the sentence: it can
+        # itself be the string "not detected (assumed 4/4)", which nested
+        # inside prose about being "barred as 4/4 (not detected (assumed
+        # 4/4))" reads as a token dump rather than an explanation.
+        later = ts_timeline[0][3]
+        if later != ts:
+            warnings.append(
+                f"the meter printed at the start of this score was not read, but a {later[0]}/"
+                f"{later[1]} printed further into it was - the bars before that point are "
+                f"barred as {ts[0]}/{ts[1]} rather than measured against a meter read from a "
+                "later part of the score"
+            )
+
     if tuning_unread:
         # Said in the warnings as well as carried as data, because it is a
         # caveat about the transcription and a reader who has only the API
@@ -2573,8 +2712,19 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     if key_reason:
         warnings.append(f"key signature: {key_reason} - notes are spelled as if there were none")
 
-    if len(ts_timeline) > 1:
-        changes = ", ".join(f"{n}/{d}" for _, _, (n, d) in ts_timeline[:6])
+    # Every meter the transcription is actually barred in, in order, opening
+    # meter first. Derived from `ts` rather than from the timeline alone
+    # because the opening may be an assumption (see ts_opening_read): a score
+    # assumed to open in 4/4 that then prints a 3/4 DOES change meter part-way
+    # through, and the timeline holding one entry is exactly the reason that
+    # went unsaid.
+    meters_in_force = []
+    for meter in [ts] + [entry[3] for entry in ts_timeline]:
+        if not meters_in_force or meters_in_force[-1] != meter:
+            meters_in_force.append(meter)
+
+    if len(meters_in_force) > 1:
+        changes = ", ".join(f"{n}/{d}" for n, d in meters_in_force[:6])
         warnings.append(
             f"this score changes time signature part-way through ({changes}) - the change is "
             "carried into the transcription, but bar grouping around a meter change is lower "
@@ -2676,11 +2826,12 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                         no_stem_notes += staff_no_stem
                         no_stem_staves += 1
 
-            # The meter in effect for this staff: from the notation staff it
-            # reads, or from its own position when it reads none.
+            # Where to look the meter up: the notation staff this tab staff
+            # reads from, or its own position when it reads none. The meter
+            # itself is resolved per BAR, in the measure loop below, because a
+            # change engraved part-way along a system governs the bars after
+            # it and not the ones before it.
             anchor_y = std_staff.top if std_staff is not None else staff.top
-            staff_ts = _ts_at(ts_timeline, page_idx, anchor_y) or ts
-            measure_quarter_len = _measure_quarter_length(staff_ts)
 
             # Two-and-a-half staff-line-spacings is comfortably wider than
             # normal engraving jitter between a notehead and its tab digit,
@@ -2704,6 +2855,13 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             staff_first_bar = len(all_measures) + 1
             for i, m_cols in enumerate(measures_for_staff):
                 m_lo, m_hi = bounds[i], bounds[i + 1]
+                # This bar's own meter, at this bar's own position. The budget
+                # it sets decides what _bar_conformance measures the bar
+                # against and how far _pad_voice_to_budget fills a short
+                # voice, so a meter borrowed from elsewhere in the system
+                # lands on both of those figures.
+                bar_ts = _ts_at(ts_timeline, page_idx, anchor_y, m_lo) or ts
+                measure_quarter_len = _measure_quarter_length(bar_ts)
                 if source.uses_glyphs:
                     voices, unmatched_cols, unmatched_notes = (
                         _build_measure_beats_glyph(
@@ -2734,7 +2892,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                         # counted and named instead - see unread_bars.
                         voices = [_rest_beats_for(measure_quarter_len)]
                         unread_bars.append(len(all_measures) + 1)
-                    all_measures.append((voices, staff_ts))
+                    all_measures.append((voices, bar_ts))
                     continue
                 if not m_cols:
                     # No digit columns landed in this bar - emit an explicit
@@ -2748,11 +2906,11 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                     # unmarked for the same reason as the glyph branch above,
                     # and counted as unread for the same reason too.
                     unread_bars.append(len(all_measures) + 1)
-                    all_measures.append((_rest_beats_for(measure_quarter_len), staff_ts))
+                    all_measures.append((_rest_beats_for(measure_quarter_len), bar_ts))
                     continue
                 durations_q = _infer_measure_rhythm(m_cols, measure_quarter_len, m_hi)
                 beats = [(_snap_duration(dq), 0, col["notes"]) for col, dq in zip(m_cols, durations_q)]
-                all_measures.append((beats, staff_ts))
+                all_measures.append((beats, bar_ts))
             prov_bars[source.provenance].extend(
                 range(staff_first_bar, len(all_measures) + 1))
 
@@ -2859,7 +3017,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         "glyph-decoded": "high - read directly from the time-signature digit glyphs printed on the score",
         "auto-detected": "medium - read from page text",
     }.get(ts_source, "low - not detected, assumed 4/4")
-    if len(ts_timeline) > 1 and ts_source == "glyph-decoded":
+    if len(meters_in_force) > 1 and ts_source == "glyph-decoded":
         ts_confidence = (
             "medium - read directly from the time-signature digit glyphs, but the score changes "
             "meter part-way through"

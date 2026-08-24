@@ -123,11 +123,23 @@ def staff_details(tuning, number=2):
             f"{lines}</staff-details>")
 
 
+def time_signature(time, printed=True):
+    """A `<time>` element, optionally engraved invisibly.
+
+    `print-object="no"` is a real editorial choice - an edition that does not
+    want a meter on the page still has to declare one for the file to mean
+    anything - and it is the one shape that produces a score whose OPENING
+    meter cannot be read off the page while a later change can."""
+    show = "" if printed else ' print-object="no"'
+    return (f"<time{show}><beats>{time[0]}</beats>"
+            f"<beat-type>{time[1]}</beat-type></time>")
+
+
 def attributes(fifths=0, time=(4, 4), staves=2, tuning=STANDARD_TUNING,
-               octave_clef=True, tab=True):
+               octave_clef=True, tab=True, time_printed=True):
     out = [f"<attributes><divisions>{DIVISIONS}</divisions>",
            f"<key><fifths>{fifths}</fifths></key>",
-           f"<time><beats>{time[0]}</beats><beat-type>{time[1]}</beat-type></time>"]
+           time_signature(time, printed=time_printed)]
     if staves > 1:
         out.append(f"<staves>{staves}</staves>")
     number = ' number="1"' if staves > 1 else ""
@@ -374,8 +386,133 @@ def fixture_rests_and_flags():
     return score("Guitar", [attributes() + b1, b2, b3, b4, b5, b6, b1, b2])
 
 
+def fixture_four_sharps_in_three_four():
+    """Four sharps between the clef and the meter, and a meter that is not
+    4/4.
+
+    The key signature is what makes this fixture: the clef, four accidentals
+    and the meter in a row put the meter's digits about ten and a half staff
+    spaces into the staff, past the eight-and-a-bit that a clef and a meter
+    alone occupy. A window measured from the staff's left edge never reaches
+    them, so the printed meter is not found and the whole score is barred as
+    4/4 - which is why this one is written in 3/4, so that failing to read it
+    misplaces every barline instead of landing on the same answer by luck.
+    Measured on one real library, this shape lost the printed meter on 49 of
+    292 first pages."""
+    bar = _bar([note(("E", 4), "quarter"), note(("F", 4, 1), "eighth"),
+                note(("G", 4, 1), "eighth"), note(("A", 4), "quarter")], 3.0)
+    last = _bar([note(("E", 4), "half", dots=1)], 3.0)
+    return score("Guitar", [attributes(fifths=4, time=(3, 4)) + bar]
+                 + [bar] * 6 + [last])
+
+
+def fixture_hidden_opening_meter():
+    """A score whose opening meter is engraved invisibly and which then
+    prints a change to 3/4 at a later system.
+
+    The opening meter cannot be read here for a reason no window can fix: it
+    is not on the page. That makes it the case that shows what happens when
+    ONE staff of a score decodes and the first one does not - the later 3/4
+    used to be adopted as the score's opening meter, at "read directly from
+    the digit glyphs" confidence, and every earlier bar was measured and
+    emitted in 3/4 against music written in 4/4. It also used to suppress the
+    warning that says the meter changes, because only one meter had been
+    recorded and one meter is not a change.
+
+    The 4/4 bars hold four quarters and the 3/4 bars three, so barring them
+    in the wrong meter is visible in the conformance figures and not only in
+    what is reported about the meter."""
+    four = _bar([note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+                 note(("G", 4), "quarter"), note(("A", 4), "quarter")], 4.0)
+    three = _bar([note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+                  note(("G", 4), "quarter")], 3.0)
+    change = ('<print new-system="yes"/><attributes>'
+              + time_signature((3, 4)) + "</attributes>")
+    measures = ([attributes(time_printed=False) + four] + [four] * 3
+                + [change + three] + [three] * 3)
+    return score("Guitar", measures)
+
+
+def fixture_hidden_opening_meter_matches_the_default():
+    """The other direction from fixture_hidden_opening_meter: the opening
+    meter is invisible, decoding it fails, and the only meter read anywhere
+    in the score is a later, explicit 4/4 - printed again at the second
+    system for no musical reason, purely so there is something for the
+    decoder to read - which happens to be exactly what "assumed 4/4" already
+    guesses. The "meter printed at the start of this score was not read"
+    warning must not fire here: there is no discrepancy between the assumed
+    opening and the meter that was read, so saying so would be noise rather
+    than a caveat worth a reader's attention (PR #122's review, finding
+    F10). Every bar is in 4/4 throughout, so the "changes time signature"
+    warning must stay quiet too."""
+    four = _bar([note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+                 note(("G", 4), "quarter"), note(("A", 4), "quarter")], 4.0)
+    change = ('<print new-system="yes"/><attributes>'
+              + time_signature((4, 4)) + "</attributes>")
+    measures = ([attributes(time_printed=False) + four] + [four] * 3
+                + [change + four] + [four] * 3)
+    return score("Guitar", measures)
+
+
+def fixture_mid_system_meter_change():
+    """A meter change engraved part-way ALONG a system, not at its start.
+
+    An engraver prints a change where it takes effect, which is wherever the
+    barline is - the middle of a system as often as its start. The bars ahead
+    of it in that same system are still in the previous meter, so a meter
+    resolved once per system is the wrong meter for some of them: their
+    budget is wrong, they are measured against a length nobody wrote, and a
+    voice that falls short of it gets padded with silence towards a meter it
+    is not in.
+
+    Every bar here adds up exactly to its own printed meter, and the 2/4 bars
+    hold half what the 4/4 bars do, so a bar budgeted against the system's
+    meter instead of its own cannot help but show up as defective. The system
+    break before the second 4/4 is explicit so that the first system holds
+    both of the first two meters - which is the whole point of the
+    fixture."""
+    four = _bar([note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+                 note(("G", 4), "quarter"), note(("A", 4), "quarter")], 4.0)
+    two = _bar([note(("B", 4), "quarter"), note(("A", 4), "quarter")], 2.0)
+    to_two = "<attributes>" + time_signature((2, 4)) + "</attributes>"
+    back = ('<print new-system="yes"/><attributes>'
+            + time_signature((4, 4)) + "</attributes>")
+    measures = [attributes() + four, four, to_two + two, two,
+                back + four, four, four, four]
+    return score("Guitar", measures)
+
+
+def fixture_mid_system_key_and_meter_change():
+    """A meter change engraved at the SAME barline as a key change, part-way
+    along a system - the mid-system counterpart of
+    fixture_four_sharps_in_three_four.
+
+    Four sharps printed right after the barline push the numerator's own
+    left edge out exactly as they do at a staff's own start: a mid-system
+    reader sized only for "nothing between the barline and the meter" drops
+    this the same way the opening reader used to drop a key-signature-fronted
+    meter (issue #90). The change is to 3/4 so a bar barred in the wrong
+    meter is visible in the conformance figures rather than landing on the
+    right answer by luck, and every bar adds up exactly to its own printed
+    meter."""
+    four = _bar([note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+                 note(("G", 4), "quarter"), note(("A", 4), "quarter")], 4.0)
+    three = _bar([note(("F", 4, 1), "quarter"), note(("G", 4, 1), "quarter"),
+                  note(("A", 4), "quarter")], 3.0)
+    to_three_sharps = ("<attributes><key><fifths>4</fifths></key>"
+                        + time_signature((3, 4)) + "</attributes>")
+    measures = [attributes() + four, four, to_three_sharps + three,
+                three, three, three, three, three]
+    return score("Guitar", measures)
+
+
 FIXTURES = {
     "notation_and_tab": fixture_notation_and_tab,
+    "four_sharps_in_three_four": fixture_four_sharps_in_three_four,
+    "hidden_opening_meter": fixture_hidden_opening_meter,
+    "hidden_opening_meter_matches_the_default": fixture_hidden_opening_meter_matches_the_default,
+    "mid_system_meter_change": fixture_mid_system_meter_change,
+    "mid_system_key_and_meter_change": fixture_mid_system_key_and_meter_change,
     "rests_and_flags": fixture_rests_and_flags,
     "tab_only": fixture_tab_only,
     "tab_only_short_last_system": fixture_tab_only_short_last_system,
