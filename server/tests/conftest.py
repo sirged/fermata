@@ -63,6 +63,21 @@ _FIXTURE_RELATIVE_PATHS = {
     # would start the change a system early - see
     # test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early.
     "kaine_salvation": "Patreon/John Oeth/NieR/Kaine Salvation (NieR).pdf",
+    # Two of the four scores the #116 research had a guitarist check against
+    # the printed page. Born a Stranger's flagged spot is a genuine unison
+    # shared by two voices - two notes drawn adjacent on the same row, the
+    # lower stem-left and the higher swapped stem-right - and must survive as
+    # two notes in two voices. Carulli's flagged spots looked like single
+    # notes on the page but are ALSO two-voice unisons underneath (a melody
+    # note and a bass note sharing one position); the guitarist's read was of
+    # the ink, not the content stream, so the correct fix emits one note per
+    # voice there rather than doubling one note into two.
+    "born_a_stranger": "Patreon/John Oeth/To the Moon/Born a Stranger (To the Moon).pdf",
+    "carulli_moderato": "Classical/PrimoGuitar Misc/Carulli-Moderato-Op192-Free.pdf",
+    # Carries coincident duplicate pairs with only ONE candidate stem between
+    # them (issue #116) - the residue nothing can split - so the disclosure
+    # counter (coincident_unsplit_pairs) has a real score to be exercised on.
+    "ronfaure": "Patreon/John Oeth/Final Fantasy/FF XI/Ronfaure (Final Fantasy XI).pdf",
 }
 
 # Skips for want of a library are COUNTED HERE as they happen, rather than
@@ -212,6 +227,32 @@ def kaine_salvation_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing 'Kaine Salvation' fixture)")
+    return p
+
+
+@pytest.fixture
+def born_a_stranger_pdf() -> Path:
+    p = _fixture_path("born_a_stranger")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Born a Stranger' fixture)")
+    return p
+
+
+@pytest.fixture
+def carulli_moderato_pdf() -> Path:
+    p = _fixture_path("carulli_moderato")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing Carulli-Moderato fixture)")
+    return p
+
+
+@pytest.fixture
+def ronfaure_pdf() -> Path:
+    p = _fixture_path("ronfaure")
+    if p is None:
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Ronfaure fixture)")
     return p
 
 

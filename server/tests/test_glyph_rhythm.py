@@ -773,6 +773,78 @@ def test_the_chord_threading_lookup_also_narrows_on_opus(monkeypatch):
         "wider metrics box would have allowed")
 
 
+
+# ---------------------------------------------------------------------------
+# Coincident duplicate noteheads: a unison shared by two voices (issue #116)
+# ---------------------------------------------------------------------------
+
+
+def _coincident_pair(ink_x0=100.0, ink_x1=106.0, yc=115.0):
+    """Two GlyphEvents identical in every field decode_note_events groups
+    coincident duplicates on (family, gid, x0, y0) - the same glyph, drawn
+    twice at the identical position, which is how a unison shared by two
+    voices is engraved."""
+    bbox = (ink_x0, yc - 10.0, ink_x1, yc + 10.0)
+    kwargs = dict(baseline_y=yc, ink=(yc - 3.0, yc + 3.0), ink_x=(ink_x0, ink_x1))
+    a = G.GlyphEvent("Maestro", 210, "notehead_filled", bbox, 0, **kwargs)
+    b = G.GlyphEvent("Maestro", 210, "notehead_filled", bbox, 0, **kwargs)
+    return a, b
+
+
+def test_a_coincident_pair_with_two_candidate_stems_binds_one_copy_to_each(monkeypatch):
+    """The fix, pinned at the decode level: for a coincident pair with two
+    opposing candidate stems - one at the head's right edge overhanging
+    upward, one at its left edge overhanging downward, the majority shape
+    measured across the library - the two emitted NoteEvents must not share
+    a stem_key. RED before this fix: _best_stem is a pure function of
+    coordinates, so both copies always ranked the same stem best and the
+    other stem's notehead was silently lost."""
+    ink_x0, ink_x1, yc = 100.0, 106.0, 115.0
+    up = G.Stem(x=106.1, y0=95.0, y1=115.3)      # right edge, tip above
+    down = G.Stem(x=99.9, y0=114.7, y1=135.0)    # left edge, tip below
+    a, b = _coincident_pair(ink_x0, ink_x1, yc)
+    page = _BarePage()
+    monkeypatch.setattr(
+        G, "extract_glyph_events",
+        lambda _page: G.PageGlyphs([a, b], {"Maestro": []}, [], []))
+    monkeypatch.setattr(
+        G, "extract_stems_beams_curves",
+        lambda *a2, **k: ([down, up], [], []))
+    notes, stats = G.decode_note_events(
+        page, 100.0, 120.0, 50.0, 150.0, [100.0, 105.0, 110.0, 115.0, 120.0])
+    assert len(notes) == 2
+    assert notes[0].stem_key is not None and notes[1].stem_key is not None
+    assert notes[0].stem_key != notes[1].stem_key, (
+        "each copy of the coincident pair must hang off its OWN stem")
+    assert {notes[0].stem_key, notes[1].stem_key} == {G._stem_key(up), G._stem_key(down)}
+    assert stats["coincident_split_pairs"] == 1
+    assert stats["coincident_unsplit_pairs"] == 0
+
+
+def test_a_coincident_pair_with_only_one_candidate_stem_stays_bound_and_says_so(monkeypatch):
+    """The residue (issue #116's "30 single-candidate-stem pairs"): where
+    only ONE stem is anywhere near a coincident pair, nothing here can tell
+    the two copies apart, so they stay bound to it exactly as an unmodified
+    single-stem lookup would leave them - but that must be COUNTED rather
+    than silently doubling one voice's note into two same-voice notes."""
+    ink_x0, ink_x1, yc = 100.0, 106.0, 115.0
+    up = G.Stem(x=106.1, y0=95.0, y1=115.3)
+    a, b = _coincident_pair(ink_x0, ink_x1, yc)
+    page = _BarePage()
+    monkeypatch.setattr(
+        G, "extract_glyph_events",
+        lambda _page: G.PageGlyphs([a, b], {"Maestro": []}, [], []))
+    monkeypatch.setattr(
+        G, "extract_stems_beams_curves",
+        lambda *a2, **k: ([up], [], []))
+    notes, stats = G.decode_note_events(
+        page, 100.0, 120.0, 50.0, 150.0, [100.0, 105.0, 110.0, 115.0, 120.0])
+    assert len(notes) == 2
+    assert notes[0].stem_key == notes[1].stem_key == G._stem_key(up)
+    assert stats["coincident_unsplit_pairs"] == 1
+    assert stats["coincident_split_pairs"] == 0
+
+
 def test_a_stem_whose_side_contradicts_its_overhang_is_not_believed():
     """An up-stem leaves a notehead at its RIGHT edge and a down-stem at its
     left. _best_stem accepts any stem end within about a staff space, which a

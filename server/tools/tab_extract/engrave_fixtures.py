@@ -245,6 +245,37 @@ def fixture_two_voices():
     return score("Guitar", [attributes() + bar] + [bar] * 7)
 
 
+def fixture_unison_voices():
+    """`two_voices` with the upper voice dropped to the lower voice's own
+    pitch (issue #116) - a unison on every beat the two voices share, rather
+    than the upper voice's own line. MuseScore draws that as the SAME
+    notehead glyph twice at the identical position, once per voice's stem -
+    32 coincident pairs (4 per bar, 8 bars) on this page, measured against
+    the engraved PDF rather than assumed.
+
+    A decoder that binds both copies to the SAME stem (main, unfixed) leaves
+    the other voice's stem with no notehead at all: the upper voice loses
+    its note on every beat, and the lower voice's own eighths are still
+    there, so each bar reads as the lower voice's 8 eighths alone against a
+    4/4 meter that wants the upper voice's 4 quarters riding concurrently
+    over them - overfull by the upper voice's whole missing content. A
+    decoder that instead collapses the coincident glyphs to one copy before
+    reading rhythm is the WRONG fix and stays exactly as overfull, because
+    collapsing does not put a notehead back on the abandoned stem - the two
+    fixes are distinguished by whether they read every bar's beats and notes
+    back correctly, not by whether they turn the bar count green by luck.
+
+    Each voice fills the bar on its own (4 quarters, 8 eighths, both 4.0
+    quarters long), same as `two_voices` - only the pitch changed, so any
+    difference in the bar arithmetic between the two fixtures is entirely
+    the coincident duplicate's doing."""
+    upper = "".join(note(("E", 4), "quarter", voice=1) for _ in range(4))
+    lower = "".join(note(("E", 4), "eighth", voice=2) for _ in range(8))
+    body = upper + backup(4.0) + lower
+    bar = body + backup(4.0) + mirror_to_tab(body)
+    return score("Guitar", [attributes() + bar] + [bar] * 7)
+
+
 def fixture_three_voices():
     """A melody in quarters (stems up) over an arpeggiated accompaniment in
     eighths (stems down), with a sustained bass held under both as a whole
@@ -604,6 +635,7 @@ FIXTURES = {
     "tab_only": fixture_tab_only,
     "tab_only_short_last_system": fixture_tab_only_short_last_system,
     "two_voices": fixture_two_voices,
+    "unison_voices": fixture_unison_voices,
     "three_voices": fixture_three_voices,
     "tuplet_and_tie": fixture_tuplet_and_tie,
     "drop_d": fixture_drop_d,

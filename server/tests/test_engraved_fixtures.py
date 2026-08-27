@@ -1039,6 +1039,60 @@ def test_the_second_voice_really_sounds_at_the_same_time(engraved):
 
 
 # ---------------------------------------------------------------------------
+# A unison shared by two voices (issue #116)
+# ---------------------------------------------------------------------------
+
+
+def test_a_unison_shared_by_two_voices_splits_across_their_stems(engraved):
+    """`two_voices` with the upper voice dropped to the lower voice's own
+    pitch - a unison on every beat, which MuseScore draws as the same
+    notehead glyph stamped twice at the identical position, once per voice's
+    stem: 32 coincident pairs on this page.
+
+    Both copies land at the exact same coordinates, so a decoder that picks
+    a single best-ranked stem per notehead always picks the SAME stem for
+    both and leaves the other voice's stem with no notehead: the upper
+    voice's note vanishes and its bar reads as the lower voice's 8 eighths
+    alone, overfull by the melody's own missing 4 quarters. Binding one copy
+    to each candidate stem instead reads both voices back exactly as written
+    - the same shape, same counts, as `two_voices` above, proving the fix
+    changes nothing about voices that are NOT coincident duplicates."""
+    result = tabextract.extract(engraved("unison_voices"))
+    assert result.extractable
+    assert result.bars == 8
+    assert result.notes == 96, "4 quarters + 8 eighths, eight times over"
+    assert result.beats == 96
+    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
+
+    bars = emitted_bars(result.alphatex)
+    assert all(len(voices) == 2 for voices in bars), bars
+    for upper, lower in bars:
+        assert [q for q, _n in upper] == [1.0] * 4
+        assert [q for q, _n in lower] == [0.5] * 8
+
+
+def test_a_unison_shared_by_two_voices_is_overfull_without_the_stem_split(engraved, monkeypatch):
+    """The RED this fixture exists to pin, reproduced without touching the
+    source file: neutralise the fix's ability to find a SECOND candidate
+    stem for a coincident pair (both copies then fall through to the single
+    best-ranked stem, exactly what an unfixed decode does for every
+    notehead) and the fixture goes overfull in all 8 bars - the same 8/8,
+    64-beat reading measured against an unmodified checkout during the
+    research for this issue. Collapsing the coincident glyphs to one copy
+    instead of splitting them does NOT fix this (it stays 8/8): only binding
+    one copy per stem does, which is why this fixture exists rather than a
+    duplicate-count assertion alone."""
+    real_rank_stems = glyph_rhythm._rank_stems
+    monkeypatch.setattr(glyph_rhythm, "_rank_stems",
+                        lambda *a, **k: real_rank_stems(*a, **k)[:1])
+    result = tabextract.extract(engraved("unison_voices"))
+    assert result.extractable
+    assert result.bars == 8
+    assert result.beats == 64
+    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (8, 0, 8)
+
+
+# ---------------------------------------------------------------------------
 # Three voices in one bar (issue #133)
 # ---------------------------------------------------------------------------
 
@@ -1503,7 +1557,7 @@ def test_no_meter_change_is_invented_where_none_is_printed(name, engraved):
 
 ENGRAVED_NAMES = (
     "notation_and_tab", "rests_and_flags", "tab_only", "tab_only_short_last_system",
-    "two_voices", "three_voices", "tuplet_and_tie", "drop_d", "defective_bars", "volta",
+    "two_voices", "unison_voices", "three_voices", "tuplet_and_tie", "drop_d", "defective_bars", "volta",
     "harmonics_dense", "notation_only", "four_sharps_in_three_four",
     "hidden_opening_meter", "hidden_opening_meter_matches_the_default",
     "mid_system_meter_change", "mid_system_key_and_meter_change",
