@@ -2350,6 +2350,21 @@ def test_a_printed_tuning_instruction_is_recognised_without_being_applied():
 # ---------------------------------------------------------------------------
 
 
+def test_volta_number_regex_rejects_zero_and_leading_zeros():
+    """`ending-number` in the MusicXML schema is
+    `[1-9][0-9]*(, ?[1-9][0-9]*)*` - positive integers without a leading
+    zero. `_VOLTA_NUMBER_RE` used to be `\\d+`, which also matches "0" and
+    "01" - neither a valid ending number, and either would have been read
+    here and either rejected downstream by the schema or silently accepted
+    by a laxer consumer as an ending that does not exist."""
+    ok = ["1", "2", "1,2", "10", "1, 2", "12,3"]
+    bad = ["0", "00", "01", "1,0", "0,1", "10,02"]
+    for text in ok:
+        assert tabextract._VOLTA_NUMBER_RE.match(text), text
+    for text in bad:
+        assert not tabextract._VOLTA_NUMBER_RE.match(text), text
+
+
 def test_anchor_mark_case_4_is_reachable():
     """Item 4 (issue #134 adversarial review): _anchor_mark's three
     documented branches - on a bar boundary, left of the first fret column,

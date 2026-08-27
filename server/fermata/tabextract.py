@@ -421,15 +421,27 @@ PAGE_EDGE_TOLERANCE = 1.0
 
 # How close two vertical strokes have to be to count as one barline. A
 # repeat pair (thin + thick stroke) is drawn 3.6-4.0pt apart on the engravers
-# sampled; a genuine adjacent measure is never that close. Measured over
-# 12,228 consecutive-vertical gaps on tab staves: the band between 0.526 and
-# 2.273 staff spaces is EMPTY (0 gaps), with every within-barline-group gap
-# at or below 0.525 spaces and every real inter-measure gap at or above
-# 2.274. 1.0 staff space sits in the middle of that empty band - 1.9x above
-# the widest stroke pair observed and 2.3x below the narrowest genuine
-# measure - so it is not a judgement call. In absolute points this is far
-# looser than it looks: on a typical ~7.7pt tab staff spacing, 1.0 space is
-# 7.7pt, comfortably wider than any repeat-pair gap measured.
+# sampled; a genuine adjacent measure is never that close.
+#
+# TAB STAVES ONLY: measured over 12,228 consecutive-vertical gaps, the band
+# between 0.526 and 2.273 staff spaces is EMPTY (0 gaps), with every
+# within-barline-group gap at or below 0.525 spaces and every real
+# inter-measure gap at or above 2.274. 1.0 staff space sits in the middle of
+# that empty band - 1.9x above the widest stroke pair observed and 2.3x below
+# the narrowest genuine measure - so it is not a judgement call there. In
+# absolute points this is far looser than it looks: on a typical ~7.7pt tab
+# staff spacing, 1.0 space is 7.7pt, comfortably wider than any repeat-pair
+# gap measured.
+#
+# NOTATION STAVES ARE A DIFFERENT DISTRIBUTION - the band is not empty there.
+# 3,410 of the same consecutive-vertical gaps, measured on notation staves
+# instead (of 31,060 total), land INSIDE the 0.526-2.273 band this
+# threshold's tab-staff calibration treats as impossible - narrower staff
+# spacing packs genuine inter-measure gaps closer in staff-space terms. The
+# worst of those 3,410 still merges correctly (0.995 spaces, under the 1.0
+# threshold), but with a margin of 0.005 spaces rather than the tab side's
+# 1.9x/2.3x clearance - not a judgement call on tab staves, a close one on
+# notation staves that happens to still land on the right side of 1.0.
 BARLINE_STROKE_MERGE_SPACES = 1.0
 
 
@@ -1004,7 +1016,12 @@ VOLTA_ANCHOR_SPACES = 0.5
 # 5 finds not one more; widening dy to 4 picks up a triplet numeral.
 VOLTA_NUMBER_DY = (-0.2, 1.0)
 VOLTA_NUMBER_DX = (-0.2, 3.5)
-_VOLTA_NUMBER_RE = re.compile(r"^\s*(\d+(?:\s*,\s*\d+)*)\s*\.?\s*$")
+# Positive integers without a leading zero, comma-separated - MusicXML's own
+# `ending-number` restriction (`[1-9][0-9]*(, ?[1-9][0-9]*)*`). "0" and a
+# leading-zero numeral both match \d+ but are not valid ending numbers -
+# unguarded, either would be read here and later rejected by the schema
+# (or accepted by a laxer consumer as ending zero, which does not exist).
+_VOLTA_NUMBER_RE = re.compile(r"^\s*([1-9]\d*(?:\s*,\s*[1-9]\d*)*)\s*\.?\s*$")
 
 
 def _text_spans(page):

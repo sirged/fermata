@@ -413,26 +413,6 @@ def _append_note(measure, duration, type_name, dots, voice, string=None,
         _sub(technical, "fret", fret)
 
 
-def _append_barline(measure, location, rec):
-    """One `<barline>` - Rule 15 (docs/musicxml-tab-profile.md). The schema's
-    sequence inside `barline` is `bar-style?, footnote?, level?, wavy-line?,
-    segno?, coda?, fermata*, ending?, repeat?` - `ending` before `repeat`, and
-    `bar-style` first. `rec` is one entry of the `barlines` dict `build()`
-    takes: `{"bar_style": ..., "repeat": ..., "ending_number": ...,
-    "ending_type": ...}`, any subset present.
-    """
-    barline = _sub(measure, "barline", location=location)
-    bar_style = rec.get("bar_style")
-    if bar_style:
-        _sub(barline, "bar-style", bar_style)
-    ending_number = rec.get("ending_number")
-    if ending_number is not None:
-        _sub(barline, "ending", number=ending_number, type=rec.get("ending_type"))
-    repeat = rec.get("repeat")
-    if repeat:
-        _sub(barline, "repeat", direction=repeat)
-
-
 def _append_forward(measure, duration, voice):
     """Advance one voice's writing position without writing a note or a rest.
 
