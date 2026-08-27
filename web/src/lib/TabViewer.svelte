@@ -467,8 +467,16 @@
         <div class="seg">
           {#each PROFILE_LABELS as [value, label], i}
             {#if profileOptions.includes(value)}
-              <button class:on={profile === value} onclick={() => setProfile(value)}>
-                {label} (({i + 1}))
+              <!-- aria-label, not appended text: toolbar-responsive.spec.js
+                   matches this button by its exact text ("Tab", anchored) -
+                   see the note on the theme/speed selects above for the same
+                   reason applied to a <button> instead of a <select>. -->
+              <button
+                class:on={profile === value}
+                onclick={() => setProfile(value)}
+                aria-label={`${label} ((${i + 1}))`}
+              >
+                {label}
               </button>
             {/if}
           {/each}
