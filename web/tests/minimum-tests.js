@@ -208,7 +208,44 @@
 // evidence against the freeze this issue also reported, which never
 // reproduced: a heartbeat interval kept advancing across a sounding in the
 // investigation, and this keeps that fact checked rather than assumed.
-export const MINIMUM_TESTS = 265;
+//
+// Plus 12 for issue #92 - single-key shortcuts for the practice/staff view -
+// in tests/browser/practice-shortcuts.spec.js. Against the bundled "/#/demo"
+// sample (no library needed): Space play/pause; Backspace stopping and
+// returning the cursor to the start; L/S/N/C in one test (loop, speed,
+// metronome, count-in); T cycling the staff theme back to where it started,
+// read rather than assumed so a theme left over from an earlier run cannot
+// make it flaky; 1/2/3 switching the notation/tab/both profile; the arrow
+// keys moving the cursor a beat and a bar WITHOUT starting playback; Shift+
+// arrows growing and shrinking the loop boundary; double-clicking a specific
+// rendered beat (found by DOM inspection - alphaTab marks each one with its
+// own stable class, not documented) seeking to and playing from it; and
+// every wired control's accessible name carrying its own key, machine-read
+// off aria-label or text content rather than eyeballed. Plus 3 for the focus
+// guard, against a stubbed real score page instead - "/#/demo" has no text
+// field anywhere to test it against: typing "lop" into the tag editor
+// changes nothing about the loop AND the letters still land in the field
+// (proving the guard did not simply eat the keystrokes, which would pass the
+// first half for the wrong reason); Esc closes that editor even pressed from
+// inside the very field it closes; and the ordinary keyboard works again
+// once focus has left it.
+//
+// Raised deliberately, and every one of the 12 was shown to fail against a
+// mutation of the behaviour it claims: isTypingTarget() hardcoded to `false`
+// turned the focus-guard test red (and only it) while the other 11 stayed
+// green, and rewriting nudgeLoopBoundary's growth branch to be unreachable
+// turned the Shift+arrows test red the same way - see the pull request. The
+// implementation itself needed two rounds of fixing found BY these tests
+// before they passed clean: api.tickCache.findBeat() and a
+// MasterBarTickLookup's own firstBeat/nextBeat, alphaTab's two built-in ways
+// to answer "which beat is at this tick", both turned out to answer wrong or
+// empty when called cold with no currentBeatHint from a previous call (which
+// is the only way alphaTab's own docs describe either being used) - measured
+// directly, a plain forward arrow-key nudge stepped the cursor BACKWARDS
+// after a handful of presses. score-render.js now answers that question from
+// the parsed score model instead (Track/Staff/Bar/Voice/Beat, and each
+// Beat's own nextBeat/previousBeat), which has no such history.
+export const MINIMUM_TESTS = 277;
 
 export default class MinimumTests {
   constructor() {
