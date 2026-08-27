@@ -281,6 +281,17 @@ class ExtractionResult:
     # same honesty pattern as notes_no_stem / dots_unassigned above.
     coincident_unsplit_pairs: int = 0
     staves_coincident_unsplit: int = 0
+    # Noteheads that were given the fret number the tab printed for their
+    # COINCIDENT TWIN rather than one printed for them (issue #137). A unison
+    # shared between two voices is one plucked string, so the tab names it
+    # once and the second voice's notehead has no digit of its own; handing
+    # it the twin's is what lets both voices sound it, and it is an
+    # INFERENCE - the tab did not print a number for that notehead - so it
+    # is counted here rather than left unsaid, the same honesty pattern as
+    # coincident_unsplit_pairs above. Expected to be small and specific: 16
+    # across the library's 293 extractable scores, 12 of them on The Cosmic
+    # Wheel (FF XI) and 4 on Castti, the Apothecary, and 0 everywhere else.
+    unison_digits_shared: int = 0
     # Repeat barlines and volta brackets that were read only partly, and so
     # were omitted from the emitted MusicXML rather than written as a guess
     # (issue #134 Rule 15 / S5). None of these move any Rule 8 figure: a form
@@ -351,6 +362,7 @@ class ExtractionResult:
             "staves_dots_unassigned": self.staves_dots_unassigned,
             "coincident_unsplit_pairs": self.coincident_unsplit_pairs,
             "staves_coincident_unsplit": self.staves_coincident_unsplit,
+            "unison_digits_shared": self.unison_digits_shared,
             "repeats_unread": self.repeats_unread,
             "repeats_unread_bars": list(self.repeats_unread_bars),
             "endings_unread": self.endings_unread,
@@ -2106,10 +2118,13 @@ def _share_unison_digits(heads, digits, taken, per_group):
     The two families are far apart in size as well as in kind - across the
     library's 293 extractable scores, 500 short onsets are a coincident pair
     alone over one digit split across two voices, against 65 that are a
-    coincident copy inside a fully named chord. Of those 65, 16 have their
+    coincident copy inside a fully named chord. Of those 65: 16 have their
     twin in ANOTHER voice and take the shared digit (12 on The Cosmic Wheel,
-    4 on Castti, the Apothecary); the other 49 are pairs a stem could not
-    split, refused below.
+    4 on Castti, the Apothecary), 48 have no coincident twin at the leftover
+    head's own position at all (see the limitation below - a different
+    defect, not one this refuses), and exactly 1 is a pair both of whose
+    copies stayed in one voice, refused below (Kids Run Through the City
+    Corner, FF VI).
 
     ONLY COINCIDENT, AND ONLY ACROSS VOICES. Position is the test for the
     first: two copies of one glyph at one position are one sounding note,
@@ -2122,26 +2137,43 @@ def _share_unison_digits(heads, digits, taken, per_group):
     digit there would double one voice's note into two rather than give a
     second voice its own.
 
+    KNOWN LIMITATION, measured and left alone. `heads` is in pitch order and
+    the rank match consumes it from the top, so a leftover head is always one
+    of the LOWEST, and it only has a twin among the matched ones when the
+    duplicated position is the chord's own lowest. A unison on a chord's TOP
+    or MIDDLE member therefore gets nothing here: both its copies sit inside
+    the matched slice and take two different digits between them, and the
+    member left starved is a different notehead with no twin at all. That is
+    a distinct, pre-existing mis-ranking rather than a case this refuses -
+    across the library it is 48 of the 65 in-chord onsets (47 with the unison
+    on the top member, 1 in the middle; 34 of them on Spanish-Romance alone),
+    and every one of them reads exactly as it did before this existed. See
+    issue #141.
+
     `heads` is the onset's (notehead, group) pairs in pitch order and
     `digits` the fret numbers matched against them, so `heads[len(digits):]`
     is what the rank match left over. `taken` maps a rounded (x, y) to the
     (digit, id(group)) the head drawn there was given, and `per_group` is
-    extended in place. Returns how many noteheads are still without a
-    digit."""
+    extended in place. Returns (noteheads still without a digit, digits
+    shared) - the second is an INFERENCE this made rather than a reading, and
+    is disclosed as `unison_digits_shared` for the same reason
+    coincident_unsplit_pairs and dots_unassigned are."""
     unmatched = heads[len(digits):]
     if not unmatched:
-        return 0
+        return 0, 0
     positions = {(round(m.x, 2), round(m.y, 2)) for m, _g in heads}
     if len(positions) < 2 or len(digits) != len(positions):
-        return len(unmatched)
+        return len(unmatched), 0
     starved = 0
+    sharedn = 0
     for m, g in unmatched:
         shared = taken.get((round(m.x, 2), round(m.y, 2)))
         if shared is None or shared[1] == id(g):
             starved += 1
             continue
         per_group[id(g)].append(shared[0])
-    return starved
+        sharedn += 1
+    return starved, sharedn
 
 
 def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol, split_tol):
@@ -2171,7 +2203,10 @@ def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol, split_
     one-notehead-one-digit rank match runs a digit short at that onset. See
     _share_unison_digits, which is what closes the gap.
 
-    Returns ({id(group): [(string, fret), ...]}, noteheads_with_no_digit).
+    Returns ({id(group): [(string, fret), ...]}, noteheads_with_no_digit,
+    digits_shared) - the last being how many noteheads were given a digit
+    the tab printed for their coincident twin rather than for them, which is
+    an inference and is disclosed as such (`unison_digits_shared`).
     """
     heads = sorted(((m, g) for g in onset_groups for m in g.members),
                    key=lambda mg: mg[0].y)
@@ -2211,7 +2246,7 @@ def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol, split_
     for (m, g), digit in zip(heads, digits):
         per_group[id(g)].append(digit)
         taken.setdefault((round(m.x, 2), round(m.y, 2)), (digit, id(g)))
-    starved = _share_unison_digits(heads, digits, taken, per_group)
+    starved, shared_here = _share_unison_digits(heads, digits, taken, per_group)
     leftover = digits[needed:]
     if leftover:
         # More fret numbers at this onset than noteheads were read from the
@@ -2220,7 +2255,7 @@ def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol, split_
         per_group[id(max(onset_groups, key=lambda g: g.y))].extend(leftover)
     for g in onset_groups:
         per_group[id(g)].sort(key=lambda n: n[0])
-    return per_group, starved
+    return per_group, starved, shared_here
 
 
 def _rest_beats_for(quarters, limit=12, inferred=False):
@@ -2317,12 +2352,15 @@ def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
     staff. `budget` is the measure's quarter-note allowance, needed to know
     how much of each voice is silence; without it no rests are inferred.
 
-    Returns (voices, unmatched_columns, unmatched_glyph_notes): voices is a
-    list of one or more beat lists, each a list of (duration_code, dots, notes)
-    triples in x order ready for _fmt_beat; unmatched_columns is how many tab
-    columns had no glyph note within x_tol; unmatched_glyph_notes is how many
-    decoded noteheads had no fret number to match (expected to be rare - every
-    played tab note should have one).
+    Returns (voices, unmatched_columns, unmatched_glyph_notes,
+    unison_digits_shared): voices is a list of one or more beat lists, each a
+    list of (duration_code, dots, notes) triples in x order ready for
+    _fmt_beat; unmatched_columns is how many tab columns had no glyph note
+    within x_tol; unmatched_glyph_notes is how many decoded noteheads had no
+    fret number to match (expected to be rare - every played tab note should
+    have one); unison_digits_shared is how many were given the digit their
+    coincident twin's position was printed with instead (see
+    _share_unison_digits) - an inference, disclosed rather than silent.
 
     Silence that had to be deduced from the meter is not reported here: the
     beats carry it themselves, as an InferredRest notes slot, which is what the
@@ -2347,11 +2385,13 @@ def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
 
     tagged = [[] for _ in voice_groups]  # per voice: (x, code, dots, notes)
     unmatched_glyph_notes = 0
+    unison_digits_shared = 0
     onsets = _onsets(groups, onset_tol)
     for onset in onsets:
-        per_group, missing = _match_onset_columns(
+        per_group, missing, shared = _match_onset_columns(
             onset, cols_sorted, col_xcs, used, x_tol, split_tol)
         unmatched_glyph_notes += missing
+        unison_digits_shared += shared
         for g in onset:
             notes = per_group[id(g)]
             if not notes:
@@ -2393,7 +2433,7 @@ def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
             _pad_voice_to_budget(t, budget, first_x, onset_tol)
 
     return ([[(code, dots, notes) for _x, code, dots, notes in t] for t in live],
-            unmatched_columns, unmatched_glyph_notes)
+            unmatched_columns, unmatched_glyph_notes, unison_digits_shared)
 
 
 def _voice_mean_y(groups):
@@ -2903,7 +2943,8 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
                    prov_bars=None, no_stem_notes=0, no_stem_staves=0,
                    dots_unassigned=0, dots_unassigned_no_candidate=0,
                    dots_unassigned_eliminated=0, dots_unassigned_staves=0,
-                   coincident_unsplit_pairs=0, coincident_unsplit_staves=0):
+                   coincident_unsplit_pairs=0, coincident_unsplit_staves=0,
+                   unison_digits_shared=0):
     """Derive the document's rhythm warnings and confidence string from the
     collected per-staff provenances - the single place that decides both, so
     they cannot drift out of step with each other or with the measure loop.
@@ -2943,6 +2984,12 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
     engraved (issue #116) - had only ONE candidate stem between them, so
     nothing could tell the two copies apart and both stayed bound to it. See
     glyph.decode_note_events.
+
+    `unison_digits_shared` is how many noteheads were given the fret number
+    the tablature printed for their coincident twin's position rather than
+    one printed for them (issue #137) - the right reading of a unison shared
+    between two voices, and still an inference about which string those
+    notes are on. See _share_unison_digits.
     """
     conformance = conformance or _BarConformance(0, 0, 0, 0)
     prov_bars = prov_bars or {}
@@ -3077,6 +3124,21 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
             "engraved - had only one candidate stem near them, so nothing here could tell the "
             "two copies apart: both stayed bound to that one stem rather than one going to "
             "each voice, and the other voice's note at that position may be missing"
+        )
+
+    # A fret number READ FOR ANOTHER NOTEHEAD and given to this one (issue
+    # #137). It is the right reading of a unison - one string, two voices -
+    # but it is still a number the tab did not print for the notehead that
+    # got it, so it is said out loud rather than folded into the note count
+    # silently. Same reasoning as the two warnings above.
+    if unison_digits_shared:
+        warnings.append(
+            f"{unison_digits_shared} note(s) were given the fret number printed for a "
+            "coincident notehead at the same position rather than one printed for them - a "
+            "unison shared between two voices is one plucked string, so the tablature names "
+            "it once and the second voice's note has no number of its own. Only done inside "
+            "a chord whose every other position the tablature did name, but the string and "
+            "fret for those notes are inferred from the twin rather than read for them"
         )
 
     # Bars that don't add up outrank how the durations were obtained: a
@@ -3797,6 +3859,13 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     coincident_unsplit_staves = 0
     unmatched_columns_glyph = 0
     unmatched_glyph_notes_total = 0
+    # Noteheads given the fret number the tab printed for their coincident
+    # twin's position rather than one of their own (see
+    # _share_unison_digits, issue #137). Summed over MEASURES rather than
+    # over decodes, unlike the counters above: a shared digit is a decision
+    # taken while building one bar's beats, and the same notehead can only
+    # ever be built into one bar.
+    unison_digits_shared_total = 0
     # How many bars were transcribed as concurrent voices. How much of the
     # silence in them was deduced from the meter is counted off the emitted
     # beats instead (see _bar_conformance), so "the voices add up" can be told
@@ -3926,7 +3995,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                 bar_ts = _ts_at(ts_timeline, page_idx, anchor_y, m_lo) or ts
                 measure_quarter_len = _measure_quarter_length(bar_ts)
                 if source.uses_glyphs:
-                    voices, unmatched_cols, unmatched_notes = (
+                    voices, unmatched_cols, unmatched_notes, shared_digits = (
                         _build_measure_beats_glyph(
                             m_cols, m_lo, m_hi, source.note_events, source.note_xs,
                             x_tol, std_staff.spacing, measure_quarter_len,
@@ -3934,6 +4003,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                     )
                     unmatched_columns_glyph += unmatched_cols
                     unmatched_glyph_notes_total += unmatched_notes
+                    unison_digits_shared_total += shared_digits
                     if len(voices) > 1:
                         multivoice_bars += 1
                     if not voices:
@@ -4030,6 +4100,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         dots_unassigned_staves=dots_unassigned_staves,
         coincident_unsplit_pairs=coincident_unsplit_total,
         coincident_unsplit_staves=coincident_unsplit_staves,
+        unison_digits_shared=unison_digits_shared_total,
     )
     warnings.extend(rhythm_warnings)
     # Font-level problems that weren't already the reason a staff degraded
@@ -4256,6 +4327,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         staves_dots_unassigned=dots_unassigned_staves,
         coincident_unsplit_pairs=coincident_unsplit_total,
         staves_coincident_unsplit=coincident_unsplit_staves,
+        unison_digits_shared=unison_digits_shared_total,
         repeats_unread=len(repeats_unread_bars),
         repeats_unread_bars=list(repeats_unread_bars),
         endings_unread=len(endings_unread_bars),

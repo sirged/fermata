@@ -85,6 +85,12 @@ _FIXTURE_RELATIVE_PATHS = {
     # note - was left with none. The only score in the library where the
     # shape occurs more than four times.
     "cosmic_wheel": "Patreon/John Oeth/Final Fantasy/FF XI/The Cosmic Wheel (Final Fantasy XI).pdf",
+    # #116's abutting-stem-segment case, and issue #137's largest population
+    # of the arrangement its sharing CANNOT reach: 34 onsets where the
+    # coincident copy is a chord's TOP member rather than its lowest, so the
+    # leftover head has no twin at its own position. Pinned to prove #137
+    # leaves that family exactly as it found it (see issue #141).
+    "spanish_romance": "Classical/PrimoGuitar Misc/Spanish-Romance-Guitar-Free.pdf",
     # The phase-1 repeat-structure acceptance case (issue #134): a forward
     # repeat, two endings (one closed with a hook, one left open), and the
     # phantom-measure defect that used to shift its numbering from bar 9
@@ -332,6 +338,15 @@ def cosmic_wheel_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing 'The Cosmic Wheel' fixture)")
+    return p
+
+
+@pytest.fixture
+def spanish_romance_pdf() -> Path:
+    p = _fixture_path("spanish_romance")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Spanish Romance' fixture)")
     return p
 
 

@@ -1352,7 +1352,17 @@ _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
              # of the disclosure reached a reader and the structured half
              # reached nobody.
              "repeats_unread", "endings_unread", "endings_truncated",
-             "form_marks_unanchored", "endings_incomplete")
+             "form_marks_unanchored", "endings_incomplete",
+             # `unison_digits_shared` (issue #137): notes given the fret
+             # number the tablature printed for a coincident notehead at
+             # their own position rather than one printed for them - the
+             # right reading of a unison shared between two voices, and an
+             # inference about which string those notes are on that nothing
+             # else stored here can reconstruct. Added HERE and not only to
+             # ExtractionResult/to_dict deliberately - see the note above
+             # about the disclosure that reaches a reader in prose and
+             # reaches nobody in data.
+             "unison_digits_shared")
 
 # WHICH bars those were, as data and not only inside the warning prose. The
 # prose names them, but it caps the list, and the profile document states that a

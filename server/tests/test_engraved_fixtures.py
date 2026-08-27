@@ -1288,6 +1288,11 @@ def test_a_unison_inside_a_chord_sounds_in_both_voices(engraved):
     assert result.beats == 96, "4 chords + 8 eighths, eight times over"
     assert result.notes == 128, "the chord is two notes, so 8 + 8 a bar"
     assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
+    # The 32 recovered notes are an inference about which string they are on -
+    # the tab printed no number for those noteheads - and are disclosed as
+    # such rather than folded into the note count silently.
+    assert result.unison_digits_shared == 32, "4 shared beats a bar, eight bars"
+    assert any("coincident notehead at the same position" in w for w in result.warnings)
 
     bars = emitted_bars(result.alphatex)
     assert all(len(voices) == 2 for voices in bars), bars
@@ -1315,14 +1320,16 @@ def test_a_unison_inside_a_chord_loses_a_voice_without_the_shared_digit(engraved
     coincident pair per voice's stem - so a decoder checked only on its stem
     binding reads this page as perfectly resolved while a third of its notes
     are missing."""
-    monkeypatch.setattr(tabextract, "_share_unison_digits",
-                        lambda heads, digits, _taken, _per_group: max(0, len(heads) - len(digits)))
+    monkeypatch.setattr(
+        tabextract, "_share_unison_digits",
+        lambda heads, digits, _taken, _per_group: (max(0, len(heads) - len(digits)), 0))
     result = tabextract.extract(engraved("unison_in_chord"))
     assert result.extractable
     assert result.bars == 8
     assert result.beats == 64
     assert result.notes == 96
     assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 8, 8)
+    assert result.unison_digits_shared == 0
 
 
 # ---------------------------------------------------------------------------
