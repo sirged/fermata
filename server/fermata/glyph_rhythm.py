@@ -1773,6 +1773,42 @@ def _bounds(sorted_keys, lo, hi):
     return bisect.bisect_left(sorted_keys, lo), bisect.bisect_right(sorted_keys, hi)
 
 
+def _rank_stems(stems, stem_xs, x0, x1, yc, tol, x_tol=None, y_tol=None):
+    """Every candidate stem for a notehead at (x0, x1, yc), (key, stem) pairs
+    sorted best first - the ranking _best_stem picks the head of, exposed as a
+    full list so a coincident duplicate notehead (two glyph copies stamped at
+    the identical position - see decode_note_events's coincident-pair pass)
+    can be given the SECOND-best candidate instead of losing to its twin for
+    the first. Both always rank the SAME stem best, because this ranking is a
+    pure function of coordinates and the two copies' coordinates are, by
+    definition of "coincident", identical - which is exactly why a single
+    best-of pick cannot tell the two copies apart, and the runner-up has to be
+    reachable to the caller instead."""
+    xt = tol.stem_x_tol if x_tol is None else x_tol
+    yt = tol.stem_y_tol if y_tol is None else y_tol
+    lo, hi = _bounds(stem_xs, min(x0, x1) - xt, max(x0, x1) + xt)
+    candidates = []
+    for i in range(lo, hi):
+        s = stems[i]
+        if not (abs(s.x - x0) <= xt or abs(s.x - x1) <= xt):
+            continue
+        near_end = s.y0 if abs(s.y0 - yc) < abs(s.y1 - yc) else s.y1
+        dy = abs(near_end - yc)
+        if dy > yt:
+            continue
+        dx = min(abs(s.x - x0), abs(s.x - x1))
+        # Rounded so two candidates a floating-point hair apart cannot swap on
+        # the platform's last bit. The second key element exists to make the
+        # ordering TOTAL rather than merely partial - worth keeping even
+        # though it has not once had to decide anything: 0 exact ties on the
+        # rounded hypot across 6,203 multi-candidate noteheads in the
+        # library, and deleting it changes nothing measured.
+        key = (round(math.hypot(dx / xt, dy / yt), 6), round(dy, 3))
+        candidates.append((key, s))
+    candidates.sort(key=lambda ks: ks[0])
+    return candidates
+
+
 def _best_stem(stems, stem_xs, x0, x1, yc, tol, x_tol=None, y_tol=None):
     """The stem this notehead actually hangs off. x0/x1 are the notehead's ink
     edges where the font could supply them - see GlyphEvent.stem_edges.
@@ -1782,7 +1818,8 @@ def _best_stem(stems, stem_xs, x0, x1, yc, tol, x_tol=None, y_tol=None):
     bbox centre-x or top/bottom edge. In dense/chordal writing more than one
     stem can plausibly sit near a given notehead, so pick the single closest
     one, BY BOTH DISTANCES TOGETHER, each measured as a fraction of the slack
-    its own axis is allowed.
+    its own axis is allowed - see _rank_stems, which does the ranking this
+    just takes the head of.
 
     RANKING ON x FIRST AND USING y ONLY TO BREAK ITS TIES IS WRONG, and gets
     the commonest two-voice figure in this repertoire backwards. Where a melody
@@ -1811,30 +1848,8 @@ def _best_stem(stems, stem_xs, x0, x1, yc, tol, x_tol=None, y_tol=None):
     the note to whichever neighbouring voice's beamed stem happened to fall
     inside the tolerance.
     """
-    xt = tol.stem_x_tol if x_tol is None else x_tol
-    yt = tol.stem_y_tol if y_tol is None else y_tol
-    lo, hi = _bounds(stem_xs, min(x0, x1) - xt, max(x0, x1) + xt)
-    best = None
-    best_key = None
-    for i in range(lo, hi):
-        s = stems[i]
-        if not (abs(s.x - x0) <= xt or abs(s.x - x1) <= xt):
-            continue
-        near_end = s.y0 if abs(s.y0 - yc) < abs(s.y1 - yc) else s.y1
-        dy = abs(near_end - yc)
-        if dy > yt:
-            continue
-        dx = min(abs(s.x - x0), abs(s.x - x1))
-        # Rounded so two candidates a floating-point hair apart cannot swap on
-        # the platform's last bit. The second key element exists to make the
-        # ordering TOTAL rather than merely partial - worth keeping even
-        # though it has not once had to decide anything: 0 exact ties on the
-        # rounded hypot across 6,203 multi-candidate noteheads in the
-        # library, and deleting it changes nothing measured.
-        key = (round(math.hypot(dx / xt, dy / yt), 6), round(dy, 3))
-        if best_key is None or key < best_key:
-            best, best_key = s, key
-    return best
+    candidates = _rank_stems(stems, stem_xs, x0, x1, yc, tol, x_tol, y_tol)
+    return candidates[0][1] if candidates else None
 
 
 def _stem_through_notehead(stems, stem_xs, x0, x1, yc, tol):
@@ -2321,6 +2336,18 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
     offset an engraver would use at all, and dots_unassigned_eliminated,
     where one did but had already been given a dot at a different, ranked
     position first - a note that already has its own dot, not a missing one.
+
+    coincident_split_pairs / coincident_unsplit_pairs (issue #116): a unison
+    shared by two voices is engraved as the same notehead glyph drawn twice at
+    the identical position, one copy per voice's stem. _best_stem is a pure
+    function of coordinates, so both copies always rank the same stem best;
+    left alone, that binds BOTH copies to it and the other voice's stem is
+    left with no notehead - a lost voice, not an invented note. Where a second,
+    distinct candidate stem exists for the pair, one copy is given the
+    runner-up instead, and the pair counts toward coincident_split_pairs.
+    Where only one candidate stem was found for the pair, nothing here can
+    tell the two copies apart, and coincident_unsplit_pairs counts it rather
+    than silently leaving both copies bound to the one voice.
     """
     tol = _Tol(spacing if spacing else _spacing_from_lines(line_ys),
                staff_bottom - staff_top, staff_x1 - staff_x0)
@@ -2370,6 +2397,10 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         "dots_unassigned": 0,
         "dots_unassigned_no_candidate": 0,
         "dots_unassigned_eliminated": 0,
+        # See the class-level note on coincident_split_pairs /
+        # coincident_unsplit_pairs above (issue #116).
+        "coincident_split_pairs": 0,
+        "coincident_unsplit_pairs": 0,
         "font_warnings": list(glyphs.warnings),
     }
     if not glyphs.events:
@@ -2414,6 +2445,56 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
     dot_counts, dots_unassigned_no_candidate, dots_unassigned_eliminated = _assign_dots(
         dot_owners, dot_events, tol)
     dots_unassigned = dots_unassigned_no_candidate + dots_unassigned_eliminated
+
+    # Coincident duplicate noteheads (issue #116): the SAME glyph - same
+    # embedded font, same glyph id, same position to a hundredth of a point -
+    # drawn twice. Measured over the library, that is how a unison shared by
+    # two voices is engraved: one copy per voice, stacked exactly on top of
+    # each other rather than offset the way a chord's members are. Grouped by
+    # (family, gid, x0, y0) - the glyph's own identity plus the box the trace
+    # reported, not the ink centre, so two copies from the SAME draw call
+    # match exactly even where ink measurement is unavailable - restricted to
+    # the quarter-or-shorter heads, because those are the ones _best_stem
+    # resolves for duration (see duration_needs_stem below); a genuine
+    # chord's other members sit at different y and never land in the same
+    # group. A group of one is not a duplicate and is left alone.
+    _coincident_groups = collections.defaultdict(list)
+    for _ev in staff_events:
+        if _ev.category in NOTEHEAD_CATS and _ev.category not in (
+                "notehead_whole", "notehead_half"):
+            _coincident_groups[(_ev.family, _ev.gid, round(_ev.x0, 2), round(_ev.y0, 2))].append(_ev)
+    coincident_stem = {}  # id(glyph event) -> the Stem this copy was given
+    coincident_split_pairs = 0
+    coincident_unsplit_pairs = 0
+    for _group in _coincident_groups.values():
+        if len(_group) < 2:
+            continue
+        _rep = _group[0]
+        _ex0, _ex1 = _rep.stem_edges
+        _candidates = _rank_stems(stems, stem_xs, _ex0, _ex1, _rep.yc, tol)
+        if len(_candidates) >= 2:
+            # A second, distinct stem exists: this is exactly the case the
+            # research proved is a lost voice, not a chord - give each copy
+            # its own stem instead of letting both rank the same one best.
+            coincident_split_pairs += 1
+            for _member, (_key, _stem) in zip(_group, _candidates):
+                coincident_stem[id(_member)] = _stem
+            for _member in _group[len(_candidates):]:
+                coincident_stem[id(_member)] = _candidates[0][1]
+        elif _candidates:
+            # Only one candidate stem for the whole group: nothing here can
+            # tell the copies apart (see _rank_stems), so they stay bound to
+            # it exactly as an unmodified single-stem lookup would leave
+            # them - but that is disclosed rather than silently doubling one
+            # voice's note, per coincident_unsplit_pairs above.
+            coincident_unsplit_pairs += 1
+            for _member in _group:
+                coincident_stem[id(_member)] = _candidates[0][1]
+        # Zero candidates: no stem anywhere near this position for either
+        # copy. Left out of coincident_stem entirely so both copies fall
+        # through to the ordinary per-event lookup below, which measures
+        # the same emptiness and reports it as no_stem_noteheads instead -
+        # a different, already-honest anomaly, not this one.
 
     notes = []
     stems_by_key = {}
@@ -2466,7 +2547,16 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
                 flags = 0
                 duration_needs_stem = True
                 ex0, ex1 = ev.stem_edges
-                stem = _best_stem(stems, stem_xs, ex0, ex1, ev.yc, tol)
+                if id(ev) in coincident_stem:
+                    # This copy belongs to a coincident duplicate pair - see
+                    # the coincident-pair pass above - so its stem was already
+                    # decided there rather than by an independent lookup here,
+                    # which would rank the same stem best for both copies
+                    # every time and reproduce the very defect this exists to
+                    # fix.
+                    stem = coincident_stem[id(ev)]
+                else:
+                    stem = _best_stem(stems, stem_xs, ex0, ex1, ev.yc, tol)
                 if stem is not None:
                     hooks = _flag_count_near(flag_events, flag_xs, stem, ev.yc, tol)
                     beam_levels = _beam_count_near(beams, stem, ev.yc, tol)
@@ -2568,6 +2658,8 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         "dots_unassigned": dots_unassigned,
         "dots_unassigned_no_candidate": dots_unassigned_no_candidate,
         "dots_unassigned_eliminated": dots_unassigned_eliminated,
+        "coincident_split_pairs": coincident_split_pairs,
+        "coincident_unsplit_pairs": coincident_unsplit_pairs,
     })
     return notes, stats
 
