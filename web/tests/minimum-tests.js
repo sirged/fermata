@@ -230,11 +230,27 @@
 // inside the very field it closes; and the ordinary keyboard works again
 // once focus has left it.
 //
-// Raised deliberately, and every one of the 12 was shown to fail against a
+// Plus 2 more, against a stubbed real ScoreCompare (a PDF with a ready
+// transcription): ScoreCompare mounts a PdfViewer and a TabViewer AT THE
+// SAME TIME and only hides whichever pane is off screen with CSS, never
+// unmounting either - and PdfViewer already owned Space/arrows for turning
+// pages (issue #106's gig mode) before this issue gave TabViewer several of
+// the same keys. Without gating each on which pane is actually visible, a
+// Space press on the PDF-only layout would have also toggled the hidden
+// staff pane's playback - exactly the "does the shortcut set stay sane
+// where a pedal sends only arrow keys" question #92 itself asks about gig
+// mode, since gig mode is always one of these two single-pane layouts and
+// never the side-by-side one. One test per layout: Space does nothing to
+// the staff pane's own Play button while only the PDF pane is shown, and
+// does toggle it once the staff pane is the one shown.
+//
+// Raised deliberately, and every one of the 14 was shown to fail against a
 // mutation of the behaviour it claims: isTypingTarget() hardcoded to `false`
-// turned the focus-guard test red (and only it) while the other 11 stayed
-// green, and rewriting nudgeLoopBoundary's growth branch to be unreachable
-// turned the Shift+arrows test red the same way - see the pull request. The
+// turned the focus-guard test red (and only it) while the rest stayed green;
+// rewriting nudgeLoopBoundary's growth branch to be unreachable turned the
+// Shift+arrows test red the same way; and commenting out TabViewer's own
+// `if (!active) return` turned the PDF-pane-only test red while its
+// staff-pane-only sibling stayed green - see the pull request. The
 // implementation itself needed two rounds of fixing found BY these tests
 // before they passed clean: api.tickCache.findBeat() and a
 // MasterBarTickLookup's own firstBeat/nextBeat, alphaTab's two built-in ways
@@ -245,7 +261,7 @@
 // after a handful of presses. score-render.js now answers that question from
 // the parsed score model instead (Track/Staff/Bar/Voice/Beat, and each
 // Beat's own nextBeat/previousBeat), which has no such history.
-export const MINIMUM_TESTS = 277;
+export const MINIMUM_TESTS = 279;
 
 export default class MinimumTests {
   constructor() {

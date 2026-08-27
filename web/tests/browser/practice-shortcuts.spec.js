@@ -30,6 +30,7 @@
 // the behaviour they claim.
 import { expect, test } from "@playwright/test";
 import { stubMetronomeScore } from "./fixtures/metronome-score.js";
+import { CLEAN_CONFIDENCE, stubScoreApi, transcriptionResponse } from "./fixtures/transcription-warnings.js";
 
 const host = (page) => page.locator(".at-host");
 const playButton = (page) => page.locator(".player button.primary");
@@ -296,5 +297,44 @@ test.describe("the focus guard", () => {
     await expect(loopButton(page)).toHaveClass(/on/);
     // left as found, for whichever test in this file runs next
     await page.keyboard.press("l");
+  });
+});
+
+// ------------------------------------- gig-mode sanity: ScoreCompare panes
+
+// #92 asks specifically whether the shortcut set stays sane in gig mode,
+// where a pedal sends nothing but arrow keys and the reference this issue
+// points at (the PDF reader) already turns pages on them for exactly that
+// reason. ScoreCompare mounts a PdfViewer and a TabViewer AT THE SAME TIME
+// and only hides whichever pane is not on screen with CSS (see its own
+// snippets) - it never unmounts either - so without the `active` prop both
+// added to PdfViewer.svelte and TabViewer.svelte, a single Space press on
+// the PDF pane would ALSO have toggled the hidden staff pane's playback, and
+// vice versa. Gig mode itself only ever shows one pane (see
+// ScoreCompare.svelte's own `activeLayout`), so this checks the two
+// single-pane desktop layouts directly - the case that actually exercises
+// which viewer answers the keyboard.
+test.describe("keyboard shortcuts stay scoped to the visible pane in ScoreCompare", () => {
+  test.beforeEach(async ({ page }) => {
+    await stubScoreApi(page, transcriptionResponse({ warnings: [], confidence: CLEAN_CONFIDENCE }));
+    await page.goto("/#/score/1");
+    await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+  });
+
+  test("Space does nothing to the staff pane while only the PDF pane is shown", async ({ page }) => {
+    await page.getByRole("button", { name: "PDF", exact: true }).click();
+    await page.keyboard.press(" ");
+    // A moment for a wrongly-active handler to have acted, then confirm
+    // nothing did - TabViewer's own Play button (still in the DOM, just
+    // hidden behind the PDF pane) never left "Play".
+    await page.waitForTimeout(300);
+    await expect(playButton(page)).toHaveText(/Play/);
+  });
+
+  test("Space toggles playback once the staff pane is the one shown", async ({ page }) => {
+    await page.getByRole("button", { name: "Staff", exact: true }).click();
+    await page.keyboard.press(" ");
+    await expect(playButton(page)).toHaveText(/Pause/);
+    await page.keyboard.press(" "); // left as found
   });
 });
