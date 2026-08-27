@@ -56,7 +56,7 @@ import pytest
 from fermata import glyph_rhythm, musicxml, tabextract
 
 from conftest import ENGRAVED_DIR
-from test_tabextract import _parse_with_alphatab
+from test_tabextract import _load_musicxml_with_alphatab, _parse_with_alphatab
 
 
 # ---------------------------------------------------------------------------
@@ -789,29 +789,193 @@ def test_a_repeat_with_ending_brackets_leaves_its_staves_alone(engraved):
     result = tabextract.extract(pdf)
     assert result.tab_staff_count == 2
     assert result.rhythm_provenance == {tabextract.PROV_GLYPHS: 2}
-    # The repeat's thick-thin barline is read as two barlines, so an empty bar
-    # appears between the two halves. That is an artifact and it is pinned as
-    # one rather than left to be discovered: nine bars for eight written, the
-    # extra one a whole rest.
+    # The repeat's thick-thin barline is one physical barline, drawn as two
+    # close strokes - _detect_barlines merges them (see
+    # BARLINE_STROKE_MERGE_SPACES), so this reads as the eight bars actually
+    # written, not the phantom ninth a 2pt merge tolerance used to leave
+    # between the strokes.
     bars = emitted_bars(result.alphatex)
-    assert len(bars) == 9
-    assert bars[4][0] == [(4.0, [])], bars[4]
-    assert [len(v[0]) for v in bars] == [4, 4, 4, 4, 1, 4, 4, 4, 4]
-    # ...and that phantom bar is reported as a bar nothing was read from, which
-    # is the only signal it leaves: its whole rest adds up to the meter, so
-    # Rule 8 passes and the file cannot distinguish it from an engraved silence.
-    # Nine bars for eight written is exactly the kind of thing a reader has to
-    # be told about by number rather than left to notice.
-    assert result.bars_unread == 1
-    assert result.unread_bars == [5]
+    assert len(bars) == 8
+    assert [len(v[0]) for v in bars] == [4, 4, 4, 4, 4, 4, 4, 4]
+    assert result.bars_unread == 0
+    assert result.unread_bars == []
     assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
     assert "<forward>" not in result.musicxml
-    unread = next(w for w in result.warnings if "hold nothing that was read" in w)
-    assert "1 of 9 bar(s)" in unread and "The bars are: 5." in unread
-    # one bar in nine is under the downgrade threshold, and the confidence still
-    # says so rather than reading as an unqualified high
-    assert result.confidence["rhythm"].startswith("high")
-    assert "hold nothing that was read from the score (1)" in result.confidence["rhythm"]
+    assert not any("hold nothing that was read" in w for w in result.warnings)
+    assert result.confidence["rhythm"] == (
+        "high - decoded directly from the notehead/stem/flag/beam/dot glyphs "
+        "in the score's own engraving")
+
+
+def _barline_structure(musicxml_text):
+    """{measure_number: {location: {bar_style, repeat, ending}}} read back
+    out of the emitted MusicXML's own <barline> elements - so this measures
+    the artifact that gets stored and rendered, not an intermediate the
+    emitter might not agree with (issue #134 Rule 15)."""
+    out = {}
+    for measure in ET.fromstring(musicxml_text).findall("./part/measure"):
+        num = int(measure.get("number"))
+        for bl in measure.findall("barline"):
+            loc = bl.get("location")
+            rec = {}
+            bar_style = bl.findtext("bar-style")
+            if bar_style:
+                rec["bar_style"] = bar_style
+            ending = bl.find("ending")
+            if ending is not None:
+                rec["ending"] = (ending.get("number"), ending.get("type"))
+            repeat = bl.find("repeat")
+            if repeat is not None:
+                rec["repeat"] = repeat.get("direction")
+            out.setdefault(num, {})[loc] = rec
+    return out
+
+
+def test_volta_pdf_emits_exactly_the_barlines_its_own_source_declares(engraved):
+    """volta.pdf's own MusicXML source (fixture_volta in engrave_fixtures.py)
+    is the ground truth: a backward repeat closing measure 4's ending 1, and
+    measure 5's ending 2 left open. Compared against a literal expected
+    structure, not a count - issue #134 S6.2's design for this test."""
+    pdf = engraved("volta")
+    result = tabextract.extract(pdf)
+    assert result.extractable
+    assert result.bars == 8, "the fixture's own source declares 8 measures"
+    assert _barline_structure(result.musicxml) == {
+        4: {
+            "left": {"ending": ("1", "start")},
+            "right": {"bar_style": "light-heavy", "ending": ("1", "stop"),
+                      "repeat": "backward"},
+        },
+        5: {
+            "left": {"ending": ("2", "start")},
+            "right": {"ending": ("2", "stop")},
+        },
+    }
+    # The no-op invariant (issue #134 Rule 15): reading repeat structure must
+    # not move a single Rule 8 figure. Asserted as literals, not merely
+    # "unchanged from a baseline run", so a later change cannot drift them.
+    assert (result.bars_overfull, result.bars_short, result.bars_defective,
+            result.bars_padded, result.inferred_rest_quarters, result.notes) == (
+        0, 0, 0, 0, 0.0, 32)
+    assert result.repeats_unread == 0
+    assert result.endings_unread == 0
+    assert result.endings_truncated == 0
+    assert result.form_marks_unanchored == 0
+
+
+def test_repeat_structure_pdf_emits_exactly_the_barlines_its_own_source_declares(engraved):
+    """repeat_structure.pdf covers what volta.pdf does not: a FORWARD repeat
+    opening the span, three endings rather than two, one two bars long (no
+    <ending> on its own interior measure 5), an open-hook ending
+    (`discontinue`), a mid-score double barline, and a closing final one -
+    all compared against the fixture's own literal source."""
+    pdf = engraved("repeat_structure")
+    result = tabextract.extract(pdf)
+    assert result.extractable
+    assert result.bars == 8, "the fixture's own source declares 8 measures"
+    assert _barline_structure(result.musicxml) == {
+        1: {"left": {"bar_style": "heavy-light", "repeat": "forward"}},
+        3: {
+            "left": {"ending": ("1", "start")},
+            "right": {"bar_style": "light-heavy", "ending": ("1", "stop"),
+                      "repeat": "backward"},
+        },
+        4: {"left": {"ending": ("2", "start")}},
+        5: {"right": {"ending": ("2", "discontinue")}},
+        6: {"right": {"bar_style": "light-light"}},
+        7: {
+            "left": {"ending": ("3", "start")},
+            "right": {"ending": ("3", "stop")},
+        },
+        8: {"right": {"bar_style": "light-heavy"}},
+    }
+    assert (result.bars_overfull, result.bars_short, result.bars_defective,
+            result.bars_padded, result.inferred_rest_quarters, result.notes) == (
+        0, 0, 0, 0, 0.0, 32)
+    assert result.repeats_unread == 0
+    assert result.endings_unread == 0
+    assert result.endings_truncated == 0
+    assert result.form_marks_unanchored == 0
+    assert result.endings_incomplete == 0
+    assert result.confidence["structure"] == (
+        "high - repeat barlines and volta brackets read directly from the score's own "
+        "engraving")
+
+
+def test_repeat_structure_pdf_plays_in_the_order_the_repeats_and_endings_say(engraved):
+    """The only assertion that proves the file plays right rather than parses
+    right (issue #134 S4.2 / S6.2): loaded with the same alphaTab importer
+    the web player uses, bars 1-3 play, the forward/backward repeat sends
+    playback back to bar 1 for a second pass through 1-2, and the three
+    endings gate which of measures 3/4-5/7 is heard on which pass."""
+    pdf = engraved("repeat_structure")
+    result = tabextract.extract(pdf)
+    loaded = _load_musicxml_with_alphatab(result.musicxml, repeats=True)
+    assert loaded["tickLookup"] == [1, 2, 3, 1, 2, 4, 5, 6, 7, 8]
+    repeats = loaded["repeats"]
+    assert repeats[0]["isRepeatStart"] is True
+    assert repeats[2]["isRepeatEnd"] is True
+    assert repeats[2]["repeatCount"] == 2
+    # alternateEndings is alphaTab's own bitmask (bit n-1 set means ending n):
+    # ending 1 on bar 3, ending 2 on bars 4-5, ending 3 on bar 7.
+    assert repeats[2]["alternateEndings"] == 1
+    assert repeats[3]["alternateEndings"] == 2
+    assert repeats[4]["alternateEndings"] == 2
+    assert repeats[6]["alternateEndings"] == 4
+
+
+def test_a_discontinued_ending_abutting_the_next_ones_hook_still_reads_discontinue(engraved):
+    """Item 9 (issue #134 adversarial review): `has_right_hook` decides
+    `stop` vs `discontinue` by looking for a hook near the bracket's own
+    drawn right end that is not obviously part of something else - and the
+    one thing neither volta.pdf nor repeat_structure.pdf ever puts in front
+    of it is another bracket's own opening hook sitting right there. Both of
+    those fixtures' adjacent endings happen to close with `stop`, so the
+    assertion that reads their type right could not tell the rule from
+    luck - it would have read the same "stop" whether or not the hook
+    search excluded the neighbour's hook at all.
+
+    This fixture's source (fixture_adjacent_endings) declares ending 1 with
+    NO closing hook (`discontinue`) immediately followed by ending 2's own
+    opening hook at the same barline, no bar in between - the one case that
+    forces the two apart. Read against the engraved page (not merely the
+    source XML) because that is where the confusion actually lives: two
+    hook-shaped downward strokes can land at the exact same x on a real
+    page (confirmed on Zelda's Lullaby, whose ending 1 closes with `stop`
+    immediately into ending 2's own opening hook - the "spare hook" case
+    hook_x_counts/own_hook_counts exists to keep working)."""
+    pdf = engraved("adjacent_endings")
+    result = tabextract.extract(pdf)
+    assert result.extractable
+    assert result.bars == 8, "the fixture's own source declares 8 measures"
+    assert _barline_structure(result.musicxml) == {
+        1: {"left": {"bar_style": "heavy-light", "repeat": "forward"}},
+        3: {
+            "left": {"ending": ("1", "start")},
+            "right": {"ending": ("1", "discontinue")},
+        },
+        4: {
+            "left": {"ending": ("2", "start")},
+            "right": {"bar_style": "light-heavy", "ending": ("2", "stop"),
+                      "repeat": "backward"},
+        },
+        6: {
+            "left": {"ending": ("3", "start")},
+            "right": {"ending": ("3", "stop")},
+        },
+        8: {"right": {"bar_style": "light-heavy"}},
+    }
+    assert (result.bars_overfull, result.bars_short, result.bars_defective,
+            result.bars_padded, result.inferred_rest_quarters, result.notes) == (
+        0, 0, 0, 0, 0.0, 32)
+    assert result.repeats_unread == 0
+    assert result.endings_unread == 0
+    assert result.endings_truncated == 0
+    assert result.form_marks_unanchored == 0
+    assert result.endings_incomplete == 0
+
+    loaded = _load_musicxml_with_alphatab(result.musicxml, repeats=True)
+    assert loaded["tickLookup"] == [1, 2, 3, 1, 2, 4, 5, 6, 7, 8]
 
 
 # ---------------------------------------------------------------------------
@@ -898,12 +1062,16 @@ def test_expression_marks_are_not_read_as_incomprehension():
 
 def test_furniture_alone_does_not_degrade_a_clean_decode():
     glyph_rhythm.clear_caches()
+    # 0xE044 is no longer unknown - SMUFL_CODE_MAP maps it to "repeat_dot"
+    # (see DOT_LIKE_CATS) - so only the accent and the fermata are unread.
     _doc, page, _trace = _fake_smufl_page(
         [0xE0A4] * 8 + [0xE4A0, 0xE4C0, 0xE044], name="Leland")
     glyphs = glyph_rhythm.extract_glyph_events(page)
-    assert len(glyphs.unknown) == 3, "they are still seen"
+    assert len(glyphs.unknown) == 2, "they are still seen"
     kinds = {glyph_rhythm.smufl_unknown_kind(e.code) for e in glyphs.unknown}
     assert kinds == {"furniture"}
+    repeat_dot = next(e for e in glyphs.events if e.code == 0xE044)
+    assert repeat_dot.category == "repeat_dot"
 
 
 def test_a_second_font_supplying_one_glyph_is_still_accounted_for():
@@ -1673,7 +1841,6 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(monkeypat
     conftest.pytest_terminal_summary(reporter, 0, None)
     assert len(reporter.lines) == 1
     assert "2 test(s) skipped for want of a sheet music library" in reporter.lines[0]
-    assert "did NOT exercise extraction" in reporter.lines[0]
 
     # a real library present and nothing skipped for want of one: say so
     monkeypatch.setattr(conftest, "_library_skips", [])
@@ -1687,6 +1854,36 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(monkeypat
     reporter = _FakeReporter()
     conftest.pytest_terminal_summary(reporter, 0, None)
     assert reporter.lines == []
+
+
+def test_the_summary_says_how_many_tests_skipped_for_want_of_node_modules(monkeypatch):
+    """The same loud skip as the library one above, for `web/node_modules`
+    (issue #134 adversarial review, item 7): nine tests - including the
+    Zelda's Lullaby and playback-order headline cases - used to skip in
+    total silence when `npm ci` had not been run in web/, and nothing said
+    so unless a reader compared this run's summary against CI's by hand."""
+    import conftest
+
+    monkeypatch.setattr(conftest, "_library_skips", [])
+    monkeypatch.setattr(conftest, "_node_modules_skips", [])
+    monkeypatch.delenv("FERMATA_TEST_LIBRARY", raising=False)
+
+    # nothing skipped: no claim either way
+    reporter = _FakeReporter()
+    conftest.pytest_terminal_summary(reporter, 0, None)
+    assert reporter.lines == []
+
+    # counted by calling the helper, not by matching the words it happens to
+    # use - same discipline as skip_without_library
+    for reason in ("node not available", "alphaTab.mjs not found"):
+        with pytest.raises(BaseException):
+            conftest.skip_without_node_modules(reason)
+    assert len(conftest._node_modules_skips) == 2
+
+    reporter = _FakeReporter()
+    conftest.pytest_terminal_summary(reporter, 0, None)
+    assert len(reporter.lines) == 1
+    assert "2 test(s) skipped for want of web/node_modules" in reporter.lines[0]
 
 
 def test_the_committed_musicxml_still_matches_its_generator():

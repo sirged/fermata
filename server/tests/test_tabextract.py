@@ -13,6 +13,8 @@ from fermata import glyph_rhythm
 from fermata import musicxml
 from fermata import tabextract
 
+from conftest import skip_without_node_modules
+
 
 def emitted_meters(musicxml_text):
     """The meter in force in each measure of emitted MusicXML - read out of
@@ -42,11 +44,11 @@ def _parse_with_alphatab(tex: str) -> dict:
     the production server's own runtime image.
     """
     if shutil.which("node") is None:
-        pytest.skip("node not available")
+        skip_without_node_modules("node not available")
     repo_root = Path(__file__).resolve().parents[2]
     alphatab = repo_root / "web" / "node_modules" / "@coderline" / "alphatab" / "dist" / "alphaTab.mjs"
     if not alphatab.is_file():
-        pytest.skip("alphaTab.mjs not found - run `npm ci` in web/ first")
+        skip_without_node_modules("alphaTab.mjs not found - run `npm ci` in web/ first")
     script = Path(__file__).resolve().parents[1] / "tools" / "tab_extract" / "verify_tex.mjs"
 
     with tempfile.NamedTemporaryFile("w", suffix=".tex", delete=False, encoding="utf-8") as f:
@@ -64,7 +66,7 @@ def _parse_with_alphatab(tex: str) -> dict:
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def _load_musicxml_with_alphatab(xml: str, onsets: bool = False) -> dict:
+def _load_musicxml_with_alphatab(xml: str, onsets: bool = False, repeats: bool = False) -> dict:
     """Load `xml` with the real alphaTab MusicXML importer the web player uses,
     via tools/tab_extract/verify_musicxml.mjs.
 
@@ -76,13 +78,19 @@ def _load_musicxml_with_alphatab(xml: str, onsets: bool = False) -> dict:
     (rather than fails) when node or the web project's installed alphaTab build
     aren't available, since neither is present in the production server's own
     runtime image.
+
+    `repeats=True` adds `repeats` (per-master-bar isRepeatStart/isRepeatEnd/
+    repeatCount/alternateEndings) and `tickLookup` (the playback bar order,
+    1-based, repeats and all) - read from alphaTab's own MidiFileGenerator,
+    the only thing that proves a repeat/ending file PLAYS right rather than
+    merely parses right (issue #134 S4.2 / docs Rule 15).
     """
     if shutil.which("node") is None:
-        pytest.skip("node not available")
+        skip_without_node_modules("node not available")
     repo_root = Path(__file__).resolve().parents[2]
     alphatab = repo_root / "web" / "node_modules" / "@coderline" / "alphatab" / "dist" / "alphaTab.mjs"
     if not alphatab.is_file():
-        pytest.skip("alphaTab.mjs not found - run `npm ci` in web/ first")
+        skip_without_node_modules("alphaTab.mjs not found - run `npm ci` in web/ first")
     script = Path(__file__).resolve().parents[1] / "tools" / "tab_extract" / "verify_musicxml.mjs"
 
     with tempfile.NamedTemporaryFile("w", suffix=".musicxml", delete=False,
@@ -93,6 +101,8 @@ def _load_musicxml_with_alphatab(xml: str, onsets: bool = False) -> dict:
         args = ["node", str(script), str(alphatab)]
         if onsets:
             args.append("--onsets")
+        if repeats:
+            args.append("--repeats")
         proc = subprocess.run(args + [xml_path], capture_output=True, text=True, timeout=60)
     finally:
         Path(xml_path).unlink(missing_ok=True)
@@ -279,7 +289,10 @@ def test_born_a_stranger_unison_survives_as_two_notes_in_two_voices(born_a_stran
     figures are invariant under every variant tried during the research."""
     result = tabextract.extract(born_a_stranger_pdf)
     assert result.extractable
-    assert result.bars == 40
+    # One fewer than before _detect_barlines merged a repeat pair's two
+    # strokes into one boundary (see BARLINE_STROKE_MERGE_SPACES) - this
+    # score carried one of the library's phantom sliver measures.
+    assert result.bars == 39
     assert result.bars_defective == 38
     assert result.notes == 403
 
@@ -1129,7 +1142,10 @@ def test_reference_score_bars_mostly_add_up(zanarkand_pdf):
     result = tabextract.extract(zanarkand_pdf)
     assert result.extractable
     bars = _emitted_bars(result.alphatex)
-    assert len(bars) == 50, len(bars)
+    # One fewer than before _detect_barlines merged a repeat pair's two
+    # strokes into one boundary (see BARLINE_STROKE_MERGE_SPACES) - this
+    # score carried one of the library's phantom sliver measures.
+    assert len(bars) == 49, len(bars)
 
     exact = sum(1 for budget, vs in bars
                 if all(abs(v - budget) < 1e-6 for v in vs))
@@ -1171,7 +1187,8 @@ def test_reference_score_still_reports_the_bars_that_do_not_add_up(zanarkand_pdf
     result = tabextract.extract(zanarkand_pdf)
     fullness = [w for w in result.warnings if "hold more than their time signature" in w]
     assert len(fullness) == 1, result.warnings
-    assert re.search(r"\b\d+ of 50 bar\(s\)", fullness[0]), fullness[0]
+    # 49, not 50 - see test_reference_score_bars_mostly_add_up.
+    assert re.search(r"\b\d+ of 49 bar\(s\)", fullness[0]), fullness[0]
     assert any("concurrent voices" in w for w in result.warnings)
 
 
@@ -1467,7 +1484,8 @@ def test_a_meter_further_along_a_bar_is_not_a_meter_at_this_barline(mitsuha_pdf)
     mid = (std.top + std.bottom) / 2
 
     refused, accepted = [], []
-    for bx in tabextract._detect_barlines(vseg, std):
+    for bl in tabextract._detect_barlines(vseg, std):
+        bx = bl.x
         if bx <= opening or bx >= std.x1 - std.spacing:
             continue
         ts, why = glyph_rhythm.decode_meter_after_barline(
@@ -1509,7 +1527,11 @@ def test_a_key_change_at_a_mid_system_barline_does_not_hide_the_meter(wild_arms_
     being checked."""
     result = tabextract.extract(wild_arms_pdf)
     meters = emitted_meters(result.musicxml)
-    assert meters == [(4, 4)] * 25 + [(2, 4)] * 1 + [(6, 4)] * 2 + [(4, 4)] * 23
+    # Two of this score's bars used to be the phantom sliver a repeat pair's
+    # two strokes left behind before _detect_barlines merged them (see
+    # BARLINE_STROKE_MERGE_SPACES) - one inside the (6, 4) run, one in the
+    # trailing (4, 4) run - so the run lengths are two shorter than they were.
+    assert meters == [(4, 4)] * 25 + [(2, 4)] * 1 + [(6, 4)] * 1 + [(4, 4)] * 22
     assert any("changes time signature part-way through" in w for w in result.warnings), (
         result.warnings)
 
@@ -1554,7 +1576,8 @@ def test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early(kaine_salv
     mid = (courtesy_staff.top + courtesy_staff.bottom) / 2
     opening = courtesy_staff.x0 + courtesy_staff.spacing * glyph_rhythm.TS_LEAD_SPACINGS
     found_and_refused = False
-    for bx in tabextract._detect_barlines(vseg, courtesy_staff):
+    for bl in tabextract._detect_barlines(vseg, courtesy_staff):
+        bx = bl.x
         if bx <= opening or bx >= courtesy_staff.x1 - courtesy_staff.spacing:
             continue
         window = [e for e in glyphs.events
@@ -1574,7 +1597,11 @@ def test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early(kaine_salv
     result = tabextract.extract(kaine_salvation_pdf)
     meters = emitted_meters(result.musicxml)
     changes = [(i + 1, m) for i, m in enumerate(meters) if i == 0 or m != meters[i - 1]]
-    assert changes == [(1, (3, 4)), (28, (6, 8))], changes
+    # One bar earlier than before _detect_barlines merged a repeat pair's two
+    # strokes into one boundary (see BARLINE_STROKE_MERGE_SPACES) - this
+    # score's first system carried one phantom sliver measure ahead of the
+    # (6, 8) change.
+    assert changes == [(1, (3, 4)), (27, (6, 8))], changes
     assert any("changes time signature part-way through" in w for w in result.warnings), (
         result.warnings)
 
@@ -2316,3 +2343,321 @@ def test_a_printed_tuning_instruction_is_recognised_without_being_applied():
         "",
     ]:
         assert found(text) == [], text
+
+
+# ---------------------------------------------------------------------------
+# Repeat barlines and volta brackets (issue #134, phase 1)
+# ---------------------------------------------------------------------------
+
+
+def test_volta_number_regex_rejects_zero_and_leading_zeros():
+    """`ending-number` in the MusicXML schema is
+    `[1-9][0-9]*(, ?[1-9][0-9]*)*` - positive integers without a leading
+    zero. `_VOLTA_NUMBER_RE` used to be `\\d+`, which also matches "0" and
+    "01" - neither a valid ending number, and either would have been read
+    here and either rejected downstream by the schema or silently accepted
+    by a laxer consumer as an ending that does not exist."""
+    ok = ["1", "2", "1,2", "10", "1, 2", "12,3"]
+    bad = ["0", "00", "01", "1,0", "0,1", "10,02"]
+    for text in ok:
+        assert tabextract._VOLTA_NUMBER_RE.match(text), text
+    for text in bad:
+        assert not tabextract._VOLTA_NUMBER_RE.match(text), text
+
+
+def test_anchor_mark_case_4_is_reachable():
+    """Item 4 (issue #134 adversarial review): _anchor_mark's three
+    documented branches - on a bar boundary, left of the first fret column,
+    right of the last - are exhaustive over the reals (every x is either in
+    [lo, hi], less than lo, or greater than hi), so the trailing
+    `return None, None` used to be dead code: 0 hits in 200k randomized
+    probes, regardless of how far x sat from any boundary. Case 1 now
+    requires x to land within ANCHOR_MARK_SNAP_SPACES of the NEAREST bounds
+    entry, so an x that is technically inside [lo, hi] but nowhere near a
+    real boundary falls through to case 4 instead of snapping to whatever
+    happens to be nearest.
+    """
+    bounds = [0.0, 100.0, 200.0, 300.0]
+    lo, hi = 0.0, 300.0
+    spacing = 10.0  # ANCHOR_MARK_SNAP_SPACES (1.5) * 10 = 15pt tolerance
+
+    # Exactly on a boundary: case 1, trivially within tolerance.
+    assert tabextract._anchor_mark(100.0, bounds, lo, hi, spacing) == (0, 1)
+    # Within tolerance of the nearest boundary: still case 1.
+    assert tabextract._anchor_mark(112.0, bounds, lo, hi, spacing) == (0, 1)
+    # Inside [lo, hi], but farther than the tolerance from EVERY boundary
+    # (150.0 sits exactly midway between 100 and 200, 50pt from each,
+    # nowhere near the 15pt window around either) - case 4, not a guess.
+    assert tabextract._anchor_mark(150.0, bounds, lo, hi, spacing) == (None, None)
+    # Left of lo and right of hi still resolve via case 2/3 regardless of
+    # distance - those are not proximity-gated, only case 1 is.
+    assert tabextract._anchor_mark(-500.0, bounds, lo, hi, spacing) == (None, 0)
+    assert tabextract._anchor_mark(800.0, bounds, lo, hi, spacing) == (2, None)
+
+
+def test_a_thick_stroke_read_as_thin_still_finds_its_repeat_dots(monkeypatch):
+    """Item 5 (issue #134 adversarial review): _vertical_segments substitutes
+    0.0 for a missing stroke `width` (34 such strokes measured in the
+    library - see its own docstring), which reads a genuinely thick stroke
+    as thin: shape "t" gets written where "H" belongs. Searching for repeat
+    dots used to be gated on "H" in shape, so a group corrupted this way was
+    never searched at all - the repeat was dropped with NO disclosure
+    whatsoever, not even repeats_unread. Dots are now searched regardless of
+    shape, so a stroke whose thickness was lost to this bug can still find
+    its own dots and resolve a direction.
+    """
+    staff = tabextract._Staff("tab", [50, 60, 70, 80, 90, 100], 50, 350)
+    # One stroke at x=200, full staff height, width 0.0 - exactly what a
+    # missing `width` key substitutes (see _vertical_segments) for what was
+    # actually a thick (repeat) stroke on the page.
+    vseg = [(200.0, 50.0, 100.0, 0.0)]
+
+    class _FakeEvent:
+        def __init__(self, xc, yc):
+            self.xc = xc
+            self.yc = yc
+
+    # A clean repeat-dot pair to the RIGHT of the stroke (forward repeat):
+    # centre line is (50+100)/2=75, REPEAT_DOT_OFFSET_TAB=1.0 spaces * this
+    # staff's 10pt spacing = 10pt off centre each way.
+    dot_events = [_FakeEvent(210.0, 65.0), _FakeEvent(210.0, 85.0)]
+
+    def fake_dot_events(page, y0, y1, x0, x1):
+        return [e for e in dot_events if y0 <= e.yc <= y1 and x0 <= e.xc <= x1]
+
+    monkeypatch.setattr(tabextract.glyph, "dot_like_glyph_events", fake_dot_events)
+
+    barlines = tabextract._detect_barlines(vseg, staff, page=object())
+    assert len(barlines) == 1
+    bl = barlines[0]
+    assert bl.shape == "t", "the width-loss bug this test targets: a thick stroke reads thin"
+    assert bl.repeat == "forward"
+    assert bl.repeat_unread is False
+
+
+def test_zeldas_lullaby_reads_the_repeat_and_both_endings(zelda_lullaby_pdf):
+    """The phase-1 acceptance case: the score whose exact structure the
+    project's one human tester established by hand (issue #134). 23 bars -
+    not 24, the phantom sliver a repeat pair's two strokes used to leave
+    between them (see BARLINE_STROKE_MERGE_SPACES) - a forward repeat opening
+    at measure 1, ending 1 over measures 7-8 closed by a backward repeat,
+    ending 2 at measure 9 left open (no closing hook drawn), a double barline
+    at measures 10 and 18, and a final barline at measure 23.
+
+    The page also prints "To Coda" at measure 8, "D.C. al Coda" at measure
+    14, and a coda glyph at measure 19 - phase 1 leaves all three unread (see
+    issue #134 S1 and S4.2: no segno glyph exists anywhere in the library,
+    and alphaTab cannot play a D.S. al Coda written as MusicXML), so this
+    score still does not play the form its own page describes. The assertion
+    below is the correct phase-1 target, not a claim that the score is
+    finished.
+    """
+    result = tabextract.extract(zelda_lullaby_pdf)
+    assert result.extractable
+    assert result.bars == 23
+    assert result.bars_unread == 0
+    assert result.unread_bars == []
+
+    from test_engraved_fixtures import _barline_structure
+    structure = _barline_structure(result.musicxml)
+    assert structure[1]["left"] == {"bar_style": "heavy-light", "repeat": "forward"}
+    assert structure[7]["left"] == {"ending": ("1", "start")}
+    assert structure[8]["right"] == {
+        "bar_style": "light-heavy", "ending": ("1", "stop"), "repeat": "backward"}
+    assert structure[9]["left"] == {"ending": ("2", "start")}
+    assert structure[9]["right"] == {"ending": ("2", "discontinue")}
+    assert structure[10]["right"] == {"bar_style": "light-light"}
+    assert structure[18]["right"] == {"bar_style": "light-light"}
+    assert structure[23]["right"] == {"bar_style": "light-heavy"}
+    # No other measure carries a <barline> at all.
+    assert set(structure) == {1, 7, 8, 9, 10, 18, 23}
+
+    # Reading the repeat cannot move a single Rule 8 figure (issue #134 Rule
+    # 15) - form marks carry no duration.
+    assert result.repeats_unread == 0
+    assert result.endings_unread == 0
+    assert result.endings_truncated == 0
+    assert result.form_marks_unanchored == 0
+
+    loaded = _load_musicxml_with_alphatab(result.musicxml, repeats=True)
+    expected_order = (
+        list(range(1, 9)) + list(range(1, 7)) + list(range(9, 24)))
+    assert loaded["tickLookup"] == expected_order
+
+
+def test_lennas_theme_reads_a_volta_that_opens_a_system(lenna_theme_pdf):
+    """The adversarial review's own acid test for issue #134's blocker 1: a
+    volta bracket opening AT a system start, past the clef and key
+    signature, with no barline stroke anywhere near its left end because the
+    fret-column filter that builds `bounds` carved that region out entirely
+    (see _anchor_mark case 2). The nearest_barline guard in
+    _associate_voltas used to run BEFORE _anchor_mark ever got a chance to
+    place a mark like this, rejecting it outright - which on this score
+    dropped ending 2 and left ending 1 the only ending read, the "reads only
+    1 or 2" signature the review measured across 59 scores.
+
+    Both endings are one bar wide here: ending 1 opens and closes on bar 10
+    (closed by the backward repeat), ending 2 opens on bar 11 - the very
+    next bar, immediately after the repeat - and is left open (no closing
+    hook drawn).
+    """
+    result = tabextract.extract(lenna_theme_pdf)
+    assert result.extractable
+    assert result.bars == 13
+    assert result.bars_unread == 0
+
+    from test_engraved_fixtures import _barline_structure
+    structure = _barline_structure(result.musicxml)
+    assert structure[3]["left"] == {"bar_style": "heavy-light", "repeat": "forward"}
+    assert structure[10]["left"] == {"ending": ("1", "start")}
+    assert structure[10]["right"] == {
+        "bar_style": "light-heavy", "ending": ("1", "stop"), "repeat": "backward"}
+    assert structure[11]["left"] == {"ending": ("2", "start")}
+    assert structure[11]["right"] == {"ending": ("2", "discontinue")}
+    assert set(structure) == {3, 10, 11}
+
+    # Reading the volta cannot move a single Rule 8 figure - form marks carry
+    # no duration.
+    assert result.endings_unread == 0
+    assert result.endings_truncated == 0
+    assert result.form_marks_unanchored == 0
+    assert result.endings_incomplete == 0
+
+    loaded = _load_musicxml_with_alphatab(result.musicxml, repeats=True)
+    expected_order = list(range(1, 11)) + list(range(3, 10)) + [11, 12, 13]
+    assert loaded["tickLookup"] == expected_order
+
+
+def test_an_incomplete_ending_run_alone_downgrades_structure_confidence(victory_fanfare_pdf):
+    """Blocker 2 (issue #134 adversarial review): `structure_issues` (~the
+    confidence sum near musicxml build in tabextract.py) used to omit
+    `endings_incomplete`, so a score could simultaneously warn that its
+    ending numbers do not form a run starting at 1 and report `structure`
+    as "high - read directly from the engraving" - two claims that
+    contradict each other on the same response.
+
+    This score is the case that isolates the bug: a "2." bracket with no
+    matching "1." anywhere, and NOTHING else wrong - repeats_unread,
+    endings_unread, endings_truncated and form_marks_unanchored are all 0,
+    so `endings_incomplete` is the only term that can possibly account for
+    the downgrade. If the sum omits it, this reads "high".
+    """
+    result = tabextract.extract(victory_fanfare_pdf)
+    assert result.extractable
+    assert result.endings_incomplete == 1
+    assert result.repeats_unread == 0
+    assert result.endings_unread == 0
+    assert result.endings_truncated == 0
+    assert result.form_marks_unanchored == 0
+    assert result.confidence["structure"].startswith("medium"), result.confidence["structure"]
+    assert "1 repeat/volta mark(s)" in result.confidence["structure"]
+
+
+def test_two_thick_strokes_with_no_readable_dots_emit_heavy_heavy_not_nothing(
+        tarrega_estudio_em_pdf):
+    """Item 6 (issue #134 adversarial review): a barline group of two-or-more
+    thick strokes ("tHHt" here) with no repeat direction resolved at all -
+    not because a dot pair was found and disputed, but because no dot-shaped
+    glyph was found near it at all - used to be dropped from the emitted
+    MusicXML entirely: no <bar-style>, no <repeat>, no warning.
+    `_bar_style_for_shape` deliberately returns None for 2+ thick strokes (it
+    expects the "both"-repeat branch in _apply_repeat_marks to write
+    heavy-heavy with its own direction attached), which is exactly the gap
+    that let this group fall through the top-of-loop guard silently.
+
+    Fixed: this now writes heavy-heavy on both sides of the boundary it
+    sits between, with the repeat itself disclosed as unread rather than
+    guessed - the same "bar-style for the strokes seen is still written,
+    the repeat is not" contract repeats_unread already promises.
+    """
+    result = tabextract.extract(tarrega_estudio_em_pdf)
+    assert result.extractable
+    assert result.repeats_unread == 1
+    assert result.repeats_unread_bars == [8]
+
+    from test_engraved_fixtures import _barline_structure
+    structure = _barline_structure(result.musicxml)
+    assert structure[8]["right"] == {"bar_style": "heavy-heavy"}
+    assert structure[9]["left"] == {"bar_style": "heavy-heavy"}
+    assert "repeat" not in structure[8]["right"]
+    assert "repeat" not in structure[9]["left"]
+
+    assert any(
+        "dots next to a barline group but the dots could not be resolved" in w
+        and "8" in w
+        for w in result.warnings
+    )
+    assert result.confidence["structure"].startswith("medium")
+
+
+def _library_pdfs(library_root):
+    return sorted(library_root.rglob("*.pdf"))
+
+
+def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root):
+    """The invariant issue #134's own research corrected the issue for:
+    reading repeat barlines and volta brackets requires collapsing
+    multi-stroke barlines first (see BARLINE_STROKE_MERGE_SPACES), which does
+    move the bar count and bars_unread - but must NOT move a single Rule 8
+    conformance figure, because a form mark carries no duration.
+
+    Run across the whole configured library (297 PDFs in the one this
+    profile was developed against). Slow on purpose: this is the one test
+    that actually proves the invariant end to end rather than on one
+    fixture.
+    """
+    totals = collections.Counter()
+    scores_with_structure = 0
+    scores_with_endings_truncated = 0
+    extractable = 0
+    for pdf in _library_pdfs(library_root):
+        try:
+            result = tabextract.extract(pdf)
+        except Exception:
+            continue
+        if not result.extractable:
+            continue
+        extractable += 1
+        totals["bars"] += result.bars
+        totals["bars_unread"] += result.bars_unread
+        totals["notes"] += result.notes
+        totals["bars_overfull"] += result.bars_overfull
+        totals["bars_short"] += result.bars_short
+        totals["bars_defective"] += result.bars_defective
+        totals["bars_padded"] += result.bars_padded
+        totals["inferred_rest_quarters"] += result.inferred_rest_quarters
+        totals["form_marks_unanchored"] += result.form_marks_unanchored
+        totals["endings_truncated"] += result.endings_truncated
+        if result.endings_truncated:
+            scores_with_endings_truncated += 1
+        if "<repeat " in result.musicxml or "<ending " in result.musicxml:
+            scores_with_structure += 1
+
+    # The exact figures issue #134's commit 1 fix produces on this library -
+    # see the same numbers pinned by the library-wide scan in the PR/issue.
+    assert extractable == 293
+    assert totals["bars"] == 10632
+    assert totals["bars_unread"] == 23
+    assert totals["notes"] == 98688
+    assert totals["bars_overfull"] == 1569
+    assert totals["bars_short"] == 4219
+    assert totals["bars_defective"] == 5344
+    assert totals["bars_padded"] == 3589
+    assert totals["inferred_rest_quarters"] == 4885.0
+    # Not a judgement call - issue #134 S3.2 measured 0 of 513 repeat marks
+    # in the library landing inside a bar with no boundary to anchor to, and
+    # this stays 0 for volta brackets too once the adversarial review's
+    # blocker 1 (the anchor guard running before _anchor_mark) is fixed - the
+    # library holds no numbered bracket _anchor_mark's own case 4 rejects.
+    assert totals["form_marks_unanchored"] == 0
+    # Disclosed but previously unpinned (adversarial review, "smaller" list):
+    # an ending whose last bar could not be established (no backward repeat,
+    # and the drawn right end snaps to no boundary) is written over its
+    # first bar only. Measured directly against the spec's own predicted 3 -
+    # the gap is the review's own finding, not a regression to chase here.
+    assert totals["endings_truncated"] == 25
+    assert scores_with_endings_truncated == 22
+    # "Expect large" (issue #134's own phrasing): the census found 190 of 297
+    # scores carrying a repeat barline or a volta. A floor rather than a pin,
+    # since which scores the maintainer's library holds can change.
+    assert scores_with_structure >= 150

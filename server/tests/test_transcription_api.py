@@ -376,7 +376,14 @@ BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
             # dots_unassigned by why a dot went unbound (see
             # glyph._assign_dots) and belong in the same reload check.
             "dots_unassigned", "dots_unassigned_no_candidate",
-            "dots_unassigned_eliminated", "staves_dots_unassigned")
+            "dots_unassigned_eliminated", "staves_dots_unassigned",
+            # Same gap, same fix, for the repeat/volta disclosure fields
+            # (issue #134 adversarial review, blocker 3): they were added to
+            # ExtractionResult and to_dict() but never to _BAR_KEYS in api.py
+            # nor exercised HERE, so a reader of a reloaded transcription got
+            # none of them even after api.py caught up.
+            "repeats_unread", "endings_unread", "endings_truncated",
+            "form_marks_unanchored", "endings_incomplete")
 # Which bars, and how much silence - the figures that only exist as data. The
 # warning prose caps its bar list, and the profile document promises a consumer
 # that `inferred_rest_quarters` is the sum of the `<forward>` durations in the
@@ -386,7 +393,9 @@ BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
 # counts in the confidence string say how much of a score's rhythm was not read
 # from its glyphs, and only these say which of it.
 BAR_DETAIL_KEYS = ("padded_bars", "unread_bars", "inferred_rest_quarters",
-                   "spacing_bars", "degraded_bars")
+                   "spacing_bars", "degraded_bars",
+                   "repeats_unread_bars", "endings_unread_bars",
+                   "endings_truncated_bars", "form_marks_unanchored_bars")
 
 
 def test_bar_conformance_survives_a_reload(app_env, engraved, monkeypatch, insert_score):
@@ -654,3 +663,52 @@ def test_unassigned_dots_survive_the_api_round_trip(
     assert fetched["dots_unassigned"] > 0, "the whole point: this must not be the zero case"
     assert fetched["warnings"] == posted["warnings"]
     assert any("no stem this decoder could find" in w for w in fetched["warnings"])
+
+
+def test_repeat_and_volta_disclosures_survive_the_api_round_trip(
+    app_env, tarrega_estudio_em_pdf, monkeypatch, insert_score
+):
+    """The same gap as the two round-trip tests above, but for the nine
+    repeat/volta disclosure fields (issue #134 adversarial review, blocker
+    3): ExtractionResult grew `repeats_unread`, `endings_unread`,
+    `endings_truncated`, `form_marks_unanchored`, `endings_incomplete` and
+    their `*_bars` lists, and `to_dict()` carries them - but `to_dict()` is
+    never called anywhere in server/, and neither api.py's `_BAR_KEYS` /
+    `_BAR_LIST_KEYS` allowlists nor the POST /transcribe confidence blob ever
+    named them. The prose warning reached a reader; the structured field
+    reached nobody. `test_which_bars_were_not_read_from_glyphs_survives_a_reload`
+    only ever checks these against zero (no volta content on that fixture at
+    all) - a persistence bug that unconditionally wrote 0/[] would pass every
+    other test in this file and still be silently discarding the disclosure
+    on reload.
+
+    This score's one barline group is two thick strokes ("tHHt") with no
+    repeat dots found anywhere nearby - not resolved to a direction, and
+    (since a fix landed alongside this one - item 6 of the same review) no
+    longer dropped outright either: the bar-style is still written, only the
+    repeat is disclosed as unread."""
+    pdf = tarrega_estudio_em_pdf
+    monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    assert posted["repeats_unread"] == 1
+    assert posted["repeats_unread_bars"] == [8]
+    assert posted["endings_unread"] == 0
+    assert posted["endings_truncated"] == 0
+    assert posted["form_marks_unanchored"] == 0
+    assert posted["endings_incomplete"] == 0
+
+    fetched = api.get_transcription(score_id)
+    for key in ("repeats_unread", "endings_unread", "endings_truncated",
+                "form_marks_unanchored", "endings_incomplete"):
+        assert fetched[key] == posted[key], key
+    for key in ("repeats_unread_bars", "endings_unread_bars",
+                "endings_truncated_bars", "form_marks_unanchored_bars"):
+        assert fetched[key] == posted[key], key
+    assert fetched["repeats_unread"] > 0, "the whole point: this must not be the zero case"
+    assert fetched["repeats_unread_bars"] == [8]
+    assert fetched["warnings"] == posted["warnings"]
+    assert any("could not be resolved to a clean forward/backward" in w
+               for w in fetched["warnings"])

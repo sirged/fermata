@@ -356,6 +356,38 @@ def fixture_defective_bars():
     return score("Guitar", [attributes() + measures[0]] + measures[1:] + measures)
 
 
+def barline(location, style=None, repeat=None, ending=None):
+    """One `<barline>` element, in the schema's own child order - bar-style,
+    then ending, then repeat (see musicxml._append_barline / issue #134 Rule
+    15). `ending` is a pre-built `<ending .../>` fragment from `ending()`
+    below, not a bare tuple, so a caller can also pass one built by hand."""
+    parts = [f'<barline location="{location}">']
+    if style:
+        parts.append(f"<bar-style>{style}</bar-style>")
+    if ending:
+        parts.append(ending)
+    if repeat:
+        parts.append(f'<repeat direction="{repeat}"/>')
+    parts.append("</barline>")
+    return "".join(parts)
+
+
+def ending(number, type):
+    return f'<ending number="{number}" type="{type}"/>'
+
+
+def repeat_forward():
+    """A forward repeat's own `<barline location="left">` - heavy-light,
+    opening the repeated span."""
+    return barline("left", style="heavy-light", repeat="forward")
+
+
+def repeat_backward():
+    """A backward repeat's own `<barline location="right">` - light-heavy,
+    closing the repeated span."""
+    return barline("right", style="light-heavy", repeat="backward")
+
+
 def fixture_volta():
     """A repeat with "1." / "2." ending brackets under the staff.
 
@@ -373,6 +405,74 @@ def fixture_volta():
     second = ('<barline location="left"><ending number="2" type="start"/></barline>' + bar
               + '<barline location="right"><ending number="2" type="stop"/></barline>')
     return score("Guitar", [attributes() + bar, bar, bar, first, second, bar, bar, bar])
+
+
+def fixture_repeat_structure():
+    """Everything volta.pdf does not already cover (issue #134 Rule 15):
+    volta.pdf has a backward repeat and two one-bar endings, both closed with
+    a hook. This one has a FORWARD repeat opening the span (absent from
+    volta, and 238 of the library's repeats are forward), three endings
+    rather than two, one of them two bars long (so no `<ending>` is written
+    on its own interior measure), an OPEN-hook ending (`discontinue`), a
+    `light-light` double barline mid-score, and a closing `light-heavy` final
+    barline."""
+    bar = _bar([note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+                note(("G", 4), "quarter"), note(("A", 4), "quarter")], 4.0)
+    m1 = repeat_forward() + bar
+    m3 = (barline("left", ending=ending(1, "start")) + bar
+          + barline("right", style="light-heavy", repeat="backward",
+                    ending=ending(1, "stop")))
+    m4 = barline("left", ending=ending(2, "start")) + bar
+    m5 = bar + barline("right", ending=ending(2, "discontinue"))
+    m6 = bar + barline("right", style="light-light")
+    m7 = (barline("left", ending=ending(3, "start")) + bar
+          + barline("right", ending=ending(3, "stop")))
+    m8 = bar + barline("right", style="light-heavy")
+    return score("Guitar", [attributes() + m1, bar, m3, m4, m5, m6, m7, m8])
+
+
+def fixture_adjacent_endings():
+    """The one shape neither volta.pdf nor repeat_structure.pdf reaches
+    (issue #134 adversarial review, item 9): an ending that discontinues
+    (open hook - no downward jog drawn) with the VERY NEXT ending's own
+    bracket starting at that same barline, no bar in between, on the SAME
+    engraved system.
+
+    `_associate_voltas`' `has_right_hook` decides "stop" vs "discontinue" by
+    looking for ANY hook near the bracket's own drawn right end that is not
+    its own left hook (see the comment there) - which is exactly the
+    discriminator the next bracket's OWN opening hook could defeat if it
+    sits close enough. Every fixture and every library score sampled so far
+    happens to draw a bar's width of clearance (or a hook) between one
+    ending's close and the next one's open, so the assertion that reads
+    "discontinue" here has never actually been forced to tell the two
+    apart - see fixture_repeat_structure, whose ending 2 discontinues into a
+    PLAIN bar (measure 6) before ending 3 opens, and volta.pdf, whose
+    adjacent ending closes with a hook (`stop`), not without one
+    (`discontinue`).
+
+    Ending 1 discontinues directly into ending 2's own opening barline -
+    deliberately the FIRST pair in the piece rather than the second: this
+    engraver's line breaks land measures 1-5 on one system and measure 6
+    onward on the next (confirmed against repeat_structure.pdf, which wraps
+    at exactly the same point with the same bar widths) regardless of which
+    endings sit where, so putting the adjacency any later would put the two
+    brackets on DIFFERENT systems - not abutting at all, and a different
+    (also real, already covered by blocker 1's own fixtures) case."""
+    bar = _bar([note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+                note(("G", 4), "quarter"), note(("A", 4), "quarter")], 4.0)
+    m1 = repeat_forward() + bar
+    m3 = (barline("left", ending=ending(1, "start")) + bar
+          + barline("right", ending=ending(1, "discontinue")))
+    # No bar, no double barline, nothing between ending 1's discontinue
+    # above and ending 2's own opening hook right here - the abutting case.
+    m4 = (barline("left", ending=ending(2, "start")) + bar
+          + barline("right", style="light-heavy", repeat="backward",
+                    ending=ending(2, "stop")))
+    m6 = (barline("left", ending=ending(3, "start")) + bar
+          + barline("right", ending=ending(3, "stop")))
+    m8 = bar + barline("right", style="light-heavy")
+    return score("Guitar", [attributes() + m1, bar, m3, m4, bar, m6, bar, m8])
 
 
 def fixture_harmonics_dense():
@@ -641,6 +741,8 @@ FIXTURES = {
     "drop_d": fixture_drop_d,
     "defective_bars": fixture_defective_bars,
     "volta": fixture_volta,
+    "repeat_structure": fixture_repeat_structure,
+    "adjacent_endings": fixture_adjacent_endings,
     "harmonics_dense": fixture_harmonics_dense,
     "notation_only": fixture_notation_only,
 }

@@ -78,6 +78,42 @@ _FIXTURE_RELATIVE_PATHS = {
     # them (issue #116) - the residue nothing can split - so the disclosure
     # counter (coincident_unsplit_pairs) has a real score to be exercised on.
     "ronfaure": "Patreon/John Oeth/Final Fantasy/FF XI/Ronfaure (Final Fantasy XI).pdf",
+    # The phase-1 repeat-structure acceptance case (issue #134): a forward
+    # repeat, two endings (one closed with a hook, one left open), and the
+    # phantom-measure defect that used to shift its numbering from bar 9
+    # onward - the score the project's one human tester checked by hand.
+    "zelda_lullaby": (
+        "Patreon/John Oeth/The Legend of Zelda/"
+        "Zelda_s Lullaby (The Legend of Zelda Series).pdf"),
+    # The adversarial review's own acid test for issue #134's blocker 1
+    # (system-start volta anchoring): ending 1 opens and closes within a
+    # single bar, and ending 2 opens on the very next bar, which used to be
+    # rejected by the nearest_barline guard running before _anchor_mark ever
+    # got a chance to place it.
+    "lenna_theme": (
+        "Patreon/John Oeth/Final Fantasy/FF V/Lenna_s Theme (Final Fantasy V).pdf"),
+    # A "2." bracket with no matching "1." anywhere - genuinely, not from a
+    # dropped candidate: the only mark near where a "1." would be sits 1.93
+    # std-staff-spaces from the nearest barline, well outside every genuine
+    # bracket measured in the library, and is correctly rejected by the same
+    # discriminator that rejects a ledger line or a tuplet bracket. This is
+    # the one figure that is `endings_incomplete=1` and NOTHING else -
+    # repeats_unread, endings_unread, endings_truncated and
+    # form_marks_unanchored are all 0 - so it is the case that proves
+    # `structure` confidence actually reads `endings_incomplete` (issue #134
+    # adversarial review, blocker 2).
+    "victory_fanfare": (
+        "Patreon/John Oeth/Final Fantasy/FF VII/Victory Fanfare (Final Fantays VII).pdf"),
+    # Two thick strokes ("tHHt") with no repeat dots found anywhere nearby -
+    # neither resolved to a direction nor unread for want of a thick stroke,
+    # just two thick strokes and nothing beside them (issue #134 adversarial
+    # review, item 6). `_bar_style_for_shape` deliberately returns None for
+    # 2+ thick strokes (it expects the "both"-repeat branch to write
+    # heavy-heavy with its own direction attached), so before this fix the
+    # whole barline group - not just its repeat, its bar-style too - was
+    # dropped silently. The only real fixture in the library with this shape
+    # (2 instances, both on this one barline group's two measure sides).
+    "tarrega_estudio_em": "Classical/Tarrega/Tarrega-Estudio-Em-Werner.pdf",
 }
 
 # Skips for want of a library are COUNTED HERE as they happen, rather than
@@ -90,6 +126,21 @@ _library_skips = []
 
 def skip_without_library(reason: str):
     _library_skips.append(reason)
+    pytest.skip(reason)
+
+
+# Skips for want of `node` or the web project's installed alphaTab build get
+# the same treatment, for the same reason (issue #134 adversarial review,
+# item 7): a run with `web/node_modules` missing quietly skipped nine tests -
+# including the Zelda's Lullaby and playback-order headline cases - and
+# nothing said so unless a reader compared this run's summary against CI's by
+# hand. See test_tabextract._parse_with_alphatab /
+# _load_musicxml_with_alphatab, the two places that actually skip.
+_node_modules_skips = []
+
+
+def skip_without_node_modules(reason: str):
+    _node_modules_skips.append(reason)
     pytest.skip(reason)
 
 
@@ -125,25 +176,37 @@ def non_extractable_pdf() -> Path:
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    """Say out loud how much of the suite did not run for want of a library.
+    """Say out loud how much of the suite did not run for want of a library,
+    or for want of `web/node_modules`.
 
     Without this the only way to notice was to compare a CI log against a
     local run by hand, which is why 36 skipped extraction tests sat
-    unnoticed. A count that has to be read off the screen is not a
-    guarantee, but silence was not one either."""
+    unnoticed - and, separately, nine more that skip on missing
+    `web/node_modules` (issue #134 adversarial review, item 7) went
+    unannounced the same way. A count that has to be read off the screen is
+    not a guarantee, but silence was not one either."""
     if not _library_skips:
         if _library_root() is not None:
             terminalreporter.write_sep(
                 "=", "real-library tests all ran (FERMATA_TEST_LIBRARY is set)", green=True)
-        return
-    terminalreporter.write_sep(
-        "=",
-        f"{len(_library_skips)} test(s) skipped for want of a sheet music library - this "
-        "run did NOT exercise extraction against real engraved scores; set "
-        "FERMATA_TEST_LIBRARY to a library root to run them",
-        yellow=True,
-        bold=True,
-    )
+    else:
+        terminalreporter.write_sep(
+            "=",
+            f"{len(_library_skips)} test(s) skipped for want of a sheet music library - this "
+            "run did NOT exercise extraction against real engraved scores; set "
+            "FERMATA_TEST_LIBRARY to a library root to run them",
+            yellow=True,
+            bold=True,
+        )
+    if _node_modules_skips:
+        terminalreporter.write_sep(
+            "=",
+            f"{len(_node_modules_skips)} test(s) skipped for want of web/node_modules - this run "
+            "did NOT verify against the real alphaTab importer/player (parsing, MusicXML "
+            "loading, or playback order); run `npm ci` in web/ to run them",
+            yellow=True,
+            bold=True,
+        )
 
 
 def _library_root() -> Path | None:
@@ -254,6 +317,52 @@ def ronfaure_pdf() -> Path:
     if p is None:
         skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Ronfaure fixture)")
     return p
+
+
+@pytest.fixture
+def zelda_lullaby_pdf() -> Path:
+    p = _fixture_path("zelda_lullaby")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing Zelda's Lullaby fixture)")
+    return p
+
+
+@pytest.fixture
+def lenna_theme_pdf() -> Path:
+    p = _fixture_path("lenna_theme")
+    if p is None:
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Lenna's Theme fixture)")
+    return p
+
+
+@pytest.fixture
+def victory_fanfare_pdf() -> Path:
+    p = _fixture_path("victory_fanfare")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Victory Fanfare' fixture)")
+    return p
+
+
+@pytest.fixture
+def tarrega_estudio_em_pdf() -> Path:
+    p = _fixture_path("tarrega_estudio_em")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing Tarrega-Estudio-Em fixture)")
+    return p
+
+
+@pytest.fixture
+def library_root() -> Path:
+    """The whole configured library root, for tests that scan every PDF in
+    it rather than reading one named fixture - see issue #134's library-wide
+    conformance and repeat-structure checks."""
+    root = _library_root()
+    if root is None:
+        skip_without_library("FERMATA_TEST_LIBRARY not set")
+    return root
 
 
 @pytest.fixture

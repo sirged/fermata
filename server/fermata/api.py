@@ -1341,7 +1341,18 @@ def _transcription_row(conn, score_id: int):
 _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
              "bars_padded", "bars_unread", "notes_no_stem", "staves_no_stem",
              "dots_unassigned", "dots_unassigned_no_candidate",
-             "dots_unassigned_eliminated", "staves_dots_unassigned")
+             "dots_unassigned_eliminated", "staves_dots_unassigned",
+             # Repeat barlines and volta brackets read only partly, and so
+             # omitted from the emitted MusicXML (issue #134 Rule 15 / S5) -
+             # the same "recoverable from nothing else here" reasoning as
+             # notes_no_stem / dots_unassigned above. Producing these on
+             # ExtractionResult without adding them here was the recurring
+             # server-half-only defect by name (adversarial review, blocker
+             # 3): to_dict() is never called in server/, so the prose half
+             # of the disclosure reached a reader and the structured half
+             # reached nobody.
+             "repeats_unread", "endings_unread", "endings_truncated",
+             "form_marks_unanchored", "endings_incomplete")
 
 # WHICH bars those were, as data and not only inside the warning prose. The
 # prose names them, but it caps the list, and the profile document states that a
@@ -1357,7 +1368,13 @@ _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
 # resolved each way, but that field is not one this module stores or exposes
 # - only these bar-number lists carry the fact out to a consumer, and a bar
 # number is what a reader can carry back to the PDF.
-_BAR_LIST_KEYS = ("padded_bars", "unread_bars", "spacing_bars", "degraded_bars")
+_BAR_LIST_KEYS = ("padded_bars", "unread_bars", "spacing_bars", "degraded_bars",
+                   # WHICH bars carried a repeat/volta mark that could not be
+                   # read in full - the bar-number half of the repeats_unread
+                   # / endings_unread / endings_truncated / form_marks_unanchored
+                   # keys above.
+                   "repeats_unread_bars", "endings_unread_bars",
+                   "endings_truncated_bars", "form_marks_unanchored_bars")
 _BAR_AMOUNT_KEYS = ("inferred_rest_quarters",)
 
 
@@ -1557,6 +1574,15 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             "staves_dots_unassigned": result.staves_dots_unassigned,
             "spacing_bars": result.spacing_bars,
             "degraded_bars": result.degraded_bars,
+            "repeats_unread": result.repeats_unread,
+            "repeats_unread_bars": result.repeats_unread_bars,
+            "endings_unread": result.endings_unread,
+            "endings_unread_bars": result.endings_unread_bars,
+            "endings_truncated": result.endings_truncated,
+            "endings_truncated_bars": result.endings_truncated_bars,
+            "form_marks_unanchored": result.form_marks_unanchored,
+            "form_marks_unanchored_bars": result.form_marks_unanchored_bars,
+            "endings_incomplete": result.endings_incomplete,
             "time_signature": list(result.time_signature) if result.time_signature else None,
             "time_signature_source": result.time_signature_source,
             "key_fifths": result.key_fifths,

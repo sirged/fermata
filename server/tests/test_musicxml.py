@@ -626,6 +626,32 @@ def _emitted_samples():
                 ([[(2, 0, musicxml.inferred_rest()), (4, 0, [(1, 5)])],
                   [(4, 0, [(6, 0)]), (4, 0, [(6, 2)]), (4, 0, [(6, 3)])]], (3, 4)),
             ]),
+        # Rule 15: repeat barlines and volta brackets, as `<barline>` (see
+        # _append_barline / build's `barlines` param). Item 8 (issue #134
+        # adversarial review): the new elements never reached XSD validation
+        # before this sample existed, even though CI sets the schema -
+        # `bar-style`, `repeat` and `ending` (both "start"/"stop" AND
+        # "start"/"discontinue") all appear here, on the sequence order the
+        # schema requires (`ending` before `repeat`, one right barline
+        # carrying both).
+        "barlines": musicxml.build(
+            "Repeat Structure", None, DEFAULT_TUNING, (4, 4), [
+                [[(4, 0, [(1, 0)]), (4, 0, [(1, 2)]), (4, 0, [(1, 3)]), (4, 0, [(1, 5)])]],
+                [[(4, 0, [(2, 0)]), (4, 0, [(2, 2)]), (4, 0, [(2, 3)]), (4, 0, [(2, 5)])]],
+                [[(4, 0, [(3, 0)]), (4, 0, [(3, 2)]), (4, 0, [(3, 3)]), (4, 0, [(3, 5)])]],
+            ], barlines={
+                1: {"left": {"bar_style": "heavy-light", "repeat": "forward"}},
+                2: {
+                    "left": {"ending_number": "1", "ending_type": "start"},
+                    "right": {"bar_style": "light-heavy", "ending_number": "1",
+                              "ending_type": "stop", "repeat": "backward"},
+                },
+                3: {
+                    "left": {"ending_number": "2", "ending_type": "start"},
+                    "right": {"bar_style": "light-heavy", "ending_number": "2",
+                              "ending_type": "discontinue"},
+                },
+            }),
     }
 
 
@@ -696,7 +722,8 @@ def test_the_published_examples_exist_and_conform():
     rules the document states - an example that drifts out of conformance is
     worse than no example."""
     paths = _example_paths()
-    assert [p.name for p in paths] == ["monophonic.musicxml", "two-voice.musicxml"]
+    assert [p.name for p in paths] == [
+        "monophonic.musicxml", "repeat-structure.musicxml", "two-voice.musicxml"]
     for path in paths:
         root = ET.parse(path).getroot()
         assert root.tag == "score-partwise"
