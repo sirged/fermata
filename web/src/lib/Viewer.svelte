@@ -111,21 +111,25 @@
 
   function onKey(e) {
     const tag = e.target?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
     if (e.ctrlKey || e.metaKey || e.altKey) return; // don't hijack Ctrl+F / Cmd+F
     if (e.repeat) return; // OS key auto-repeat must not spam toggleGigMode
-    if (e.key === "f" || e.key === "F") {
-      e.preventDefault();
-      toggleGigMode();
-    } else if (e.key === "Escape") {
-      // #92: Esc closes whatever is open, checked in the order a player
-      // would actually be looking at it - gig mode is the most likely thing
-      // to be open (it is the one this handler already knew how to close),
-      // then the two overlays this header can have open at once, tag
-      // editing and the just-logged session's detail panel. Only ever one
-      // of these closes per press: dismissing the tag editor while the
-      // detail panel is ALSO open would take both away in one keystroke,
-      // which is not "close whatever is open" (singular) any more.
+    // #92: Esc closes whatever is open - checked BEFORE the typing guard
+    // below, deliberately, and the one shortcut in this file exempt from it.
+    // The guard exists to stop a stray CHARACTER landing in a field
+    // somebody is typing into (see TabViewer's own onKey for the shortcuts
+    // that actually risk that); Escape inserts nothing, and the most likely
+    // place a player presses it is FROM INSIDE the very field it should
+    // close - typing a tag, deciding against it, and hitting Esc without
+    // first clicking away. Checked in the order a player would actually be
+    // looking at it: gig mode is the most likely thing to be open (it is the
+    // one this handler already knew how to close), then the two overlays
+    // this header can have open at once, tag editing and the just-logged
+    // session's detail panel. Only ever one of these closes per press:
+    // dismissing the tag editor while the detail panel is ALSO open would
+    // take both away in one keystroke, which is not "close whatever is
+    // open" (singular) any more.
+    if (e.key === "Escape") {
       if (gigMode) {
         e.preventDefault();
         exitGigMode();
@@ -136,6 +140,12 @@
         e.preventDefault();
         dismissDetail();
       }
+      return;
+    }
+    if (typing) return;
+    if (e.key === "f" || e.key === "F") {
+      e.preventDefault();
+      toggleGigMode();
     }
   }
 
