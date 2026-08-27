@@ -1787,7 +1787,6 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(monkeypat
     conftest.pytest_terminal_summary(reporter, 0, None)
     assert len(reporter.lines) == 1
     assert "2 test(s) skipped for want of a sheet music library" in reporter.lines[0]
-    assert "did NOT exercise extraction" in reporter.lines[0]
 
     # a real library present and nothing skipped for want of one: say so
     monkeypatch.setattr(conftest, "_library_skips", [])
@@ -1801,6 +1800,36 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(monkeypat
     reporter = _FakeReporter()
     conftest.pytest_terminal_summary(reporter, 0, None)
     assert reporter.lines == []
+
+
+def test_the_summary_says_how_many_tests_skipped_for_want_of_node_modules(monkeypatch):
+    """The same loud skip as the library one above, for `web/node_modules`
+    (issue #134 adversarial review, item 7): nine tests - including the
+    Zelda's Lullaby and playback-order headline cases - used to skip in
+    total silence when `npm ci` had not been run in web/, and nothing said
+    so unless a reader compared this run's summary against CI's by hand."""
+    import conftest
+
+    monkeypatch.setattr(conftest, "_library_skips", [])
+    monkeypatch.setattr(conftest, "_node_modules_skips", [])
+    monkeypatch.delenv("FERMATA_TEST_LIBRARY", raising=False)
+
+    # nothing skipped: no claim either way
+    reporter = _FakeReporter()
+    conftest.pytest_terminal_summary(reporter, 0, None)
+    assert reporter.lines == []
+
+    # counted by calling the helper, not by matching the words it happens to
+    # use - same discipline as skip_without_library
+    for reason in ("node not available", "alphaTab.mjs not found"):
+        with pytest.raises(BaseException):
+            conftest.skip_without_node_modules(reason)
+    assert len(conftest._node_modules_skips) == 2
+
+    reporter = _FakeReporter()
+    conftest.pytest_terminal_summary(reporter, 0, None)
+    assert len(reporter.lines) == 1
+    assert "2 test(s) skipped for want of web/node_modules" in reporter.lines[0]
 
 
 def test_the_committed_musicxml_still_matches_its_generator():

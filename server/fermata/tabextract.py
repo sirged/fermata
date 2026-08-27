@@ -748,8 +748,10 @@ def _detect_barlines(segs, staff, page=None):
 
     `page` is optional: a caller that only wants boundary positions (the
     meter timeline, callers that pre-date repeat reading) can leave it out and
-    every record comes back with shape "t" and repeat None. Passing it is
-    what enables the dot search - see _read_repeat_dots.
+    every record comes back with `repeat` None and `repeat_unread` False -
+    `shape` is read from stroke widths alone and does not depend on `page` at
+    all, so it can still hold "H". Passing `page` is what enables the dot
+    search - see _read_repeat_dots.
     """
     xs = []
     span = staff.bottom - staff.top
@@ -780,11 +782,28 @@ def _detect_barlines(segs, staff, page=None):
         shape = "".join("H" if w >= BARLINE_THICK_MIN_PT else "t" for _x, w in group)
         repeat = None
         repeat_unread = False
-        if page is not None and "H" in shape:
+        if page is not None:
+            # Searched regardless of `shape` - NOT gated on "H" in shape.
+            # `width` is missing (substituted 0.0, see _vertical_segments)
+            # for 34 strokes across the library, which reads a genuinely
+            # thick stroke as thin; a group that should carry an "H" but
+            # doesn't still sits beside its own repeat dots, and gating the
+            # search on the very shape the width bug corrupted silently
+            # dropped the repeat with no disclosure at all (issue #134 S5).
             repeat, found_any = _read_repeat_dots(
                 page, staff, group_x0, group_x1, len(group))
             if repeat is None and found_any:
                 repeat_unread = True
+        if repeat is None and not repeat_unread and shape.count("H") >= 2:
+            # Two or more thick strokes with no direction resolved at all -
+            # whether because no dot-shaped glyph was found nearby, or
+            # because what was found didn't form a clean pair. Either way
+            # this is the back-to-back-repeat SHAPE with no readable
+            # direction, and it used to be dropped from `barline_recs`'
+            # onward handling with no bar-style and no warning (see
+            # _apply_repeat_marks, which now writes heavy-heavy for this
+            # case explicitly rather than nothing at all).
+            repeat_unread = True
         barlines.append(_Barline(boundary_x, shape, repeat, repeat_unread,
                                   edges=(group_x0, group_x1)))
     return barlines
@@ -803,24 +822,56 @@ def _bar_style_for_shape(shape):
     return "heavy-light" if shape[0] == "H" else "light-heavy"
 
 
-def _anchor_mark(x, bounds, lo, hi):
+# How close, in the ANCHORING staff's own spaces (the staff `bounds` was
+# built from - always the tab staff, see _anchor_mark's callers), an x has to
+# land to one of this staff's own detected bar boundaries to count as
+# anchored to it AT ALL (case 1 of _anchor_mark below), rather than falling
+# through to the disclosed "no boundary here" case 4.
+#
+# `bounds` records only the LEFTMOST stroke of each barline group (see
+# _detect_barlines: which stroke survives makes no difference to any
+# bar/beat/note/conformance figure) - but a volta bracket's hook is drawn
+# against whichever physical stroke the engraver actually used, which for a
+# group closing WITH a repeat is that group's own THICK stroke, not
+# necessarily the leftmost one (see _Barline.edges / _associate_voltas). A
+# repeat pair's thin-to-thick gap is measured at 3.6-4.0pt in the library
+# (BARLINE_STROKE_MERGE_SPACES) - up to 0.69 tab-staff-spaces measured
+# directly on Zelda's Lullaby ending 2, whose left hook abuts a repeat's
+# thick stroke 5.28pt from the group's registered (leftmost) x - so a
+# tolerance anywhere near VOLTA_ANCHOR_SPACES (0.5) would reject a bracket
+# that IS correctly anchored. 1.5 spaces comfortably clears every group width
+# measured (including the 17 compound multi-stroke groups whose total span
+# exceeds one merge hop) while staying well inside the empty band no genuine
+# inter-measure gap ever falls under (>= 2.274 tab-staff-spaces) - so it
+# cannot make two adjacent boundaries ambiguous with each other. A repeat
+# mark's own x is always an exact match (0 distance) regardless of this
+# value, so it never rejects one; case 4 was dead code before this test
+# existed at all - every real x fell into case 1, 2 or 3 regardless of how
+# far from a boundary it was.
+ANCHOR_MARK_SNAP_SPACES = 1.5
+
+
+def _anchor_mark(x, bounds, lo, hi, spacing):
     """Which LOCAL (0-based, staff-relative) bar's right and/or left barline
     an x position belongs to, per issue #134 S3.2's total rule over this
     staff's 513-mark sample:
 
-    1. if x sits at one of this staff's own bar boundaries (it will, exactly,
-       whenever lo <= x <= hi - `bounds` is built from the same detection
-       pass), it is the right barline of the bar before it and the left
-       barline of the bar after;
+    1. if x sits at one of this staff's own bar boundaries - within
+       ANCHOR_MARK_SNAP_SPACES of the nearest one, whenever lo <= x <= hi -
+       it is the right barline of the bar before it and the left barline of
+       the bar after. A repeat mark's own x is always an exact member of
+       `bounds` (built from the same detection pass), so this never rejects
+       one; a volta bracket's left hook is not, which is exactly what the
+       proximity test is for;
     2. otherwise, if x is left of the first fret column, it is the LEFT
        barline of this staff's first bar - the clef/meter region the
        fret-column filter carved out of `bounds` ate the boundary that would
        otherwise be there;
     3. otherwise, if x is right of the last fret column, it is the RIGHT
        barline of this staff's last bar;
-    4. otherwise there is no boundary to anchor to at all - not one mark in
-       the library takes this branch, so a caller reaching it should
-       disclose rather than guess.
+    4. otherwise there is no boundary to anchor to at all: x sits inside
+       [lo, hi] but farther than the snap tolerance from any boundary in
+       `bounds` - a caller reaching this should disclose rather than guess.
 
     Returns (right_of_local_bar, left_of_local_bar); either may be None where
     that side does not apply (the very first/last boundary of the staff).
@@ -828,12 +879,13 @@ def _anchor_mark(x, bounds, lo, hi):
     n_bars = len(bounds) - 1
     if lo <= x <= hi:
         i = min(range(len(bounds)), key=lambda k: abs(bounds[k] - x))
-        right_of = i - 1 if i > 0 else None
-        left_of = i if i < n_bars else None
-        return right_of, left_of
-    if x < lo:
+        if abs(bounds[i] - x) <= spacing * ANCHOR_MARK_SNAP_SPACES:
+            right_of = i - 1 if i > 0 else None
+            left_of = i if i < n_bars else None
+            return right_of, left_of
+    elif x < lo:
         return None, 0
-    if x > hi:
+    elif x > hi:
         return n_bars - 1, None
     return None, None
 
@@ -855,14 +907,15 @@ def _add_form_mark(form_marks, measure, location, bar_style=None, repeat=None,
         rec["ending_type"] = ending_type
 
 
-def _apply_repeat_marks(barline_recs, bounds, lo, hi, staff_first_bar, form_marks):
+def _apply_repeat_marks(barline_recs, bounds, lo, hi, staff_first_bar, form_marks, spacing):
     """Turn this staff's repeat/bar-style records into form_marks entries
     (see _add_form_mark), keyed by DOCUMENT-level measure number.
 
     Returns (repeats_unread_bars, form_marks_unanchored_bars) - document-level
     bar numbers for the two failure modes issue #134 S5 names: a dot pair
-    found but not resolved to a clean direction, and a mark with no boundary
-    to anchor to at all.
+    found but not resolved to a clean direction (or two-or-more thick strokes
+    with no direction resolved at all - see _detect_barlines), and a mark
+    with no boundary to anchor to at all.
     """
     repeats_unread_bars = []
     unanchored_bars = []
@@ -870,13 +923,30 @@ def _apply_repeat_marks(barline_recs, bounds, lo, hi, staff_first_bar, form_mark
         bar_style = _bar_style_for_shape(bl.shape)
         if bl.repeat is None and bar_style is None and not bl.repeat_unread:
             continue
-        right_of, left_of = _anchor_mark(bl.x, bounds, lo, hi)
+        right_of, left_of = _anchor_mark(bl.x, bounds, lo, hi, spacing)
         if right_of is None and left_of is None:
             unanchored_bars.append(staff_first_bar + max(len(bounds) - 2, 0))
             continue
         if bl.repeat_unread:
             local = right_of if right_of is not None else left_of
             repeats_unread_bars.append(staff_first_bar + local)
+            # The bar-style for the strokes actually seen is still written -
+            # only the repeat direction is dropped (issue #134 S5). Two or
+            # more thick strokes with no direction resolved is the
+            # back-to-back-repeat SHAPE with none of its meaning read, so it
+            # is written as heavy-heavy rather than as nothing at all -
+            # `_bar_style_for_shape` deliberately returns None for that shape
+            # (it expects the "both" branch below to write heavy-heavy with
+            # its direction attached), so this is the one place that has to
+            # override it explicitly.
+            unread_style = "heavy-heavy" if bl.shape.count("H") >= 2 else bar_style
+            if unread_style is not None:
+                if right_of is not None:
+                    _add_form_mark(form_marks, staff_first_bar + right_of, "right",
+                                    bar_style=unread_style)
+                if left_of is not None:
+                    _add_form_mark(form_marks, staff_first_bar + left_of, "left",
+                                    bar_style=unread_style)
             continue
         if bl.repeat == "both":
             if right_of is not None:
@@ -1122,20 +1192,35 @@ def _read_volta_brackets(page, band_top, spacing):
     return brackets, hooks
 
 
-def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first_bar, spacing):
-    """This system's volta brackets, split into (endings, unread_bars):
-    endings is a list of (first_doc_bar, last_doc_bar, number, ending_type,
-    truncated), unread_bars is document-level bar numbers for a bracket whose
-    left hook lands on a barline but whose number could not be read (dropped
-    rather than guessed - issue #134 S5).
+def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first_bar, spacing,
+                       bar_spacing):
+    """This system's volta brackets, split into (endings, unread_bars,
+    unanchored_bars): endings is a list of (first_doc_bar, last_doc_bar,
+    number, ending_type, truncated); unread_bars is document-level bar
+    numbers for a bracket whose left hook lands on a barline but whose
+    number could not be read (dropped rather than guessed - issue #134 S5);
+    unanchored_bars is document-level bar numbers for a bracket _anchor_mark
+    could not place against any bar boundary at all (its case 4).
 
     The first bar comes from the same anchoring rule a repeat mark uses (see
-    _anchor_mark) applied to the bracket's own left hook. The last bar comes,
-    in order: (1) the bar whose right barline carries a backward repeat at or
-    after the first bar - authoritative; (2) failing that, the bracket's own
-    drawn right end snapped to a boundary within VOLTA_ANCHOR_SPACES; (3)
-    failing both, the first bar alone, disclosed as truncated (issue #134
-    S3.2).
+    _anchor_mark) applied to the bracket's own left hook - INCLUDING its
+    case 2/3, a system-start/end bracket whose left end sits past the
+    clef/key signature (or past the last note), with no real barline at its
+    x at all because the fret-column filter carved that region's boundary
+    out of `bounds`. That is 37% of the library's numbered brackets (issue
+    #134 S3.2) and is not an edge case to guard against - it is the normal
+    shape of a bracket that opens a system. The last bar comes, in order:
+    (1) the bar whose right barline carries a backward repeat at or after
+    the first bar - authoritative; (2) failing that, the bracket's own drawn
+    right end snapped to a boundary within VOLTA_ANCHOR_SPACES; (3) failing
+    both, the first bar alone, disclosed as truncated (issue #134 S3.2).
+
+    `spacing` is the NOTATION staff's own spacing, used for the bracket's own
+    geometry - see _read_volta_brackets. `bar_spacing` is the TAB staff's,
+    the staff `bounds`/`lo`/`hi`/`barline_recs` were built from - passed
+    through to _anchor_mark, whose proximity test is keyed to the staff its
+    `bounds` came from, not the staff the bracket was drawn against (see
+    ANCHOR_MARK_SNAP_SPACES).
     """
     def _dist_to_group(x, bl):
         e0, e1 = bl.edges
@@ -1145,19 +1230,46 @@ def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first
 
     endings = []
     unread_bars = []
+    unanchored_bars = []
     n_bars = len(bounds) - 1
     for left_x, right_x, line_y, number in brackets:
-        # The discriminator that rejects a ledger line or a tuplet bracket,
-        # which pass the height/hook/number tests: the left end has to land
-        # ON A BARLINE, not merely somewhere plausible. Measured against the
-        # whole group's edges, not just its boundary x: a hook drawn against
-        # a repeat's own thick stroke can sit several points from the
-        # leftmost (kept) stroke - see _Barline.edges.
-        nearest_barline = min(
-            (_dist_to_group(left_x, bl) for bl in barline_recs), default=float("inf"))
-        if nearest_barline > spacing * VOLTA_ANCHOR_SPACES:
+        right_of, left_of = _anchor_mark(left_x, bounds, lo, hi, bar_spacing)
+        if right_of is None and left_of is None:
+            # _anchor_mark's own case 4 (issue #134 S3.2/S5) - genuinely no
+            # bar boundary anywhere near this bracket's left end, as opposed
+            # to the nearest_barline rejection below (a real boundary
+            # nearby, just not one this bracket's hook actually lands on).
+            # Only disclosed for a NUMBERED bracket: `brackets` also holds
+            # every unnumbered height/hook-shaped candidate this staff's
+            # system carried (ties, slurs, hairpins that happen to pass
+            # those two tests), most of which were never volta candidates at
+            # all and were always going to land nowhere near a barline -
+            # disclosing every one of those as an unanchored FORM MARK would
+            # be noise, not a finding. A number is what makes a bracket look
+            # like an actual attempt at a volta in the first place.
+            if number is not None:
+                unanchored_bars.append(staff_first_bar + max(n_bars - 1, 0))
             continue
-        right_of, left_of = _anchor_mark(left_x, bounds, lo, hi)
+        if lo <= left_x <= hi:
+            # The discriminator that rejects a ledger line or a tuplet
+            # bracket, which pass the height/hook/number tests: the left end
+            # has to land ON A BARLINE, not merely somewhere plausible.
+            # Measured against the whole group's edges, not just its
+            # boundary x: a hook drawn against a repeat's own thick stroke
+            # can sit several points from the leftmost (kept) stroke - see
+            # _Barline.edges. This only applies when _anchor_mark resolved
+            # the bracket against one of THIS STAFF'S OWN detected
+            # boundaries (case 1, lo <= left_x <= hi) - a bracket anchored
+            # to the system start/end (case 2/3) has no real barline at its
+            # x by construction, the clef/key signature region ate it, so
+            # there is nothing here to measure against. Running this guard
+            # before _anchor_mark used to reject every case-2/3 bracket
+            # before the anchoring that exists precisely for them was ever
+            # reached (issue #134 adversarial review, blocker 1).
+            nearest_barline = min(
+                (_dist_to_group(left_x, bl) for bl in barline_recs), default=float("inf"))
+            if nearest_barline > spacing * VOLTA_ANCHOR_SPACES:
+                continue
         first_local = left_of if left_of is not None else (
             right_of + 1 if right_of is not None else None)
         if first_local is None or first_local >= n_bars:
@@ -1170,7 +1282,7 @@ def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first
         for bl in barline_recs:
             if bl.repeat not in ("backward", "both"):
                 continue
-            r_of, _l_of = _anchor_mark(bl.x, bounds, lo, hi)
+            r_of, _l_of = _anchor_mark(bl.x, bounds, lo, hi, bar_spacing)
             if r_of is not None and r_of >= first_local:
                 if last_local is None or r_of < last_local:
                     last_local = r_of
@@ -1203,7 +1315,7 @@ def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first
 
         endings.append((staff_first_bar + first_local, staff_first_bar + last_local,
                          number, "stop" if has_right_hook else "discontinue", truncated))
-    return endings, unread_bars
+    return endings, unread_bars, unanchored_bars
 
 
 # ---------------------------------------------------------------------------
@@ -3716,7 +3828,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             # (issue #134 phase 1). Form marks carry no duration and never
             # touch `all_measures` above - see the `form_marks` comment.
             staff_repeats_unread, staff_unanchored = _apply_repeat_marks(
-                barline_recs, bounds, lo, hi, staff_first_bar, form_marks)
+                barline_recs, bounds, lo, hi, staff_first_bar, form_marks, staff.spacing)
             repeats_unread_bars.extend(staff_repeats_unread)
             form_marks_unanchored_bars.extend(staff_unanchored)
 
@@ -3735,10 +3847,11 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                 # because 2.5 TAB-staff-spaces is a taller absolute distance.
                 brackets, volta_hooks = _read_volta_brackets(
                     page, std_staff.top, std_staff.spacing)
-                endings, unread = _associate_voltas(
+                endings, unread, volta_unanchored = _associate_voltas(
                     brackets, volta_hooks, barline_recs, bounds, lo, hi, staff_first_bar,
-                    std_staff.spacing)
+                    std_staff.spacing, staff.spacing)
                 endings_unread_bars.extend(unread)
+                form_marks_unanchored_bars.extend(volta_unanchored)
                 for first_bar, last_bar, number, ending_type, truncated in endings:
                     ending_numbers_seen.add(number)
                     _add_form_mark(form_marks, first_bar, "left", ending_number=number,
@@ -3914,7 +4027,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     # durations were read, and folding it into `rhythm` would make that
     # figure mean two different things (issue #134 Rule 15).
     structure_issues = (len(repeats_unread_bars) + len(endings_unread_bars)
-                         + len(endings_truncated_bars) + len(form_marks_unanchored_bars))
+                         + len(endings_truncated_bars) + len(form_marks_unanchored_bars)
+                         + endings_incomplete)
     if not form_marks and not structure_issues:
         structure_confidence = (
             "n/a - no repeat barlines or volta brackets were found on this score"

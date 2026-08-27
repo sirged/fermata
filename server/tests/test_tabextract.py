@@ -13,6 +13,8 @@ from fermata import glyph_rhythm
 from fermata import musicxml
 from fermata import tabextract
 
+from conftest import skip_without_node_modules
+
 
 def emitted_meters(musicxml_text):
     """The meter in force in each measure of emitted MusicXML - read out of
@@ -42,11 +44,11 @@ def _parse_with_alphatab(tex: str) -> dict:
     the production server's own runtime image.
     """
     if shutil.which("node") is None:
-        pytest.skip("node not available")
+        skip_without_node_modules("node not available")
     repo_root = Path(__file__).resolve().parents[2]
     alphatab = repo_root / "web" / "node_modules" / "@coderline" / "alphatab" / "dist" / "alphaTab.mjs"
     if not alphatab.is_file():
-        pytest.skip("alphaTab.mjs not found - run `npm ci` in web/ first")
+        skip_without_node_modules("alphaTab.mjs not found - run `npm ci` in web/ first")
     script = Path(__file__).resolve().parents[1] / "tools" / "tab_extract" / "verify_tex.mjs"
 
     with tempfile.NamedTemporaryFile("w", suffix=".tex", delete=False, encoding="utf-8") as f:
@@ -84,11 +86,11 @@ def _load_musicxml_with_alphatab(xml: str, onsets: bool = False, repeats: bool =
     merely parses right (issue #134 S4.2 / docs Rule 15).
     """
     if shutil.which("node") is None:
-        pytest.skip("node not available")
+        skip_without_node_modules("node not available")
     repo_root = Path(__file__).resolve().parents[2]
     alphatab = repo_root / "web" / "node_modules" / "@coderline" / "alphatab" / "dist" / "alphaTab.mjs"
     if not alphatab.is_file():
-        pytest.skip("alphaTab.mjs not found - run `npm ci` in web/ first")
+        skip_without_node_modules("alphaTab.mjs not found - run `npm ci` in web/ first")
     script = Path(__file__).resolve().parents[1] / "tools" / "tab_extract" / "verify_musicxml.mjs"
 
     with tempfile.NamedTemporaryFile("w", suffix=".musicxml", delete=False,

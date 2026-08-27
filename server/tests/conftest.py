@@ -85,6 +85,13 @@ _FIXTURE_RELATIVE_PATHS = {
     "zelda_lullaby": (
         "Patreon/John Oeth/The Legend of Zelda/"
         "Zelda_s Lullaby (The Legend of Zelda Series).pdf"),
+    # The adversarial review's own acid test for issue #134's blocker 1
+    # (system-start volta anchoring): ending 1 opens and closes within a
+    # single bar, and ending 2 opens on the very next bar, which used to be
+    # rejected by the nearest_barline guard running before _anchor_mark ever
+    # got a chance to place it.
+    "lenna_theme": (
+        "Patreon/John Oeth/Final Fantasy/FF V/Lenna_s Theme (Final Fantasy V).pdf"),
 }
 
 # Skips for want of a library are COUNTED HERE as they happen, rather than
@@ -97,6 +104,21 @@ _library_skips = []
 
 def skip_without_library(reason: str):
     _library_skips.append(reason)
+    pytest.skip(reason)
+
+
+# Skips for want of `node` or the web project's installed alphaTab build get
+# the same treatment, for the same reason (issue #134 adversarial review,
+# item 7): a run with `web/node_modules` missing quietly skipped nine tests -
+# including the Zelda's Lullaby and playback-order headline cases - and
+# nothing said so unless a reader compared this run's summary against CI's by
+# hand. See test_tabextract._parse_with_alphatab /
+# _load_musicxml_with_alphatab, the two places that actually skip.
+_node_modules_skips = []
+
+
+def skip_without_node_modules(reason: str):
+    _node_modules_skips.append(reason)
     pytest.skip(reason)
 
 
@@ -132,25 +154,37 @@ def non_extractable_pdf() -> Path:
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    """Say out loud how much of the suite did not run for want of a library.
+    """Say out loud how much of the suite did not run for want of a library,
+    or for want of `web/node_modules`.
 
     Without this the only way to notice was to compare a CI log against a
     local run by hand, which is why 36 skipped extraction tests sat
-    unnoticed. A count that has to be read off the screen is not a
-    guarantee, but silence was not one either."""
+    unnoticed - and, separately, nine more that skip on missing
+    `web/node_modules` (issue #134 adversarial review, item 7) went
+    unannounced the same way. A count that has to be read off the screen is
+    not a guarantee, but silence was not one either."""
     if not _library_skips:
         if _library_root() is not None:
             terminalreporter.write_sep(
                 "=", "real-library tests all ran (FERMATA_TEST_LIBRARY is set)", green=True)
-        return
-    terminalreporter.write_sep(
-        "=",
-        f"{len(_library_skips)} test(s) skipped for want of a sheet music library - this "
-        "run did NOT exercise extraction against real engraved scores; set "
-        "FERMATA_TEST_LIBRARY to a library root to run them",
-        yellow=True,
-        bold=True,
-    )
+    else:
+        terminalreporter.write_sep(
+            "=",
+            f"{len(_library_skips)} test(s) skipped for want of a sheet music library - this "
+            "run did NOT exercise extraction against real engraved scores; set "
+            "FERMATA_TEST_LIBRARY to a library root to run them",
+            yellow=True,
+            bold=True,
+        )
+    if _node_modules_skips:
+        terminalreporter.write_sep(
+            "=",
+            f"{len(_node_modules_skips)} test(s) skipped for want of web/node_modules - this run "
+            "did NOT verify against the real alphaTab importer/player (parsing, MusicXML "
+            "loading, or playback order); run `npm ci` in web/ to run them",
+            yellow=True,
+            bold=True,
+        )
 
 
 def _library_root() -> Path | None:
@@ -269,6 +303,14 @@ def zelda_lullaby_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing Zelda's Lullaby fixture)")
+    return p
+
+
+@pytest.fixture
+def lenna_theme_pdf() -> Path:
+    p = _fixture_path("lenna_theme")
+    if p is None:
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Lenna's Theme fixture)")
     return p
 
 
