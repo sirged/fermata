@@ -46,10 +46,14 @@
     // toggle playback here and turn the page there - exactly the "does the
     // shortcut set stay sane" question #92 asks about gig mode, where a
     // pedal sends nothing but arrow keys. ScoreCompare passes this only
-    // `true` while its staff pane is the one actually on screen (never in
-    // "side" layout, where two panes are visible at once and no single key
-    // press can unambiguously mean one of them - see the comment on
-    // `activeLayout` there).
+    // `true` while its staff pane is the one actually on screen - NOT in
+    // "side" layout (two panes visible at once), which is deliberately left
+    // to the PDF pane's own page-turn keys instead: those predate #92 (issue
+    // #106's own gig-mode-pedal reasoning) and "side" is the default the
+    // moment a score has a transcription at all, so ceding it here is what
+    // keeps arrow keys turning pages in side-by-side the way they always
+    // have on main - see the comment on PdfViewer's `active` prop in
+    // ScoreCompare for the other half of this.
     active = true,
   } = $props();
 

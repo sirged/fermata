@@ -29,8 +29,36 @@
 // tests/minimum-tests.js for how these were checked against a mutation of
 // the behaviour they claim.
 import { expect, test } from "@playwright/test";
-import { stubMetronomeScore } from "./fixtures/metronome-score.js";
-import { CLEAN_CONFIDENCE, stubScoreApi, transcriptionResponse } from "./fixtures/transcription-warnings.js";
+import { stubMetronomeScore, stubMetronomeScoreRepeat } from "./fixtures/metronome-score.js";
+import { CLEAN_CONFIDENCE, MIN_PDF, SCORE, stubScoreApi, transcriptionResponse } from "./fixtures/transcription-warnings.js";
+
+/**
+ * A minimal, valid multi-page PDF, built (not hand-copied like
+ * transcription-warnings.js's own single-page MIN_PDF) so its byte offsets
+ * are always correct for however many pages are asked for. Needed only
+ * here, for the side-layout page-turn spec below - MIN_PDF has exactly one
+ * page, which cannot demonstrate a page actually turning.
+ */
+function buildMultiPagePdf(pageCount) {
+  const objects = ["1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"];
+  const kids = Array.from({ length: pageCount }, (_, i) => `${3 + i} 0 R`).join(" ");
+  objects.push(`2 0 obj<</Type/Pages/Kids[${kids}]/Count ${pageCount}>>endobj\n`);
+  for (let i = 0; i < pageCount; i++) {
+    objects.push(`${3 + i} 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\n`);
+  }
+  let body = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const obj of objects) {
+    offsets.push(body.length);
+    body += obj;
+  }
+  const xrefStart = body.length;
+  const total = objects.length + 1;
+  let xref = `xref\n0 ${total}\n0000000000 65535 f \n`;
+  for (let i = 1; i < total; i++) xref += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  body += xref + `trailer<</Size ${total}/Root 1 0 R>>\nstartxref\n${xrefStart}\n%%EOF`;
+  return Buffer.from(body, "utf-8");
+}
 
 const host = (page) => page.locator(".at-host");
 const playButton = (page) => page.locator(".player button.primary");
@@ -300,20 +328,16 @@ test.describe("the focus guard", () => {
   });
 });
 
-// ------------------------------------- gig-mode sanity: ScoreCompare panes
+// ------------------------------ single-pane desktop layouts: ScoreCompare
 
-// #92 asks specifically whether the shortcut set stays sane in gig mode,
-// where a pedal sends nothing but arrow keys and the reference this issue
-// points at (the PDF reader) already turns pages on them for exactly that
-// reason. ScoreCompare mounts a PdfViewer and a TabViewer AT THE SAME TIME
-// and only hides whichever pane is not on screen with CSS (see its own
-// snippets) - it never unmounts either - so without the `active` prop both
-// added to PdfViewer.svelte and TabViewer.svelte, a single Space press on
-// the PDF pane would ALSO have toggled the hidden staff pane's playback, and
-// vice versa. Gig mode itself only ever shows one pane (see
-// ScoreCompare.svelte's own `activeLayout`), so this checks the two
-// single-pane desktop layouts directly - the case that actually exercises
-// which viewer answers the keyboard.
+// ScoreCompare mounts a PdfViewer and a TabViewer AT THE SAME TIME and only
+// hides whichever pane is not on screen with CSS (see its own snippets) - it
+// never unmounts either - so without the `active` prop both added to
+// PdfViewer.svelte and TabViewer.svelte, a single Space press on the PDF
+// pane would ALSO have toggled the hidden staff pane's playback, and vice
+// versa. NEITHER of these two tests puts the app in gig mode - see the
+// "gig mode itself" suite below for that; these are the two single-pane
+// DESKTOP layouts, which is what `active` actually keys off.
 test.describe("keyboard shortcuts stay scoped to the visible pane in ScoreCompare", () => {
   test.beforeEach(async ({ page }) => {
     await stubScoreApi(page, transcriptionResponse({ warnings: [], confidence: CLEAN_CONFIDENCE }));
@@ -340,6 +364,89 @@ test.describe("keyboard shortcuts stay scoped to the visible pane in ScoreCompar
     await page.evaluate(() => document.activeElement?.blur());
     await page.keyboard.press(" ");
     await expect(playButton(page)).toHaveText(/Pause/);
+    await page.keyboard.press(" "); // left as found
+  });
+});
+
+// ------------------------------------------------------ side-by-side layout
+
+// "side" is the DEFAULT layout the instant a score has a transcription (see
+// ScoreCompare's own `layout` initial value) and it is where main already
+// turns PDF pages on Space/arrow keys - regression-tested here because
+// nothing in the original suite exercised this layout's keyboard at all,
+// which is exactly how the regression shipped green: `active` on the PDF
+// pane was written as `activeLayout === "pdf"`, silently OFF the moment
+// "side" - the common case - was showing.
+test.describe("side-by-side layout: PDF page-turning keeps its keys", () => {
+  test.beforeEach(async ({ page }) => {
+    await stubScoreApi(page, transcriptionResponse({ warnings: [], confidence: CLEAN_CONFIDENCE }));
+    // Overrides the /file route stubScoreApi just registered with a real
+    // 2-page PDF - Playwright tries the most-recently-registered matching
+    // route first, so this one wins. MIN_PDF (what stubScoreApi uses) has
+    // exactly one page and cannot demonstrate a page actually turning.
+    await page.route("**/api/scores/1/file", (route) =>
+      route.fulfill({ body: buildMultiPagePdf(2), contentType: "application/pdf" }),
+    );
+    await page.goto("/#/score/1");
+    await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+    // "side" is the default already (score.has_transcription is true in
+    // SCORE), asserted rather than assumed so a future default change fails
+    // here loudly instead of this spec silently testing the wrong layout.
+    await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveClass(/on/);
+  });
+
+  test("ArrowRight turns the PDF page", async ({ page }) => {
+    await expect(page.locator(".hud span")).toHaveText("1 / 2");
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator(".hud span")).toHaveText("2 / 2");
+  });
+
+  test("Space does not also toggle the staff pane's playback", async ({ page }) => {
+    await page.keyboard.press(" ");
+    await page.waitForTimeout(300);
+    await expect(playButton(page)).toHaveText(/Play/);
+  });
+});
+
+// ------------------------------------------------------------- gig mode
+
+// Gig mode is the pedal-driven mode #92 itself points to as the reason this
+// all has to stay unambiguous - a pedal sends nothing but arrow keys, and
+// there is no mouse to fall back on if the wrong pane answers. Entered here
+// for real (Viewer.svelte's own "f" shortcut, unmodified by this issue)
+// rather than only inferred from the single-pane tests above.
+test.describe("gig mode itself", () => {
+  test.beforeEach(async ({ page }) => {
+    await stubScoreApi(page, transcriptionResponse({ warnings: [], confidence: CLEAN_CONFIDENCE }));
+    await page.route("**/api/scores/1/file", (route) =>
+      route.fulfill({ body: buildMultiPagePdf(2), contentType: "application/pdf" }),
+    );
+    await page.goto("/#/score/1");
+    await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+  });
+
+  test("from the default (side-by-side) layout, gig mode forces the PDF pane and its arrow keys turn pages", async ({
+    page,
+  }) => {
+    await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveClass(/on/);
+    await page.keyboard.press("f");
+    // ScoreCompare's own toolbar - the layout picker included - only renders
+    // outside gig mode (see its `{#if !gigMode}`), so its disappearance is
+    // the evidence gig mode is genuinely active, not merely that "f" was
+    // pressed.
+    await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
+    await expect(page.locator(".hud span")).toHaveText("1 / 2");
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator(".hud span")).toHaveText("2 / 2");
+  });
+
+  test("from the staff layout, gig mode keeps the staff pane and Space still plays/pauses it", async ({ page }) => {
+    await page.getByRole("button", { name: "Staff", exact: true }).click();
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.keyboard.press("f");
+    await expect(page.getByRole("button", { name: "Staff", exact: true })).toHaveCount(0);
+    await page.keyboard.press(" ");
+    await expect(page.locator("button.primary")).toHaveText(/Pause/);
     await page.keyboard.press(" "); // left as found
   });
 });

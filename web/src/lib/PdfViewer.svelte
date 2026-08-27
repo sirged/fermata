@@ -22,7 +22,12 @@
     // plain arrow keys chief among them. Left both listening unconditionally,
     // showing the staff pane would still silently turn a page in the PDF
     // pane sitting behind it on every Space press. ScoreCompare passes this
-    // only `true` while its PDF pane is the one actually on screen.
+    // `true` while the PDF pane is the one actually on screen AND while
+    // BOTH panes are (side-by-side, the default layout the moment a score
+    // has a transcription) - this is the one page-turning has always owned,
+    // predating #92 by way of issue #106's own gig-mode-pedal reasoning, so
+    // it keeps the keys there and TabViewer's newer ones stand down instead
+    // (see ScoreCompare's own comment on the two `active` props for why).
     active = true,
   } = $props();
 
