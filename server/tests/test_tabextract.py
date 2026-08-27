@@ -64,7 +64,7 @@ def _parse_with_alphatab(tex: str) -> dict:
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def _load_musicxml_with_alphatab(xml: str, onsets: bool = False) -> dict:
+def _load_musicxml_with_alphatab(xml: str, onsets: bool = False, repeats: bool = False) -> dict:
     """Load `xml` with the real alphaTab MusicXML importer the web player uses,
     via tools/tab_extract/verify_musicxml.mjs.
 
@@ -76,6 +76,12 @@ def _load_musicxml_with_alphatab(xml: str, onsets: bool = False) -> dict:
     (rather than fails) when node or the web project's installed alphaTab build
     aren't available, since neither is present in the production server's own
     runtime image.
+
+    `repeats=True` adds `repeats` (per-master-bar isRepeatStart/isRepeatEnd/
+    repeatCount/alternateEndings) and `tickLookup` (the playback bar order,
+    1-based, repeats and all) - read from alphaTab's own MidiFileGenerator,
+    the only thing that proves a repeat/ending file PLAYS right rather than
+    merely parses right (issue #134 S4.2 / docs Rule 15).
     """
     if shutil.which("node") is None:
         pytest.skip("node not available")
@@ -93,6 +99,8 @@ def _load_musicxml_with_alphatab(xml: str, onsets: bool = False) -> dict:
         args = ["node", str(script), str(alphatab)]
         if onsets:
             args.append("--onsets")
+        if repeats:
+            args.append("--repeats")
         proc = subprocess.run(args + [xml_path], capture_output=True, text=True, timeout=60)
     finally:
         Path(xml_path).unlink(missing_ok=True)
@@ -2333,3 +2341,115 @@ def test_a_printed_tuning_instruction_is_recognised_without_being_applied():
         "",
     ]:
         assert found(text) == [], text
+
+
+# ---------------------------------------------------------------------------
+# Repeat barlines and volta brackets (issue #134, phase 1)
+# ---------------------------------------------------------------------------
+
+
+def test_zeldas_lullaby_reads_the_repeat_and_both_endings(zelda_lullaby_pdf):
+    """The phase-1 acceptance case: the score whose exact structure the
+    project's one human tester established by hand (issue #134). 23 bars -
+    not 24, the phantom sliver a repeat pair's two strokes used to leave
+    between them (see BARLINE_STROKE_MERGE_SPACES) - a forward repeat opening
+    at measure 1, ending 1 over measures 7-8 closed by a backward repeat,
+    ending 2 at measure 9 left open (no closing hook drawn), a double barline
+    at measures 10 and 18, and a final barline at measure 23.
+
+    The page also prints "To Coda" at measure 8, "D.C. al Coda" at measure
+    14, and a coda glyph at measure 19 - phase 1 leaves all three unread (see
+    issue #134 S1 and S4.2: no segno glyph exists anywhere in the library,
+    and alphaTab cannot play a D.S. al Coda written as MusicXML), so this
+    score still does not play the form its own page describes. The assertion
+    below is the correct phase-1 target, not a claim that the score is
+    finished.
+    """
+    result = tabextract.extract(zelda_lullaby_pdf)
+    assert result.extractable
+    assert result.bars == 23
+    assert result.bars_unread == 0
+    assert result.unread_bars == []
+
+    from test_engraved_fixtures import _barline_structure
+    structure = _barline_structure(result.musicxml)
+    assert structure[1]["left"] == {"bar_style": "heavy-light", "repeat": "forward"}
+    assert structure[7]["left"] == {"ending": ("1", "start")}
+    assert structure[8]["right"] == {
+        "bar_style": "light-heavy", "ending": ("1", "stop"), "repeat": "backward"}
+    assert structure[9]["left"] == {"ending": ("2", "start")}
+    assert structure[9]["right"] == {"ending": ("2", "discontinue")}
+    assert structure[10]["right"] == {"bar_style": "light-light"}
+    assert structure[18]["right"] == {"bar_style": "light-light"}
+    assert structure[23]["right"] == {"bar_style": "light-heavy"}
+    # No other measure carries a <barline> at all.
+    assert set(structure) == {1, 7, 8, 9, 10, 18, 23}
+
+    # Reading the repeat cannot move a single Rule 8 figure (issue #134 Rule
+    # 15) - form marks carry no duration.
+    assert result.repeats_unread == 0
+    assert result.endings_unread == 0
+    assert result.endings_truncated == 0
+    assert result.form_marks_unanchored == 0
+
+    loaded = _load_musicxml_with_alphatab(result.musicxml, repeats=True)
+    expected_order = (
+        list(range(1, 9)) + list(range(1, 7)) + list(range(9, 24)))
+    assert loaded["tickLookup"] == expected_order
+
+
+def _library_pdfs(library_root):
+    return sorted(library_root.rglob("*.pdf"))
+
+
+def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root):
+    """The invariant issue #134's own research corrected the issue for:
+    reading repeat barlines and volta brackets requires collapsing
+    multi-stroke barlines first (see BARLINE_STROKE_MERGE_SPACES), which does
+    move the bar count and bars_unread - but must NOT move a single Rule 8
+    conformance figure, because a form mark carries no duration.
+
+    Run across the whole configured library (297 PDFs in the one this
+    profile was developed against). Slow on purpose: this is the one test
+    that actually proves the invariant end to end rather than on one
+    fixture.
+    """
+    totals = collections.Counter()
+    scores_with_structure = 0
+    extractable = 0
+    for pdf in _library_pdfs(library_root):
+        try:
+            result = tabextract.extract(pdf)
+        except Exception:
+            continue
+        if not result.extractable:
+            continue
+        extractable += 1
+        totals["bars"] += result.bars
+        totals["bars_unread"] += result.bars_unread
+        totals["notes"] += result.notes
+        totals["bars_overfull"] += result.bars_overfull
+        totals["bars_short"] += result.bars_short
+        totals["bars_defective"] += result.bars_defective
+        totals["bars_padded"] += result.bars_padded
+        totals["form_marks_unanchored"] += result.form_marks_unanchored
+        if "<repeat " in result.musicxml or "<ending " in result.musicxml:
+            scores_with_structure += 1
+
+    # The exact figures issue #134's commit 1 fix produces on this library -
+    # see the same numbers pinned by the library-wide scan in the PR/issue.
+    assert extractable == 293
+    assert totals["bars"] == 10632
+    assert totals["bars_unread"] == 23
+    assert totals["notes"] == 98688
+    assert totals["bars_overfull"] == 1569
+    assert totals["bars_short"] == 4219
+    assert totals["bars_defective"] == 5344
+    assert totals["bars_padded"] == 3589
+    # Not a judgement call - issue #134 S3.2 measured 0 of 513 repeat marks
+    # in the library landing inside a bar with no boundary to anchor to.
+    assert totals["form_marks_unanchored"] == 0
+    # "Expect large" (issue #134's own phrasing): the census found 190 of 297
+    # scores carrying a repeat barline or a volta. A floor rather than a pin,
+    # since which scores the maintainer's library holds can change.
+    assert scores_with_structure >= 150

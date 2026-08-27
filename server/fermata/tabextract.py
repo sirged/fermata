@@ -3726,10 +3726,18 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             # S2.4) - so a tab staff with no notation partner has nowhere a
             # bracket for it could be, and is skipped.
             if std_staff is not None:
-                brackets, volta_hooks = _read_volta_brackets(page, std_staff.top, staff.spacing)
+                # The bracket's own geometry (height, hook length, number
+                # window) is drawn relative to the NOTATION staff it sits
+                # above, not the tab staff below it - the two staves' spacing
+                # in points differ (measured ~4.98-5.12 vs ~7.44-7.7 in this
+                # fixture alone), and using the tab staff's here rejected a
+                # bracket only 3.28 std-staff-spaces tall as too short,
+                # because 2.5 TAB-staff-spaces is a taller absolute distance.
+                brackets, volta_hooks = _read_volta_brackets(
+                    page, std_staff.top, std_staff.spacing)
                 endings, unread = _associate_voltas(
                     brackets, volta_hooks, barline_recs, bounds, lo, hi, staff_first_bar,
-                    staff.spacing)
+                    std_staff.spacing)
                 endings_unread_bars.extend(unread)
                 for first_bar, last_bar, number, ending_type, truncated in endings:
                     ending_numbers_seen.add(number)

@@ -23,6 +23,15 @@
 // still loads, still validates, and plays every late-entering voice on the
 // downbeat, so nothing but a position tells you.
 //
+// With --repeats each line also carries `repeats`: per master bar (1-based
+// bar number), {isRepeatStart, isRepeatEnd, repeatCount, alternateEndings}
+// read straight off alphaTab's own MasterBar - alternateEndings is the
+// BITMASK alphaTab itself uses (bit n-1 set means this bar belongs to ending
+// n), not a count - and `tickLookup`: the PLAYBACK bar order (1-based,
+// repeats and all) read from MidiFileGenerator's own tickLookup.masterBars,
+// which is the only thing here that proves a file plays right rather than
+// merely parses right (issue #134 S4.2 / docs Rule 15).
+//
 // firstNoteString/Fret and tuning are the ones that matter beyond "it
 // parsed": MusicXML numbers staff LINES from the bottom and STRINGS from the
 // top, so a file with the two confused still validates against the schema and
@@ -38,7 +47,8 @@ import { pathToFileURL } from "node:url";
 async function main() {
     const [alphaTabPath, ...rest] = process.argv.slice(2);
     const wantOnsets = rest.includes("--onsets");
-    const targets = rest.filter((a) => a !== "--onsets");
+    const wantRepeats = rest.includes("--repeats");
+    const targets = rest.filter((a) => a !== "--onsets" && a !== "--repeats");
     if (!alphaTabPath || targets.length === 0) {
         console.error("usage: node verify_musicxml.mjs <alphaTab.mjs> [--onsets] <file-or-dir> [...]");
         process.exit(2);
@@ -114,6 +124,21 @@ async function main() {
                 firstNoteMidi, firstNoteString, firstNoteFret, tuning,
             });
             if (wantOnsets) result.onsets = onsets;
+            if (wantRepeats) {
+                const repeats = score.masterBars.map((mb) => ({
+                    isRepeatStart: mb.isRepeatStart,
+                    isRepeatEnd: mb.isRepeatEnd,
+                    repeatCount: mb.repeatCount,
+                    alternateEndings: mb.alternateEndings,
+                }));
+                const midiFile = new mod.midi.MidiFile();
+                const handler = new mod.midi.AlphaSynthMidiFileHandler(midiFile);
+                const generator = new mod.midi.MidiFileGenerator(score, new Settings(), handler);
+                generator.generate();
+                const tickLookup = generator.tickLookup.masterBars.map(
+                    (item) => item.masterBar.index + 1);
+                Object.assign(result, { repeats, tickLookup });
+            }
         } catch (e) {
             anyFailed = true;
             Object.assign(result, { ok: false, error: String(e && e.stack ? e.stack : e) });

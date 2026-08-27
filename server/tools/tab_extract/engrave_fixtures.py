@@ -356,6 +356,38 @@ def fixture_defective_bars():
     return score("Guitar", [attributes() + measures[0]] + measures[1:] + measures)
 
 
+def barline(location, style=None, repeat=None, ending=None):
+    """One `<barline>` element, in the schema's own child order - bar-style,
+    then ending, then repeat (see musicxml._append_barline / issue #134 Rule
+    15). `ending` is a pre-built `<ending .../>` fragment from `ending()`
+    below, not a bare tuple, so a caller can also pass one built by hand."""
+    parts = [f'<barline location="{location}">']
+    if style:
+        parts.append(f"<bar-style>{style}</bar-style>")
+    if ending:
+        parts.append(ending)
+    if repeat:
+        parts.append(f'<repeat direction="{repeat}"/>')
+    parts.append("</barline>")
+    return "".join(parts)
+
+
+def ending(number, type):
+    return f'<ending number="{number}" type="{type}"/>'
+
+
+def repeat_forward():
+    """A forward repeat's own `<barline location="left">` - heavy-light,
+    opening the repeated span."""
+    return barline("left", style="heavy-light", repeat="forward")
+
+
+def repeat_backward():
+    """A backward repeat's own `<barline location="right">` - light-heavy,
+    closing the repeated span."""
+    return barline("right", style="light-heavy", repeat="backward")
+
+
 def fixture_volta():
     """A repeat with "1." / "2." ending brackets under the staff.
 
@@ -373,6 +405,30 @@ def fixture_volta():
     second = ('<barline location="left"><ending number="2" type="start"/></barline>' + bar
               + '<barline location="right"><ending number="2" type="stop"/></barline>')
     return score("Guitar", [attributes() + bar, bar, bar, first, second, bar, bar, bar])
+
+
+def fixture_repeat_structure():
+    """Everything volta.pdf does not already cover (issue #134 Rule 15):
+    volta.pdf has a backward repeat and two one-bar endings, both closed with
+    a hook. This one has a FORWARD repeat opening the span (absent from
+    volta, and 238 of the library's repeats are forward), three endings
+    rather than two, one of them two bars long (so no `<ending>` is written
+    on its own interior measure), an OPEN-hook ending (`discontinue`), a
+    `light-light` double barline mid-score, and a closing `light-heavy` final
+    barline."""
+    bar = _bar([note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+                note(("G", 4), "quarter"), note(("A", 4), "quarter")], 4.0)
+    m1 = repeat_forward() + bar
+    m3 = (barline("left", ending=ending(1, "start")) + bar
+          + barline("right", style="light-heavy", repeat="backward",
+                    ending=ending(1, "stop")))
+    m4 = barline("left", ending=ending(2, "start")) + bar
+    m5 = bar + barline("right", ending=ending(2, "discontinue"))
+    m6 = bar + barline("right", style="light-light")
+    m7 = (barline("left", ending=ending(3, "start")) + bar
+          + barline("right", ending=ending(3, "stop")))
+    m8 = bar + barline("right", style="light-heavy")
+    return score("Guitar", [attributes() + m1, bar, m3, m4, m5, m6, m7, m8])
 
 
 def fixture_harmonics_dense():
@@ -641,6 +697,7 @@ FIXTURES = {
     "drop_d": fixture_drop_d,
     "defective_bars": fixture_defective_bars,
     "volta": fixture_volta,
+    "repeat_structure": fixture_repeat_structure,
     "harmonics_dense": fixture_harmonics_dense,
     "notation_only": fixture_notation_only,
 }

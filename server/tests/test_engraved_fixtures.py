@@ -56,7 +56,7 @@ import pytest
 from fermata import glyph_rhythm, musicxml, tabextract
 
 from conftest import ENGRAVED_DIR
-from test_tabextract import _parse_with_alphatab
+from test_tabextract import _load_musicxml_with_alphatab, _parse_with_alphatab
 
 
 # ---------------------------------------------------------------------------
@@ -805,6 +805,123 @@ def test_a_repeat_with_ending_brackets_leaves_its_staves_alone(engraved):
     assert result.confidence["rhythm"] == (
         "high - decoded directly from the notehead/stem/flag/beam/dot glyphs "
         "in the score's own engraving")
+
+
+def _barline_structure(musicxml_text):
+    """{measure_number: {location: {bar_style, repeat, ending}}} read back
+    out of the emitted MusicXML's own <barline> elements - so this measures
+    the artifact that gets stored and rendered, not an intermediate the
+    emitter might not agree with (issue #134 Rule 15)."""
+    out = {}
+    for measure in ET.fromstring(musicxml_text).findall("./part/measure"):
+        num = int(measure.get("number"))
+        for bl in measure.findall("barline"):
+            loc = bl.get("location")
+            rec = {}
+            bar_style = bl.findtext("bar-style")
+            if bar_style:
+                rec["bar_style"] = bar_style
+            ending = bl.find("ending")
+            if ending is not None:
+                rec["ending"] = (ending.get("number"), ending.get("type"))
+            repeat = bl.find("repeat")
+            if repeat is not None:
+                rec["repeat"] = repeat.get("direction")
+            out.setdefault(num, {})[loc] = rec
+    return out
+
+
+def test_volta_pdf_emits_exactly_the_barlines_its_own_source_declares(engraved):
+    """volta.pdf's own MusicXML source (fixture_volta in engrave_fixtures.py)
+    is the ground truth: a backward repeat closing measure 4's ending 1, and
+    measure 5's ending 2 left open. Compared against a literal expected
+    structure, not a count - issue #134 S6.2's design for this test."""
+    pdf = engraved("volta")
+    result = tabextract.extract(pdf)
+    assert result.extractable
+    assert result.bars == 8, "the fixture's own source declares 8 measures"
+    assert _barline_structure(result.musicxml) == {
+        4: {
+            "left": {"ending": ("1", "start")},
+            "right": {"bar_style": "light-heavy", "ending": ("1", "stop"),
+                      "repeat": "backward"},
+        },
+        5: {
+            "left": {"ending": ("2", "start")},
+            "right": {"ending": ("2", "stop")},
+        },
+    }
+    # The no-op invariant (issue #134 Rule 15): reading repeat structure must
+    # not move a single Rule 8 figure. Asserted as literals, not merely
+    # "unchanged from a baseline run", so a later change cannot drift them.
+    assert (result.bars_overfull, result.bars_short, result.bars_defective,
+            result.bars_padded, result.inferred_rest_quarters, result.notes) == (
+        0, 0, 0, 0, 0.0, 32)
+    assert result.repeats_unread == 0
+    assert result.endings_unread == 0
+    assert result.endings_truncated == 0
+    assert result.form_marks_unanchored == 0
+
+
+def test_repeat_structure_pdf_emits_exactly_the_barlines_its_own_source_declares(engraved):
+    """repeat_structure.pdf covers what volta.pdf does not: a FORWARD repeat
+    opening the span, three endings rather than two, one two bars long (no
+    <ending> on its own interior measure 5), an open-hook ending
+    (`discontinue`), a mid-score double barline, and a closing final one -
+    all compared against the fixture's own literal source."""
+    pdf = engraved("repeat_structure")
+    result = tabextract.extract(pdf)
+    assert result.extractable
+    assert result.bars == 8, "the fixture's own source declares 8 measures"
+    assert _barline_structure(result.musicxml) == {
+        1: {"left": {"bar_style": "heavy-light", "repeat": "forward"}},
+        3: {
+            "left": {"ending": ("1", "start")},
+            "right": {"bar_style": "light-heavy", "ending": ("1", "stop"),
+                      "repeat": "backward"},
+        },
+        4: {"left": {"ending": ("2", "start")}},
+        5: {"right": {"ending": ("2", "discontinue")}},
+        6: {"right": {"bar_style": "light-light"}},
+        7: {
+            "left": {"ending": ("3", "start")},
+            "right": {"ending": ("3", "stop")},
+        },
+        8: {"right": {"bar_style": "light-heavy"}},
+    }
+    assert (result.bars_overfull, result.bars_short, result.bars_defective,
+            result.bars_padded, result.inferred_rest_quarters, result.notes) == (
+        0, 0, 0, 0, 0.0, 32)
+    assert result.repeats_unread == 0
+    assert result.endings_unread == 0
+    assert result.endings_truncated == 0
+    assert result.form_marks_unanchored == 0
+    assert result.endings_incomplete == 0
+    assert result.confidence["structure"] == (
+        "high - repeat barlines and volta brackets read directly from the score's own "
+        "engraving")
+
+
+def test_repeat_structure_pdf_plays_in_the_order_the_repeats_and_endings_say(engraved):
+    """The only assertion that proves the file plays right rather than parses
+    right (issue #134 S4.2 / S6.2): loaded with the same alphaTab importer
+    the web player uses, bars 1-3 play, the forward/backward repeat sends
+    playback back to bar 1 for a second pass through 1-2, and the three
+    endings gate which of measures 3/4-5/7 is heard on which pass."""
+    pdf = engraved("repeat_structure")
+    result = tabextract.extract(pdf)
+    loaded = _load_musicxml_with_alphatab(result.musicxml, repeats=True)
+    assert loaded["tickLookup"] == [1, 2, 3, 1, 2, 4, 5, 6, 7, 8]
+    repeats = loaded["repeats"]
+    assert repeats[0]["isRepeatStart"] is True
+    assert repeats[2]["isRepeatEnd"] is True
+    assert repeats[2]["repeatCount"] == 2
+    # alternateEndings is alphaTab's own bitmask (bit n-1 set means ending n):
+    # ending 1 on bar 3, ending 2 on bars 4-5, ending 3 on bar 7.
+    assert repeats[2]["alternateEndings"] == 1
+    assert repeats[3]["alternateEndings"] == 2
+    assert repeats[4]["alternateEndings"] == 2
+    assert repeats[6]["alternateEndings"] == 4
 
 
 # ---------------------------------------------------------------------------

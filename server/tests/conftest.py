@@ -78,6 +78,13 @@ _FIXTURE_RELATIVE_PATHS = {
     # them (issue #116) - the residue nothing can split - so the disclosure
     # counter (coincident_unsplit_pairs) has a real score to be exercised on.
     "ronfaure": "Patreon/John Oeth/Final Fantasy/FF XI/Ronfaure (Final Fantasy XI).pdf",
+    # The phase-1 repeat-structure acceptance case (issue #134): a forward
+    # repeat, two endings (one closed with a hook, one left open), and the
+    # phantom-measure defect that used to shift its numbering from bar 9
+    # onward - the score the project's one human tester checked by hand.
+    "zelda_lullaby": (
+        "Patreon/John Oeth/The Legend of Zelda/"
+        "Zelda_s Lullaby (The Legend of Zelda Series).pdf"),
 }
 
 # Skips for want of a library are COUNTED HERE as they happen, rather than
@@ -254,6 +261,26 @@ def ronfaure_pdf() -> Path:
     if p is None:
         skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Ronfaure fixture)")
     return p
+
+
+@pytest.fixture
+def zelda_lullaby_pdf() -> Path:
+    p = _fixture_path("zelda_lullaby")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing Zelda's Lullaby fixture)")
+    return p
+
+
+@pytest.fixture
+def library_root() -> Path:
+    """The whole configured library root, for tests that scan every PDF in
+    it rather than reading one named fixture - see issue #134's library-wide
+    conformance and repeat-structure checks."""
+    root = _library_root()
+    if root is None:
+        skip_without_library("FERMATA_TEST_LIBRARY not set")
+    return root
 
 
 @pytest.fixture

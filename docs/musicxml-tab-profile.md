@@ -27,6 +27,7 @@ several things this profile has to decide.
   - [Voices](#voices-rules-6-8)
   - [Fret, string and pitch](#fret-string-and-pitch-rules-9-13)
   - [Inferred silence](#inferred-silence-rule-14)
+  - [Repeat structure](#repeat-structure-rule-15)
 - [Example 1: one monophonic bar](#example-1-one-monophonic-bar)
 - [Example 2: two voices in one bar](#example-2-two-voices-in-one-bar)
 - [Checking a file](#checking-a-file)
@@ -506,6 +507,72 @@ carries the inferred silence as an ordinary rest; MusicXML is the canonical
 output, and the numbers under [Checking a file](#checking-a-file) name the
 affected measures for a reader of either.
 
+### Repeat structure (Rule 15)
+
+**Rule 15.** Repeat barlines and multiple endings are written as `<barline>`,
+and only where the engraving says so.
+
+A repeat that begins is `<barline location="left">` on the first measure of
+the repeated span, carrying `<bar-style>heavy-light</bar-style>` and
+`<repeat direction="forward"/>`. A repeat that ends is
+`<barline location="right">` on the last measure of the span, carrying
+`<bar-style>light-heavy</bar-style>` and `<repeat direction="backward"/>`.
+`times` is never written: an engraved `:‖` says to play the span twice and
+says nothing more, and 2 is what a consumer assumes in its absence.
+
+An ending is `<ending>` on the first and last measures of its range —
+`type="start"` on the left barline of the first, and on the right barline of
+the last either `type="stop"` where the bracket is drawn with a closing hook
+or `type="discontinue"` where it is left open. Intermediate measures carry no
+`<ending>`; a consumer that tracks the open ending sees them, and one that
+does not would not be helped by repeating it. The `number` attribute is the
+number printed inside the bracket, verbatim as an integer list.
+
+The schema's sequence inside `barline` is `bar-style?, footnote?, level?,
+wavy-line?, segno?, coda?, fermata*, ending?, repeat?` — **`<ending>` comes
+before `<repeat>`**, and a measure that both closes an ending and ends a
+repeat carries both in that order on one right barline.
+
+**A form mark carries no duration, and Rule 8 is unaffected by it.** This is
+load-bearing in both directions. A producer must not let reading a repeat
+change a measure's contents, and a consumer must not let a `<barline>` enter
+the per-voice sums. Measured on the library this profile was developed
+against: adding repeat structure to 188 of 297 scores moved
+`bars_overfull`, `bars_short`, `bars_defective`, `bars_padded` and
+`inferred_rest_quarters` by exactly zero.
+
+**What is not written, and why the file cannot tell you.** A repeat mark this
+producer read only partly — dots with no thick stroke, a bracket with no
+readable number, an ending whose extent could not be established — is
+**omitted entirely** and reported in the producer's own warnings. There is no
+way to write "there is a repeat here and I could not read it" in MusicXML:
+a `<repeat>` is an assertion, and a half-read one written anyway would make
+the transcription play a form nobody engraved. So a conforming file's silence
+about repeats means only that none were written, exactly as
+[Rule 14](#inferred-silence-rule-14) says of a missing `<forward>`. A reader
+who needs to know whether any were *missed* has to get it from the producer —
+see `repeats_unread`, `endings_unread`, `endings_truncated`,
+`form_marks_unanchored` and `endings_incomplete` on `ExtractionResult`, and
+the `structure` confidence key beside `frets` / `rhythm` / `time_signature` /
+`key_signature`. `structure` is kept apart from `rhythm` deliberately: a
+dropped volta says nothing about whether the durations were read, and folding
+it into `rhythm` would make that figure mean two different things.
+
+**`bar-style` alone.** A final barline (`light-heavy`) and a double barline
+(`light-light`) carry no `<repeat>` and no `<ending>`; they are engraving, and
+writing them costs nothing and makes a round trip look like the page.
+
+Out of scope for phase 1, and recorded here rather than left to be
+rediscovered: `D.C.`, `D.S.`, `Fine`, `al Coda`/`To Coda` text, and coda/segno
+navigation. No segno glyph is drawn anywhere in the library this profile was
+developed against, so a `D.S.` has no jump target this producer could read
+off the engraving even if it read the text — and the web player's own
+MusicXML importer only reads a jump (`dacapo`, `dalsegno`, `tocoda`, `fine`)
+from a `<sound>` that is a direct child of `<measure>`, not from the nested
+`<direction><sound>` every notation program (and the specification's own
+examples) writes, so a correct, schema-valid file for these would still play
+wrong in this project's own renderer.
+
 ## Example 1: one monophonic bar
 
 One bar of 4/4 at 80 bpm in standard tuning: open first string (E4), second
@@ -939,8 +1006,9 @@ promise more interoperability than exists.
 - Ties (`<tie>`, `<tied>`) and slurs.
 - Grace notes, which the schema handles as a separate `<note>` branch with no
   `<duration>` at all.
-- Repeats, codas, segnos, multiple endings, and any other structural
-  navigation.
+- Codas, segnos, and text navigation instructions (`D.C.`, `D.S.`, `Fine`,
+  `al Coda`) — see [Rule 15](#repeat-structure-rule-15) for why the
+  structural repeats are in scope and these are not.
 - Beaming (`<beam>`). Readers group notes into beams themselves.
 - Note values shorter than a 32nd, and more than two augmentation dots.
 

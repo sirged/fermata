@@ -44,6 +44,7 @@ gap this directory exists to close was created.
 | `drop_d` | a non-standard tuning named in the score's text, and a metronome mark |
 | `defective_bars` | bars over their meter, bars under it, and a bar wrong in both directions at once |
 | `volta` | a repeat with "1." / "2." ending brackets close under the staff |
+| `repeat_structure` | a forward repeat opening the span, three numbered endings (one two bars long, one closed with an open hook), a mid-score double barline, and a closing final barline |
 | `harmonics_dense` | two uncalibrated harmonic noteheads on a system dense enough that the unknown-glyph ratio cannot see them |
 | `notation_only` | standard notation with no tablature — refused, with the reason |
 | `four_sharps_in_three_four` | four sharps between the clef and the meter, pushing the meter's digits past the window a clef and a meter alone need — in 3/4, so failing to read it misplaces every barline |
