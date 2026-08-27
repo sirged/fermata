@@ -92,6 +92,28 @@ _FIXTURE_RELATIVE_PATHS = {
     # got a chance to place it.
     "lenna_theme": (
         "Patreon/John Oeth/Final Fantasy/FF V/Lenna_s Theme (Final Fantasy V).pdf"),
+    # A "2." bracket with no matching "1." anywhere - genuinely, not from a
+    # dropped candidate: the only mark near where a "1." would be sits 1.93
+    # std-staff-spaces from the nearest barline, well outside every genuine
+    # bracket measured in the library, and is correctly rejected by the same
+    # discriminator that rejects a ledger line or a tuplet bracket. This is
+    # the one figure that is `endings_incomplete=1` and NOTHING else -
+    # repeats_unread, endings_unread, endings_truncated and
+    # form_marks_unanchored are all 0 - so it is the case that proves
+    # `structure` confidence actually reads `endings_incomplete` (issue #134
+    # adversarial review, blocker 2).
+    "victory_fanfare": (
+        "Patreon/John Oeth/Final Fantasy/FF VII/Victory Fanfare (Final Fantays VII).pdf"),
+    # Two thick strokes ("tHHt") with no repeat dots found anywhere nearby -
+    # neither resolved to a direction nor unread for want of a thick stroke,
+    # just two thick strokes and nothing beside them (issue #134 adversarial
+    # review, item 6). `_bar_style_for_shape` deliberately returns None for
+    # 2+ thick strokes (it expects the "both"-repeat branch to write
+    # heavy-heavy with its own direction attached), so before this fix the
+    # whole barline group - not just its repeat, its bar-style too - was
+    # dropped silently. The only real fixture in the library with this shape
+    # (2 instances, both on this one barline group's two measure sides).
+    "tarrega_estudio_em": "Classical/Tarrega/Tarrega-Estudio-Em-Werner.pdf",
 }
 
 # Skips for want of a library are COUNTED HERE as they happen, rather than
@@ -311,6 +333,24 @@ def lenna_theme_pdf() -> Path:
     p = _fixture_path("lenna_theme")
     if p is None:
         skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Lenna's Theme fixture)")
+    return p
+
+
+@pytest.fixture
+def victory_fanfare_pdf() -> Path:
+    p = _fixture_path("victory_fanfare")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Victory Fanfare' fixture)")
+    return p
+
+
+@pytest.fixture
+def tarrega_estudio_em_pdf() -> Path:
+    p = _fixture_path("tarrega_estudio_em")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing Tarrega-Estudio-Em fixture)")
     return p
 
 
