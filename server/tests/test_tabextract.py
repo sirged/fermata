@@ -1474,7 +1474,8 @@ def test_a_meter_further_along_a_bar_is_not_a_meter_at_this_barline(mitsuha_pdf)
     mid = (std.top + std.bottom) / 2
 
     refused, accepted = [], []
-    for bx in tabextract._detect_barlines(vseg, std):
+    for bl in tabextract._detect_barlines(vseg, std):
+        bx = bl.x
         if bx <= opening or bx >= std.x1 - std.spacing:
             continue
         ts, why = glyph_rhythm.decode_meter_after_barline(
@@ -1565,7 +1566,8 @@ def test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early(kaine_salv
     mid = (courtesy_staff.top + courtesy_staff.bottom) / 2
     opening = courtesy_staff.x0 + courtesy_staff.spacing * glyph_rhythm.TS_LEAD_SPACINGS
     found_and_refused = False
-    for bx in tabextract._detect_barlines(vseg, courtesy_staff):
+    for bl in tabextract._detect_barlines(vseg, courtesy_staff):
+        bx = bl.x
         if bx <= opening or bx >= courtesy_staff.x1 - courtesy_staff.spacing:
             continue
         window = [e for e in glyphs.events

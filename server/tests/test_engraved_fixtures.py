@@ -891,12 +891,16 @@ def test_expression_marks_are_not_read_as_incomprehension():
 
 def test_furniture_alone_does_not_degrade_a_clean_decode():
     glyph_rhythm.clear_caches()
+    # 0xE044 is no longer unknown - SMUFL_CODE_MAP maps it to "repeat_dot"
+    # (see DOT_LIKE_CATS) - so only the accent and the fermata are unread.
     _doc, page, _trace = _fake_smufl_page(
         [0xE0A4] * 8 + [0xE4A0, 0xE4C0, 0xE044], name="Leland")
     glyphs = glyph_rhythm.extract_glyph_events(page)
-    assert len(glyphs.unknown) == 3, "they are still seen"
+    assert len(glyphs.unknown) == 2, "they are still seen"
     kinds = {glyph_rhythm.smufl_unknown_kind(e.code) for e in glyphs.unknown}
     assert kinds == {"furniture"}
+    repeat_dot = next(e for e in glyphs.events if e.code == 0xE044)
+    assert repeat_dot.category == "repeat_dot"
 
 
 def test_a_second_font_supplying_one_glyph_is_still_accounted_for():

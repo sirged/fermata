@@ -395,6 +395,12 @@ SMUFL_CODE_MAP = {
     0xE0A4: "notehead_filled",
     0xE0A9: "notehead_x",
     0xE1E7: "dot",             # augmentationDot
+    0xE043: "repeat_dot",      # repeatDot
+    0xE044: "repeat_dot",      # repeatDots - measured on the engraved
+                               # fixtures as one glyph per dot, at the same
+                               # +-1.0/+-0.5 space offset a plain dot draws,
+                               # so it needs no geometry of its own; see
+                               # DOT_LIKE_CATS.
     0xE240: "flag8", 0xE241: "flag8",
     0xE242: "flag16", 0xE243: "flag16",
     0xE244: "flag32", 0xE245: "flag32",
@@ -493,6 +499,15 @@ REST_VALUES = {"rest_whole": 4.0, "rest_half": 2.0, "rest_quarter": 1.0,
                "rest8": 0.5, "rest16": 0.25, "rest32": 0.125}
 REST_CATS = set(REST_VALUES) | {"rest_half_whole", "flag8_or_rest_quarter"}
 DOT_CATS = {"dot"}
+# Repeat dots, told apart from an augmentation dot (DOT_CATS) by geometry, not
+# by glyph: Maestro and Opus draw a repeat's dots with the very same
+# augmentationDot glyph they use for a note's dot, and only a SMuFL font has a
+# codepoint that names them as repeat furniture (repeat_dot, above) - so a
+# reader has to accept either shape. DOT_LIKE_CATS is what a caller scanning
+# for repeat dots asks for; DOT_CATS on its own stays the rhythm decoder's
+# augmentation-dot vocabulary, unaffected by this.
+REPEAT_DOT_CATS = {"repeat_dot"}
+DOT_LIKE_CATS = DOT_CATS | REPEAT_DOT_CATS
 
 
 # ---------------------------------------------------------------------------
@@ -3120,6 +3135,26 @@ def decode_meter_after_barline(page, staff_top, staff_bottom, barline_x, staff_x
             "signature for the system that follows rather than a change at this barline"
         )
     return ts, why
+
+
+def dot_like_glyph_events(page, y0, y1, x0, x1):
+    """Dot-shaped glyph events (DOT_LIKE_CATS - an augmentation dot or either
+    SMuFL repeat-dot codepoint, see DOT_CATS/REPEAT_DOT_CATS) whose centre
+    falls in this box, x-sorted.
+
+    This is glyph classification, not geometry: it says where a dot-shaped
+    glyph is and nothing about what it belongs to. Telling a repeat's dots
+    from an augmentation dot - the search window around a barline, the
+    symmetric-pair test, which side of the barline group they fall on - is
+    the caller's, because that geometry is keyed to a barline group's extent
+    and a staff's own spacing, neither of which this module has any reason to
+    know about.
+    """
+    glyphs = extract_glyph_events(page)
+    return sorted(
+        (e for e in glyphs.events
+         if e.category in DOT_LIKE_CATS and y0 <= e.yc <= y1 and x0 <= e.xc <= x1),
+        key=lambda e: e.xc)
 
 
 # ---------------------------------------------------------------------------

@@ -413,6 +413,26 @@ def _append_note(measure, duration, type_name, dots, voice, string=None,
         _sub(technical, "fret", fret)
 
 
+def _append_barline(measure, location, rec):
+    """One `<barline>` - Rule 15 (docs/musicxml-tab-profile.md). The schema's
+    sequence inside `barline` is `bar-style?, footnote?, level?, wavy-line?,
+    segno?, coda?, fermata*, ending?, repeat?` - `ending` before `repeat`, and
+    `bar-style` first. `rec` is one entry of the `barlines` dict `build()`
+    takes: `{"bar_style": ..., "repeat": ..., "ending_number": ...,
+    "ending_type": ...}`, any subset present.
+    """
+    barline = _sub(measure, "barline", location=location)
+    bar_style = rec.get("bar_style")
+    if bar_style:
+        _sub(barline, "bar-style", bar_style)
+    ending_number = rec.get("ending_number")
+    if ending_number is not None:
+        _sub(barline, "ending", number=ending_number, type=rec.get("ending_type"))
+    repeat = rec.get("repeat")
+    if repeat:
+        _sub(barline, "repeat", direction=repeat)
+
+
 def _append_forward(measure, duration, voice):
     """Advance one voice's writing position without writing a note or a rest.
 
@@ -431,6 +451,30 @@ def _append_forward(measure, duration, voice):
     _sub(forward, "duration", duration)
     _sub(forward, "footnote", INFERRED_REST_FOOTNOTE)
     _sub(forward, "voice", voice)
+
+
+def _append_barline(measure, location, mark):
+    """One `<barline>` (Rule 15). `mark` is a dict with any of `bar_style`,
+    `repeat` ("forward"/"backward"), `ending_number`/`ending_type`
+    ("start"/"stop"/"discontinue") - whichever were read for this side of
+    this measure.
+
+    The schema's sequence inside `barline` is `bar-style?, footnote?,
+    level?, wavy-line?, segno?, coda?, fermata*, ending?, repeat?` - `ending`
+    before `repeat`, and `bar-style` first. `times` is never written on
+    `<repeat>`: an engraved `:|` says to play the span twice and says nothing
+    more, which is what a consumer assumes in its absence.
+    """
+    barline = _sub(measure, "barline", location=location)
+    bar_style = mark.get("bar_style")
+    if bar_style:
+        _sub(barline, "bar-style", bar_style)
+    ending_number = mark.get("ending_number")
+    if ending_number is not None:
+        _sub(barline, "ending", number=ending_number, type=mark["ending_type"])
+    repeat = mark.get("repeat")
+    if repeat:
+        _sub(barline, "repeat", direction=repeat)
 
 
 def _append_attributes(measure, ts, fifths, tuning, capo, opening):
@@ -508,8 +552,15 @@ def _split_measure(measure_in, in_effect):
 
 
 def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
-          part_name="Guitar", encoding_date=None):
+          part_name="Guitar", encoding_date=None, barlines=None):
     """Emit one tab part as a MusicXML 4.0 `score-partwise` document.
+
+    `barlines` is Rule 15's repeat/volta structure: {measure_number (1-based,
+    matching this function's own <measure number=>) -> {"left": mark,
+    "right": mark}}, mark being a dict with any of `bar_style`, `repeat`,
+    `ending_number`/`ending_type` - see _append_barline. A form mark carries
+    no duration and is written independently of the beats/voices below; it
+    can never move what those decide.
 
     `measures` is a list of (beats, measure_ts) pairs - or bare beats lists,
     for a caller with no per-measure meter to carry - where beats is a list of
@@ -580,6 +631,10 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
         if opening and tempo:
             _append_tempo(measure, tempo)
 
+        marks = (barlines or {}).get(index + 1, {})
+        if "left" in marks:
+            _append_barline(measure, "left", marks["left"])
+
         written = 0
         for voice_number, voice in enumerate(voices_of(beats_in), start=1):
             if voice_number > 1 and written:
@@ -630,6 +685,9 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
                             fifths=fifths, chord=position > 0,
                         )
                 written += duration
+
+        if "right" in marks:
+            _append_barline(measure, "right", marks["right"])
 
     ET.indent(root, space="  ")
     body = ET.tostring(root, encoding="unicode")
