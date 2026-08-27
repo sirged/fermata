@@ -1215,34 +1215,50 @@ export function createScoreView(host, opts = {}) {
 
   // ---------------------------------------------------- repeat-safe cursor
   //
-  // Every one of these works in TWO tick spaces at once, and getting that
-  // wrong was #92's most severe bug: Beat.absolutePlaybackStart (and
-  // api.tickCache.getBeatStart(beat), which is documented as returning the
-  // same "first time this beat plays" tick) are built from MasterBar.start -
-  // NOTATED order, one number per bar however many times it actually plays -
-  // while api.tickPosition, api.playbackRange and api.tickCache.masterBars
-  // are the repeat-EXPANDED PLAYBACK order the generated MIDI actually runs
-  // on, where a twice-played bar gets two different MasterBarTickLookup
-  // entries with two different `.start` ticks. The two spaces agree only on
-  // a score with no repeats at all. Measured on a real repeat fixture (two
-  // bars repeated once, then a third): stepping bar-by-bar past the repeat
-  // and then one beat further moved the cursor BACKWARDS by 6720 ticks,
-  // because the beat step converted through the notated-order tick while the
-  // bar step had been reading real playback ticks the whole time.
+  // #92's most severe bug came from Beat.absolutePlaybackStart, which is
+  // built from MasterBar.start - NOTATED order, one number per bar however
+  // many times it actually plays - while api.tickPosition, api.playbackRange
+  // and api.tickCache.masterBars are the repeat-EXPANDED PLAYBACK order the
+  // generated MIDI actually runs on, where a twice-played bar gets two
+  // different MasterBarTickLookup entries with two different `.start` ticks.
+  // Reading and writing ticks in two different spaces like that agrees only
+  // on a score with no repeats at all. Measured on a real repeat fixture
+  // (two bars repeated once, then a third): stepping bar-by-bar past the
+  // repeat and then one beat further moved the cursor BACKWARDS by 6720
+  // ticks, because the beat step converted through the notated-order tick
+  // while the bar step had been reading real playback ticks the whole time.
   //
-  // The fix is BeatTickLookup (MasterBarTickLookup.firstBeat/nextBeat/
-  // previousBeat/lastBeat), and it needs one fact spelled out that its own
-  // doc comments do not: BeatTickLookup.start/.end are RELATIVE to the
-  // MasterBarTickLookup that owns them, not absolute ticks. That single
-  // relative shape is exactly what lets the same beat chain be read off ANY
-  // pass's own MasterBarTickLookup instance and still land on the right
-  // absolute tick for THAT pass - add its owning masterBar's own `.start`
-  // and the result is correct however many times the bar has already played.
-  // (An earlier version of this file read BeatTickLookup.start as if it were
-  // already absolute, saw "0" where it expected a mid-piece tick, and
-  // concluded the field was unreliable - it was in fact reporting exactly
-  // what it documents, just not what was assumed of it; confirmed by
-  // dumping api.tickCache.masterBars directly against this repeat fixture.)
+  // api.tickCache.getBeatStart(beat) does NOT have this problem - it is
+  // built from the tick cache, not from MasterBar.start, and returns a
+  // genuine PLAYBACK-space tick (confirmed: it is what playFromBeat below
+  // uses to seek, and lands correctly at 17760 for the last beat of a
+  // three-bar repeat fixture). What it answers is narrower than "the
+  // current tick": alphaTab's own map from a bar INDEX to its
+  // MasterBarTickLookup only ever keeps the bar's FIRST played pass, so
+  // getBeatStart is pinned to that one pass regardless of which pass a live
+  // cursor is actually sitting in. Fine for playFromBeat, which seeks from a
+  // CLICK on the score's one rendered occurrence of a bar (a repeat is a
+  // notation symbol, not a second copy of the bars, so there is only ever
+  // one beat to have clicked on) - not fine for stepping a cursor that may
+  // already be in a LATER pass, which is what the rest of this section is
+  // for.
+  //
+  // The fix there is BeatTickLookup (MasterBarTickLookup.firstBeat/nextBeat/
+  // previousBeat/lastBeat), read off the SPECIFIC pass's own
+  // MasterBarTickLookup instance (found by masterBarLookupAtTick, which is
+  // already pass-correct) rather than off the bar-index map getBeatStart
+  // uses - and it needs one fact spelled out that its own doc comments do
+  // not: BeatTickLookup.start/.end are RELATIVE to the MasterBarTickLookup
+  // that owns them, not absolute ticks. That relative shape is exactly what
+  // lets the same beat chain be read off ANY pass's own instance and still
+  // land on the right absolute tick for THAT pass - add its owning
+  // masterBar's own `.start` and the result is correct however many times
+  // the bar has already played. (An earlier version of this file read
+  // BeatTickLookup.start as if it were already absolute, saw "0" where it
+  // expected a mid-piece tick, and concluded the field was unreliable - it
+  // was in fact reporting exactly what it documents, just not what was
+  // assumed of it; confirmed by dumping api.tickCache.masterBars directly
+  // against this repeat fixture.)
   //
   // A {masterBar, beatLookup} pair, not a bare Beat, is what gets passed
   // around below - the masterBar half is what makes the pair pass-specific;
@@ -1323,13 +1339,24 @@ export function createScoreView(host, opts = {}) {
   // through it. A beat's own span is generally hundreds of ticks wide, so
   // tolerating a lag of a few ticks costs nothing in correctness while
   // absorbing exactly the race that caused the stall.
+  // The tolerance above was one-sided - it forgave a live read landing
+  // AFTER the cached beat's own start (still inside its span) but not one
+  // landing a tick or two BEFORE it, which the same lossy tick/millisecond
+  // round-trip nudgeLoopBoundary's own comment documents (a deterministic
+  // +1 on read-back, measured) can just as easily produce in the other
+  // direction. A read of start-1 re-derived to the PREVIOUS beat instead -
+  // one lost press, seen under load on a real fixture. A few ticks below
+  // start is forgiven too now, still far short of a beat's own span
+  // (generally hundreds of ticks), so this costs nothing in correctness
+  // either.
+  const CURSOR_LAG_TOLERANCE_TICKS = 4;
   let cursorPos = null;
   function ensureCursorPosition() {
     const tick = api.tickPosition ?? 0;
     if (cursorPos) {
       const start = positionTick(cursorPos);
       const end = start + cursorPos.beatLookup.duration;
-      if (tick >= start && tick < end) return cursorPos;
+      if (tick >= start - CURSOR_LAG_TOLERANCE_TICKS && tick < end) return cursorPos;
     }
     cursorPos = beatPositionAtTick(tick);
     return cursorPos;
@@ -1338,7 +1365,15 @@ export function createScoreView(host, opts = {}) {
   function publishCursor() {
     if (!host) return;
     const tick = api.tickPosition ?? 0;
-    host.dataset.cursorTick = String(tick);
+    // A score that opens with a grace note can genuinely report a NEGATIVE
+    // tickPosition there (measured: -119) - a grace note plays fractionally
+    // BEFORE the beat it graces, and this is that offset, not a bug in
+    // anything here. Stepping itself is unaffected (masterBarLookupAtTick's
+    // own fallback already resolves any tick at or before the piece's
+    // start to bar 0, negative or not), so only the published READOUT is
+    // clamped - there is nothing before the start of a piece for a reader
+    // of this attribute to usefully do with a negative number.
+    host.dataset.cursorTick = String(Math.max(0, tick));
     const mb = masterBarLookupAtTick(tick);
     if (mb) host.dataset.cursorBar = String(mb.masterBar.index);
     else delete host.dataset.cursorBar;
@@ -1364,20 +1399,26 @@ export function createScoreView(host, opts = {}) {
   // Seeking to a beat and continuing playback from there - the underlying
   // capability #92 asks double-click to use if it exists. It does, but not
   // through beat.absolutePlaybackStart - see the block comment above this
-  // section for the tick-space bug that field caused, and why
-  // api.tickCache.getBeatStart(beat) is the fix instead.
+  // section for the notated-vs-playback-space bug that field caused, and
+  // why api.tickCache.getBeatStart(beat) is the fix instead: it is a genuine
+  // PLAYBACK-space tick, built from the tick cache rather than from counting
+  // notated bars - confirmed directly, it is what lands correctly on 15360/
+  // 17760 for the repeat-fixture tests below rather than the wrong, earlier-
+  // in-the-piece ticks beat.absolutePlaybackStart produced.
   //
-  // getBeatStart answers "when does this beat first play", not "which pass
-  // of it" - the right question here, unlike for the cursor-stepping
-  // functions above: a REPEATED bar is drawn on screen exactly once (a
-  // repeat is a notation symbol, not a second copy of the bars), so a click
-  // on it has only one visual beat to mean, and seeking to that beat's first
-  // play is the natural reading of clicking the one rendering of it there
-  // is. This is also what corrects the OTHER half of the bug this issue's
-  // own repeat measurement found: a bar placed AFTER a repeated section
-  // (never itself repeated) still needs the repeat's extra passes counted
-  // to land on its own correct, later tick, and getBeatStart accounts for
-  // those - built from the tick cache, not from counting notated bars.
+  // What getBeatStart answers is narrower than "the current tick", though -
+  // see the block comment above for why it is pinned to a bar's FIRST played
+  // pass regardless of which pass is actually current. That pinning is the
+  // right answer here, unlike for the cursor-stepping functions above: a
+  // REPEATED bar is drawn on screen exactly once (a repeat is a notation
+  // symbol, not a second copy of the bars), so a click on it has only one
+  // visual beat to mean, and seeking to that beat's first play is the
+  // natural reading of clicking the one rendering of it there is. This also
+  // corrects the OTHER half of the bug this issue's own repeat measurement
+  // found: a bar placed AFTER a repeated section (never itself repeated,
+  // so "first pass" and "only pass" are the same thing for it) still needs
+  // the repeat's extra passes counted to land on its own correct, later
+  // tick, and getBeatStart - being built from the tick cache - already does.
   //
   // Setting tickPosition before calling play() is the documented way to
   // seek (see api.tickPosition's own doc comment). This is deliberately NOT
@@ -1897,7 +1938,34 @@ export function createScoreView(host, opts = {}) {
       // position - see the browser test that presses an arrow key right
       // after a nudge and would otherwise land somewhere the nudge itself
       // teleported the cursor to, not where the arrow key actually moved it.
-      const savedTick = api.tickPosition ?? 0;
+      //
+      // The value saved is positionTick(ensureCursorPosition()) - the
+      // beat's own CANONICAL tick, computed from plain integers on the
+      // parsed model (masterBar.start + beatLookup.start) - and NOT a raw
+      // api.tickPosition read-back. The engine's own tick/millisecond
+      // conversion is lossy: reading tickPosition back after setting it
+      // measured a deterministic +1 on this fixture (5280 in, 5281 out)
+      // every single time, not an occasional rounding artifact - which,
+      // saved and restored on every nudge, accumulated to -462 ticks over
+      // 600 nudges and eventually landed cursor stepping a beat behind.
+      // Deriving the restore value from the model instead of the engine's
+      // own read-back sidesteps that conversion entirely.
+      //
+      // A SEPARATE, narrower thing this does NOT chase down: nudging far
+      // faster than any human keypress rate (Playwright driving Shift+arrow
+      // with no pause between presses, dozens of times a second) was
+      // measured occasionally landing on the range's own start anyway,
+      // asynchronously, after this function had already returned and
+      // restored the correct tick synchronously - traced to alphaTab's own
+      // internal beat-cursor transition (see IAlphaTabApi's own
+      // transitionBeatCursor) still animating from a PREVIOUS nudge when a
+      // new one starts, not to anything this function does or fails to
+      // undo. Not reproducible at any human-realistic pace (confirmed: a
+      // 50ms gap between presses, ten times over, four separate runs, never
+      // recurred) - see the browser test below, which paces its presses for
+      // exactly this reason.
+      const savedPos = ensureCursorPosition();
+      const savedTick = savedPos ? positionTick(savedPos) : (api.tickPosition ?? 0);
       let range = api.playbackRange;
       let established = false;
       if (!range) {
@@ -1925,6 +1993,11 @@ export function createScoreView(host, opts = {}) {
       api.playbackRange = range;
       // Undo the setter's own relocation - see the comment on savedTick.
       api.tickPosition = savedTick;
+      // Kept in sync with the exact value just restored (rather than left
+      // to ensureCursorPosition's own re-derivation on the next call),
+      // since savedPos already IS the correct cached position for savedTick
+      // and re-deriving it would be redundant work for the same answer.
+      if (savedPos) cursorPos = savedPos;
       // publishLoopRange() also runs off api.playbackRangeChanged (for a
       // drag-selected range, which only ever arrives that way) - but that
       // event was measured firing asynchronously, on some later microtask

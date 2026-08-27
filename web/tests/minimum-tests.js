@@ -292,7 +292,26 @@
 // have caught; see score-render.js's own long comment on positionTick for
 // the fix and the two-space explanation, and the repeat- and voice-specific
 // tests above for what pins each half of it down now.
-export const MINIMUM_TESTS = 287;
+//
+// Plus 2 more from a third review pass. One: nudging the loop boundary many
+// times in a row does not drift the cursor - nudgeLoopBoundary saves the
+// cursor's tick before writing a new playbackRange (whose own setter
+// relocates tickPosition as a side effect) and restores it after, but the
+// value saved used to be a raw api.tickPosition READ-BACK, and reading it
+// back after writing it was measured returning a deterministic +1 on this
+// fixture - not an occasional artifact, a consistent one, so saving and
+// restoring that read-back accumulated one tick of drift on every nudge
+// (-462 ticks over 600 nudges in the original measurement, eventually
+// landing cursor stepping a beat behind). Fixed by restoring the beat's own
+// canonical tick, computed from plain integers on the parsed model, instead
+// of the engine's lossy read-back. Two: Space on a focused button activates
+// the button rather than reaching TabViewer's transport - onKey used to
+// preventDefault() Space unconditionally, which suppresses a focused
+// BUTTON's own native Space-activates-click default action; every other
+// test in this file that clicks a button before testing Space now has to
+// blur() it first, which is the accessibility-correct behaviour working as
+// intended, not a workaround.
+export const MINIMUM_TESTS = 289;
 
 export default class MinimumTests {
   constructor() {
