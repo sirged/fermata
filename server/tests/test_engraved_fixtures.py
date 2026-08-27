@@ -1261,6 +1261,71 @@ def test_a_unison_shared_by_two_voices_is_overfull_without_the_stem_split(engrav
 
 
 # ---------------------------------------------------------------------------
+# A unison that is one member of a chord (issue #137)
+# ---------------------------------------------------------------------------
+
+
+def test_a_unison_inside_a_chord_sounds_in_both_voices(engraved):
+    """`unison_in_chord`: the upper voice writes a two-note chord whose LOWER
+    member is the same pitch, at the same moment, as the lower voice's own
+    eighth - three noteheads at that onset, two positions, and only TWO tab
+    digits, because a unison is one plucked string and prints one number
+    however many voices sound it.
+
+    Both voices must come back whole: the upper voice's four quarters each
+    carrying the chord's two notes, the lower voice's eight eighths each
+    carrying one - and on the beats they share, the lower voice's note must
+    be the SAME string and fret as the chord's lower member, because that is
+    the one string the page says is sounding.
+
+    RED before this fix: the digits were handed out one per notehead in pitch
+    order, the third notehead got none, and the lower voice lost its note on
+    every beat the two voices share - 8 of 8 bars short (see the pinning
+    test below)."""
+    result = tabextract.extract(engraved("unison_in_chord"))
+    assert result.extractable
+    assert result.bars == 8
+    assert result.beats == 96, "4 chords + 8 eighths, eight times over"
+    assert result.notes == 128, "the chord is two notes, so 8 + 8 a bar"
+    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
+
+    bars = emitted_bars(result.alphatex)
+    assert all(len(voices) == 2 for voices in bars), bars
+    for upper, lower in bars:
+        assert [q for q, _n in upper] == [1.0] * 4
+        assert [q for q, _n in lower] == [0.5] * 8
+        assert all(len(n) == 2 for _q, n in upper), "every chord keeps both members"
+        assert all(len(n) == 1 for _q, n in lower)
+        for (_uq, chord), (_lq, alone) in zip(upper, lower[::2]):
+            assert alone[0] in chord, (
+                "the shared beat's lower voice plays the chord's own lower "
+                "string, not a string of its own")
+
+
+def test_a_unison_inside_a_chord_loses_a_voice_without_the_shared_digit(engraved, monkeypatch):
+    """The RED this fixture exists to pin, reproduced without touching the
+    source file: neutralise the sharing (every notehead the pitch-ranked
+    match left over stays without a digit, exactly what an unfixed extract
+    does) and the lower voice loses its note on all four beats it shares with
+    the chord - 8 of 8 bars SHORT, each by the 2.0 quarters those four
+    eighths were worth, and 32 notes gone from the page's 128.
+
+    Note what does NOT change: the bars stay 8 and nothing goes overfull.
+    The stem split from #116 is doing its job here - one copy of the
+    coincident pair per voice's stem - so a decoder checked only on its stem
+    binding reads this page as perfectly resolved while a third of its notes
+    are missing."""
+    monkeypatch.setattr(tabextract, "_share_unison_digits",
+                        lambda heads, digits, _taken, _per_group: max(0, len(heads) - len(digits)))
+    result = tabextract.extract(engraved("unison_in_chord"))
+    assert result.extractable
+    assert result.bars == 8
+    assert result.beats == 64
+    assert result.notes == 96
+    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 8, 8)
+
+
+# ---------------------------------------------------------------------------
 # Three voices in one bar (issue #133)
 # ---------------------------------------------------------------------------
 
@@ -1725,7 +1790,8 @@ def test_no_meter_change_is_invented_where_none_is_printed(name, engraved):
 
 ENGRAVED_NAMES = (
     "notation_and_tab", "rests_and_flags", "tab_only", "tab_only_short_last_system",
-    "two_voices", "unison_voices", "three_voices", "tuplet_and_tie", "drop_d", "defective_bars", "volta",
+    "two_voices", "unison_voices", "unison_in_chord", "three_voices", "tuplet_and_tie",
+    "drop_d", "defective_bars", "volta",
     "harmonics_dense", "notation_only", "four_sharps_in_three_four",
     "hidden_opening_meter", "hidden_opening_meter_matches_the_default",
     "mid_system_meter_change", "mid_system_key_and_meter_change",

@@ -39,6 +39,7 @@ gap this directory exists to close was created.
 | `tab_only_short_last_system` | eight bars of which six are read: an unstretched final system falls under the length floor and is lost silently |
 | `two_voices` | a melody stems-up over an accompaniment stems-down in one bar |
 | `unison_voices` | `two_voices` with the upper voice dropped to the lower voice's own pitch — a unison every beat, drawn as the same notehead glyph twice at the identical position, once per voice's stem (issue #116) |
+| `unison_in_chord` | `unison_voices` with the upper voice thickened into a chord, so the unison is one MEMBER of it — three noteheads at the onset, two positions, and only **two** tab digits, because a unison is one plucked string and prints one number however many voices sound it (issue #137) |
 | `three_voices` | a melody, an arpeggiated accompaniment and a sustained whole-note bass, all three attacking together on beat one (issue #133) |
 | `tuplet_and_tie` | a triplet (not detected, so its bar is reported overfull) and a tie across a barline |
 | `drop_d` | a non-standard tuning named in the score's text, and a metronome mark |

@@ -2060,6 +2060,90 @@ def _assign_group_voices(groups, onset_tol):
     return voices or [groups]
 
 
+def _share_unison_digits(heads, digits, taken, per_group):
+    """Give a notehead left with no fret number the digit its COINCIDENT TWIN
+    was given, where the onset is a CHORD the tab has fully named and the twin
+    belongs to another voice (issue #137).
+
+    WHY A DIGIT CAN BE MISSING AT ALL. _match_onset_columns hands out the
+    digits at an onset one per notehead, ranked by pitch against string, and
+    that is right whenever every notehead is its own sounding note. A UNISON
+    SHARED BETWEEN TWO VOICES IS NOT: it is one string, plucked once, notated
+    in each voice - drawn as the same notehead glyph stamped twice at one
+    position, one copy per voice's stem (see glyph.decode_note_events's
+    coincident-pair pass, issue #116) - and the tab prints ONE number for it,
+    because there is only one string to name. Two noteheads, one digit.
+
+    A unison ALONE does not run short of digits, which is why this did not
+    surface with #116: with nothing else at the onset the engraver is free to
+    write the two voices on two different strings and does (MuseScore writes
+    the `unison_voices` fixture's two voices as 2 on the fourth string and 7
+    on the fifth), so there is a digit apiece. Put the unison inside a CHORD
+    and that freedom is gone - the chord's own members are what the column
+    holds, the unison is one of them, and the onset has three noteheads and
+    two digits. Measured on The Cosmic Wheel (FF XI), 12 onsets across 4
+    pages, every one of them that shape: an upper voice's two-note chord
+    whose lower member is the lower voice's own eighth.
+
+    Unfixed, the third notehead simply got nothing, and the VOICE it belongs
+    to lost its note for that beat: 12 bars read an eighth short of their
+    meter and were padded with silence nothing on the page prints. Giving it
+    its twin's digit says what the page says - both voices sound that string
+    at that moment.
+
+    WHY THE CHORD IS REQUIRED, and not merely a coincident pair short of a
+    digit. Only where the tab named EVERY distinct notehead position at this
+    onset exactly once - `len(digits) == len(positions)`, with more than one
+    position, i.e. a chord - is the column demonstrably complete, and a
+    leftover copy therefore provably a second stem on a string the tab
+    already names. Where the whole onset IS the coincident pair, one printed
+    notehead over one printed digit, the page is self-consistent as a single
+    note and the only thing suggesting otherwise is the two-stem signature,
+    which #116 measured to be unreliable on its own: its adjudicated example
+    (Carulli-Moderato-Op192) reads as single notes on the printed page while
+    its content stream carries exactly that signature. Sharing the digit
+    there would double a printed note into two sounding ones on no evidence.
+    The two families are far apart in size as well as in kind - across the
+    library's 293 extractable scores, 500 short onsets are a coincident pair
+    alone over one digit split across two voices, against 65 that are a
+    coincident copy inside a fully named chord. Of those 65, 16 have their
+    twin in ANOTHER voice and take the shared digit (12 on The Cosmic Wheel,
+    4 on Castti, the Apothecary); the other 49 are pairs a stem could not
+    split, refused below.
+
+    ONLY COINCIDENT, AND ONLY ACROSS VOICES. Position is the test for the
+    first: two copies of one glyph at one position are one sounding note,
+    whereas a chord's members sit at DIFFERENT positions and each needs its
+    own digit, so a head that merely lacks a digit gets nothing here and is
+    still reported as a notehead with no fret number. Requiring the twin to
+    be in another GROUP matters for the same reason: where a coincident pair
+    could not be split across two stems (glyph.decode_note_events's
+    coincident_unsplit_pairs) both copies sit in one group, and copying the
+    digit there would double one voice's note into two rather than give a
+    second voice its own.
+
+    `heads` is the onset's (notehead, group) pairs in pitch order and
+    `digits` the fret numbers matched against them, so `heads[len(digits):]`
+    is what the rank match left over. `taken` maps a rounded (x, y) to the
+    (digit, id(group)) the head drawn there was given, and `per_group` is
+    extended in place. Returns how many noteheads are still without a
+    digit."""
+    unmatched = heads[len(digits):]
+    if not unmatched:
+        return 0
+    positions = {(round(m.x, 2), round(m.y, 2)) for m, _g in heads}
+    if len(positions) < 2 or len(digits) != len(positions):
+        return len(unmatched)
+    starved = 0
+    for m, g in unmatched:
+        shared = taken.get((round(m.x, 2), round(m.y, 2)))
+        if shared is None or shared[1] == id(g):
+            starved += 1
+            continue
+        per_group[id(g)].append(shared[0])
+    return starved
+
+
 def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol, split_tol):
     """Hand the tab digits sounding at one onset out to the groups there.
 
@@ -2081,6 +2165,11 @@ def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol, split_
     digits than it had noteheads consume the NEXT onset's column instead,
     sounding those frets a beat early and dropping the notes that column
     belonged to.
+
+    A UNISON SHARED BETWEEN TWO VOICES IS ONE PLUCKED STRING, so the tab
+    prints ONE fret number for it however many voices sound it, and the
+    one-notehead-one-digit rank match runs a digit short at that onset. See
+    _share_unison_digits, which is what closes the gap.
 
     Returns ({id(group): [(string, fret), ...]}, noteheads_with_no_digit).
     """
@@ -2113,8 +2202,16 @@ def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol, split_
 
     digits.sort(key=lambda n: n[0])  # by string: 1 is the highest-pitched
     per_group = {id(g): [] for g in onset_groups}
-    for (_m, g), digit in zip(heads, digits):
+    # Where a head DID get a digit, remember it against the position it was
+    # drawn at, so a coincident twin left over below can be given the same
+    # one. First writer wins: with three copies at one position (never yet
+    # seen on a page) the extra copies all take the first copy's digit,
+    # which is the only digit the tab printed for that string.
+    taken = {}
+    for (m, g), digit in zip(heads, digits):
         per_group[id(g)].append(digit)
+        taken.setdefault((round(m.x, 2), round(m.y, 2)), (digit, id(g)))
+    starved = _share_unison_digits(heads, digits, taken, per_group)
     leftover = digits[needed:]
     if leftover:
         # More fret numbers at this onset than noteheads were read from the
@@ -2123,7 +2220,7 @@ def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol, split_
         per_group[id(max(onset_groups, key=lambda g: g.y))].extend(leftover)
     for g in onset_groups:
         per_group[id(g)].sort(key=lambda n: n[0])
-    return per_group, max(0, needed - len(digits))
+    return per_group, starved
 
 
 def _rest_beats_for(quarters, limit=12, inferred=False):
