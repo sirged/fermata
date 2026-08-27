@@ -431,6 +431,50 @@ def fixture_repeat_structure():
     return score("Guitar", [attributes() + m1, bar, m3, m4, m5, m6, m7, m8])
 
 
+def fixture_adjacent_endings():
+    """The one shape neither volta.pdf nor repeat_structure.pdf reaches
+    (issue #134 adversarial review, item 9): an ending that discontinues
+    (open hook - no downward jog drawn) with the VERY NEXT ending's own
+    bracket starting at that same barline, no bar in between, on the SAME
+    engraved system.
+
+    `_associate_voltas`' `has_right_hook` decides "stop" vs "discontinue" by
+    looking for ANY hook near the bracket's own drawn right end that is not
+    its own left hook (see the comment there) - which is exactly the
+    discriminator the next bracket's OWN opening hook could defeat if it
+    sits close enough. Every fixture and every library score sampled so far
+    happens to draw a bar's width of clearance (or a hook) between one
+    ending's close and the next one's open, so the assertion that reads
+    "discontinue" here has never actually been forced to tell the two
+    apart - see fixture_repeat_structure, whose ending 2 discontinues into a
+    PLAIN bar (measure 6) before ending 3 opens, and volta.pdf, whose
+    adjacent ending closes with a hook (`stop`), not without one
+    (`discontinue`).
+
+    Ending 1 discontinues directly into ending 2's own opening barline -
+    deliberately the FIRST pair in the piece rather than the second: this
+    engraver's line breaks land measures 1-5 on one system and measure 6
+    onward on the next (confirmed against repeat_structure.pdf, which wraps
+    at exactly the same point with the same bar widths) regardless of which
+    endings sit where, so putting the adjacency any later would put the two
+    brackets on DIFFERENT systems - not abutting at all, and a different
+    (also real, already covered by blocker 1's own fixtures) case."""
+    bar = _bar([note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+                note(("G", 4), "quarter"), note(("A", 4), "quarter")], 4.0)
+    m1 = repeat_forward() + bar
+    m3 = (barline("left", ending=ending(1, "start")) + bar
+          + barline("right", ending=ending(1, "discontinue")))
+    # No bar, no double barline, nothing between ending 1's discontinue
+    # above and ending 2's own opening hook right here - the abutting case.
+    m4 = (barline("left", ending=ending(2, "start")) + bar
+          + barline("right", style="light-heavy", repeat="backward",
+                    ending=ending(2, "stop")))
+    m6 = (barline("left", ending=ending(3, "start")) + bar
+          + barline("right", ending=ending(3, "stop")))
+    m8 = bar + barline("right", style="light-heavy")
+    return score("Guitar", [attributes() + m1, bar, m3, m4, bar, m6, bar, m8])
+
+
 def fixture_harmonics_dense():
     """Diamond noteheads - harmonics - on a densely written two-voice system.
 
@@ -698,6 +742,7 @@ FIXTURES = {
     "defective_bars": fixture_defective_bars,
     "volta": fixture_volta,
     "repeat_structure": fixture_repeat_structure,
+    "adjacent_endings": fixture_adjacent_endings,
     "harmonics_dense": fixture_harmonics_dense,
     "notation_only": fixture_notation_only,
 }

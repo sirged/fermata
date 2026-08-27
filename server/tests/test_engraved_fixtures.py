@@ -924,6 +924,60 @@ def test_repeat_structure_pdf_plays_in_the_order_the_repeats_and_endings_say(eng
     assert repeats[6]["alternateEndings"] == 4
 
 
+def test_a_discontinued_ending_abutting_the_next_ones_hook_still_reads_discontinue(engraved):
+    """Item 9 (issue #134 adversarial review): `has_right_hook` decides
+    `stop` vs `discontinue` by looking for a hook near the bracket's own
+    drawn right end that is not obviously part of something else - and the
+    one thing neither volta.pdf nor repeat_structure.pdf ever puts in front
+    of it is another bracket's own opening hook sitting right there. Both of
+    those fixtures' adjacent endings happen to close with `stop`, so the
+    assertion that reads their type right could not tell the rule from
+    luck - it would have read the same "stop" whether or not the hook
+    search excluded the neighbour's hook at all.
+
+    This fixture's source (fixture_adjacent_endings) declares ending 1 with
+    NO closing hook (`discontinue`) immediately followed by ending 2's own
+    opening hook at the same barline, no bar in between - the one case that
+    forces the two apart. Read against the engraved page (not merely the
+    source XML) because that is where the confusion actually lives: two
+    hook-shaped downward strokes can land at the exact same x on a real
+    page (confirmed on Zelda's Lullaby, whose ending 1 closes with `stop`
+    immediately into ending 2's own opening hook - the "spare hook" case
+    hook_x_counts/own_hook_counts exists to keep working)."""
+    pdf = engraved("adjacent_endings")
+    result = tabextract.extract(pdf)
+    assert result.extractable
+    assert result.bars == 8, "the fixture's own source declares 8 measures"
+    assert _barline_structure(result.musicxml) == {
+        1: {"left": {"bar_style": "heavy-light", "repeat": "forward"}},
+        3: {
+            "left": {"ending": ("1", "start")},
+            "right": {"ending": ("1", "discontinue")},
+        },
+        4: {
+            "left": {"ending": ("2", "start")},
+            "right": {"bar_style": "light-heavy", "ending": ("2", "stop"),
+                      "repeat": "backward"},
+        },
+        6: {
+            "left": {"ending": ("3", "start")},
+            "right": {"ending": ("3", "stop")},
+        },
+        8: {"right": {"bar_style": "light-heavy"}},
+    }
+    assert (result.bars_overfull, result.bars_short, result.bars_defective,
+            result.bars_padded, result.inferred_rest_quarters, result.notes) == (
+        0, 0, 0, 0, 0.0, 32)
+    assert result.repeats_unread == 0
+    assert result.endings_unread == 0
+    assert result.endings_truncated == 0
+    assert result.form_marks_unanchored == 0
+    assert result.endings_incomplete == 0
+
+    loaded = _load_musicxml_with_alphatab(result.musicxml, repeats=True)
+    assert loaded["tickLookup"] == [1, 2, 3, 1, 2, 4, 5, 6, 7, 8]
+
+
 # ---------------------------------------------------------------------------
 # An unrecognised notehead, at a density no ratio can see
 # ---------------------------------------------------------------------------

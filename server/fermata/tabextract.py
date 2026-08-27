@@ -1249,7 +1249,21 @@ def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first
     unread_bars = []
     unanchored_bars = []
     n_bars = len(bounds) - 1
-    for left_x, right_x, line_y, number in brackets:
+    # How many hook entries sit at each x, and how many BRACKETS claim that
+    # exact x as their own left hook (issue #134 adversarial review, item
+    # 9). Two numbered endings can sit back to back with nothing between
+    # them (see fixture_adjacent_endings) - the closing hook of one and the
+    # opening hook of the next then land at THE SAME x, drawn as two
+    # coincident strokes (confirmed on Zelda's Lullaby: 2 separate hook
+    # entries at the exact x where ending 1 closes and ending 2 opens). A
+    # count comparison, not a flat exclusion, is what tells "the next
+    # bracket's own opening hook, and nothing else" (count equal - exclude)
+    # apart from "a genuine closing hook that happens to coincide with the
+    # next bracket's opening one" (count exceeds the claims - the spare one
+    # is fair game) - see has_right_hook below.
+    hook_x_counts = collections.Counter(hx for hx, _htop, _hbot in hooks)
+    own_hook_counts = collections.Counter(b[0] for b in brackets)
+    for idx, (left_x, right_x, line_y, number) in enumerate(brackets):
         right_of, left_of = _anchor_mark(left_x, bounds, lo, hi, bar_spacing)
         if right_of is None and left_of is None:
             # _anchor_mark's own case 4 (issue #134 S3.2/S5) - genuinely no
@@ -1295,12 +1309,29 @@ def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first
             unread_bars.append(staff_first_bar + first_local)
             continue
 
+        # This bracket's own extent search must not cross into the NEXT
+        # bracket's territory - a backward repeat that closes THAT bracket's
+        # own span is not this one's, even though "at or after first_local"
+        # alone cannot tell the two apart (issue #134 adversarial review,
+        # item 9 - the same neighbouring-bracket confusion has_right_hook
+        # below guards against, for the extent search instead of the hook).
+        next_first_local = None
+        if idx + 1 < len(brackets):
+            nxt_right_of, nxt_left_of = _anchor_mark(
+                brackets[idx + 1][0], bounds, lo, hi, bar_spacing)
+            if nxt_left_of is not None:
+                next_first_local = nxt_left_of
+            elif nxt_right_of is not None:
+                next_first_local = nxt_right_of + 1
+
         last_local = None
         for bl in barline_recs:
             if bl.repeat not in ("backward", "both"):
                 continue
             r_of, _l_of = _anchor_mark(bl.x, bounds, lo, hi, bar_spacing)
             if r_of is not None and r_of >= first_local:
+                if next_first_local is not None and r_of >= next_first_local:
+                    continue
                 if last_local is None or r_of < last_local:
                     last_local = r_of
         truncated = False
@@ -1325,10 +1356,19 @@ def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first
         # never required. The repeat search and `truncated` above decide the
         # ending's EXTENT (issue #134 S3.2) and are deliberately not
         # consulted here - the extent and the hook are different questions.
+        # A hook at x counts as available here only if there are MORE hook
+        # entries at that x than brackets claiming it as their own left hook
+        # (issue #134 adversarial review, item 9) - see hook_x_counts /
+        # own_hook_counts above. The ordinary case (a hook belonging only to
+        # this bracket, or only to a neighbour's) has counts 1 and 1 or 1
+        # and 0 - never available to a DIFFERENT bracket. The coincident
+        # case (two hooks land at the same x - one closes this bracket, one
+        # opens the next) has counts 2 and 1, so the spare is available.
         has_right_hook = any(
             abs(hx - right_x) <= spacing * VOLTA_ANCHOR_SPACES
             and abs(htop - line_y) <= spacing * 1.5
-            for hx, htop, _hbot in hooks if hx != left_x)
+            and hook_x_counts[hx] > own_hook_counts[hx]
+            for hx, htop, _hbot in hooks)
 
         endings.append((staff_first_bar + first_local, staff_first_bar + last_local,
                          number, "stop" if has_right_hook else "discontinue", truncated))
