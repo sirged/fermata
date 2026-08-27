@@ -789,29 +789,22 @@ def test_a_repeat_with_ending_brackets_leaves_its_staves_alone(engraved):
     result = tabextract.extract(pdf)
     assert result.tab_staff_count == 2
     assert result.rhythm_provenance == {tabextract.PROV_GLYPHS: 2}
-    # The repeat's thick-thin barline is read as two barlines, so an empty bar
-    # appears between the two halves. That is an artifact and it is pinned as
-    # one rather than left to be discovered: nine bars for eight written, the
-    # extra one a whole rest.
+    # The repeat's thick-thin barline is one physical barline, drawn as two
+    # close strokes - _detect_barlines merges them (see
+    # BARLINE_STROKE_MERGE_SPACES), so this reads as the eight bars actually
+    # written, not the phantom ninth a 2pt merge tolerance used to leave
+    # between the strokes.
     bars = emitted_bars(result.alphatex)
-    assert len(bars) == 9
-    assert bars[4][0] == [(4.0, [])], bars[4]
-    assert [len(v[0]) for v in bars] == [4, 4, 4, 4, 1, 4, 4, 4, 4]
-    # ...and that phantom bar is reported as a bar nothing was read from, which
-    # is the only signal it leaves: its whole rest adds up to the meter, so
-    # Rule 8 passes and the file cannot distinguish it from an engraved silence.
-    # Nine bars for eight written is exactly the kind of thing a reader has to
-    # be told about by number rather than left to notice.
-    assert result.bars_unread == 1
-    assert result.unread_bars == [5]
+    assert len(bars) == 8
+    assert [len(v[0]) for v in bars] == [4, 4, 4, 4, 4, 4, 4, 4]
+    assert result.bars_unread == 0
+    assert result.unread_bars == []
     assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
     assert "<forward>" not in result.musicxml
-    unread = next(w for w in result.warnings if "hold nothing that was read" in w)
-    assert "1 of 9 bar(s)" in unread and "The bars are: 5." in unread
-    # one bar in nine is under the downgrade threshold, and the confidence still
-    # says so rather than reading as an unqualified high
-    assert result.confidence["rhythm"].startswith("high")
-    assert "hold nothing that was read from the score (1)" in result.confidence["rhythm"]
+    assert not any("hold nothing that was read" in w for w in result.warnings)
+    assert result.confidence["rhythm"] == (
+        "high - decoded directly from the notehead/stem/flag/beam/dot glyphs "
+        "in the score's own engraving")
 
 
 # ---------------------------------------------------------------------------

@@ -451,11 +451,15 @@ comparison against the source stays aligned.
 The consequence has to be stated, because a consumer cannot recover it: **a
 measure of rests may be either genuinely engraved silence or a measure whose
 contents were missed, and nothing in the file distinguishes them.** In the
-library this profile was developed against, 338 measures are a bar of rests and
-exactly one of them was printed that way. Fermata therefore reports these
-measures outside the Rule 8 figures — counted, named by number, and folded into
-its own confidence — because the file cannot carry the distinction. A consumer
-that needs it has to get it from the producer.
+library this profile was developed against, 24 measures are a bar of rests and
+exactly one of them was printed that way. (An earlier count of 338 included 314
+measures that were never on the page at all - a repeat barline's two strokes,
+drawn a few points apart, that `_detect_barlines` read as two separate
+barlines with a phantom sliver "measure" between them; see
+[Rule 15](#repeat-structure-rule-15) for the fix.) Fermata therefore reports
+these measures outside the Rule 8 figures — counted, named by number, and
+folded into its own confidence — because the file cannot carry the
+distinction. A consumer that needs it has to get it from the producer.
 
 **For a reader.** Four things follow, and they all matter:
 

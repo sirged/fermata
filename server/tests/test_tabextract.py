@@ -279,7 +279,10 @@ def test_born_a_stranger_unison_survives_as_two_notes_in_two_voices(born_a_stran
     figures are invariant under every variant tried during the research."""
     result = tabextract.extract(born_a_stranger_pdf)
     assert result.extractable
-    assert result.bars == 40
+    # One fewer than before _detect_barlines merged a repeat pair's two
+    # strokes into one boundary (see BARLINE_STROKE_MERGE_SPACES) - this
+    # score carried one of the library's phantom sliver measures.
+    assert result.bars == 39
     assert result.bars_defective == 38
     assert result.notes == 403
 
@@ -1129,7 +1132,10 @@ def test_reference_score_bars_mostly_add_up(zanarkand_pdf):
     result = tabextract.extract(zanarkand_pdf)
     assert result.extractable
     bars = _emitted_bars(result.alphatex)
-    assert len(bars) == 50, len(bars)
+    # One fewer than before _detect_barlines merged a repeat pair's two
+    # strokes into one boundary (see BARLINE_STROKE_MERGE_SPACES) - this
+    # score carried one of the library's phantom sliver measures.
+    assert len(bars) == 49, len(bars)
 
     exact = sum(1 for budget, vs in bars
                 if all(abs(v - budget) < 1e-6 for v in vs))
@@ -1171,7 +1177,8 @@ def test_reference_score_still_reports_the_bars_that_do_not_add_up(zanarkand_pdf
     result = tabextract.extract(zanarkand_pdf)
     fullness = [w for w in result.warnings if "hold more than their time signature" in w]
     assert len(fullness) == 1, result.warnings
-    assert re.search(r"\b\d+ of 50 bar\(s\)", fullness[0]), fullness[0]
+    # 49, not 50 - see test_reference_score_bars_mostly_add_up.
+    assert re.search(r"\b\d+ of 49 bar\(s\)", fullness[0]), fullness[0]
     assert any("concurrent voices" in w for w in result.warnings)
 
 
@@ -1509,7 +1516,11 @@ def test_a_key_change_at_a_mid_system_barline_does_not_hide_the_meter(wild_arms_
     being checked."""
     result = tabextract.extract(wild_arms_pdf)
     meters = emitted_meters(result.musicxml)
-    assert meters == [(4, 4)] * 25 + [(2, 4)] * 1 + [(6, 4)] * 2 + [(4, 4)] * 23
+    # Two of this score's bars used to be the phantom sliver a repeat pair's
+    # two strokes left behind before _detect_barlines merged them (see
+    # BARLINE_STROKE_MERGE_SPACES) - one inside the (6, 4) run, one in the
+    # trailing (4, 4) run - so the run lengths are two shorter than they were.
+    assert meters == [(4, 4)] * 25 + [(2, 4)] * 1 + [(6, 4)] * 1 + [(4, 4)] * 22
     assert any("changes time signature part-way through" in w for w in result.warnings), (
         result.warnings)
 
@@ -1574,7 +1585,11 @@ def test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early(kaine_salv
     result = tabextract.extract(kaine_salvation_pdf)
     meters = emitted_meters(result.musicxml)
     changes = [(i + 1, m) for i, m in enumerate(meters) if i == 0 or m != meters[i - 1]]
-    assert changes == [(1, (3, 4)), (28, (6, 8))], changes
+    # One bar earlier than before _detect_barlines merged a repeat pair's two
+    # strokes into one boundary (see BARLINE_STROKE_MERGE_SPACES) - this
+    # score's first system carried one phantom sliver measure ahead of the
+    # (6, 8) change.
+    assert changes == [(1, (3, 4)), (27, (6, 8))], changes
     assert any("changes time signature part-way through" in w for w in result.warnings), (
         result.warnings)
 

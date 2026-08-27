@@ -384,6 +384,19 @@ STAFF_LINE_SIBLING_TOLERANCE = 2.0
 # A rule drawn along the page's own edge is page furniture, not a staff.
 PAGE_EDGE_TOLERANCE = 1.0
 
+# How close two vertical strokes have to be to count as one barline. A
+# repeat pair (thin + thick stroke) is drawn 3.6-4.0pt apart on the engravers
+# sampled; a genuine adjacent measure is never that close. Measured over
+# 12,228 consecutive-vertical gaps on tab staves: the band between 0.526 and
+# 2.273 staff spaces is EMPTY (0 gaps), with every within-barline-group gap
+# at or below 0.525 spaces and every real inter-measure gap at or above
+# 2.274. 1.0 staff space sits in the middle of that empty band - 1.9x above
+# the widest stroke pair observed and 2.3x below the narrowest genuine
+# measure - so it is not a judgement call. In absolute points this is far
+# looser than it looks: on a typical ~7.7pt tab staff spacing, 1.0 space is
+# 7.7pt, comfortably wider than any repeat-pair gap measured.
+BARLINE_STROKE_MERGE_SPACES = 1.0
+
 
 def _long_horizontal_segments(page, min_len_ratio=0.25):
     """Near-horizontal vector primitives long enough to plausibly be staff
@@ -546,6 +559,23 @@ def _detect_barlines(segs, staff):
     so calling _vertical_segments(page) once per staff here made a 2-page,
     ~7-staves-per-page file re-parse the same page content ~14 times inside
     a single synchronous request.
+
+    Strokes within BARLINE_STROKE_MERGE_SPACES of their immediate predecessor
+    are the same barline (see its docstring for why that threshold and not a
+    fixed point value): a repeat pair draws a thin stroke and a thick stroke a
+    few points apart, and merging too tight leaves both as separate barlines
+    with a phantom sliver "measure" between them. The comparison chains off
+    the PREVIOUS stroke, not off the group's leftmost one, because a compound
+    barline (e.g. a double bar abutting a repeat, `ttHt`) can carry four
+    strokes whose individual gaps are each well under the threshold but whose
+    total span, first stroke to last, is not - measured on the library, 17
+    such groups. Chaining off each hop instead of the group's anchor still
+    merges them correctly, since no genuine inter-measure gap is ever within
+    this threshold of anything (the empty band is 0.526-2.273 staff spaces;
+    see BARLINE_STROKE_MERGE_SPACES). Which stroke of a group survives as the
+    boundary makes no difference to anything downstream - bars, beats, notes
+    and every conformance count come out identical whichever end is kept - so
+    the leftmost is kept because music never starts inside a barline group.
     """
     xs = []
     span = staff.bottom - staff.top
@@ -554,11 +584,15 @@ def _detect_barlines(segs, staff):
             if staff.x0 - 2 <= x <= staff.x1 + 2:
                 xs.append(round(x, 1))
     xs = sorted(set(xs))
+    merge_tol = staff.spacing * BARLINE_STROKE_MERGE_SPACES
     merged = []
+    prev = None
     for x in xs:
-        if merged and x - merged[-1] < 2.0:
+        if prev is not None and x - prev < merge_tol:
+            prev = x
             continue
         merged.append(x)
+        prev = x
     return merged
 
 
