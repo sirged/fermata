@@ -1145,6 +1145,13 @@ export function createScoreView(host, opts = {}) {
     delete host.dataset.metronomeDenominator;
     delete host.dataset.metronomePhase;
     delete host.dataset.metronomeBpm;
+    // Same reasoning as the metronome dataset above - a fresh view for a new
+    // score must not go on reporting the previous score's cursor tick or loop
+    // range while this one is still loading.
+    delete host.dataset.cursorTick;
+    delete host.dataset.cursorBar;
+    delete host.dataset.loopStartTick;
+    delete host.dataset.loopEndTick;
   }
 
   // Reflects each scheduled click onto the host, the same way publish() below
@@ -1173,6 +1180,117 @@ export function createScoreView(host, opts = {}) {
     },
     publishMetronomeClick,
   );
+
+  // ------------------------------------------- the non-playing cursor (#92)
+  //
+  // Nothing before this existed to select a beat or a bar without also
+  // playing it - `api.tickPosition` is the one position the renderer knows
+  // about, and it is also the playhead: setting it moves the drawn cursor,
+  // and it is exactly where the NEXT playPause() resumes from. That double
+  // duty is what a keyboard "move the cursor" wants - it is a rehearsal mark
+  // dropped for next time, not a mode of its own - so nothing here tracks a
+  // second, separate notion of "selected beat".
+  //
+  // Only track 0 is ever rendered today (see the module header on
+  // supportedProfiles), so the beat lookups below only ever search that one
+  // track. Multi-track support would need to be told which track's cursor is
+  // being moved; nothing here assumes that will stay true forever, it is
+  // just the honest boundary of what a single-track renderer can mean by
+  // "the" cursor.
+  const CURSOR_TRACK = new Set([0]);
+
+  // The beat at or containing `tick`, or null before a score has loaded (no
+  // tickCache yet) or if the lookup finds nothing there.
+  function beatAtTick(tick) {
+    const cache = api.tickCache;
+    if (!cache) return null;
+    return cache.findBeat(CURSOR_TRACK, Math.max(0, tick | 0))?.beat ?? null;
+  }
+
+  // The MasterBarTickLookup spanning `tick` - the same lookup
+  // createScoreMetronome's currentBars() reads, but kept in the renderer's
+  // own shape (not the plain {startTick,...} one that function builds) so
+  // its nextMasterBar/previousMasterBar links can be followed directly
+  // rather than re-deriving an index into the array.
+  function masterBarLookupAtTick(tick) {
+    const bars = api.tickCache?.masterBars;
+    if (!bars || bars.length === 0) return null;
+    let found = bars[0];
+    for (const mb of bars) {
+      if (mb.start > tick) break;
+      found = mb;
+    }
+    return found;
+  }
+
+  function publishCursor() {
+    if (!host) return;
+    const tick = api.tickPosition ?? 0;
+    host.dataset.cursorTick = String(tick);
+    const mb = masterBarLookupAtTick(tick);
+    if (mb) host.dataset.cursorBar = String(mb.masterBar.index);
+    else delete host.dataset.cursorBar;
+  }
+
+  function publishLoopRange() {
+    if (!host) return;
+    const range = api.playbackRange;
+    if (range) {
+      host.dataset.loopStartTick = String(range.startTick);
+      host.dataset.loopEndTick = String(range.endTick);
+    } else {
+      delete host.dataset.loopStartTick;
+      delete host.dataset.loopEndTick;
+    }
+  }
+
+  // Reflects a drag-selected range (alphaTab's own built-in gesture) as well
+  // as one nudged from the keyboard below - one publisher for both, so a
+  // test (or a future readout) cannot see the two disagree.
+  api.playbackRangeChanged.on(() => publishLoopRange());
+
+  // Seeking to a beat and continuing playback from there - the underlying
+  // capability #92 asks double-click to use if it exists. It does:
+  // Beat.absolutePlaybackStart is exactly the tick api.play() would need to
+  // start from, and setting tickPosition before calling play() is the
+  // documented way to seek (see api.tickPosition's own doc comment). This is
+  // deliberately NOT api.playBeat(beat) - that plays a short, separate
+  // preview of just the one beat (its own doc: "playback of audio separate
+  // to the main song playback") and never touches the transport at all,
+  // which is a preview, not "play from there".
+  function playFromBeat(beat) {
+    if (!beat) return;
+    metronome.control.prime();
+    api.tickPosition = beat.absolutePlaybackStart;
+    publishCursor();
+    // api.play() is its own guard - it declines (returns false) and does
+    // nothing when the player is not ready yet, the same as every other
+    // transport call in this file already relies on.
+    api.play();
+  }
+
+  // alphaTab's own beatMouseDown fires on every ordinary mousedown over a
+  // beat - it is what the built-in click-and-drag loop-range selection reads
+  // - so seeking on it directly would fire on the FIRST click of a drag, not
+  // only a double one. A native "dblclick" tells the two apart for free: it
+  // only fires once the browser has already decided two clicks landed close
+  // together in time and place, which a drag never satisfies. Pairing the
+  // two events - remembering the beat the matching mousedown reported, then
+  // acting on it when dblclick follows - reuses the renderer's own hit
+  // testing (there is no public API to ask "which beat is under this pixel"
+  // outside of a mouse event) without needing to reimplement it.
+  let lastMouseDownBeat = null;
+  api.beatMouseDown.on((beat) => {
+    lastMouseDownBeat = beat;
+  });
+  // host outlives this closure (see the dataset-reset comment above), so the
+  // listener is named and removed in destroy() below - otherwise a score
+  // switch would pile up one more of these on every load, and a double-click
+  // would seek+play once per accumulated listener.
+  function onHostDblClick() {
+    if (lastMouseDownBeat) playFromBeat(lastMouseDownBeat);
+  }
+  if (host) host.addEventListener("dblclick", onHostDblClick);
 
   // Fonts for the title block are not readable through settings; they are
   // assigned onto the live resource object, which is why this happens after
@@ -1315,6 +1433,11 @@ export function createScoreView(host, opts = {}) {
     onScoreTempo(loadedScore?.tempo ?? null, tempoProvenance(loadedScore));
     publish();
     onProfiles(scoreProfiles, unrenderable);
+    // A freshly loaded score starts at bar one, not wherever the previous
+    // score's cursor happened to be left - see the dataset.cursorTick reset
+    // above for the same reasoning applied to the attribute this reflects.
+    publishCursor();
+    publishLoopRange();
   });
 
   api.playerReady.on(() => onReady());
@@ -1553,12 +1676,76 @@ export function createScoreView(host, opts = {}) {
     },
     stop() {
       api.stop();
+      publishCursor();
+    },
+
+    /**
+     * Moves the cursor one beat forward (direction > 0) or backward
+     * (direction < 0) - without starting playback, see the block above this
+     * view's construction for why tickPosition alone is what "the cursor"
+     * means here. A no-op at either end of the piece, or before a score has
+     * loaded.
+     */
+    moveCursorBeat(direction) {
+      const beat = beatAtTick(api.tickPosition ?? 0);
+      const target = direction > 0 ? beat?.nextBeat : beat?.previousBeat;
+      if (!target) return;
+      api.tickPosition = target.absolutePlaybackStart;
+      publishCursor();
+    },
+
+    /**
+     * Moves the cursor a whole bar forward or backward - #92's own
+     * equivalent for "a line", chosen because this renderer has no exposed
+     * notion of which drawn system a bar falls on: "stand" layout is one
+     * continuous horizontal line by design (see LAYOUT_TABLE above), so a
+     * literal "next line" would mean nothing there, and "desk" layout's
+     * bars-per-row is a rendering choice that can change on every resize. A
+     * bar is the one coarser unit both layouts agree on.
+     */
+    moveCursorBar(direction) {
+      const mb = masterBarLookupAtTick(api.tickPosition ?? 0);
+      const target = direction > 0 ? mb?.nextMasterBar : mb?.previousMasterBar;
+      if (!target) return;
+      api.tickPosition = target.start;
+      publishCursor();
+    },
+
+    /**
+     * Nudges the loop region's END boundary out (direction > 0) or in
+     * (direction < 0) by one beat. This renderer's loop otherwise only ever
+     * gets a region from alphaTab's own click-and-drag gesture across the
+     * score - see the toolbar's Loop button title - so with nothing selected
+     * yet, the first nudge starts a region at the bar the cursor is
+     * currently in (matching what a one-bar drag-select would have produced)
+     * rather than nudging nothing.
+     */
+    nudgeLoopBoundary(direction) {
+      let range = api.playbackRange;
+      let established = false;
+      if (!range) {
+        const mb = masterBarLookupAtTick(api.tickPosition ?? 0);
+        if (!mb) return;
+        range = { startTick: mb.start, endTick: mb.end };
+        established = true;
+      }
+      const boundaryBeat = beatAtTick(Math.max(range.startTick, range.endTick - 1));
+      const target = direction > 0 ? boundaryBeat?.nextBeat : boundaryBeat?.previousBeat;
+      const newEnd =
+        target && target.absolutePlaybackStart > range.startTick ? target.absolutePlaybackStart : null;
+      if (newEnd != null) range = { startTick: range.startTick, endTick: newEnd };
+      // A region that already existed and simply cannot move further (the
+      // very first or last beat) is left exactly as it was, rather than
+      // re-applying the same range and firing a no-op change event.
+      else if (!established) return;
+      api.playbackRange = range;
     },
 
     destroy() {
       destroyed = true;
       observer.disconnect();
       partialWatcher.disconnect();
+      if (host) host.removeEventListener("dblclick", onHostDblClick);
       metronome.destroy();
       api.destroy();
     },

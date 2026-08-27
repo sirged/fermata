@@ -117,9 +117,25 @@
     if (e.key === "f" || e.key === "F") {
       e.preventDefault();
       toggleGigMode();
-    } else if (e.key === "Escape" && gigMode) {
-      e.preventDefault();
-      exitGigMode();
+    } else if (e.key === "Escape") {
+      // #92: Esc closes whatever is open, checked in the order a player
+      // would actually be looking at it - gig mode is the most likely thing
+      // to be open (it is the one this handler already knew how to close),
+      // then the two overlays this header can have open at once, tag
+      // editing and the just-logged session's detail panel. Only ever one
+      // of these closes per press: dismissing the tag editor while the
+      // detail panel is ALSO open would take both away in one keystroke,
+      // which is not "close whatever is open" (singular) any more.
+      if (gigMode) {
+        e.preventDefault();
+        exitGigMode();
+      } else if (editingTags) {
+        e.preventDefault();
+        editingTags = false;
+      } else if (lastSession && detail) {
+        e.preventDefault();
+        dismissDetail();
+      }
     }
   }
 

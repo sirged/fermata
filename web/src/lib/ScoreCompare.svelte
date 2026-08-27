@@ -451,7 +451,18 @@
 
 {#snippet pdfPane(hidden)}
   <div class="pane" class:hidden>
-    <PdfViewer {score} {gigMode} {onToggleGig} {practiceLabel} {onStopPractice} />
+    <!-- active: only while this is the ONE pane on screen, never in "side"
+         layout - see PdfViewer's own comment on the prop for why sharing a
+         key with TabViewer's #92 shortcuts makes two panes answering the
+         same keypress worse than neither answering it. -->
+    <PdfViewer
+      {score}
+      {gigMode}
+      {onToggleGig}
+      {practiceLabel}
+      {onStopPractice}
+      active={activeLayout === "pdf"}
+    />
   </div>
 {/snippet}
 
@@ -591,6 +602,7 @@
           {onToggleGig}
           {practiceLabel}
           {onStopPractice}
+          active={activeLayout === "staff"}
         />
       </div>
     {/if}

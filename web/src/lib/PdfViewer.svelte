@@ -13,6 +13,17 @@
     onToggleGig = () => {},
     practiceLabel = null,
     onStopPractice = () => {},
+    // Whether Space/PageUp/PageDown/the arrow keys should turn pages here at
+    // all. Defaults true - the only other caller (Viewer.svelte, for a PDF
+    // with no transcription) always wants this on. ScoreCompare mounts this
+    // alongside a TabViewer and keeps BOTH mounted even while only one pane
+    // is on screen (see its own snippets), and TabViewer grew single-key
+    // shortcuts of its own on several of the same keys (#92) - Space and the
+    // plain arrow keys chief among them. Left both listening unconditionally,
+    // showing the staff pane would still silently turn a page in the PDF
+    // pane sitting behind it on every Space press. ScoreCompare passes this
+    // only `true` while its PDF pane is the one actually on screen.
+    active = true,
   } = $props();
 
   let container;
@@ -191,6 +202,7 @@
   }
 
   function onKey(e) {
+    if (!active) return;
     const tag = e.target?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target?.isContentEditable) return;
     if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
