@@ -1213,53 +1213,95 @@ export function createScoreView(host, opts = {}) {
     return found;
   }
 
-  // The first Beat of bar `barIndex`, read off the parsed score model
-  // itself (Track -> Staff -> Bar -> Voice -> Beat) rather than anything the
-  // tick cache builds. Track 0, staff 0, voice 0 - the same "only the first
-  // track is ever rendered" boundary noted above.
-  function firstBeatOfBar(barIndex) {
-    const bar = api.score?.tracks?.[0]?.staves?.[0]?.bars?.[barIndex];
-    return bar?.voices?.[0]?.beats?.[0] ?? null;
-  }
+  // ---------------------------------------------------- repeat-safe cursor
+  //
+  // Every one of these works in TWO tick spaces at once, and getting that
+  // wrong was #92's most severe bug: Beat.absolutePlaybackStart (and
+  // api.tickCache.getBeatStart(beat), which is documented as returning the
+  // same "first time this beat plays" tick) are built from MasterBar.start -
+  // NOTATED order, one number per bar however many times it actually plays -
+  // while api.tickPosition, api.playbackRange and api.tickCache.masterBars
+  // are the repeat-EXPANDED PLAYBACK order the generated MIDI actually runs
+  // on, where a twice-played bar gets two different MasterBarTickLookup
+  // entries with two different `.start` ticks. The two spaces agree only on
+  // a score with no repeats at all. Measured on a real repeat fixture (two
+  // bars repeated once, then a third): stepping bar-by-bar past the repeat
+  // and then one beat further moved the cursor BACKWARDS by 6720 ticks,
+  // because the beat step converted through the notated-order tick while the
+  // bar step had been reading real playback ticks the whole time.
+  //
+  // The fix is BeatTickLookup (MasterBarTickLookup.firstBeat/nextBeat/
+  // previousBeat/lastBeat), and it needs one fact spelled out that its own
+  // doc comments do not: BeatTickLookup.start/.end are RELATIVE to the
+  // MasterBarTickLookup that owns them, not absolute ticks. That single
+  // relative shape is exactly what lets the same beat chain be read off ANY
+  // pass's own MasterBarTickLookup instance and still land on the right
+  // absolute tick for THAT pass - add its owning masterBar's own `.start`
+  // and the result is correct however many times the bar has already played.
+  // (An earlier version of this file read BeatTickLookup.start as if it were
+  // already absolute, saw "0" where it expected a mid-piece tick, and
+  // concluded the field was unreliable - it was in fact reporting exactly
+  // what it documents, just not what was assumed of it; confirmed by
+  // dumping api.tickCache.masterBars directly against this repeat fixture.)
+  //
+  // A {masterBar, beatLookup} pair, not a bare Beat, is what gets passed
+  // around below - the masterBar half is what makes the pair pass-specific;
+  // a Beat alone cannot say which of a repeated bar's plays it means.
 
-  // The Beat spanning `tick`, found by walking a bar's own beats
-  // structurally - firstBeatOfBar, then Beat.nextBeat (a plain link on the
-  // parsed model, populated once at parse time) accumulating each beat's own
-  // playbackDuration - rather than through api.tickCache.findBeat() or a
-  // MasterBarTickLookup's firstBeat/lastBeat/nextBeat/previousBeat. Both of
-  // those were measured to occasionally answer wrong or empty when queried
-  // cold, at an arbitrary tick, with nothing to say why: findBeat's own docs
-  // describe it as optimised for a `currentBeatHint` carried from the
-  // PREVIOUS call, which nothing here has during a one-off keyboard nudge,
-  // and MasterBarTickLookup.firstBeat was seen (with an actual browser trace
-  // to show it) reporting a NEXT bar's first beat as starting at tick 0 -
-  // simply wrong, not merely a boundary-tick edge case. The parsed model's
-  // own Beat.nextBeat/previousBeat chain has no such history and needs no
-  // hint - it is exactly the structure the renderer itself was built from.
-  function beatAtTickStructural(tick) {
+  // {masterBar, beatLookup} for the tick, found by walking the OWNING pass's
+  // own beat chain (masterBarLookupAtTick already returns the correct pass
+  // for `tick`) rather than through api.tickCache.findBeat(), which is
+  // documented as optimised for a `currentBeatHint` carried from a previous
+  // call - nothing here has one for a one-off keyboard nudge, and it was
+  // measured to occasionally answer wrong or empty when called cold anyway.
+  function beatPositionAtTick(tick) {
     const mb = masterBarLookupAtTick(tick);
-    let beat = mb ? firstBeatOfBar(mb.masterBar.index) : null;
-    let at = mb?.start ?? 0;
-    while (beat?.nextBeat && at + beat.playbackDuration <= tick) {
-      at += beat.playbackDuration;
-      beat = beat.nextBeat;
-    }
-    return beat;
+    if (!mb) return null;
+    const relTick = tick - mb.start;
+    let bt = mb.firstBeat;
+    while (bt?.nextBeat && relTick >= bt.end) bt = bt.nextBeat;
+    return bt ? { masterBar: mb, beatLookup: bt } : null;
   }
 
-  // The cursor's current Beat, kept as state so repeated stepping (an arrow
-  // key held, or several presses in a row) only ever follows
-  // Beat.nextBeat/previousBeat - it never re-derives from tickPosition via
-  // beatAtTickStructural on every press, which would mean walking every bar
-  // from its own start again each time. Re-seeded automatically whenever
+  // The absolute playback tick of a {masterBar, beatLookup} pair - see the
+  // block comment above for why this is an addition, not a bare field read.
+  function positionTick(pos) {
+    return pos.masterBar.start + pos.beatLookup.start;
+  }
+
+  // One beat forward (direction > 0) or backward, crossing into the
+  // next/previous PASS's own MasterBarTickLookup (via its own
+  // nextMasterBar/previousMasterBar, already confirmed to walk in PLAYBACK
+  // order - pass 1 of every repeated bar, then pass 2, then whatever follows
+  // the repeat - not notated order) when the current pass's beats run out.
+  // null at either end of the piece.
+  function stepBeatPosition(pos, direction) {
+    if (!pos) return null;
+    if (direction > 0) {
+      if (pos.beatLookup.nextBeat) return { masterBar: pos.masterBar, beatLookup: pos.beatLookup.nextBeat };
+      const nextMasterBar = pos.masterBar.nextMasterBar;
+      return nextMasterBar?.firstBeat ? { masterBar: nextMasterBar, beatLookup: nextMasterBar.firstBeat } : null;
+    }
+    if (pos.beatLookup.previousBeat) return { masterBar: pos.masterBar, beatLookup: pos.beatLookup.previousBeat };
+    const previousMasterBar = pos.masterBar.previousMasterBar;
+    return previousMasterBar?.lastBeat
+      ? { masterBar: previousMasterBar, beatLookup: previousMasterBar.lastBeat }
+      : null;
+  }
+
+  // The cursor's current position, kept as state so repeated stepping (an
+  // arrow key held, or several presses in a row) only ever follows
+  // beatLookup.nextBeat/previousBeat - it never re-derives from tickPosition
+  // via beatPositionAtTick on every press, which would mean walking every
+  // bar from its own start again each time. Re-seeded automatically whenever
   // tickPosition has moved some OTHER way since the last read - real
   // playback, Backspace, a double-click seek, a fresh score - compared by
   // the tick it claims to be at, not merely "unset".
-  let cursorBeat = null;
-  function ensureCursorBeat() {
+  let cursorPos = null;
+  function ensureCursorPosition() {
     const tick = api.tickPosition ?? 0;
-    if (!cursorBeat || cursorBeat.absolutePlaybackStart !== tick) cursorBeat = beatAtTickStructural(tick);
-    return cursorBeat;
+    if (!cursorPos || positionTick(cursorPos) !== tick) cursorPos = beatPositionAtTick(tick);
+    return cursorPos;
   }
 
   function publishCursor() {
@@ -1289,18 +1331,40 @@ export function createScoreView(host, opts = {}) {
   api.playbackRangeChanged.on(() => publishLoopRange());
 
   // Seeking to a beat and continuing playback from there - the underlying
-  // capability #92 asks double-click to use if it exists. It does:
-  // Beat.absolutePlaybackStart is exactly the tick api.play() would need to
-  // start from, and setting tickPosition before calling play() is the
-  // documented way to seek (see api.tickPosition's own doc comment). This is
-  // deliberately NOT api.playBeat(beat) - that plays a short, separate
-  // preview of just the one beat (its own doc: "playback of audio separate
-  // to the main song playback") and never touches the transport at all,
-  // which is a preview, not "play from there".
+  // capability #92 asks double-click to use if it exists. It does, but not
+  // through beat.absolutePlaybackStart - see the block comment above this
+  // section for the tick-space bug that field caused, and why
+  // api.tickCache.getBeatStart(beat) is the fix instead.
+  //
+  // getBeatStart answers "when does this beat first play", not "which pass
+  // of it" - the right question here, unlike for the cursor-stepping
+  // functions above: a REPEATED bar is drawn on screen exactly once (a
+  // repeat is a notation symbol, not a second copy of the bars), so a click
+  // on it has only one visual beat to mean, and seeking to that beat's first
+  // play is the natural reading of clicking the one rendering of it there
+  // is. This is also what corrects the OTHER half of the bug this issue's
+  // own repeat measurement found: a bar placed AFTER a repeated section
+  // (never itself repeated) still needs the repeat's extra passes counted
+  // to land on its own correct, later tick, and getBeatStart accounts for
+  // those - built from the tick cache, not from counting notated bars.
+  //
+  // Setting tickPosition before calling play() is the documented way to
+  // seek (see api.tickPosition's own doc comment). This is deliberately NOT
+  // api.playBeat(beat) - that plays a short, separate preview of just the
+  // one beat (its own doc: "playback of audio separate to the main song
+  // playback") and never touches the transport at all, which is a preview,
+  // not "play from there".
   function playFromBeat(beat) {
     if (!beat) return;
+    const tick = api.tickCache?.getBeatStart(beat) ?? beat.absolutePlaybackStart;
     metronome.control.prime();
-    api.tickPosition = beat.absolutePlaybackStart;
+    api.tickPosition = tick;
+    // Forces the next cursor-stepping call to re-derive its position from
+    // this new tick via beatPositionAtTick, which is pass-aware - rather
+    // than trying to hand-build a matching {masterBar, beatLookup} pair
+    // here from a plain Beat, which is exactly the structural-vs-playback
+    // mismatch this whole section exists to avoid.
+    cursorPos = null;
     publishCursor();
     // api.play() is its own guard - it declines (returns false) and does
     // nothing when the player is not ready yet, the same as every other
@@ -1737,11 +1801,10 @@ export function createScoreView(host, opts = {}) {
      * loaded.
      */
     moveCursorBeat(direction) {
-      const cur = ensureCursorBeat();
-      const target = direction > 0 ? cur?.nextBeat : cur?.previousBeat;
+      const target = stepBeatPosition(ensureCursorPosition(), direction);
       if (!target) return;
-      cursorBeat = target;
-      api.tickPosition = target.absolutePlaybackStart;
+      cursorPos = target;
+      api.tickPosition = positionTick(target);
       publishCursor();
     },
 
@@ -1780,6 +1843,18 @@ export function createScoreView(host, opts = {}) {
      * by using its own start).
      */
     nudgeLoopBoundary(direction) {
+      // AlphaSynthBase's playbackRange SETTER moves tickPosition to the new
+      // range's own start as a side effect (the same "seek to the range"
+      // behaviour api.stop() documents for a selected range) - harmless for
+      // a mouse drag, which is dragging the playhead there anyway, but wrong
+      // for a keyboard nudge: it silently teleports the cursor to wherever
+      // this nudge's region now STARTS, discarding wherever the player had
+      // actually been reading from. Saved here and restored below, because a
+      // nudge is a change to the LOOP, not a command to relocate the reading
+      // position - see the browser test that presses an arrow key right
+      // after a nudge and would otherwise land somewhere the nudge itself
+      // teleported the cursor to, not where the arrow key actually moved it.
+      const savedTick = api.tickPosition ?? 0;
       let range = api.playbackRange;
       let established = false;
       if (!range) {
@@ -1790,12 +1865,11 @@ export function createScoreView(host, opts = {}) {
       }
       let newEnd = null;
       if (direction > 0) {
-        const excluded = beatAtTickStructural(range.endTick);
-        const grown = excluded?.nextBeat;
-        if (grown) newEnd = grown.absolutePlaybackStart;
+        const grown = stepBeatPosition(beatPositionAtTick(range.endTick), 1);
+        if (grown) newEnd = positionTick(grown);
       } else {
-        const lastIncluded = beatAtTickStructural(Math.max(range.startTick, range.endTick - 1));
-        if (lastIncluded) newEnd = lastIncluded.absolutePlaybackStart;
+        const lastIncluded = beatPositionAtTick(Math.max(range.startTick, range.endTick - 1));
+        if (lastIncluded) newEnd = positionTick(lastIncluded);
       }
       if (newEnd != null && newEnd > range.startTick) {
         range = { startTick: range.startTick, endTick: newEnd };
@@ -1806,6 +1880,8 @@ export function createScoreView(host, opts = {}) {
         return;
       }
       api.playbackRange = range;
+      // Undo the setter's own relocation - see the comment on savedTick.
+      api.tickPosition = savedTick;
       // publishLoopRange() also runs off api.playbackRangeChanged (for a
       // drag-selected range, which only ever arrives that way) - but that
       // event was measured firing asynchronously, on some later microtask
@@ -1813,7 +1889,12 @@ export function createScoreView(host, opts = {}) {
       // caller reading the dataset immediately after this function returns
       // - which is exactly what a keyboard handler's caller does - sees the
       // change it just made rather than whatever the attribute last said.
+      // publishCursor() alongside it for the same reason: the range write
+      // just moved tickPosition out from under this function and back
+      // again, and a caller must see the cursor exactly where it actually
+      // is now (unchanged), not a value that predates either move.
       publishLoopRange();
+      publishCursor();
     },
 
     destroy() {

@@ -333,6 +333,11 @@ test.describe("keyboard shortcuts stay scoped to the visible pane in ScoreCompar
 
   test("Space toggles playback once the staff pane is the one shown", async ({ page }) => {
     await page.getByRole("button", { name: "Staff", exact: true }).click();
+    // Move focus off the layout button before testing Space - it is a
+    // BUTTON, so it now (rightly, see the focus-guard suite's own F3
+    // coverage) owns Space itself while focused, and pressing it here would
+    // re-click "Staff" rather than reach TabViewer's transport at all.
+    await page.evaluate(() => document.activeElement?.blur());
     await page.keyboard.press(" ");
     await expect(playButton(page)).toHaveText(/Pause/);
     await page.keyboard.press(" "); // left as found

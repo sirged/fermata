@@ -342,15 +342,33 @@
     return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable;
   }
 
+  // Space is also how a focused BUTTON activates itself - a standard browser
+  // default action this file does not own, and Enter does the same, but
+  // nothing here binds Enter so only Space needs this exemption. A <button>
+  // is none of INPUT/TEXTAREA/SELECT/contenteditable, so isTypingTarget alone
+  // does not cover it: tabbing to the Loop button and pressing Space used to
+  // preventDefault() the browser's own click-on-Space before it could fire,
+  // starting playback instead of toggling Loop - and the same for every
+  // other button in this toolbar, the viewer header, and the session-detail
+  // panel, since this listener sits on the window and sees every keydown
+  // regardless of which button has focus.
+  function isButtonLikeTarget(el) {
+    const tag = el?.tagName;
+    return tag === "BUTTON" || el?.getAttribute?.("role") === "button";
+  }
+
   /**
-   * The single-key transport (#92). Guarded on three things, in order:
-   * whether this instance is even the one allowed to answer the keyboard
-   * right now (see `active` above), whether the keypress is really meant for
-   * this view and not a browser/OS shortcut (a held Ctrl/Meta - Alt is
-   * allowed through deliberately, see below), and - the one the issue's own
-   * comment calls worse than no shortcut at all if it is wrong - whether a
-   * text field has focus, checked last only because it is cheapest to check
-   * last, never skipped.
+   * The single-key transport (#92). Guarded on: whether this instance is
+   * even the one allowed to answer the keyboard right now (see `active`
+   * above); whether the keypress is really meant for this view and not a
+   * browser/OS shortcut (a held Ctrl/Meta - Alt is allowed through
+   * deliberately, see below); whether a text field has focus - the one the
+   * issue's own comment calls worse than no shortcut at all if it is wrong,
+   * checked HERE, before the per-key switch, precisely because nothing below
+   * it is safe to run while a field is focused, typing guard first; and,
+   * narrower still and case-by-case rather than a blanket exemption, whether
+   * the focused element already owns the specific key being pressed (Space
+   * on a button - see isButtonLikeTarget).
    */
   function onKey(e) {
     if (!active) return;
@@ -372,6 +390,13 @@
     }
     switch (e.key) {
       case " ":
+        // A focused BUTTON owns Space already - see isButtonLikeTarget.
+        // Checked before preventDefault(), not after: calling
+        // preventDefault() on this keydown at all suppresses the browser's
+        // own default action for it regardless of who called it, which
+        // includes "activate the focused button" - so this has to be a
+        // return, not a fall-through that merely skips playPause().
+        if (isButtonLikeTarget(e.target)) return;
         // preventDefault BEFORE the readiness check, always, for this one and
         // every case below that has a native default worth blocking: Space
         // scrolls the page and Backspace can navigate history when nothing
