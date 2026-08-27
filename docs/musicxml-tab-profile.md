@@ -839,6 +839,62 @@ The things to note:
 - Fret 2 on string 1 is F sharp 4 — spelled sharp, not G flat, by Rule 12: in C
   major, F sharp is nearer the key's centre on the line of fifths.
 
+## Example 3: repeat barline and two endings
+
+Three bars of 4/4 in standard tuning, illustrating [Rule 15](#repeat-structure-rule-15):
+a forward repeat opens bar 1, ending 1 spans bar 2 and is closed by a backward
+repeat with a closing hook (`type="stop"`), and ending 2 spans bar 3 and is
+left open (`type="discontinue"`) with no repeat mark of its own. The complete
+file is published as
+[`docs/examples/repeat-structure.musicxml`](examples/repeat-structure.musicxml)
+and is validated by the test suite; the header, `<part-list>` and
+`<staff-details>` are identical to Example 1, so only the three `<barline>`
+elements are shown here, each beside the measure it belongs to.
+
+```xml
+<measure number="1">
+  ...
+  <barline location="left">
+    <bar-style>heavy-light</bar-style>
+    <repeat direction="forward" />
+  </barline>
+  ...
+</measure>
+<measure number="2">
+  <barline location="left">
+    <ending number="1" type="start" />
+  </barline>
+  ...
+  <barline location="right">
+    <bar-style>light-heavy</bar-style>
+    <ending number="1" type="stop" />
+    <repeat direction="backward" />
+  </barline>
+</measure>
+<measure number="3">
+  <barline location="left">
+    <ending number="2" type="start" />
+  </barline>
+  ...
+  <barline location="right">
+    <bar-style>light-heavy</bar-style>
+    <ending number="2" type="discontinue" />
+  </barline>
+</measure>
+```
+
+The things to note:
+
+- `<ending>` comes before `<repeat>` inside `<barline>` — the schema's own
+  sequence order — and measure 2's right barline carries both, closing ending
+  1 and the repeat at once.
+- Ending 2 carries no `<repeat>` at all: nothing closes it, because nothing on
+  the page closes it either — a bracket left open at its right end is written
+  exactly as drawn, not guessed shut.
+- Neither barline moves a single note or rest. A form mark carries no
+  duration (Rule 8 is unaffected by it) — see [Repeat structure
+  (Rule 15)](#repeat-structure-rule-15) above.
+
 ## Checking a file
 
 Fermata's own output is checked three ways, and any implementation of this
