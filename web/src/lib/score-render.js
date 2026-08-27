@@ -1293,14 +1293,34 @@ export function createScoreView(host, opts = {}) {
   // arrow key held, or several presses in a row) only ever follows
   // beatLookup.nextBeat/previousBeat - it never re-derives from tickPosition
   // via beatPositionAtTick on every press, which would mean walking every
-  // bar from its own start again each time. Re-seeded automatically whenever
-  // tickPosition has moved some OTHER way since the last read - real
-  // playback, Backspace, a double-click seek, a fresh score - compared by
-  // the tick it claims to be at, not merely "unset".
+  // bar from its own start again each time. Re-seeded whenever tickPosition
+  // has moved some OTHER way since the last read - real playback, Backspace,
+  // a double-click seek, a fresh score.
+  //
+  // "moved some other way" is deliberately a RANGE check (does the live tick
+  // still fall inside the cached beat's own span), not exact equality
+  // against the tick this function itself last wrote. api.tickPosition's
+  // write and its own read-back were measured to not always land in the
+  // same synchronous tick this file writes them in - see stop() and
+  // nudgeLoopBoundary's own comments on the identical race for
+  // api.playbackRange - so a caller re-entering right after a write can read
+  // a value that has not visibly settled yet, one or two ticks off the exact
+  // value just written. Exact equality treated that lag as "the position
+  // moved externally" and reseeded from the stale read, which under load (40
+  // rapid ArrowRight presses in one measured run) intermittently stalled
+  // mid-piece, re-deriving the SAME beat repeatedly instead of stepping
+  // through it. A beat's own span is generally hundreds of ticks wide, so
+  // tolerating a lag of a few ticks costs nothing in correctness while
+  // absorbing exactly the race that caused the stall.
   let cursorPos = null;
   function ensureCursorPosition() {
     const tick = api.tickPosition ?? 0;
-    if (!cursorPos || positionTick(cursorPos) !== tick) cursorPos = beatPositionAtTick(tick);
+    if (cursorPos) {
+      const start = positionTick(cursorPos);
+      const end = start + cursorPos.beatLookup.duration;
+      if (tick >= start && tick < end) return cursorPos;
+    }
+    cursorPos = beatPositionAtTick(tick);
     return cursorPos;
   }
 
@@ -1513,6 +1533,18 @@ export function createScoreView(host, opts = {}) {
     // moment this render started rather than read live off `profile` here -
     // see renderingProfile's declaration.
     onProfileApplied(renderingProfile);
+    // scoreLoaded's own publishCursor() call runs before api.tickCache
+    // exists (it is built during rendering, not necessarily by the instant
+    // scoreLoaded fires - the same caveat createScoreMetronome's
+    // currentBars() already documents) - so masterBarLookupAtTick finds
+    // nothing that early and data-cursor-bar is silently left unpublished.
+    // data-cursor-tick still gets set either way (it does not depend on the
+    // tick cache), which is what let this go unnoticed: a bare
+    // Number(null) reads as 0, the same value bar 0 legitimately is, so an
+    // assertion built on that coincidence passed for the wrong reason.
+    // Republishing once a render has actually finished is what makes the
+    // attribute reliably present rather than reliably absent-but-coincident.
+    publishCursor();
   });
 
   // A profile carried over from a previous score, or the "scoretab" default,

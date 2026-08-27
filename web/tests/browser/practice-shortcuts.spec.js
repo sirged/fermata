@@ -87,6 +87,16 @@ async function cursorBar(page) {
   return Number(await host(page).getAttribute("data-cursor-bar"));
 }
 
+async function loopStartTick(page) {
+  const v = await host(page).getAttribute("data-loop-start-tick");
+  return v == null ? null : Number(v);
+}
+
+async function loopEndTick(page) {
+  const v = await host(page).getAttribute("data-loop-end-tick");
+  return v == null ? null : Number(v);
+}
+
 test("Space toggles play/pause when the staff view has focus", async ({ page }) => {
   await openDemo(page);
   await expect(playButton(page)).toHaveText(/Play/);
@@ -102,12 +112,16 @@ test("Backspace stops playback and returns the cursor to the start", async ({ pa
   // this file - Backspace has nothing to prove if the cursor never left 0.
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("ArrowDown");
-  expect(await cursorBar(page)).toBeGreaterThan(0);
+  // expect.poll, not a bare read: every assertion in this file about state
+  // after a keypress retries rather than sampling once, immediately - see
+  // this file's own header and issue #110, which this project has hit
+  // before from exactly this shape of assertion.
+  await expect.poll(() => cursorBar(page)).toBeGreaterThan(0);
   await page.keyboard.press(" ");
   await expect(playButton(page)).toHaveText(/Pause/);
   await page.keyboard.press("Backspace");
   await expect(playButton(page)).toHaveText(/Play/);
-  expect(await cursorTick(page)).toBe(0);
+  await expect(host(page)).toHaveAttribute("data-cursor-tick", "0");
 });
 
 test("L toggles the loop, S cycles speed, N toggles the metronome, C toggles count-in", async ({
@@ -181,50 +195,85 @@ test("the arrow keys move the cursor a beat and a bar, without starting playback
   page,
 }) => {
   await openDemo(page);
-  expect(await cursorBar(page)).toBe(0);
-  expect(await cursorTick(page)).toBe(0);
+  await expect(host(page)).toHaveAttribute("data-cursor-bar", "0");
+  await expect(host(page)).toHaveAttribute("data-cursor-tick", "0");
 
   await page.keyboard.press("ArrowRight");
+  await expect.poll(() => cursorTick(page)).toBeGreaterThan(0);
   const afterOneBeat = await cursorTick(page);
-  expect(afterOneBeat).toBeGreaterThan(0);
   await page.keyboard.press("ArrowRight");
-  expect(await cursorTick(page)).toBeGreaterThan(afterOneBeat);
+  await expect.poll(() => cursorTick(page)).toBeGreaterThan(afterOneBeat);
   await page.keyboard.press("ArrowLeft");
-  expect(await cursorTick(page)).toBe(afterOneBeat);
+  await expect(host(page)).toHaveAttribute("data-cursor-tick", String(afterOneBeat));
 
   // Moving the cursor is not the same thing as playing it - the button must
   // still read "Play" throughout.
   await expect(playButton(page)).toHaveText(/Play/);
 
   await page.keyboard.press("ArrowDown");
-  expect(await cursorBar(page)).toBe(1);
+  await expect(host(page)).toHaveAttribute("data-cursor-bar", "1");
   await page.keyboard.press("ArrowDown");
-  expect(await cursorBar(page)).toBe(2);
+  await expect(host(page)).toHaveAttribute("data-cursor-bar", "2");
   await page.keyboard.press("ArrowUp");
-  expect(await cursorBar(page)).toBe(1);
+  await expect(host(page)).toHaveAttribute("data-cursor-bar", "1");
   await expect(playButton(page)).toHaveText(/Play/);
+});
+
+test("many rapid ArrowRights never stall or step backwards (F5)", async ({ page }) => {
+  // A real regression, not a hypothetical: ensureCursorPosition used to
+  // compare tickPosition against the cached beat's start by EXACT equality,
+  // and api.tickPosition's write and its own read-back were measured to not
+  // always land in the same synchronous tick this file writes them in (see
+  // stop()'s and nudgeLoopBoundary's own comments on the identical race for
+  // api.playbackRange) - so a caller re-entering right after a write could
+  // read a value one or two ticks off what was just written, look like the
+  // position had moved some OTHER way, and reseed from the stale read. Under
+  // load (40 rapid presses) this intermittently STALLED - re-deriving the
+  // same beat repeatedly instead of stepping through it - measured directly
+  // before the fix (a range-containment check instead of exact equality;
+  // see ensureCursorPosition's own comment).
+  //
+  // Uses the metronome fixture (48 beats across 8 bars of 6/8), not the
+  // demo sample (~34 beats): a stall shows up as two consecutive presses
+  // reporting the same tick, and the demo sample's own beat count is close
+  // enough to 40 that reaching its actual end partway through would look
+  // exactly like the bug this test exists to catch.
+  //
+  // The reads below are deliberately bare, not expect.poll - this test's
+  // whole point is what an IMMEDIATE read shows right after each press;
+  // retrying would wait out the very race being checked for and could not
+  // fail against the mutation that reintroduces it.
+  await stubMetronomeScore(page);
+  await page.goto("/#/score/1");
+  await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+  let previous = await cursorTick(page);
+  for (let i = 0; i < 40; i++) {
+    await page.keyboard.press("ArrowRight");
+    const tick = await cursorTick(page);
+    expect(tick, `press ${i + 1}: stalled at the same tick as the previous press`).toBeGreaterThan(previous);
+    previous = tick;
+  }
 });
 
 test("Shift+arrows nudge the loop boundary", async ({ page }) => {
   await openDemo(page);
-  expect(await host(page).getAttribute("data-loop-start-tick")).toBeNull();
-  expect(await host(page).getAttribute("data-loop-end-tick")).toBeNull();
+  await expect(host(page)).not.toHaveAttribute("data-loop-start-tick");
+  await expect(host(page)).not.toHaveAttribute("data-loop-end-tick");
 
   await page.keyboard.press("Shift+ArrowRight");
-  const start = Number(await host(page).getAttribute("data-loop-start-tick"));
-  const firstEnd = Number(await host(page).getAttribute("data-loop-end-tick"));
+  await expect.poll(() => loopEndTick(page)).not.toBeNull();
+  const start = await loopStartTick(page);
+  const firstEnd = await loopEndTick(page);
   expect(Number.isFinite(start)).toBe(true);
   expect(firstEnd).toBeGreaterThan(start);
 
   await page.keyboard.press("Shift+ArrowRight");
-  const secondEnd = Number(await host(page).getAttribute("data-loop-end-tick"));
-  expect(secondEnd).toBeGreaterThan(firstEnd);
+  await expect.poll(() => loopEndTick(page)).toBeGreaterThan(firstEnd);
   // The start boundary is untouched by nudging the end.
-  expect(Number(await host(page).getAttribute("data-loop-start-tick"))).toBe(start);
+  await expect(host(page)).toHaveAttribute("data-loop-start-tick", String(start));
 
   await page.keyboard.press("Shift+ArrowLeft");
-  const backDown = Number(await host(page).getAttribute("data-loop-end-tick"));
-  expect(backDown).toBe(firstEnd);
+  await expect(host(page)).toHaveAttribute("data-loop-end-tick", String(firstEnd));
 });
 
 test("double-clicking a beat seeks to it and plays from there", async ({ page }) => {
@@ -245,7 +294,7 @@ test("double-clicking a beat seeks to it and plays from there", async ({ page })
   const target = await beatTarget.boundingBox();
   expect(target).not.toBeNull();
 
-  expect(await cursorTick(page)).toBe(0);
+  await expect(host(page)).toHaveAttribute("data-cursor-tick", "0");
   await expect(playButton(page)).toHaveText(/Play/);
 
   const x = target.x + target.width / 2;
@@ -253,7 +302,7 @@ test("double-clicking a beat seeks to it and plays from there", async ({ page })
   await page.mouse.dblclick(x, y);
 
   await expect(playButton(page)).toHaveText(/Pause/, { timeout: 10_000 });
-  expect(await cursorTick(page)).toBeGreaterThan(0);
+  await expect.poll(() => cursorTick(page)).toBeGreaterThan(0);
 });
 
 test("each wired control's accessible name contains its key token", async ({ page }) => {
