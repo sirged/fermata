@@ -1197,16 +1197,6 @@ export function createScoreView(host, opts = {}) {
   // being moved; nothing here assumes that will stay true forever, it is
   // just the honest boundary of what a single-track renderer can mean by
   // "the" cursor.
-  const CURSOR_TRACK = new Set([0]);
-
-  // The beat at or containing `tick`, or null before a score has loaded (no
-  // tickCache yet) or if the lookup finds nothing there.
-  function beatAtTick(tick) {
-    const cache = api.tickCache;
-    if (!cache) return null;
-    return cache.findBeat(CURSOR_TRACK, Math.max(0, tick | 0))?.beat ?? null;
-  }
-
   // The MasterBarTickLookup spanning `tick` - the same lookup
   // createScoreMetronome's currentBars() reads, but kept in the renderer's
   // own shape (not the plain {startTick,...} one that function builds) so
@@ -1221,6 +1211,55 @@ export function createScoreView(host, opts = {}) {
       found = mb;
     }
     return found;
+  }
+
+  // The first Beat of bar `barIndex`, read off the parsed score model
+  // itself (Track -> Staff -> Bar -> Voice -> Beat) rather than anything the
+  // tick cache builds. Track 0, staff 0, voice 0 - the same "only the first
+  // track is ever rendered" boundary noted above.
+  function firstBeatOfBar(barIndex) {
+    const bar = api.score?.tracks?.[0]?.staves?.[0]?.bars?.[barIndex];
+    return bar?.voices?.[0]?.beats?.[0] ?? null;
+  }
+
+  // The Beat spanning `tick`, found by walking a bar's own beats
+  // structurally - firstBeatOfBar, then Beat.nextBeat (a plain link on the
+  // parsed model, populated once at parse time) accumulating each beat's own
+  // playbackDuration - rather than through api.tickCache.findBeat() or a
+  // MasterBarTickLookup's firstBeat/lastBeat/nextBeat/previousBeat. Both of
+  // those were measured to occasionally answer wrong or empty when queried
+  // cold, at an arbitrary tick, with nothing to say why: findBeat's own docs
+  // describe it as optimised for a `currentBeatHint` carried from the
+  // PREVIOUS call, which nothing here has during a one-off keyboard nudge,
+  // and MasterBarTickLookup.firstBeat was seen (with an actual browser trace
+  // to show it) reporting a NEXT bar's first beat as starting at tick 0 -
+  // simply wrong, not merely a boundary-tick edge case. The parsed model's
+  // own Beat.nextBeat/previousBeat chain has no such history and needs no
+  // hint - it is exactly the structure the renderer itself was built from.
+  function beatAtTickStructural(tick) {
+    const mb = masterBarLookupAtTick(tick);
+    let beat = mb ? firstBeatOfBar(mb.masterBar.index) : null;
+    let at = mb?.start ?? 0;
+    while (beat?.nextBeat && at + beat.playbackDuration <= tick) {
+      at += beat.playbackDuration;
+      beat = beat.nextBeat;
+    }
+    return beat;
+  }
+
+  // The cursor's current Beat, kept as state so repeated stepping (an arrow
+  // key held, or several presses in a row) only ever follows
+  // Beat.nextBeat/previousBeat - it never re-derives from tickPosition via
+  // beatAtTickStructural on every press, which would mean walking every bar
+  // from its own start again each time. Re-seeded automatically whenever
+  // tickPosition has moved some OTHER way since the last read - real
+  // playback, Backspace, a double-click seek, a fresh score - compared by
+  // the tick it claims to be at, not merely "unset".
+  let cursorBeat = null;
+  function ensureCursorBeat() {
+    const tick = api.tickPosition ?? 0;
+    if (!cursorBeat || cursorBeat.absolutePlaybackStart !== tick) cursorBeat = beatAtTickStructural(tick);
+    return cursorBeat;
   }
 
   function publishCursor() {
@@ -1676,6 +1715,17 @@ export function createScoreView(host, opts = {}) {
     },
     stop() {
       api.stop();
+      // api.stop()'s own doc says it moves the playback position back to the
+      // start (or the start of a selected range) - but that landing is not
+      // guaranteed to be visible on api.tickPosition synchronously, in the
+      // same tick this function returns on: it is set from the player's own
+      // event loop, which stop() only signals. Setting it here too makes the
+      // cursor this reflects match the DOCUMENTED contract immediately
+      // rather than however many milliseconds later that event arrives -
+      // both converge on the same tick either way. Caught by this file's own
+      // browser test pressing Backspace and reading data-cursor-tick back on
+      // the very next line, with no wait in between.
+      api.tickPosition = api.playbackRange?.startTick ?? 0;
       publishCursor();
     },
 
@@ -1687,9 +1737,10 @@ export function createScoreView(host, opts = {}) {
      * loaded.
      */
     moveCursorBeat(direction) {
-      const beat = beatAtTick(api.tickPosition ?? 0);
-      const target = direction > 0 ? beat?.nextBeat : beat?.previousBeat;
+      const cur = ensureCursorBeat();
+      const target = direction > 0 ? cur?.nextBeat : cur?.previousBeat;
       if (!target) return;
+      cursorBeat = target;
       api.tickPosition = target.absolutePlaybackStart;
       publishCursor();
     },
@@ -1719,6 +1770,14 @@ export function createScoreView(host, opts = {}) {
      * yet, the first nudge starts a region at the bar the cursor is
      * currently in (matching what a one-bar drag-select would have produced)
      * rather than nudging nothing.
+     *
+     * The region is [startTick, endTick) - endTick is the start of the first
+     * beat NOT included, not the tick of the last note actually sounding.
+     * Growing it therefore asks "what beat comes after the one currently
+     * just past the end" (the beat AT endTick, stepped forward once);
+     * shrinking asks "what beat is currently the last one included" (the
+     * beat one tick before endTick, which becomes the new, smaller endTick
+     * by using its own start).
      */
     nudgeLoopBoundary(direction) {
       let range = api.playbackRange;
@@ -1729,16 +1788,32 @@ export function createScoreView(host, opts = {}) {
         range = { startTick: mb.start, endTick: mb.end };
         established = true;
       }
-      const boundaryBeat = beatAtTick(Math.max(range.startTick, range.endTick - 1));
-      const target = direction > 0 ? boundaryBeat?.nextBeat : boundaryBeat?.previousBeat;
-      const newEnd =
-        target && target.absolutePlaybackStart > range.startTick ? target.absolutePlaybackStart : null;
-      if (newEnd != null) range = { startTick: range.startTick, endTick: newEnd };
-      // A region that already existed and simply cannot move further (the
-      // very first or last beat) is left exactly as it was, rather than
-      // re-applying the same range and firing a no-op change event.
-      else if (!established) return;
+      let newEnd = null;
+      if (direction > 0) {
+        const excluded = beatAtTickStructural(range.endTick);
+        const grown = excluded?.nextBeat;
+        if (grown) newEnd = grown.absolutePlaybackStart;
+      } else {
+        const lastIncluded = beatAtTickStructural(Math.max(range.startTick, range.endTick - 1));
+        if (lastIncluded) newEnd = lastIncluded.absolutePlaybackStart;
+      }
+      if (newEnd != null && newEnd > range.startTick) {
+        range = { startTick: range.startTick, endTick: newEnd };
+      } else if (!established) {
+        // A region that already existed and simply cannot move further (the
+        // very first or last beat) is left exactly as it was, rather than
+        // re-applying the same range and firing a no-op change event.
+        return;
+      }
       api.playbackRange = range;
+      // publishLoopRange() also runs off api.playbackRangeChanged (for a
+      // drag-selected range, which only ever arrives that way) - but that
+      // event was measured firing asynchronously, on some later microtask
+      // rather than inside this same call. Publishing here too means a
+      // caller reading the dataset immediately after this function returns
+      // - which is exactly what a keyboard handler's caller does - sees the
+      // change it just made rather than whatever the attribute last said.
+      publishLoopRange();
     },
 
     destroy() {
