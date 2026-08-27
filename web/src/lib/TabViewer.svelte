@@ -459,7 +459,7 @@
           ● {practiceLabel}
         </button>
       {/if}
-      <button onclick={onToggleGig} aria-label="Exit gig mode ((Esc))" title="Exit gig mode ((Esc))">⤢</button>
+      <button onclick={onToggleGig} aria-label="Exit gig mode ((Esc))" title="Exit gig mode (Esc)">⤢</button>
     </div>
   {:else}
     <div class="toolbar">
@@ -478,7 +478,7 @@
         class="theme-picker"
         value={settings.staff_theme}
         onchange={chooseTheme}
-        title="Staff theme ((T))"
+        title="Staff theme"
         aria-label="Staff theme ((T))"
       >
         {#each STAFF_THEMES as t}
@@ -492,7 +492,7 @@
         <button disabled={!playerReady} onclick={() => view?.stop()} aria-label="Stop — back to the start ((Backspace))">
           ■
         </button>
-        <select value={speed} onchange={setSpeed} title="Playback speed ((S))" aria-label="Playback speed ((S))">
+        <select value={speed} onchange={setSpeed} title="Playback speed" aria-label="Playback speed ((S))">
           {#if !SPEEDS.includes(speed)}
             <!-- the ladder steps to speeds between the presets -->
             <option value={speed}>{Math.round(speed * 100)}%</option>
