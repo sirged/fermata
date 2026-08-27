@@ -1254,6 +1254,17 @@ export function createScoreView(host, opts = {}) {
   // documented as optimised for a `currentBeatHint` carried from a previous
   // call - nothing here has one for a one-off keyboard nudge, and it was
   // measured to occasionally answer wrong or empty when called cold anyway.
+  //
+  // A useful side effect of building this on BeatTickLookup rather than on
+  // Voice 0's own Beat chain (an earlier version of this file did, and only
+  // visited voice 0's onsets): BeatTickLookup's own doc comment describes it
+  // as covering "one or multiple Beats" at a shared instant, with a second
+  // voice's interior beat getting its OWN chain entry wherever it does not
+  // coincide with voice 0's. Confirmed on a two-voice MusicXML fixture (one
+  // voice of two half notes, a second of four interior quarter notes): the
+  // beat chain visits all four quarter-note onsets, not just the two the
+  // first voice alone would produce - so cursor stepping already walks the
+  // bar's merged onset set across voices, with no further work needed here.
   function beatPositionAtTick(tick) {
     const mb = masterBarLookupAtTick(tick);
     if (!mb) return null;

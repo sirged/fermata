@@ -135,6 +135,20 @@
         exitGigMode();
       } else if (editingTags) {
         e.preventDefault();
+        // Discards whatever is typed into tagsDraft, not merely closes -
+        // there was no "cancel without saving" affordance here before this
+        // issue at all (the tag editor's only exit was saveTags(), which
+        // always saves), so this is genuinely new behaviour, not a
+        // pre-existing Cancel this just wired a key to. Deliberately a
+        // discard rather than a preserve-on-reopen: startTagEdit() already
+        // re-seeds tagsDraft from score.tags every time it is opened, so
+        // "preserve" would mean adding a second, separate persistence path
+        // just for this one abandoned-edit case, and the ordinary meaning of
+        // Cancel on a form - here or anywhere else on the web - is exactly
+        // this: what you typed is gone, what was saved before is not
+        // touched. See the browser test that types a draft, presses Esc,
+        // reopens, and asserts the field is back to score.tags rather than
+        // silently trusting "the editor closed" to also mean "as intended".
         editingTags = false;
       } else if (lastSession && detail) {
         e.preventDefault();

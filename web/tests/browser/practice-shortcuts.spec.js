@@ -60,6 +60,54 @@ function buildMultiPagePdf(pageCount) {
   return Buffer.from(body, "utf-8");
 }
 
+/**
+ * One 4/4 bar, two voices - voice 1 two half notes (onsets at 0 and half
+ * the bar), voice 2 four quarter notes (onsets at every quarter, including
+ * two INTERIOR to voice 1's own half notes). <backup> is what MusicXML
+ * itself uses to return the cursor to measure-start between voices - not
+ * this file's invention. divisions=480 matches metronome-score.js's own
+ * convention, for the same fixture-shape reason that file states.
+ */
+const MULTI_VOICE_MUSICXML = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1"><part-name>Piano</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>480</divisions>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>960</duration><voice>1</voice><type>half</type></note>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>960</duration><voice>1</voice><type>half</type></note>
+      <backup><duration>1920</duration></backup>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>480</duration><voice>2</voice><type>quarter</type></note>
+      <note><pitch><step>F</step><octave>4</octave></pitch><duration>480</duration><voice>2</voice><type>quarter</type></note>
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>480</duration><voice>2</voice><type>quarter</type></note>
+      <note><pitch><step>A</step><octave>4</octave></pitch><duration>480</duration><voice>2</voice><type>quarter</type></note>
+    </measure>
+  </part>
+</score-partwise>
+`;
+
+function multiVoiceScoreMeta() {
+  // file_type not "pdf" is what routes Viewer.svelte to TabViewer directly
+  // - see metronome-score.js's own scoreMeta() for the identical reasoning.
+  return {
+    id: 1,
+    title: "multi-voice fixture",
+    composer: "",
+    source: "",
+    file_type: "musicxml",
+    has_transcription: false,
+    favorite: false,
+    content_kind: "notation",
+    tags: [],
+  };
+}
+
 const host = (page) => page.locator(".at-host");
 const playButton = (page) => page.locator(".player button.primary");
 const stopButton = (page) => page.locator(".player button[aria-label*='Backspace']");
@@ -276,6 +324,114 @@ test("Shift+arrows nudge the loop boundary", async ({ page }) => {
   await expect(host(page)).toHaveAttribute("data-loop-end-tick", String(firstEnd));
 });
 
+test("a repeated section: forward arrow-key stepping stays monotonic across it (F1)", async ({ page }) => {
+  // Beat.absolutePlaybackStart (and api.tickCache.getBeatStart) are built
+  // from NOTATED bar order - one tick per bar however many times a repeat
+  // plays it - while api.tickPosition/api.playbackRange/
+  // api.tickCache.masterBars are the repeat-EXPANDED PLAYBACK order the
+  // generated MIDI actually runs on. Confusing the two was #92's most
+  // severe bug: measured directly on this exact fixture (two 4/4 bars
+  // repeated once, then a 6/8 bar), stepping forward past the repeat and
+  // one beat further moved the cursor BACKWARDS by 6720 ticks. See
+  // beatPositionAtTick/positionTick's own block comment in score-render.js
+  // for the fix.
+  await stubMetronomeScoreRepeat(page);
+  await page.goto("/#/score/4");
+  await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+  // 4 beats/bar x 2 bars x 2 passes + 6 beats in the final 6/8 bar = 22
+  // beats total - stepped past the end (24 presses) to also confirm it
+  // clamps there instead of wrapping.
+  // A short poll per press, not a bare read (unlike the F5 stress test
+  // above, which deliberately stays bare because retrying would wait out
+  // the exact stale-reseed race it exists to catch): under load, running
+  // inside the full suite rather than in isolation, a single read was
+  // measured landing before the keydown's own synchronous handler had
+  // actually run - test-harness event-dispatch timing, not a reseed bug,
+  // confirmed by its being unreproducible over a dozen isolated runs of
+  // this same test alone. A genuine backward step or stall does not
+  // self-correct within a few hundred milliseconds; a delayed read does.
+  let previous = -1;
+  for (let i = 0; i < 24; i++) {
+    await page.keyboard.press("ArrowRight");
+    const floor = previous;
+    await expect
+      .poll(() => cursorTick(page), { timeout: 500, message: `press ${i + 1}: stepped backwards or stalled` })
+      .toBeGreaterThanOrEqual(floor);
+    previous = await cursorTick(page);
+  }
+});
+
+test("a repeated section: double-clicking a beat AFTER the repeat lands on its real playback tick (F1)", async ({
+  page,
+}) => {
+  // The other half of the same bug: a bar placed after a repeated section
+  // (never itself repeated) still needs the repeat's extra passes counted
+  // to land on its OWN correct, later tick. Measured directly: double-
+  // clicking the 6/8 bar used to seek to 10080 - inside the repeat's
+  // second pass - when it actually plays at 15360.
+  await stubMetronomeScoreRepeat(page);
+  await page.goto("/#/score/4");
+  await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+  // "b8" is the first beat of the third notated bar (two 4/4 bars of 4
+  // beats each come first, b0-b7) - alphaTab's own per-beat class, found
+  // by DOM inspection, the same one the double-click test below uses.
+  const target = await page.locator(".at-host .b8").first().boundingBox();
+  expect(target).not.toBeNull();
+  await page.mouse.dblclick(target.x + target.width / 2, target.y + target.height / 2);
+  await expect(playButton(page)).toHaveText(/Pause/, { timeout: 10_000 });
+  await expect(host(page)).toHaveAttribute("data-cursor-tick", "15360");
+});
+
+test("cursor stepping visits a second voice's interior onsets, not just the first voice's (F6)", async ({ page }) => {
+  // firstBeatOfBar used to read only bar.voices[0] (structurally, the first
+  // voice) and follow its own Beat.nextBeat chain, so a second voice's
+  // notes that fall BETWEEN the first voice's own beats were never visited
+  // at all. Fixed as a side effect of rebuilding cursor stepping on
+  // BeatTickLookup for F1 (see beatPositionAtTick's own comment): its chain
+  // already merges every voice's onsets into one timeline, which this
+  // fixture (one voice of two half notes, a second of four INTERIOR
+  // quarter notes) is built to prove directly rather than infer.
+  await page.route("**/api/scores/1", (route) =>
+    route.fulfill({ json: multiVoiceScoreMeta() }),
+  );
+  await page.route("**/api/scores/1/file", (route) =>
+    route.fulfill({ body: MULTI_VOICE_MUSICXML, contentType: "application/vnd.recordare.musicxml+xml" }),
+  );
+  await page.route("**/api/scores/1/practice", (route) =>
+    route.fulfill({ json: { total_seconds: 0, sessions: [] } }),
+  );
+  await page.goto("/#/score/1");
+  await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+  // The UNTOUCHED starting tick was measured, occasionally, reporting 1
+  // instead of 0 - an internal rounding artifact of the player becoming
+  // ready, unrelated to voices or repeats and not this test's to pin down -
+  // so it is only checked loosely. Every tick AFTER that comes from this
+  // file's own moveCursorBeat, which writes an exact integer
+  // (masterBar.start + beatLookup.start, both plain integers - see
+  // positionTick), and was measured to never carry the same drift: what
+  // matters here, the STEP-TO-STEP progression, is asserted on exact values.
+  // Voice 1 alone (two half notes) would only ever produce [1920] as a
+  // single further step - the interior 960 and 2880 onsets only exist in
+  // voice 2's four quarter notes.
+  const start = await cursorTick(page);
+  expect(start).toBeLessThanOrEqual(1);
+  // A short poll per press, not a bare read - see the identical reasoning
+  // on the F1 monotonicity test above (a stale read under full-suite load,
+  // not a reseed bug: unreproducible over a dozen isolated runs, and a
+  // wrong onset would not self-correct within a few hundred milliseconds
+  // the way a delayed read does).
+  const expected = [960, 1920, 2880];
+  const ticks = [];
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.press("ArrowRight");
+    await expect
+      .poll(() => cursorTick(page), { timeout: 500, message: `press ${i + 1}` })
+      .toBe(expected[i]);
+    ticks.push(await cursorTick(page));
+  }
+  expect(ticks).toEqual(expected);
+});
+
 test("double-clicking a beat seeks to it and plays from there", async ({ page }) => {
   await openDemo(page);
   // alphaTab marks every rendered beat's own SVG group with a stable "bN"
@@ -351,13 +507,22 @@ test.describe("the focus guard", () => {
     await expect(loopButton(page)).not.toHaveClass(/on/);
   });
 
-  test("Esc closes the open tag editor, even typed from inside it", async ({ page }) => {
+  test("Esc closes the open tag editor, even typed from inside it, and discards the draft", async ({ page }) => {
     await openTagEditor(page);
     const input = page.locator(".tags-input");
     await input.click();
     await page.keyboard.type("draft");
     await page.keyboard.press("Escape");
     await expect(page.locator(".tags-input")).toHaveCount(0);
+    // Esc is the FIRST cancel-without-saving path this editor has ever had
+    // - there was no "close" button before #92 wired one to a key, only
+    // Save - so this is genuinely new behaviour, asserted explicitly rather
+    // than left to be inferred from the editor merely having closed: what
+    // was typed is gone, matching an ordinary Cancel anywhere else on the
+    // web. Reopening re-seeds from the score's own (empty) tags, not from
+    // the abandoned "draft" - see Viewer.svelte's own comment on this.
+    await openTagEditor(page);
+    await expect(page.locator(".tags-input")).toHaveValue("");
   });
 
   test("Space and L still work once focus has left the text field", async ({ page }) => {
