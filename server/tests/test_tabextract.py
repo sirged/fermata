@@ -2625,6 +2625,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
         totals["bars_short"] += result.bars_short
         totals["bars_defective"] += result.bars_defective
         totals["bars_padded"] += result.bars_padded
+        totals["inferred_rest_quarters"] += result.inferred_rest_quarters
         totals["form_marks_unanchored"] += result.form_marks_unanchored
         totals["endings_truncated"] += result.endings_truncated
         if result.endings_truncated:
@@ -2642,6 +2643,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     assert totals["bars_short"] == 4219
     assert totals["bars_defective"] == 5344
     assert totals["bars_padded"] == 3589
+    assert totals["inferred_rest_quarters"] == 4885.0
     # Not a judgement call - issue #134 S3.2 measured 0 of 513 repeat marks
     # in the library landing inside a bar with no boundary to anchor to, and
     # this stays 0 for volta brackets too once the adversarial review's
