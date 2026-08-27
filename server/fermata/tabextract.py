@@ -990,15 +990,12 @@ _REST_ONSET_MERGE_SPACINGS = 0.8
 # Voices
 # ---------------------------------------------------------------------------
 
-# Two stem groups whose x differ by less than this SHARE AN ONSET - they
-# sound together, so they are separate voices rather than consecutive beats.
-# In notation-staff line spacings. Measured on the library's two-voice
-# writing: an upper and a lower voice notated at the same onset are engraved
-# within about 0.1pt of each other (0.02 spacings), while the closest
-# DIFFERENT onsets this must never fuse - consecutive sixteenths - sit about
-# 1.25 spacings apart. 0.6 is half of that, so it clears real simultaneity by
-# more than an order of magnitude and still cannot merge two real onsets.
-_ONSET_SHARE_SPACINGS = 0.6
+# _ONSET_SHARE_SPACINGS lives in glyph_rhythm - it is also what
+# glyph.decode_note_events uses to tell a coincident duplicate's genuine
+# second voice from a runner-up stem borrowed from a different onset (issue
+# #116), and glyph_rhythm cannot import this module back. Referenced here by
+# the same name so nothing reading this file has to know it moved.
+_ONSET_SHARE_SPACINGS = glyph._ONSET_SHARE_SPACINGS
 
 # How far from the column it already claimed one onset may reach for ANOTHER
 # column, in notation-staff line spacings. Engravers offset a bass tab number

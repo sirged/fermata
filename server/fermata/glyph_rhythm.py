@@ -1773,6 +1773,27 @@ def _bounds(sorted_keys, lo, hi):
     return bisect.bisect_left(sorted_keys, lo), bisect.bisect_right(sorted_keys, hi)
 
 
+# Two noteheads whose x differ by less than this SHARE AN ONSET - they sound
+# together, so they are separate voices rather than consecutive beats. In
+# notation-staff line spacings. Measured on the library's two-voice writing:
+# an upper and a lower voice notated at the same onset are engraved within
+# about 0.1pt of each other (0.02 spacings), while the closest DIFFERENT
+# onsets this must never fuse - consecutive sixteenths - sit about 1.25
+# spacings apart. 0.6 is half of that, so it clears real simultaneity by more
+# than an order of magnitude and still cannot merge two real onsets.
+#
+# Lives here rather than in tabextract, which is where voice-grouping
+# (_stem_groups / _assign_group_voices) actually uses it, because
+# decode_note_events needs the SAME number for a narrower question: whether a
+# coincident duplicate pair's runner-up candidate stem (see _rank_stems) is
+# genuinely this notehead's OTHER voice, or a different note's stem that
+# happens to fall inside the search window - see the coincident-pair pass in
+# decode_note_events. tabextract imports this module, not the other way
+# around, so the constant has to live on this side; tabextract references it
+# by the same name rather than keeping its own copy.
+_ONSET_SHARE_SPACINGS = 0.6
+
+
 def _rank_stems(stems, stem_xs, x0, x1, yc, tol, x_tol=None, y_tol=None):
     """Every candidate stem for a notehead at (x0, x1, yc), (key, stem) pairs
     sorted best first - the ranking _best_stem picks the head of, exposed as a
@@ -2342,12 +2363,19 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
     the identical position, one copy per voice's stem. _best_stem is a pure
     function of coordinates, so both copies always rank the same stem best;
     left alone, that binds BOTH copies to it and the other voice's stem is
-    left with no notehead - a lost voice, not an invented note. Where a second,
-    distinct candidate stem exists for the pair, one copy is given the
-    runner-up instead, and the pair counts toward coincident_split_pairs.
-    Where only one candidate stem was found for the pair, nothing here can
-    tell the two copies apart, and coincident_unsplit_pairs counts it rather
-    than silently leaving both copies bound to the one voice.
+    left with no notehead - a lost voice, not an invented note. Where a
+    second, distinct candidate stem exists AT THE SAME ONSET as the winner -
+    a unison is two voices sounding together, not merely two nearby stems -
+    one copy is given that runner-up instead, and the pair counts toward
+    coincident_split_pairs. A geometrically close runner-up that is actually
+    a DIFFERENT note's own stem at a different onset is not this pair's other
+    voice; binding to it would not recover a lost voice, it would invent a
+    note at a time nothing sounds, so such a candidate is skipped. Where no
+    same-onset candidate was found at all - whether because only one
+    candidate existed geometrically, or every further one belonged elsewhere
+    - nothing here can split the pair correctly, and coincident_unsplit_pairs
+    counts it rather than silently leaving both copies bound to the one
+    voice.
     """
     tol = _Tol(spacing if spacing else _spacing_from_lines(line_ys),
                staff_bottom - staff_top, staff_x1 - staff_x0)
@@ -2466,35 +2494,93 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
     coincident_stem = {}  # id(glyph event) -> the Stem this copy was given
     coincident_split_pairs = 0
     coincident_unsplit_pairs = 0
-    for _group in _coincident_groups.values():
-        if len(_group) < 2:
-            continue
-        _rep = _group[0]
-        _ex0, _ex1 = _rep.stem_edges
-        _candidates = _rank_stems(stems, stem_xs, _ex0, _ex1, _rep.yc, tol)
-        if len(_candidates) >= 2:
-            # A second, distinct stem exists: this is exactly the case the
-            # research proved is a lost voice, not a chord - give each copy
-            # its own stem instead of letting both rank the same one best.
-            coincident_split_pairs += 1
-            for _member, (_key, _stem) in zip(_group, _candidates):
-                coincident_stem[id(_member)] = _stem
-            for _member in _group[len(_candidates):]:
-                coincident_stem[id(_member)] = _candidates[0][1]
-        elif _candidates:
-            # Only one candidate stem for the whole group: nothing here can
-            # tell the copies apart (see _rank_stems), so they stay bound to
-            # it exactly as an unmodified single-stem lookup would leave
-            # them - but that is disclosed rather than silently doubling one
-            # voice's note, per coincident_unsplit_pairs above.
-            coincident_unsplit_pairs += 1
-            for _member in _group:
-                coincident_stem[id(_member)] = _candidates[0][1]
-        # Zero candidates: no stem anywhere near this position for either
-        # copy. Left out of coincident_stem entirely so both copies fall
-        # through to the ordinary per-event lookup below, which measures
-        # the same emptiness and reports it as no_stem_noteheads instead -
-        # a different, already-honest anomaly, not this one.
+    _dup_groups = [g for g in _coincident_groups.values() if len(g) >= 2]
+    if _dup_groups:
+        # A second, geometrically distinct candidate stem is necessary but
+        # NOT sufficient to be this pair's other voice: a unison is two
+        # voices sounding the SAME PITCH AT THE SAME MOMENT, so the runner-up
+        # stem has to stand at the SAME ONSET as the winner, not merely be
+        # the second-closest stem in reach. Where the runner-up is actually
+        # a DIFFERENT note's own stem - a real notehead elsewhere on this
+        # staff whose own best-ranked stem this is - and that note's onset is
+        # not this one, binding the duplicate to it does not recover a lost
+        # voice, it invents a note at a time nothing sounds (measured:
+        # Spanish Romance and The Cosmic Wheel, where the runner-up was the
+        # accompaniment's own next stem, not a dedicated stem for the
+        # coincident pair).
+        #
+        # _claimed_stem_xs is the ground truth for "which x-columns are
+        # already spoken for": every OTHER real notehead's own best stem,
+        # resolved independently of the pair being decided here, keyed by the
+        # STEM'S OWN X rather than by object identity. That distinction
+        # matters: a long stem (a bass note written well below the staff, its
+        # stem reaching up toward the beam that governs its rhythm) can be
+        # split by the vector pass into more than one abutting segment at the
+        # SAME x but different y - two distinct Stem objects that are the
+        # SAME printed line. Keying on identity missed exactly this (measured
+        # on Spanish Romance: the bass note's own resolution correctly finds
+        # its NEAR segment; the coincident pair's runner-up search finds a
+        # FAR segment of that same line, at an x nothing else appears to
+        # claim, because nothing else literally IS that Stem object even
+        # though something else already owns that column). Keying on x
+        # catches it: the runner-up and the bass's own stem share x to
+        # sub-point precision, because they are the same drawn line.
+        #
+        # notehead_half is included here (unlike the duplicate-detection
+        # pass above) precisely because that is the category the bass note
+        # in this example is - a half or whole note's stem is looked up for
+        # direction only, but it is looked up, and its claim on an x-column
+        # is exactly what a coincident pair's runner-up must be checked
+        # against. Built only when a coincident group exists - establishing
+        # it costs one extra stem lookup per non-duplicate notehead on the
+        # staff, and every other staff on the score should not pay for it.
+        _dup_ids = {id(_m) for _g in _dup_groups for _m in _g}
+        _claimed_stem_xs = set()
+        for _ev in staff_events:
+            if (_ev.category in NOTEHEAD_CATS
+                    and _ev.category != "notehead_whole"
+                    and id(_ev) not in _dup_ids):
+                _oex0, _oex1 = _ev.stem_edges
+                _own_stem = _best_stem(stems, stem_xs, _oex0, _oex1, _ev.yc, tol)
+                if _own_stem is not None:
+                    _claimed_stem_xs.add(round(_own_stem.x, 2))
+        _onset_tol = tol.spacing * _ONSET_SHARE_SPACINGS
+
+        for _group in _dup_groups:
+            _rep = _group[0]
+            _ex0, _ex1 = _rep.stem_edges
+            _candidates = _rank_stems(stems, stem_xs, _ex0, _ex1, _rep.yc, tol)
+            _runner = None
+            for _key, _stem in _candidates[1:]:
+                if not any(abs(_stem.x - _cx) <= _onset_tol for _cx in _claimed_stem_xs):
+                    _runner = _stem
+                    break
+            if _candidates and _runner is not None:
+                # No other real note's stem occupies this x-column: give
+                # each copy its own stem instead of letting both rank the
+                # same one best.
+                coincident_split_pairs += 1
+                coincident_stem[id(_group[0])] = _candidates[0][1]
+                coincident_stem[id(_group[1])] = _runner
+                for _member in _group[2:]:
+                    coincident_stem[id(_member)] = _candidates[0][1]
+            elif _candidates:
+                # Either only one candidate stem existed at all, or every
+                # further candidate belongs to a different note's onset:
+                # nothing here can split the pair correctly, so they stay
+                # bound to the winner exactly as an unmodified single-stem
+                # lookup would leave them - but that is disclosed rather
+                # than silently doubling one voice's note, per
+                # coincident_unsplit_pairs above.
+                coincident_unsplit_pairs += 1
+                for _member in _group:
+                    coincident_stem[id(_member)] = _candidates[0][1]
+            # Zero candidates: no stem anywhere near this position for
+            # either copy. Left out of coincident_stem entirely so both
+            # copies fall through to the ordinary per-event lookup below,
+            # which measures the same emptiness and reports it as
+            # no_stem_noteheads instead - a different, already-honest
+            # anomaly, not this one.
 
     notes = []
     stems_by_key = {}

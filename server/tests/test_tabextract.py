@@ -307,15 +307,20 @@ def test_carulli_moderato_unison_emits_one_note_per_voice_not_two_in_one(carulli
 
 
 def test_a_coincident_pair_with_no_second_stem_is_disclosed_not_silently_doubled(ronfaure_pdf):
-    """The 30-of-1,117 residue the #116 research could not split: a
-    coincident duplicate pair with only ONE candidate stem between the two
-    copies, so nothing here can tell them apart and both stay bound to it -
-    which must be COUNTED (coincident_unsplit_pairs) rather than silently
-    leaving two same-voice notes stacked on one stem with no signal that
-    anything is uncertain there."""
+    """A coincident duplicate pair that cannot be told apart - either because
+    only ONE candidate stem was found at all, or because every further
+    candidate's x-column already belongs to a different, real note's own
+    stem (see the onset guard in decode_note_events) - stays bound to the
+    winner rather than being split. That must be COUNTED
+    (coincident_unsplit_pairs) rather than silently leaving two same-voice
+    notes stacked on one stem with no signal that anything is uncertain
+    there. 10 of these 15 are onset-rejected rather than single-candidate:
+    without the onset guard this score reads 5 unsplit / 4 staves (see the
+    guard's own regression test), which is the smaller, geometry-only
+    residue the #116 research first measured."""
     result = tabextract.extract(ronfaure_pdf)
     assert result.extractable
-    assert result.coincident_unsplit_pairs == 5
+    assert result.coincident_unsplit_pairs == 15
     assert result.staves_coincident_unsplit == 4
     assert any("coincident duplicate notehead pair" in w for w in result.warnings)
 

@@ -845,6 +845,61 @@ def test_a_coincident_pair_with_only_one_candidate_stem_stays_bound_and_says_so(
     assert stats["coincident_split_pairs"] == 0
 
 
+def test_a_runner_up_stem_at_a_different_onset_is_not_this_pairs_other_voice(monkeypatch):
+    """A unison is two voices sounding the SAME PITCH AT THE SAME MOMENT, so
+    a geometrically close second candidate stem is not enough on its own -
+    it has to stand at the SAME onset as the winner. Measured on Spanish
+    Romance and The Cosmic Wheel: a coincident pair's runner-up candidate can
+    be a real, OTHER note's own stem - there, a bass note written far below
+    the staff whose long stem the vector pass splits into abutting segments,
+    one of which lands in the pair's search window at the SAME x as the
+    bass's own (correctly resolved) segment. Binding the pair's second copy
+    to it does not recover a lost voice; it invents a note at the bass's
+    time, not the pair's. Here a separate real notehead, far from the
+    coincident pair in y, has its OWN best stem at the SAME x as the pair's
+    geometric runner-up (simulating that split-stem shape without needing
+    two Stem objects to literally be one printed line) - the runner-up must
+    be rejected and the pair must fall through to the unsplit path exactly
+    as if only one candidate had ever existed.
+
+    RED without the onset guard: remove it (accept the first geometrically
+    close candidate regardless of who else's onset it belongs to) and this
+    pair splits - the fixture stays green because unison_voices' two voices
+    genuinely share an onset and nothing else on that page claims either
+    stem, so only a case built specifically to have a foreign claim like
+    this one can tell the guard apart from no guard at all."""
+    ink_x0, ink_x1, yc = 100.0, 106.0, 115.0
+    # up is unambiguously the closer (winning) candidate - tighter on both
+    # axes than runner - so which one ranks first is not left to a tie.
+    up = G.Stem(x=106.05, y0=95.0, y1=115.1)          # winner: the pair's own up-stem
+    runner = G.Stem(x=99.9, y0=114.7, y1=135.0)       # geometrically valid 2nd candidate
+    # A real, distant note (a different beat entirely - yc far below the
+    # pair) whose own best stem sits at the SAME x as `runner`, standing in
+    # for the abutting segment of one long printed stem line.
+    claim_stem = G.Stem(x=99.9, y0=180.0, y1=200.0)
+    other = G.GlyphEvent("Maestro", 210, "notehead_filled",
+                         (93.0, yc + 75.0, 99.9, yc + 95.0), 0,
+                         baseline_y=199.0, ink=(196.5, 201.5), ink_x=(93.0, 99.9))
+    a, b = _coincident_pair(ink_x0, ink_x1, yc)
+    page = _BarePage()
+    monkeypatch.setattr(
+        G, "extract_glyph_events",
+        lambda _page: G.PageGlyphs([a, b, other], {"Maestro": []}, [], []))
+    # stem_xs must be sorted ascending (see _bounds) - runner and claim_stem
+    # share an x, so sort explicitly rather than hand-order them.
+    monkeypatch.setattr(
+        G, "extract_stems_beams_curves",
+        lambda *a2, **k: (sorted([runner, up, claim_stem], key=lambda s: s.x), [], []))
+    notes, stats = G.decode_note_events(
+        page, 100.0, 220.0, 50.0, 150.0, [100.0, 105.0, 110.0, 115.0, 120.0])
+    pair_notes = [n for n in notes if n.x == a.xc]
+    assert len(pair_notes) == 2
+    assert pair_notes[0].stem_key == pair_notes[1].stem_key == G._stem_key(up), (
+        "the runner-up belongs to the other note's onset and must be refused")
+    assert stats["coincident_unsplit_pairs"] == 1
+    assert stats["coincident_split_pairs"] == 0
+
+
 def test_a_stem_whose_side_contradicts_its_overhang_is_not_believed():
     """An up-stem leaves a notehead at its RIGHT edge and a down-stem at its
     left. _best_stem accepts any stem end within about a staff space, which a
