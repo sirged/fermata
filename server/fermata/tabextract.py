@@ -270,6 +270,17 @@ class ExtractionResult:
     dots_unassigned_no_candidate: int = 0
     dots_unassigned_eliminated: int = 0
     staves_dots_unassigned: int = 0
+    # A unison shared by two voices is engraved as the same notehead glyph
+    # drawn twice at the identical position, one copy per voice's stem (issue
+    # #116) - and where a SECOND, distinct candidate stem exists for the
+    # pair, one copy is bound to each rather than both losing to the other
+    # for the single best-ranked stem (see glyph.decode_note_events). Where
+    # only ONE candidate stem was found for the pair, nothing can tell the
+    # two copies apart, and coincident_unsplit_pairs counts that residue
+    # rather than silently leaving both copies bound to the one voice - the
+    # same honesty pattern as notes_no_stem / dots_unassigned above.
+    coincident_unsplit_pairs: int = 0
+    staves_coincident_unsplit: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -312,6 +323,8 @@ class ExtractionResult:
             "dots_unassigned_no_candidate": self.dots_unassigned_no_candidate,
             "dots_unassigned_eliminated": self.dots_unassigned_eliminated,
             "staves_dots_unassigned": self.staves_dots_unassigned,
+            "coincident_unsplit_pairs": self.coincident_unsplit_pairs,
+            "staves_coincident_unsplit": self.staves_coincident_unsplit,
         }
 
 
@@ -977,15 +990,12 @@ _REST_ONSET_MERGE_SPACINGS = 0.8
 # Voices
 # ---------------------------------------------------------------------------
 
-# Two stem groups whose x differ by less than this SHARE AN ONSET - they
-# sound together, so they are separate voices rather than consecutive beats.
-# In notation-staff line spacings. Measured on the library's two-voice
-# writing: an upper and a lower voice notated at the same onset are engraved
-# within about 0.1pt of each other (0.02 spacings), while the closest
-# DIFFERENT onsets this must never fuse - consecutive sixteenths - sit about
-# 1.25 spacings apart. 0.6 is half of that, so it clears real simultaneity by
-# more than an order of magnitude and still cannot merge two real onsets.
-_ONSET_SHARE_SPACINGS = 0.6
+# _ONSET_SHARE_SPACINGS lives in glyph_rhythm - it is also what
+# glyph.decode_note_events uses to tell a coincident duplicate's genuine
+# second voice from a runner-up stem borrowed from a different onset (issue
+# #116), and glyph_rhythm cannot import this module back. Referenced here by
+# the same name so nothing reading this file has to know it moved.
+_ONSET_SHARE_SPACINGS = glyph._ONSET_SHARE_SPACINGS
 
 # How far from the column it already claimed one onset may reach for ANOTHER
 # column, in notation-staff line spacings. Engravers offset a bass tab number
@@ -1982,7 +1992,8 @@ def _overfull_bars(measures) -> tuple[int, int]:
 def _rhythm_report(counts, details, conformance=None, unread_bars=(),
                    prov_bars=None, no_stem_notes=0, no_stem_staves=0,
                    dots_unassigned=0, dots_unassigned_no_candidate=0,
-                   dots_unassigned_eliminated=0, dots_unassigned_staves=0):
+                   dots_unassigned_eliminated=0, dots_unassigned_staves=0,
+                   coincident_unsplit_pairs=0, coincident_unsplit_staves=0):
     """Derive the document's rhythm warnings and confidence string from the
     collected per-staff provenances - the single place that decides both, so
     they cannot drift out of step with each other or with the measure loop.
@@ -2015,6 +2026,13 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
     `dots_unassigned_no_candidate` / `dots_unassigned_eliminated` split it by
     WHY, since the two are not the same claim about the page - see
     glyph._assign_dots's docstring.
+
+    `coincident_unsplit_pairs` / `coincident_unsplit_staves` are how many
+    coincident duplicate notehead pairs - the same glyph drawn twice at the
+    identical position, which is how a unison shared by two voices is
+    engraved (issue #116) - had only ONE candidate stem between them, so
+    nothing could tell the two copies apart and both stayed bound to it. See
+    glyph.decode_note_events.
     """
     conformance = conformance or _BarConformance(0, 0, 0, 0)
     prov_bars = prov_bars or {}
@@ -2133,6 +2151,22 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
             f"system(s) could not be bound to a note - {reason}. Each was left unattached "
             "rather than bound to the nearest notehead anyway, so no note's duration was "
             "invented from it - but a note nearby may be missing a dot it should have"
+        )
+
+    # A coincident duplicate notehead pair (issue #116) that could not be
+    # told apart: only one candidate stem was found for the pair, so both
+    # copies stayed bound to it rather than one going to each voice. Stated
+    # with its own count for the same reason dots_unassigned is - a count of
+    # affected staves alone cannot say whether a score has one such pair or
+    # a dozen.
+    if coincident_unsplit_pairs:
+        warnings.append(
+            f"{coincident_unsplit_pairs} coincident duplicate notehead pair(s) across "
+            f"{coincident_unsplit_staves} staff system(s) - the same notehead glyph drawn "
+            "twice at the identical position, which is how a unison shared by two voices is "
+            "engraved - had only one candidate stem near them, so nothing here could tell the "
+            "two copies apart: both stayed bound to that one stem rather than one going to "
+            "each voice, and the other voice's note at that position may be missing"
         )
 
     # Bars that don't add up outrank how the durations were obtained: a
@@ -2843,6 +2877,13 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     dots_unassigned_no_candidate_total = 0
     dots_unassigned_eliminated_total = 0
     dots_unassigned_staves = 0
+    # Coincident duplicate notehead pairs (see glyph.decode_note_events,
+    # coincident_unsplit_pairs) where only one candidate stem was found, so
+    # both copies stayed bound to it rather than being told apart - summed
+    # the same de-duplicated way as no_stem_notes/dots_unassigned_total
+    # above.
+    coincident_unsplit_total = 0
+    coincident_unsplit_staves = 0
     unmatched_columns_glyph = 0
     unmatched_glyph_notes_total = 0
     # How many bars were transcribed as concurrent voices. How much of the
@@ -2922,6 +2963,10 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                         dots_unassigned_eliminated_total += source.stats.get(
                             "dots_unassigned_eliminated", 0)
                         dots_unassigned_staves += 1
+                    staff_coincident_unsplit = source.stats.get("coincident_unsplit_pairs", 0)
+                    if staff_coincident_unsplit:
+                        coincident_unsplit_total += staff_coincident_unsplit
+                        coincident_unsplit_staves += 1
 
             # Where to look the meter up: the notation staff this tab staff
             # reads from, or its own position when it reads none. The meter
@@ -3024,6 +3069,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         dots_unassigned_no_candidate=dots_unassigned_no_candidate_total,
         dots_unassigned_eliminated=dots_unassigned_eliminated_total,
         dots_unassigned_staves=dots_unassigned_staves,
+        coincident_unsplit_pairs=coincident_unsplit_total,
+        coincident_unsplit_staves=coincident_unsplit_staves,
     )
     warnings.extend(rhythm_warnings)
     # Font-level problems that weren't already the reason a staff degraded
@@ -3183,4 +3230,6 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         dots_unassigned_no_candidate=dots_unassigned_no_candidate_total,
         dots_unassigned_eliminated=dots_unassigned_eliminated_total,
         staves_dots_unassigned=dots_unassigned_staves,
+        coincident_unsplit_pairs=coincident_unsplit_total,
+        staves_coincident_unsplit=coincident_unsplit_staves,
     )

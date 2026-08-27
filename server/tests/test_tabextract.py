@@ -268,6 +268,63 @@ def test_a_melody_over_a_chord_stays_a_separate_voice(dalza_pdf):
         assert voices["1"] == 4.0, f"bar {bar} voice 1: {voices}"
 
 
+def test_born_a_stranger_unison_survives_as_two_notes_in_two_voices(born_a_stranger_pdf):
+    """A regression guard for issue #116, on the score the research's
+    guitarist checked against the printed page: two notes adjacent on the
+    same row, the lower drawn stem-left and the higher swapped stem-right -
+    standard engraving for a unison shared by two voices, and the guitarist
+    called two emitted notes correct there. Binding both copies to the same
+    stem (the pre-fix defect) would lose one of them; collapsing the
+    coincident glyphs to one copy (the tempting wrong fix) would too. These
+    figures are invariant under every variant tried during the research."""
+    result = tabextract.extract(born_a_stranger_pdf)
+    assert result.extractable
+    assert result.bars == 40
+    assert result.bars_defective == 38
+    assert result.notes == 403
+
+
+def test_carulli_moderato_unison_emits_one_note_per_voice_not_two_in_one(carulli_moderato_pdf):
+    """The other half of the same guard: Carulli's flagged spots read as
+    single notes on the page, but the content stream shows the SAME
+    two-opposing-stem signature as a genuine unison (the research measured
+    this - 'no unisons possible' reads the ink correctly and the content
+    stream incorrectly). The correct fix gives each engraved stem its own
+    note rather than stacking both duplicate copies into one voice as a
+    doubled chord; these figures are unchanged from before the fix, and no
+    beat anywhere in the piece repeats the same fret/string within one
+    chord."""
+    result = tabextract.extract(carulli_moderato_pdf)
+    assert result.extractable
+    assert result.bars == 42
+    assert result.bars_defective == 0
+    assert result.notes == 308
+    for chord in re.finditer(r"\(([^)]+)\)", result.alphatex):
+        notes_in_chord = chord.group(1).split()
+        assert len(notes_in_chord) == len(set(notes_in_chord)), (
+            f"a chord doubled the same note instead of splitting across voices: "
+            f"{chord.group(1)}")
+
+
+def test_a_coincident_pair_with_no_second_stem_is_disclosed_not_silently_doubled(ronfaure_pdf):
+    """A coincident duplicate pair that cannot be told apart - either because
+    only ONE candidate stem was found at all, or because every further
+    candidate's x-column already belongs to a different, real note's own
+    stem (see the onset guard in decode_note_events) - stays bound to the
+    winner rather than being split. That must be COUNTED
+    (coincident_unsplit_pairs) rather than silently leaving two same-voice
+    notes stacked on one stem with no signal that anything is uncertain
+    there. 10 of these 15 are onset-rejected rather than single-candidate:
+    without the onset guard this score reads 5 unsplit / 4 staves (see the
+    guard's own regression test), which is the smaller, geometry-only
+    residue the #116 research first measured."""
+    result = tabextract.extract(ronfaure_pdf)
+    assert result.extractable
+    assert result.coincident_unsplit_pairs == 15
+    assert result.staves_coincident_unsplit == 4
+    assert any("coincident duplicate notehead pair" in w for w in result.warnings)
+
+
 def test_notation_only_pdf_has_no_tab_staves(tarrega_pdf):
     info = tabextract.analyze(tarrega_pdf)
     assert info["extractable"] is False
