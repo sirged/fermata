@@ -898,8 +898,8 @@ def test_repeat_structure_pdf_emits_exactly_the_barlines_its_own_source_declares
     assert result.form_marks_unanchored == 0
     assert result.endings_incomplete == 0
     assert result.confidence["structure"] == (
-        "high - repeat barlines and volta brackets read directly from the score's own "
-        "engraving")
+        "high - repeat barlines, volta brackets and navigation marks read directly from the "
+        "score's own engraving")
 
 
 def test_repeat_structure_pdf_plays_in_the_order_the_repeats_and_endings_say(engraved):
@@ -976,6 +976,127 @@ def test_a_discontinued_ending_abutting_the_next_ones_hook_still_reads_discontin
 
     loaded = _load_musicxml_with_alphatab(result.musicxml, repeats=True)
     assert loaded["tickLookup"] == [1, 2, 3, 1, 2, 4, 5, 6, 7, 8]
+
+
+# ---------------------------------------------------------------------------
+# Navigation marks (issue #134 phase 2, Rule 16)
+# ---------------------------------------------------------------------------
+
+
+def _navigation_structure(musicxml_text):
+    """{measure_number: [(where, symbol_or_words, sound_dict)]} read back out
+    of the emitted MusicXML's own <direction> elements - the artifact that
+    gets stored and rendered, not an intermediate (issue #134 Rule 16).
+
+    `where` is "before" or "after", decided by whether the direction is
+    written ahead of the measure's first note or behind its last, because
+    that is the difference between a sign that opens a section and an
+    instruction that fires at the end of a bar. The opening tempo direction
+    is not a navigation mark and is skipped."""
+    out = {}
+    for measure in ET.fromstring(musicxml_text).findall("./part/measure"):
+        num = int(measure.get("number"))
+        children = list(measure)
+        note_positions = [i for i, el in enumerate(children)
+                          if el.tag in ("note", "forward")]
+        first_note = note_positions[0] if note_positions else len(children)
+        for i, el in enumerate(children):
+            if el.tag != "direction":
+                continue
+            dtype = el.find("direction-type")
+            if dtype is None or dtype.find("metronome") is not None:
+                continue
+            what = dtype.find("words")
+            what = what.text if what is not None else dtype[0].tag
+            sound = el.find("sound")
+            attrs = dict(sound.attrib) if sound is not None else None
+            where = "before" if i < first_note else "after"
+            out.setdefault(num, []).append((where, what, attrs))
+    return out
+
+
+def test_navigation_pdf_binds_every_mark_to_the_bar_it_is_engraved_over(engraved):
+    """navigation.pdf's own MusicXML source (fixture_navigation in
+    engrave_fixtures.py) is the ground truth, and this asserts the whole
+    read-back against it as a literal structure rather than a count: the
+    segno opening measure 1, "To Coda" closing 2, "D.S. al Coda" closing 4,
+    the coda sign opening 6, "Fine" closing 7 and "D.C. al Fine" closing 8.
+
+    Every one of the six resolves to a <sound> as well as to its text,
+    because this fixture draws both signs - which is exactly what the real
+    library cannot do (155 coda signs across 142 files and not one segno),
+    and why the fixture exists.
+
+    Note what the bar numbers prove. Three of these instructions
+    (2, 4, 7) are engraved LEFT-aligned at the barline they close, so their
+    text starts at that barline and runs on into the next bar - reading them
+    by the text's right edge would put every one of them a bar late. The
+    fourth (8) is engraved a beat inside its own bar instead. Both
+    alignments come out on the bar the source declares."""
+    pdf = engraved("navigation")
+    result = tabextract.extract(pdf)
+    assert result.extractable
+    assert result.bars == 8, "the fixture's own source declares 8 measures"
+    assert _navigation_structure(result.musicxml) == {
+        1: [("before", "segno", {"segno": "segno"})],
+        2: [("after", "To Coda", {"tocoda": "coda"})],
+        4: [("after", "D.S. al Coda", {"dalsegno": "segno"})],
+        6: [("before", "coda", {"coda": "coda"})],
+        7: [("after", "Fine", {"fine": "yes"})],
+        8: [("after", "D.C. al Fine", {"dacapo": "yes"})],
+    }
+    # Nothing here is a repeat or a volta: the two features have to be
+    # readable independently of each other.
+    assert _barline_structure(result.musicxml) == {
+        8: {"right": {"bar_style": "light-heavy"}},
+    }
+    # The no-op invariant, again and for the same reason (issue #134 Rule
+    # 15/16): a navigation mark carries no duration, so not one Rule 8
+    # figure may move for reading it. Literals, so a later change cannot
+    # drift them.
+    assert (result.bars_overfull, result.bars_short, result.bars_defective,
+            result.bars_padded, result.inferred_rest_quarters, result.notes) == (
+        0, 0, 0, 0, 0.0, 32)
+    assert result.nav_marks_unanchored == 0
+    assert result.nav_marks_unresolved == 0
+    assert result.nav_marks_unresolved_bars == []
+    assert result.confidence["structure"] == (
+        "high - repeat barlines, volta brackets and navigation marks read directly from the "
+        "score's own engraving")
+
+
+def test_navigation_pdf_is_correct_musicxml_that_alphatab_still_plays_straight(engraved):
+    """The renderer limitation, pinned rather than hoped away.
+
+    This project's own player is alphaTab, and alphaTab reads a jump ONLY
+    from a `<sound>` that is a direct child of `<measure>` - not from one
+    nested inside `<direction>`, which is where the MusicXML specification's
+    own examples put it and where every notation program writes it (issue
+    #134 S4.2, re-measured here rather than taken on trust). So the emitted
+    file is right and plays straight through, and this test says so out loud
+    so that a future reader finds a measurement instead of a mystery.
+
+    Hoisting the same `<sound>` elements to measure level - the shape
+    alphaTab does read - is measured in the second half, and shows why the
+    emitter does not simply write that instead: alphaTab then takes the
+    D.S. at bar 4 and IGNORES the "To Coda" at bar 2 and the "Fine" at bar
+    7, so the file would play a form the page does not describe either. A
+    second `<sound>` naming the same jump is also two instructions to any
+    consumer that honours both."""
+    pdf = engraved("navigation")
+    result = tabextract.extract(pdf)
+    loaded = _load_musicxml_with_alphatab(result.musicxml, repeats=True)
+    assert loaded["tickLookup"] == [1, 2, 3, 4, 5, 6, 7, 8]
+
+    hoisted = re.sub(
+        r"(<direction[^>]*>.*?)(\s*<sound [^/]*/>)(\s*</direction>)",
+        lambda m: m.group(1) + m.group(3) + m.group(2),
+        result.musicxml, flags=re.S)
+    assert hoisted != result.musicxml
+    played = _load_musicxml_with_alphatab(hoisted, repeats=True)
+    assert played["tickLookup"] == [1, 2, 3, 4, 1, 2, 3, 4, 5, 6, 7, 8], (
+        "alphaTab reads the measure-level form - and reads it wrong: it takes "
+        "the D.S. and ignores both the To Coda and the Fine")
 
 
 # ---------------------------------------------------------------------------
@@ -1803,6 +1924,11 @@ ENGRAVED_NAMES = (
     "hidden_opening_meter", "hidden_opening_meter_matches_the_default",
     "mid_system_meter_change", "mid_system_key_and_meter_change",
     "multidigit_meter",
+    # The form-mark fixtures. repeat_structure and adjacent_endings landed
+    # with issue #134 phase 1 but were never added here, so the three tests
+    # this tuple drives - committed, regenerable, engraved by the version
+    # the assertions were measured against - have not been covering them.
+    "repeat_structure", "adjacent_endings", "navigation",
 )
 SYNTHESISED_NAMES = ("raster_scan", "fake_music_font")
 

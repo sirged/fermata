@@ -395,6 +395,17 @@ SMUFL_CODE_MAP = {
     0xE0A4: "notehead_filled",
     0xE0A9: "notehead_x",
     0xE1E7: "dot",             # augmentationDot
+    0xE047: "segno",           # segno - the landing point a "D.S." names.
+    0xE048: "coda",            # coda - the landing point a "To Coda" names.
+                               # Both sit in SMUFL_FURNITURE_BLOCKS, so
+                               # neither can move a duration or a confidence
+                               # figure; they are read for their POSITION,
+                               # which is the whole of what they mean.
+                               # Maestro's own coda is GID 171 (mapped
+                               # above); Maestro's segno has no entry,
+                               # because no library file draws one to
+                               # calibrate a GID against - see
+                               # navigation_glyph_events.
     0xE043: "repeat_dot",      # repeatDot
     0xE044: "repeat_dot",      # repeatDots - measured on the engraved
                                # fixtures as one glyph per dot, at the same
@@ -508,6 +519,12 @@ DOT_CATS = {"dot"}
 # augmentation-dot vocabulary, unaffected by this.
 REPEAT_DOT_CATS = {"repeat_dot"}
 DOT_LIKE_CATS = DOT_CATS | REPEAT_DOT_CATS
+# The two navigation SIGNS - the places a "D.S." or a "To Coda" sends a
+# player to. Unlike a repeat dot these are never anything else: no rhythm,
+# no articulation and no accidental shares a codepoint with them, so a
+# caller needs no geometry to tell them apart from their neighbours, only a
+# band to look in.
+NAVIGATION_CATS = {"segno", "coda"}
 
 
 # ---------------------------------------------------------------------------
@@ -3155,6 +3172,29 @@ def dot_like_glyph_events(page, y0, y1, x0, x1):
         (e for e in glyphs.events
          if e.category in DOT_LIKE_CATS and y0 <= e.yc <= y1 and x0 <= e.xc <= x1),
         key=lambda e: e.xc)
+
+
+def navigation_glyph_events(page):
+    """Every segno and coda sign drawn on this page, x-sorted.
+
+    Whole page, no band: a navigation sign is placed against a SYSTEM, and
+    which system that is depends on staff geometry this module has no reason
+    to know (see tabextract._assign_nav_marks). Returning them all and
+    letting the caller do the placing is the same division dot_like_glyph_events
+    keeps.
+
+    Measured over this project's library (297 files): 155 coda signs across
+    142 files and ZERO segnos - and not for want of a table entry either. A
+    census of every music-font glyph in the library that resolved to no
+    category at all found no segno-shaped outline among them; the only
+    recurring unmapped Maestro glyph is a treble clef (GID 5, 11 occurrences
+    in one file). So 86 files print "D.S." with nothing on the page for the
+    D.S. to send a player back to, which is a fact about the engraving and
+    is disclosed as such rather than papered over.
+    """
+    glyphs = extract_glyph_events(page)
+    return sorted((e for e in glyphs.events if e.category in NAVIGATION_CATS),
+                  key=lambda e: e.x0)
 
 
 # ---------------------------------------------------------------------------

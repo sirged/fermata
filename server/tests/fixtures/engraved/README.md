@@ -47,6 +47,7 @@ gap this directory exists to close was created.
 | `volta` | a repeat with "1." / "2." ending brackets close under the staff |
 | `repeat_structure` | a forward repeat opening the span, three numbered endings (one two bars long, one closed with an open hook), a mid-score double barline, and a closing final barline |
 | `adjacent_endings` | an ending that discontinues (no closing hook) with the very next ending's own opening hook at the same barline, no bar in between — the one shape that forces `stop` vs `discontinue` to actually tell a bracket's own closing hook apart from its neighbour's opening one, rather than agreeing with it by luck (issue #134 adversarial review, item 9) |
+| `navigation` | a segno, a "To Coda", a "D.S. al Coda", the coda sign, a "Fine" and a "D.C. al Fine" — the marks of Rule 16, including **a segno**, which no score in the maintainer's library draws at all, and both text alignments: three instructions engraved left-aligned at the barline they close (so their text runs on into the next bar) and one engraved a beat inside its own bar |
 | `harmonics_dense` | two uncalibrated harmonic noteheads on a system dense enough that the unknown-glyph ratio cannot see them |
 | `notation_only` | standard notation with no tablature — refused, with the reason |
 | `four_sharps_in_three_four` | four sharps between the clef and the meter, pushing the meter's digits past the window a clef and a meter alone need — in 3/4, so failing to read it misplaces every barline |

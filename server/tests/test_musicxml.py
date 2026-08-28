@@ -15,6 +15,7 @@ run whether or not a schema is to hand.
 """
 
 import os
+import re
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -594,6 +595,73 @@ def test_measures_are_numbered_from_one_consecutively():
 
 
 # ---------------------------------------------------------------------------
+# Navigation marks (Rule 16)
+# ---------------------------------------------------------------------------
+
+
+def _nav_build(directions):
+    measures = [([[(4, 0, [(1, 0)])]], (4, 4))] * 2
+    return _root(musicxml.build("T", None, DEFAULT_TUNING, (4, 4), measures,
+                                directions=directions))
+
+
+def test_a_sign_is_written_before_the_notes_and_an_instruction_after_them():
+    """Rule 16's one structural claim: WHERE in the measure the direction is
+    written is what says whether the mark opens the bar or fires at the end
+    of it. A segno drawn at the head of bar 2 and a D.C. that sends playback
+    away at the end of it are two different things, and the only thing in
+    the file that tells them apart is their position in the measure."""
+    root = _nav_build({
+        2: {"before": [{"symbol": "segno", "sound": {"segno": "segno"}}],
+            "after": [{"words": "D.C. al Fine", "sound": {"dacapo": "yes"}}]},
+    })
+    measure = root.findall("./part/measure")[1]
+    tags = [el.tag for el in measure]
+    assert tags.index("direction") < tags.index("note")
+    assert len(tags) - 1 - tags[::-1].index("direction") > tags.index("note")
+
+
+def test_a_sign_is_written_as_the_element_musicxml_has_for_it():
+    root = _nav_build({1: {"before": [
+        {"symbol": "segno", "sound": {"segno": "segno"}},
+        {"symbol": "coda", "sound": {"coda": "coda2"}},
+    ]}})
+    directions = root.findall("./part/measure/direction")
+    assert directions[0].find("direction-type/segno") is not None
+    assert directions[0].find("sound").get("segno") == "segno"
+    assert directions[1].find("direction-type/coda") is not None
+    assert directions[1].find("sound").get("coda") == "coda2"
+    # A sign is written as a sign, never as the word beside it.
+    assert root.findall("./part/measure/direction/direction-type/words") == []
+
+
+def test_an_instruction_with_no_target_is_written_as_words_with_no_sound():
+    """The library's dominant case (issue #134 phase 2): a "D.S." on a score
+    that draws no segno. The words are what the page prints and are written;
+    the `<sound>` would be an assertion about a jump whose target is not in
+    the file, and is not."""
+    root = _nav_build({1: {"after": [{"words": "D.S. al Coda", "sound": None}]}})
+    direction = root.find("./part/measure/direction")
+    assert direction.findtext("direction-type/words") == "D.S. al Coda"
+    assert direction.find("sound") is None
+
+
+def test_directions_are_placed_above_and_carry_no_duration():
+    """A navigation mark cannot move a Rule 8 figure, which in the emitter
+    means it must not add a `<duration>` anywhere - see written_beats."""
+    plain = musicxml.build("T", None, DEFAULT_TUNING, (4, 4),
+                           [([[(4, 0, [(1, 0)])]], (4, 4))] * 2)
+    marked = musicxml.build("T", None, DEFAULT_TUNING, (4, 4),
+                            [([[(4, 0, [(1, 0)])]], (4, 4))] * 2,
+                            directions={1: {"after": [
+                                {"words": "Fine", "sound": {"fine": "yes"}}]}})
+    root = _root(marked)
+    assert root.find("./part/measure/direction").get("placement") == "above"
+    strip = re.sub(r"\s*<direction .*?</direction>", "", marked, flags=re.S)
+    assert strip == plain, "a direction changed something other than itself"
+
+
+# ---------------------------------------------------------------------------
 # Validation against the real schema
 # ---------------------------------------------------------------------------
 
@@ -651,6 +719,27 @@ def _emitted_samples():
                     "right": {"bar_style": "light-heavy", "ending_number": "2",
                               "ending_type": "discontinue"},
                 },
+            }),
+        # Rule 16: navigation marks, as `<direction>` (see
+        # _append_navigation / build's `directions` param). Every shape the
+        # emitter can write is here so the schema sees all of them: a
+        # `<segno/>` and a `<coda/>` direction-type, `<words>` with a
+        # `<sound>` and `<words>` with none (the jump the page names no
+        # target for), and every one of the four `<sound>` jump attributes.
+        "navigation": musicxml.build(
+            "Navigation", None, DEFAULT_TUNING, (4, 4), [
+                [[(4, 0, [(1, 0)]), (4, 0, [(1, 2)]), (4, 0, [(1, 3)]), (4, 0, [(1, 5)])]],
+                [[(4, 0, [(2, 0)]), (4, 0, [(2, 2)]), (4, 0, [(2, 3)]), (4, 0, [(2, 5)])]],
+                [[(4, 0, [(3, 0)]), (4, 0, [(3, 2)]), (4, 0, [(3, 3)]), (4, 0, [(3, 5)])]],
+            ], directions={
+                1: {"before": [{"symbol": "segno", "sound": {"segno": "segno"}}],
+                    "after": [{"words": "To Coda", "sound": {"tocoda": "coda"}}]},
+                2: {"before": [{"symbol": "coda", "sound": {"coda": "coda"}}],
+                    "after": [{"words": "Fine", "sound": {"fine": "yes"}},
+                              {"words": "D.S. al Coda",
+                               "sound": {"dalsegno": "segno"}}]},
+                3: {"after": [{"words": "D.C. al Fine", "sound": {"dacapo": "yes"}},
+                              {"words": "D.S. al Fine", "sound": None}]},
             }),
     }
 
@@ -723,7 +812,8 @@ def test_the_published_examples_exist_and_conform():
     worse than no example."""
     paths = _example_paths()
     assert [p.name for p in paths] == [
-        "monophonic.musicxml", "repeat-structure.musicxml", "two-voice.musicxml"]
+        "monophonic.musicxml", "navigation.musicxml", "repeat-structure.musicxml",
+        "two-voice.musicxml"]
     for path in paths:
         root = ET.parse(path).getroot()
         assert root.tag == "score-partwise"

@@ -495,6 +495,41 @@ def _append_attributes(measure, ts, fifths, tuning, capo, opening):
     return attributes
 
 
+def _append_navigation(measure, record):
+    """One navigation `<direction>` (Rule 16). `record` is a dict with
+
+      `symbol`  "segno" or "coda" - the sign the page draws, written as the
+                `<segno/>` / `<coda/>` direction-type that MusicXML has for
+                exactly this and nothing else;
+      `words`   the instruction the page prints, verbatim ("D.C. al Coda",
+                "To Coda", "Fine");
+      `sound`   the playback attributes for `<sound>`, or None where the
+                page names a jump whose target it does not draw.
+
+    A mark carries a symbol or words, never both: the sign IS the mark for a
+    segno or a coda, and the word beside it ("Coda 2") is a label for the
+    sign, already carried by the `coda` id in `sound`.
+
+    `<sound>` goes inside `<direction>`, which is where the specification's
+    own examples put it and where every notation program writes it. It is
+    NOT also written as a direct child of `<measure>` - the one shape this
+    project's own renderer would read a jump from (see docs Rule 16) -
+    because two `<sound>` elements naming one jump is two instructions to a
+    reader that honours both, and this file's job is to be right rather than
+    to be convenient for one consumer.
+    """
+    direction = _sub(measure, "direction", placement="above")
+    dtype = _sub(direction, "direction-type")
+    symbol = record.get("symbol")
+    if symbol:
+        _sub(dtype, symbol)
+    else:
+        _sub(dtype, "words", record.get("words") or "")
+    sound = record.get("sound")
+    if sound:
+        _sub(direction, "sound", **{k: str(v) for k, v in sorted(sound.items())})
+
+
 def _append_tempo(measure, tempo):
     direction = _sub(measure, "direction", placement="above")
     dtype = _sub(direction, "direction-type")
@@ -532,7 +567,8 @@ def _split_measure(measure_in, in_effect):
 
 
 def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
-          part_name="Guitar", encoding_date=None, barlines=None):
+          part_name="Guitar", encoding_date=None, barlines=None,
+          directions=None):
     """Emit one tab part as a MusicXML 4.0 `score-partwise` document.
 
     `barlines` is Rule 15's repeat/volta structure: {measure_number (1-based,
@@ -541,6 +577,14 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
     `ending_number`/`ending_type` - see _append_barline. A form mark carries
     no duration and is written independently of the beats/voices below; it
     can never move what those decide.
+
+    `directions` is Rule 16's navigation structure, keyed the same way:
+    {measure_number -> {"before": [record], "after": [record]}}, record as
+    _append_navigation describes. "before" is written ahead of the measure's
+    notes and "after" behind them, which is the difference between a sign
+    that opens a section at the downbeat (segno, coda) and an instruction
+    that fires at the end of the bar (D.C., D.S., To Coda, Fine). Like a
+    barline it carries no duration.
 
     `measures` is a list of (beats, measure_ts) pairs - or bare beats lists,
     for a caller with no per-measure meter to carry - where beats is a list of
@@ -614,6 +658,9 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
         marks = (barlines or {}).get(index + 1, {})
         if "left" in marks:
             _append_barline(measure, "left", marks["left"])
+        nav = (directions or {}).get(index + 1, {})
+        for record in nav.get("before", ()):
+            _append_navigation(measure, record)
 
         written = 0
         for voice_number, voice in enumerate(voices_of(beats_in), start=1):
@@ -666,6 +713,8 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
                         )
                 written += duration
 
+        for record in nav.get("after", ()):
+            _append_navigation(measure, record)
         if "right" in marks:
             _append_barline(measure, "right", marks["right"])
 
