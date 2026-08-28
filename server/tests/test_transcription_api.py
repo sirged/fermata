@@ -388,7 +388,13 @@ BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
             # added to _BAR_KEYS at the same time as ExtractionResult and
             # to_dict rather than after an adversarial review found it
             # missing, and exercised HERE so its reload path is real.
-            "unison_digits_shared")
+            "unison_digits_shared",
+            # coincident_unsplit_pairs / staves_coincident_unsplit (issue
+            # #116) were the opposite gap: reached ExtractionResult and
+            # to_dict with #116 itself but never _BAR_KEYS in api.py nor
+            # HERE (issue #143), so their reload path went unexercised until
+            # now.
+            "coincident_unsplit_pairs", "staves_coincident_unsplit")
 # Which bars, and how much silence - the figures that only exist as data. The
 # warning prose caps its bar list, and the profile document promises a consumer
 # that `inferred_rest_quarters` is the sum of the `<forward>` durations in the
@@ -478,6 +484,31 @@ def test_which_bars_were_not_read_from_glyphs_survives_a_reload(
     assert fetched["dots_unassigned_no_candidate"] == 0
     assert fetched["dots_unassigned_eliminated"] == 0
     assert fetched["staves_dots_unassigned"] == 0
+
+
+def test_a_coincident_unsplit_pair_survives_a_reload(app_env, ronfaure_pdf, monkeypatch,
+                                                       insert_score):
+    """coincident_unsplit_pairs / staves_coincident_unsplit (issue #116) round
+    trip against a score where they are non-zero, for the same reason the bar
+    figures above are: all-zeros looks identical to a persistence bug that
+    dropped them. Ronfaure reads 15 unsplit pairs across 4 staves (see
+    test_a_coincident_pair_with_no_second_stem_is_disclosed_not_silently_doubled
+    in test_tabextract.py) - reaching ExtractionResult and to_dict() with
+    #116 itself, but neither _BAR_KEYS in api.py nor the confidence blob
+    transcribe() writes ever picked them up (issue #143), so a reloaded
+    transcription reported every other disclosure the decoder made except
+    this one."""
+    monkeypatch.setattr(api, "LIBRARY_DIR", ronfaure_pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, ronfaure_pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    fetched = api.get_transcription(score_id)
+
+    assert posted["coincident_unsplit_pairs"] == 15
+    assert posted["staves_coincident_unsplit"] == 4
+    assert fetched["coincident_unsplit_pairs"] == posted["coincident_unsplit_pairs"]
+    assert fetched["staves_coincident_unsplit"] == posted["staves_coincident_unsplit"]
 
 
 def test_a_row_stored_before_the_bar_figures_reports_them_unrecorded(app_env, insert_score):

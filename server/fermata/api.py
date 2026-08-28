@@ -1362,7 +1362,17 @@ _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
              # ExtractionResult/to_dict deliberately - see the note above
              # about the disclosure that reaches a reader in prose and
              # reaches nobody in data.
-             "unison_digits_shared")
+             "unison_digits_shared",
+             # `coincident_unsplit_pairs` / `staves_coincident_unsplit`
+             # (issue #116): a unison shared between two voices whose second,
+             # distinct candidate stem could not be found, so the two copies
+             # of the coincident notehead could not be told apart - the exact
+             # "recoverable from nothing else here" case the disclosures
+             # above exist for. Reached ExtractionResult and to_dict() with
+             # #116 itself but never HERE (issue #143), so a reloaded
+             # transcription reported every disclosure the decoder made
+             # except this one.
+             "coincident_unsplit_pairs", "staves_coincident_unsplit")
 
 # WHICH bars those were, as data and not only inside the warning prose. The
 # prose names them, but it caps the list, and the profile document states that a
@@ -1582,6 +1592,16 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             "dots_unassigned_no_candidate": result.dots_unassigned_no_candidate,
             "dots_unassigned_eliminated": result.dots_unassigned_eliminated,
             "staves_dots_unassigned": result.staves_dots_unassigned,
+            # coincident_unsplit_pairs / staves_coincident_unsplit (issue
+            # #116, #143): _BAR_KEYS above only controls what a stored blob
+            # is READ back as - this dict is what gets written into it in the
+            # first place, and it named every other _BAR_KEYS entry by hand
+            # already but never picked these two up, so the round trip broke
+            # here even after _BAR_KEYS did the reading half. Without this,
+            # a score with real unsplit pairs (e.g. Ronfaure, 15 per #116)
+            # stores None for both and #143's own verification plan fails.
+            "coincident_unsplit_pairs": result.coincident_unsplit_pairs,
+            "staves_coincident_unsplit": result.staves_coincident_unsplit,
             "spacing_bars": result.spacing_bars,
             "degraded_bars": result.degraded_bars,
             "repeats_unread": result.repeats_unread,
