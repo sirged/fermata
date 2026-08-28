@@ -276,6 +276,58 @@ def fixture_unison_voices():
     return score("Guitar", [attributes() + bar] + [bar] * 7)
 
 
+def fixture_unison_in_chord():
+    """`unison_voices` with the upper voice thickened into a CHORD, so the
+    unison is one member of it rather than the whole of it (issue #137) - the
+    shape the library's own residual case has, measured off The Cosmic Wheel
+    (FF XI) page by page: an upper voice writing a two-note chord whose LOWER
+    member sounds the same pitch, at the same moment, as the lower voice's
+    own eighth. Three noteheads are drawn at that onset and only two
+    positions are occupied, because two of the three are the identical glyph
+    stamped twice - one copy per voice's stem, exactly as in `unison_voices`.
+
+    WHAT MAKES THIS DIFFERENT FROM `unison_voices`, and why that fixture
+    cannot cover it: a unison is ONE string being plucked, so the tablature
+    prints ONE fret number for it however many voices sound it. With the
+    unison alone (`unison_voices`) the engraver has a free choice of string
+    for each voice and takes it - MuseScore writes that fixture's two voices
+    on two different strings, 2 on the fourth and 7 on the fifth, so there is
+    a digit apiece and nothing is ever short of one. Put the unison INSIDE a
+    chord and the choice is gone: the chord's own two digits are what the
+    column holds, and the lower voice's note is the lower of them, so the
+    onset has THREE noteheads and TWO digits. The tab below is written that
+    way deliberately - the lower voice's on-beat eighths are the chord's own
+    lower digit and are not printed a second time, which is what the library
+    page does and what an engraver would do.
+
+    Unfixed, the digits are handed out one per notehead in pitch order, the
+    third notehead gets nothing, and the voice it belongs to loses its note
+    entirely: every bar reads with the lower voice 2.0 quarters short of its
+    meter (4 of its 8 eighths gone), 8 of 8 bars defective. Nothing about the
+    stems is wrong there - the split #116 introduced puts one copy on each
+    voice's stem correctly - so a fixture that only checked the stem binding
+    would pass while the bar it produced was still wrong."""
+    upper = "".join(note(("A", 4), "quarter", voice=1)
+                    + note(("E", 4), "quarter", voice=1, chord=True) for _ in range(4))
+    lower = "".join(note(("E", 4), "eighth", voice=2) for _ in range(8))
+    notation = upper + backup(4.0) + lower
+    # The tab is NOT mirror_to_tab(notation): a unison is one plucked string
+    # and prints one digit, so the lower voice's on-beat eighths are the
+    # chord's own lower digit rather than four more numbers stacked on it.
+    # Writing them out again would give the onset three digits for its three
+    # noteheads and the shortage this fixture exists to hold could not arise.
+    tab_upper = "".join(note(("A", 4), "quarter", voice=5, staff=2)
+                        + note(("E", 4), "quarter", voice=5, staff=2, chord=True)
+                        for _ in range(4))
+    tab_lower = "".join(
+        (rest("eighth", staff=2, voice=6) if i % 2 == 0
+         else note(("E", 4), "eighth", voice=6, staff=2))
+        for i in range(8))
+    tab = tab_upper + backup(4.0) + tab_lower
+    bar = notation + backup(4.0) + tab
+    return score("Guitar", [attributes() + bar] + [bar] * 7)
+
+
 def fixture_three_voices():
     """A melody in quarters (stems up) over an arpeggiated accompaniment in
     eighths (stems down), with a sustained bass held under both as a whole
@@ -736,6 +788,7 @@ FIXTURES = {
     "tab_only_short_last_system": fixture_tab_only_short_last_system,
     "two_voices": fixture_two_voices,
     "unison_voices": fixture_unison_voices,
+    "unison_in_chord": fixture_unison_in_chord,
     "three_voices": fixture_three_voices,
     "tuplet_and_tie": fixture_tuplet_and_tie,
     "drop_d": fixture_drop_d,
