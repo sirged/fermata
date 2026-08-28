@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/metronome-everywhere.spec.js",
+  "count": 24,
+  "reason": "issue #97's metronome-as-a-general-tool page (rate, subdivision, accent, tempo range, marked/transcribed/assumed tempo honesty, per-score persistence) plus issue #121's compound-meter audibility checks."
+}

@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/ear-training.spec.js",
+  "count": 15,
+  "reason": "issue #61's drill (hearing a note, offering and grading four choices, session logging, instrument-range handling) plus issue #120's real-audio audition check and heartbeat watchdog."
+}

@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/practice.spec.js",
+  "count": 30,
+  "reason": "practice-week arithmetic and wording: day/week boundaries, goal statements that never grade the person, and (issues #102/#103) how much of a week's total rests on an assumed day."
+}

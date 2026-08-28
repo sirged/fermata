@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/toolbar-responsive.spec.js",
+  "count": 13,
+  "reason": "issue #106: the score toolbar clipping below its intrinsic width on a portrait tablet - clipping checks at five widths, real-click reachability, and transport-row placement below the wrap breakpoint."
+}

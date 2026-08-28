@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/practice.spec.js",
+  "count": 15,
+  "reason": "the practice review page: goals, weekly totals, timezone-correct day filing, and (issues #102/#103) an assumed-not-recorded day saying so beside the date."
+}
