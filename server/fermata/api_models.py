@@ -455,7 +455,18 @@ class TranscriptionOut(BaseModel):
     source: str
     # The stored blob, parsed - or the raw column text if it did not parse as
     # JSON, or None/empty if nothing was ever stored. See _transcription_dict.
-    confidence: dict[str, Any] | str | None
+    #
+    # `Any` and not `dict[str, Any] | str | None`: the column is a bare TEXT
+    # value nothing but transcribe() constrains in the ordinary path (always
+    # a JSON object there), but _transcription_dict's own parse only checks
+    # that json.loads succeeded, not that the result was a dict - a stored
+    # value that happens to be a JSON array, number or bool parses cleanly
+    # and is handed back as-is. That row shape is not reachable through this
+    # application today, but the helper tolerates it and this model has to
+    # tolerate whatever the helper actually hands it, or a row nothing here
+    # wrote could 500 a plain GET instead of degrading the way the helper
+    # already does.
+    confidence: Any = None
     created_at: str
     updated_at: str
     warnings: list[str]

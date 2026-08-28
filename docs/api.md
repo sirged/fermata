@@ -36,12 +36,23 @@ number `GET /api/version` reports is the application's own release, and there
 is no `/api/v2` alongside `/api/v1`. Until that changes, the practical
 expectations are:
 
-- **Fields are additive in the ordinary case.** A response gaining a new
-  field is not treated as a breaking change - see, for example, how the
-  transcription endpoints' Rule 8 conformance figures and provenance fields
-  (`bars_defective`, `time_signature_source`, and the rest - see
-  `TranscriptionOut` in `api_models.py`) were added to an existing response
-  rather than requiring a new endpoint.
+- **A new field reaches clients once its response model carries it, not the
+  moment a handler starts computing it.** Every response is filtered through
+  a Pydantic model (`server/fermata/api_models.py`) before it leaves the
+  server, so a field a handler adds to its own return value is invisible on
+  the wire until the matching model grows to match - see, for example, how
+  the transcription endpoints' Rule 8 conformance figures and provenance
+  fields (`bars_defective`, `time_signature_source`, and the rest - see
+  `TranscriptionOut`) had to be added to that model, not only to the
+  handler, to actually reach a reader (issues #143, #146). Growing a field
+  in the ordinary case is not a breaking change; forgetting to grow it is a
+  bug, and it is the one `server/tests/test_api_docs.py` actually guards
+  against: every request its tests make is checked against the RAW value the
+  handler returned, captured (via `fastapi.routing.run_endpoint_function`)
+  before response_model ever touched it, against what actually reached the
+  wire - and fails naming the exact route and field the moment a model falls
+  behind its handler, across every endpoint group in one mechanism rather
+  than one hand-written pin per model.
 - **A field already documented is not silently repurposed or removed.**
   Renaming or dropping a field, or changing what a value means, is called out
   in the release it ships in.

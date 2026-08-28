@@ -2,7 +2,7 @@
 does, which the other test modules already cover, but whether what FastAPI
 generates from api.py is actually true, complete and fetchable.
 
-Four separate claims, each with its own test group below:
+Five separate claims, each with its own test group below:
 
 1. GET /openapi.json is a document that validates against the OpenAPI spec -
    FastAPI producing SOME JSON is not the same claim as producing one a
@@ -10,23 +10,41 @@ Four separate claims, each with its own test group below:
    surface as its contract) could actually trust.
 2. Every route carries a summary, a description and at least one tag, and
    its success response declares a schema (or, for the two file-serving
-   routes, a real content type) - see test_every_route_is_documented for
-   what "documented" is defined to mean and why an undocumented new route
-   fails this rather than passing by default. FastAPI derives a summary from
-   a function's name even with no docstring at all, so summary alone would
-   be a test that could never go red; description is what actually requires
-   someone to have written something.
+   routes, a real content type, with no stray application/json alongside
+   it) - see test_every_route_is_documented for what "documented" is
+   defined to mean and why an undocumented new route fails this rather than
+   passing by default. FastAPI derives a summary from a function's name even
+   with no docstring at all, so summary alone would be a test that could
+   never go red; description is what actually requires someone to have
+   written something.
 3. For a representative endpoint out of each group (system, settings,
-   instruments, library, practice, transcription, scan), the JSON that
-   actually comes back over real HTTP validates against the model
-   response_model= declares for it - proving the declared shape is the real
-   shape, not merely FastAPI's own opinion of it echoed back.
+   instruments, library, practice, transcription, scan, upload), the JSON
+   that actually comes back over real HTTP validates against the model
+   response_model= declares for it.
 4. FastAPI's response-model validation is switched on, not merely present in
    the decorator - test_response_validation_actually_rejects_a_bad_response
    proves it against a throwaway route using the exact same
    `response_model=` idiom every route in api.py uses, so the proof is about
    the mechanism itself rather than about any one handler happening to
    behave.
+5. THE SYSTEMIC GUARD. Group 3's `Model.model_validate(response.json())`
+   checks are tautological on their own: a response the model just filtered
+   and serialized is model-valid by construction, so they can never catch a
+   field the model silently drops on the way to the wire - the exact bug
+   class this repo has shipped more than once when a handler grew a field
+   and its response model did not (see #143, #145, #146 for the same
+   pattern one layer down, in `_BAR_KEYS` versus what actually got written).
+   `client`, below, is wrapped so every request made through it in group 3
+   is ALSO checked against the raw value the handler itself returned, before
+   response_model ever touched it - captured via fastapi.routing's own
+   run_endpoint_function, the one seam between "what the handler computed"
+   and "what got filtered". Every key present on the raw return must reach
+   the wire at the same path, recursively, so a field dropped three levels
+   down (goal.progress.sessions_inferred, say) is named exactly where it was
+   lost. This is what actually keeps ~30 hand-mirrored models honest - not
+   the individual model_validate() calls, which stay in group 3 because they
+   check a different property (declared TYPES match reality) than this one
+   (no declared field is silently dropped).
 """
 
 import pytest
@@ -34,6 +52,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from openapi_spec_validator import validate as validate_openapi
 
+import fastapi.routing as fastapi_routing
 from fermata import api, api_models
 from fermata.main import app as full_app
 
@@ -46,16 +65,118 @@ _BINARY_ROUTES = {
 }
 
 
+def _assert_wire_carries_every_raw_key(raw, wire, route: str, path: str = ""):
+    """The systemic drift guard (claim 5 above). `raw` is what the handler
+    itself returned, captured before response_model touched it; `wire` is
+    the parsed JSON that actually left the server for the same request.
+    Every key present in `raw` must be reachable at the same path in
+    `wire` - recursively through nested dicts and lists of dicts, so a field
+    dropped inside a nested model (GoalOut.progress, InstrumentOut.strings,
+    ...) is named at its own path rather than only at the top.
+
+    Deliberately checks KEY PRESENCE only, never value equality - a bool
+    becoming a JSON `true`, or an int surviving a round trip, is not what
+    this is for for; response-model type-correctness is group 3's job
+    (Model.model_validate). This one question only: did every field the
+    handler computed make it to the wire, or did the model quietly drop it.
+
+    dict[str, Any] passthrough fields (TranscriptionOut.confidence) declare
+    no sub-schema, so nothing between the handler and the wire strips
+    anything inside them - recursing into them same as any other dict is
+    safe (it can only ever agree) rather than something this needs to
+    special-case around.
+    """
+    if isinstance(raw, dict):
+        assert isinstance(wire, dict), (
+            f"{route}: at '{path or '(root)'}' the raw return was a dict but the wire "
+            f"response was {type(wire).__name__} - response_model changed the shape, "
+            "not just dropped a field"
+        )
+        for key, raw_value in raw.items():
+            assert key in wire, (
+                f"{route}: field '{path}{key}' is on the handler's raw return but missing "
+                "from the wire JSON - grow its response model in api_models.py to include it"
+            )
+            _assert_wire_carries_every_raw_key(raw_value, wire[key], route, f"{path}{key}.")
+    elif isinstance(raw, (list, tuple)):
+        if not isinstance(wire, list):
+            return  # a type mismatch here is group 3's claim to catch, not this one's
+        for i, (raw_item, wire_item) in enumerate(zip(raw, wire)):
+            _assert_wire_carries_every_raw_key(raw_item, wire_item, route, f"{path}[{i}].")
+    # scalars: nothing further to check - key presence is this function's whole claim
+
+
+class _DriftGuardedClient:
+    """Wraps a TestClient so every JSON request made through it is checked
+    by _assert_wire_carries_every_raw_key - see claim 5 in the module
+    docstring. `_captured` is filled by the run_endpoint_function spy the
+    `client` fixture installs; `_call` reads off exactly the entries added
+    during its own request (there is exactly one per request in this app,
+    since no route here calls another route through Depends() - a handler
+    calling another handler function directly, as create_instrument calls
+    get_instrument, is a plain Python call and never re-enters FastAPI's
+    routing at all)."""
+
+    def __init__(self, inner: TestClient, captured: list):
+        self._inner = inner
+        self._captured = captured
+
+    def _call(self, method: str, url: str, **kwargs):
+        before = len(self._captured)
+        resp = getattr(self._inner, method)(url, **kwargs)
+        new_raws = self._captured[before:]
+        content_type = resp.headers.get("content-type", "")
+        if new_raws and content_type.startswith("application/json"):
+            _assert_wire_carries_every_raw_key(
+                new_raws[-1], resp.json(), f"{method.upper()} {url}"
+            )
+        return resp
+
+    def get(self, url, **kw):
+        return self._call("get", url, **kw)
+
+    def post(self, url, **kw):
+        return self._call("post", url, **kw)
+
+    def put(self, url, **kw):
+        return self._call("put", url, **kw)
+
+    def patch(self, url, **kw):
+        return self._call("patch", url, **kw)
+
+    def delete(self, url, **kw):
+        return self._call("delete", url, **kw)
+
+
 @pytest.fixture
-def client(app_env):
+def client(app_env, monkeypatch):
     """The router alone - same pattern as test_instruments_api.py and
     test_version_api.py's client fixtures. Schema-shape assertions use
     `full_app` (fermata.main.app) instead, further down, because that is the
     literal app that serves /docs and /openapi.json in production; this one
-    is for hitting live endpoints against a throwaway database."""
+    is for hitting live endpoints against a throwaway database.
+
+    Wrapped in _DriftGuardedClient rather than handed back as a bare
+    TestClient: every group-3 test already makes real requests here to
+    validate response shape, and reusing that same traffic for the systemic
+    drift guard (claim 5) needs no separate scenario or fixture of its own.
+    `run_endpoint_function` is FastAPI's own seam between "the handler
+    returned this" and "response_model filtered it to this" - patched at
+    the module fastapi.routing resolves it from, which is where routing.py's
+    own `await run_endpoint_function(...)` call looks it up at call time."""
     app = FastAPI()
     app.include_router(api.router)
-    return TestClient(app)
+
+    captured: list = []
+    original = fastapi_routing.run_endpoint_function
+
+    async def spy(*, dependant, values, is_coroutine):
+        result = await original(dependant=dependant, values=values, is_coroutine=is_coroutine)
+        captured.append(result)
+        return result
+
+    monkeypatch.setattr(fastapi_routing, "run_endpoint_function", spy)
+    return _DriftGuardedClient(TestClient(app), captured)
 
 
 @pytest.fixture
@@ -148,7 +269,13 @@ def test_every_route_is_documented(openapi_schema):
                     f"{{'content': {{'<mime-type>': {{}}}}}}}} to the decorator"
                 )
         else:
-            schema_present = any("schema" in media for media in content.values())
+            # `"schema" in media` is satisfied by response_model=None's own
+            # empty `{"schema": {}}` - FastAPI emits that placeholder for
+            # every JSON-content route regardless of whether a real model
+            # was ever attached, so a route with NO response_model still
+            # passed this check. `.get(...)` truthy-checked, not `in`, is
+            # what actually requires a non-empty schema object.
+            schema_present = any(media.get("schema") for media in content.values())
             if not schema_present:
                 problems.append(
                     f"{route}: no response schema - add response_model=<Model> to the route "
@@ -164,6 +291,21 @@ def test_every_route_has_exactly_the_expected_operation_count(openapi_schema):
     removes a route."""
     count = sum(1 for _ in _operations(openapi_schema))
     assert count == 41
+
+
+def test_binary_routes_do_not_advertise_a_json_content_type(openapi_schema):
+    """Without `response_class=FileResponse`, FastAPI assumes a route can
+    also answer with `application/json` (its default) alongside whatever
+    real content types `responses=` declares - so a codegen reading
+    /openapi.json would believe GET .../file or .../thumb might hand back
+    JSON, when neither ever does. Only the real content types may appear."""
+    for method, path in _BINARY_ROUTES:
+        content = openapi_schema["paths"][path][method.lower()]["responses"]["200"]["content"]
+        assert "application/json" not in content, (
+            f"{method} {path} advertises application/json - add "
+            "response_class=FileResponse to its decorator"
+        )
+        assert content, f"{method} {path} advertises no content type at all"
 
 
 # ---------------------------------------------------------------------------
@@ -277,11 +419,24 @@ def test_practice_responses_match_their_models(client, insert_score):
 
 
 def test_a_goal_about_a_deleted_score_still_validates(client, insert_score):
-    """The one shape genuinely different from the rest: an uncountable goal's
-    progress omits `sessions_inferred` and every day's `inferred` - see
-    api_models.GoalDayOut and GoalProgressOut. This is the case that would
-    500 if those fields were modelled as required ints instead of optional
-    ones, so it is exercised on purpose rather than only in passing."""
+    """The one shape genuinely different from the rest: practice.goal_progress
+    OMITS `sessions_inferred` and every day's `inferred` key entirely on its
+    uncountable branch - see api_models.GoalDayOut and GoalProgressOut's
+    docstrings. That is a fact about the RAW handler return; it is not what a
+    client actually sees. response_model= fills in each field's declared
+    default (None) for a key the handler never set, so the WIRE response
+    carries `"sessions_inferred": null` and `"inferred": null` explicitly -
+    additive relative to what main sends (an absent key becomes a present
+    null), and the one payload change this PR is actually responsible for.
+    Checked directly against the raw JSON below, deliberately, rather than
+    only through the parsed model - a model attribute reads the same
+    (`None`) whether the wire carried the key as `null` or omitted it
+    altogether, so only inspecting `response.json()` itself proves which one
+    actually happened.
+
+    Also exercises the case that would 500 if these fields were modelled as
+    required ints instead of optional ones, which is the reason this test
+    exists at all."""
     from fermata import db
 
     conn = db.connect()
@@ -293,9 +448,14 @@ def test_a_goal_about_a_deleted_score_still_validates(client, insert_score):
     conn.execute("DELETE FROM scores WHERE id = ?", (score_id,))
     conn.commit()
 
-    validated = api_models.GoalOut.model_validate(
-        client.get(f"/api/practice/goals").json()["goals"][0]
-    )
+    wire = client.get("/api/practice/goals").json()["goals"][0]
+    progress = wire["progress"]
+    assert progress["countable"] is False
+    assert "sessions_inferred" in progress and progress["sessions_inferred"] is None
+    for day in progress["days"]:
+        assert "inferred" in day and day["inferred"] is None
+
+    validated = api_models.GoalOut.model_validate(wire)
     assert validated.progress.countable is False
     assert validated.progress.sessions_inferred is None
     assert all(day.inferred is None for day in validated.progress.days)
@@ -358,9 +518,24 @@ def test_transcription_model_stays_in_sync_with_api_pys_bar_key_tuples():
 
 
 def test_scan_and_upload_responses_match_their_models(client, monkeypatch):
+    from fermata import config
+
     monkeypatch.setattr(api.scanner, "start_scan", lambda **kw: True)
     api_models.ScanStatusOut.model_validate(client.get("/api/scan/status").json())
     api_models.ScanTriggerOut.model_validate(client.post("/api/scan").json())
+
+    # UploadOut, actually exercised - app_env already made config.LIBRARY_DIR
+    # a real throwaway folder; api.py bound its own LIBRARY_DIR name at
+    # import time (`from .config import LIBRARY_DIR`), so it has to be
+    # repointed directly - see test_scanner.py's upload tests for the same
+    # pattern.
+    monkeypatch.setattr(api, "LIBRARY_DIR", config.LIBRARY_DIR)
+    uploaded = client.post(
+        "/api/upload?folder=Uploads",
+        files={"file": ("thing.pdf", b"%PDF-1.4 not a real pdf", "application/pdf")},
+    )
+    assert uploaded.status_code == 200
+    api_models.UploadOut.model_validate(uploaded.json())
 
 
 # ---------------------------------------------------------------------------

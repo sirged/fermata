@@ -1363,12 +1363,20 @@ def practice_review(weeks: int = practice.DEFAULT_REVIEW_WEEKS, today: str | Non
 @router.get(
     "/scores/{score_id}/file",
     tags=[TAG_LIBRARY],
+    response_class=FileResponse,
     responses={200: {"content": {"application/pdf": {}, "application/octet-stream": {}}}},
 )
 def get_file(score_id: RowId):
     """The score's own file - a PDF or, for anything else FILE_TYPES admits,
     an octet stream. No response_model: this returns a FileResponse, whose
-    body is the file's bytes rather than JSON."""
+    body is the file's bytes rather than JSON.
+
+    `response_class=FileResponse` matters beyond documentation: without it
+    FastAPI assumes `application/json` is on offer alongside the real
+    content types declared in `responses=` above, and a codegen reading
+    /openapi.json would believe this endpoint might hand back JSON. With it,
+    only the real content types are advertised - see
+    test_binary_routes_do_not_advertise_a_json_content_type."""
     conn = connect()
     row = _score_row(conn, score_id)
     path = LIBRARY_DIR / row["path"]
@@ -1381,10 +1389,12 @@ def get_file(score_id: RowId):
 @router.get(
     "/scores/{score_id}/thumb",
     tags=[TAG_LIBRARY],
+    response_class=FileResponse,
     responses={200: {"content": {"image/png": {}}}},
 )
 def get_thumb(score_id: RowId):
-    """The score's cached first-page thumbnail, if one has been generated."""
+    """The score's cached first-page thumbnail, if one has been generated.
+    `response_class=FileResponse` - see get_file's docstring just above."""
     conn = connect()
     row = _score_row(conn, score_id)
     path = thumb_path(row["hash"])
