@@ -527,6 +527,72 @@ def fixture_adjacent_endings():
     return score("Guitar", [attributes() + m1, bar, m3, m4, bar, m6, bar, m8])
 
 
+def direction(words=None, symbol=None, sound=None):
+    """One navigation `<direction>` (issue #134 Rule 16). `symbol` is "segno"
+    or "coda"; `words` is the printed instruction; `sound` is a dict of
+    playback attributes ({"dacapo": "yes"}, {"tocoda": "coda"}, ...)."""
+    inner = f"<{symbol}/>" if symbol else f"<words>{words}</words>"
+    attrs = "".join(f' {k}="{v}"' for k, v in sorted((sound or {}).items()))
+    tail = f"<sound{attrs}/>" if attrs else ""
+    return (f'<direction placement="above"><direction-type>{inner}'
+            f"</direction-type>{tail}</direction>")
+
+
+def fixture_navigation():
+    """Navigation marks: a segno, a "To Coda", a "D.S. al Coda", the coda
+    sign itself, a "Fine" and a "D.C. al Fine" (issue #134 phase 2).
+
+    Deliberately carries BOTH signs. This said the library drew "155 coda
+    signs across 142 files and not one segno"; it draws 87 segnos across 83
+    files, and the zero was a mislabelled row in the Maestro glyph table
+    (see Rule 16, which retracts the claim). What the fixture still supplies
+    that the library cannot is the OTHER route to a segno: MuseScore draws it
+    as a published SMuFL codepoint, where every library segno is a Finale
+    glyph ID, and the two are decoded by completely separate code paths.
+
+    It carries every placement the reader has to tell apart:
+
+    - a SIGN at the head of a bar (segno on 1, coda on 6) against an
+      INSTRUCTION at the end of one (To Coda on 2, D.S. on 4, Fine on 7,
+      D.C. on 8) - the difference between "before" and "after" in
+      musicxml.build's `directions`, and between containment and
+      boundary-snap in tabextract._apply_nav_marks;
+    - an instruction written at the very end of its bar (2, 4, 7), which
+      MuseScore engraves LEFT-aligned at the barline so its text runs on
+      into the next bar - the alignment the library's own Finale
+      engravings never use, and the one that made anchoring by the text's
+      right edge alone wrong by exactly one bar;
+    - an instruction written a beat BEFORE the end of its bar (8), which
+      lands the text inside the bar it names rather than across its
+      boundary. That one is on the last bar on purpose - a real "D.C. al
+      Fine" is the last thing on the page - and is written a beat early
+      because MuseScore truncates a string that would cross the page edge:
+      engraved after the final note it comes out as "D.C. al Fin", which
+      is an engraver's limit rather than anything this decoder does.
+
+    No repeat barline and no volta bracket: the two features have to be
+    readable independently, and repeat_structure.pdf already covers those
+    with no navigation mark on it at all.
+    """
+    seq = [note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+           note(("G", 4), "quarter"), note(("A", 4), "quarter")]
+    bar = _bar(seq, 4.0)
+    m1 = direction(symbol="segno", sound={"segno": "segno"}) + bar
+    m2 = bar + direction(words="To Coda", sound={"tocoda": "coda"})
+    m4 = bar + direction(words="D.S. al Coda", sound={"dalsegno": "segno"})
+    m6 = direction(symbol="coda", sound={"coda": "coda"}) + bar
+    m7 = bar + direction(words="Fine", sound={"fine": "yes"})
+    # The instruction goes between the third and fourth notes of the
+    # notation staff's voice, so it is engraved a beat inside the bar - see
+    # the docstring. The tablature staff mirrors the bar's notes only; a
+    # direction belongs to the measure, not to a staff, and writing it twice
+    # would engrave it twice.
+    m8 = ("".join(seq[:3]) + direction(words="D.C. al Fine", sound={"dacapo": "yes"})
+          + seq[3] + backup(4.0) + mirror_to_tab("".join(seq))
+          + barline("right", style="light-heavy"))
+    return score("Guitar", [attributes() + m1, m2, bar, m4, bar, m6, m7, m8])
+
+
 def fixture_harmonics_dense():
     """Diamond noteheads - harmonics - on a densely written two-voice system.
 
@@ -796,6 +862,7 @@ FIXTURES = {
     "volta": fixture_volta,
     "repeat_structure": fixture_repeat_structure,
     "adjacent_endings": fixture_adjacent_endings,
+    "navigation": fixture_navigation,
     "harmonics_dense": fixture_harmonics_dense,
     "notation_only": fixture_notation_only,
 }

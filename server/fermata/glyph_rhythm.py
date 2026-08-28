@@ -157,15 +157,43 @@ def _ttfont_class():
 # same reduced-subset export pipeline - and verified per file at load time
 # against MAESTRO_GLYF_DIGESTS rather than trusted on the family name alone.
 MAESTRO_GID_MAP = {
-    2: "sharp", 4: "simile", 13: "dot", 16: "digit1", 17: "digit2", 32: "flat_paren",
+    2: "sharp", 4: "segno", 13: "dot", 16: "digit1", 17: "digit2", 32: "flat_paren",
     18: "digit3", 19: "digit4", 20: "digit5", 21: "digit6", 22: "digit7",
     23: "digit8", 24: "digit9",
     29: "accent", 31: "tremolo", 40: "flag8", 44: "natural_paren",
     48: "flag16", 51: "fermata", 52: "clef", 63: "sharp_paren", 64: "flat",
-    68: "trill", 71: "flag8", 75: "natural", 79: "flag16",
+    68: "arpeggio", 71: "flag8", 75: "natural", 79: "flag16",
     84: "notehead_whole", 144: "notehead_x", 149: "rest8", 156: "rest_quarter",
     157: "notehead_filled", 171: "coda", 174: "notehead_diamond",
     177: "rest8", 187: "rest_half_whole", 199: "notehead_half",
+    # GID 4 IS A SEGNO, AND WAS LABELLED "simile" HERE UNTIL IT WAS ACTUALLY
+    # RENDERED. Both marks are built from a slash and two dots, which is
+    # presumably how the wrong label was arrived at; the segno adds the
+    # S-curve through the slash, and at 900 dpi there is no mistaking one for
+    # the other. Rendered from the page - not from the font in isolation - at
+    # its drawn size for "1 AM (Animal Crossing New Leaf).pdf" p1 and "Ask Me
+    # Why (The Boy and the Heron).pdf" p1: an unmistakable segno both times.
+    # Corroborated by what the pages say: this library draws GID 4 87 times
+    # across 83 files, and all 83 print a "D.S." somewhere; not one file
+    # carries the glyph without one.
+    #
+    # WHY A DOUBLE-CHECK MISSED IT. The census behind this reader was run
+    # twice - once over every glyph that resolved to a category and once over
+    # every glyph that resolved to NONE - and a wrongly-categorised glyph is
+    # in neither bucket: it is not unmapped, so the "what are we missing"
+    # sweep never sees it, and it is not a segno, so the "what did we find"
+    # sweep never counts it. Only rendering the outline and looking at it
+    # catches that class of error, which is the standard this whole table
+    # claims for itself and the standard the two entries below were held to.
+    #
+    # GID 68 was likewise labelled "trill" and is an ARPEGGIO wiggle segment:
+    # rendered from "Carcelera - Reflejo Andaluz (Counter-Strike).pdf" p1,
+    # where its 15 occurrences stand in three vertical stacks of five, each
+    # stack drawn immediately before a chord and spanning it - which is how
+    # an arpeggio roll is engraved, and is nothing like the horizontal "tr"
+    # plus wavy line of a trill. Nothing consumes either category, so this
+    # relabel changes no decode; it stops the table asserting something false.
+    #
     # digit7 (22) and digit9 (24) confirmed by rendering the actual glyph
     # outlines from real library files and eyeballing them: 22 from
     # "Moonlit Shadows (New World).pdf" (a 7/8 signature), 24 from
@@ -236,7 +264,7 @@ MAESTRO_GID_MAP = {
 # maestro_fingerprint_ok.
 MAESTRO_GLYF_DIGESTS = {
     2: "b1a6a7f41a95299ae7e202f516bf4bc7",    # sharp
-    4: "2059d6889199a9f0571c6e40fee0c290",    # simile
+    4: "2059d6889199a9f0571c6e40fee0c290",    # segno
     13: "40ef7e3b3885505e494c4f0dec79658c",   # dot
     16: "152d31c9b5e40ab0539d160169275898",   # digit1
     17: "f9ca473a695b291e40c5bac5b7f3cfe6",   # digit2
@@ -257,7 +285,7 @@ MAESTRO_GLYF_DIGESTS = {
     52: "1fa841a0b3eb8a6673fc13d366e37df1",   # clef
     63: "bac9dfd483f772988b7e5358e6a71be4",   # sharp_paren
     64: "b00221382cd74b15334900b26553eecb",   # flat
-    68: "b715d3151adf935bc682e468678fa03d",   # trill
+    68: "b715d3151adf935bc682e468678fa03d",   # arpeggio
     71: "10bb28c200130375856c77df9eb121f3",   # flag8
     75: "0673bb60e4da121a63dfa85729eb6c19",   # natural
     79: "c4359488ce017b1ad641b490da02de01",   # flag16
@@ -395,6 +423,17 @@ SMUFL_CODE_MAP = {
     0xE0A4: "notehead_filled",
     0xE0A9: "notehead_x",
     0xE1E7: "dot",             # augmentationDot
+    0xE047: "segno",           # segno - the landing point a "D.S." names.
+    0xE048: "coda",            # coda - the landing point a "To Coda" names.
+                               # Both sit in SMUFL_FURNITURE_BLOCKS, so
+                               # neither can move a duration or a confidence
+                               # figure; they are read for their POSITION,
+                               # which is the whole of what they mean.
+                               # Maestro's own coda is GID 171 (mapped
+                               # above); Maestro's segno has no entry,
+                               # because no library file draws one to
+                               # calibrate a GID against - see
+                               # navigation_glyph_events.
     0xE043: "repeat_dot",      # repeatDot
     0xE044: "repeat_dot",      # repeatDots - measured on the engraved
                                # fixtures as one glyph per dot, at the same
@@ -508,6 +547,12 @@ DOT_CATS = {"dot"}
 # augmentation-dot vocabulary, unaffected by this.
 REPEAT_DOT_CATS = {"repeat_dot"}
 DOT_LIKE_CATS = DOT_CATS | REPEAT_DOT_CATS
+# The two navigation SIGNS - the places a "D.S." or a "To Coda" sends a
+# player to. Unlike a repeat dot these are never anything else: no rhythm,
+# no articulation and no accidental shares a codepoint with them, so a
+# caller needs no geometry to tell them apart from their neighbours, only a
+# band to look in.
+NAVIGATION_CATS = {"segno", "coda"}
 
 
 # ---------------------------------------------------------------------------
@@ -3155,6 +3200,34 @@ def dot_like_glyph_events(page, y0, y1, x0, x1):
         (e for e in glyphs.events
          if e.category in DOT_LIKE_CATS and y0 <= e.yc <= y1 and x0 <= e.xc <= x1),
         key=lambda e: e.xc)
+
+
+def navigation_glyph_events(page):
+    """Every segno and coda sign drawn on this page, x-sorted.
+
+    Whole page, no band: a navigation sign is placed against a SYSTEM, and
+    which system that is depends on staff geometry this module has no reason
+    to know (see tabextract._assign_nav_marks). Returning them all and
+    letting the caller do the placing is the same division dot_like_glyph_events
+    keeps.
+
+    Measured over this project's library (297 files): 155 coda signs across
+    142 files, and 87 segnos across 83 files - every one of them Finale's
+    Maestro GID 4, which this table labelled "simile" until the outline was
+    rendered and looked at (see MAESTRO_GID_MAP). An earlier version of this
+    docstring said the library drew ZERO segnos and that a census had checked
+    it twice; both sweeps of that census were blind to this by construction,
+    because a wrongly-categorised glyph is neither mapped-and-counted nor
+    unmapped-and-listed.
+
+    What remains true is that no library file prints the WORD "Segno" in its
+    text layer, and that a "D.S." whose score draws no segno still gets its
+    words and no `dalsegno` - there are still such files, just far fewer than
+    the count that claim was built on.
+    """
+    glyphs = extract_glyph_events(page)
+    return sorted((e for e in glyphs.events if e.category in NAVIGATION_CATS),
+                  key=lambda e: e.x0)
 
 
 # ---------------------------------------------------------------------------

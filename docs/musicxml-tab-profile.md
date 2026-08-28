@@ -28,6 +28,7 @@ several things this profile has to decide.
   - [Fret, string and pitch](#fret-string-and-pitch-rules-9-13)
   - [Inferred silence](#inferred-silence-rule-14)
   - [Repeat structure](#repeat-structure-rule-15)
+  - [Navigation marks](#navigation-marks-rule-16)
 - [Example 1: one monophonic bar](#example-1-one-monophonic-bar)
 - [Example 2: two voices in one bar](#example-2-two-voices-in-one-bar)
 - [Checking a file](#checking-a-file)
@@ -562,16 +563,104 @@ it into `rhythm` would make that figure mean two different things.
 (`light-light`) carry no `<repeat>` and no `<ending>`; they are engraving, and
 writing them costs nothing and makes a round trip look like the page.
 
-Out of scope for phase 1, and recorded here rather than left to be
-rediscovered: `D.C.`, `D.S.`, `Fine`, `al Coda`/`To Coda` text, and coda/segno
-navigation. No segno glyph is drawn anywhere in the library this profile was
-developed against, so a `D.S.` has no jump target this producer could read
-off the engraving even if it read the text — and the web player's own
-MusicXML importer only reads a jump (`dacapo`, `dalsegno`, `tocoda`, `fine`)
-from a `<sound>` that is a direct child of `<measure>`, not from the nested
-`<direction><sound>` every notation program (and the specification's own
-examples) writes, so a correct, schema-valid file for these would still play
-wrong in this project's own renderer.
+Text navigation — `D.C.`, `D.S.`, `To Coda`, `Fine` and the two signs — is
+not a `<barline>` and has its own rule; see
+[Rule 16](#navigation-marks-rule-16).
+
+### Navigation marks (Rule 16)
+
+**Rule 16.** A navigation mark is written as a `<direction>` on the measure
+it names, and the `<sound>` beside it is written only where the score draws
+what it points at.
+
+A **sign** — the segno and the coda — is written as the element MusicXML has
+for it, before the measure's notes, because it marks that measure's downbeat:
+
+```xml
+<direction placement="above">
+  <direction-type><coda/></direction-type>
+  <sound coda="coda"/>
+</direction>
+```
+
+An **instruction** — `D.C.`, `D.S.`, `To Coda`, `Fine` — is written as
+`<words>`, verbatim as the page prints it, *after* the measure's notes,
+because it fires at the end of that measure:
+
+```xml
+<direction placement="above">
+  <direction-type><words>D.C. al Coda</words></direction-type>
+  <sound dacapo="yes"/>
+</direction>
+```
+
+The `<sound>` attribute is `dacapo`, `dalsegno`, `tocoda` or `fine`, and
+`segno`/`coda` on the signs themselves. Where a score carries more than one
+coda they are `coda1`, `coda2`, … after the number printed beside each sign,
+and a `To Coda 2` names `coda2`.
+
+`<sound>` is written **inside** `<direction>`, which is where the
+specification's own examples put it and where every notation program writes
+it. It is deliberately not *also* written as a direct child of `<measure>`:
+two `<sound>` elements naming one jump are two instructions to a reader that
+honours both.
+
+**A navigation mark carries no duration, and Rule 8 is unaffected by it** —
+the same invariant [Rule 15](#repeat-structure-rule-15) states for a
+`<barline>`, and it was measured the same way. Adding navigation marks to
+166 of 297 scores moved `bars`, `bars_measured`, `bars_overfull`,
+`bars_short`, `bars_defective`, `bars_padded`, `inferred_rest_quarters`,
+`notes` and `beats` by exactly zero, score by score.
+
+**What is written without its jump, and why.** Unlike a half-read repeat,
+a navigation instruction that was read is always written: the words are what
+the page prints, and a reader is entitled to see them. What is conditional is
+the `<sound>`, which is an assertion about playback — `dalsegno` names a
+segno, `tocoda` names a coda — and naming a target that is not in the file
+would make the transcription play a form nobody engraved. So an instruction
+whose target the score does not draw is written as words alone, and the
+measure is reported in `nav_marks_unresolved` / `nav_marks_unresolved_bars`.
+A mark with no measure to name at all — too far from any staff, over a staff
+no music was read from, or lying entirely outside the horizontal span of the
+staff whose bars it would otherwise be clamped onto — is reported in
+`nav_marks_unanchored`, which has no bar list precisely because it has no
+bar. Both feed the `structure` confidence key.
+
+This is not a rare branch. In the library this profile was developed against,
+**86 of 297 scores print "D.S.", and 43 marks over the library are read off
+the page and anchored to no bar.** Of those 86, three draw no segno for the
+D.S. to name and get their words and no `dalsegno`; the other 83 do draw one.
+
+**A correction, stated plainly, because an earlier version of this rule said
+the opposite.** This document previously claimed that *no score in the
+library draws a segno at all*, and that the claim had been "measured twice —
+once over every music glyph that resolved to a category and once over every
+glyph that resolved to none". The claim was false: the library draws **87
+segno signs across 83 files**. Every one of them is Finale's Maestro glyph ID
+4, which this project's calibrated glyph table labelled `"simile"`. That is
+precisely the error a two-sided census cannot see — a *wrongly categorised*
+glyph is in neither bucket, because it is not unmapped (so the "what are we
+missing" sweep skips it) and it is not a segno (so the "what did we find"
+sweep never counts it). Only rendering the outline and looking at it settles
+that class of question, which is the standard the glyph table claims for
+itself; GID 4 renders as an unmistakable segno, and every one of the 83 files
+carrying it also prints a "D.S.". What survives from the old claim is
+narrower and still true: **the word "Segno" appears in no file's text layer**,
+so the sign is the only evidence there ever was.
+
+**What the renderer does with it.** This project's own player, alphaTab
+1.8.4, reads a jump only from a `<sound>` that is a direct child of
+`<measure>`, so it ignores every jump written above and plays the score
+straight through. That is a renderer limitation, not a file defect: the file
+is what MusicXML says it should be, and a consumer that reads the
+specification's own shape gets the form. Measured directly on the engraved
+`navigation` fixture, both ways round — see
+`test_navigation_pdf_is_correct_musicxml_that_alphatab_still_plays_straight`,
+which also shows that hoisting the same `<sound>` elements to measure level
+makes alphaTab take the `D.S.` and ignore the `To Coda` and the `Fine`, so
+that shape would not be more correct either. MuseScore 4.6.3 imports these
+directions as staff text on the right measures and drops the `<sound>`
+attributes, so a round trip through it keeps the marks and loses the jumps.
 
 ## Example 1: one monophonic bar
 
@@ -895,6 +984,64 @@ The things to note:
   duration (Rule 8 is unaffected by it) — see [Repeat structure
   (Rule 15)](#repeat-structure-rule-15) above.
 
+## Example 4: navigation marks
+
+The same three bars, illustrating [Rule 16](#navigation-marks-rule-16): a
+segno opening bar 1 with a `To Coda` at its end, a `D.S. al Coda` ending bar
+2, and the coda sign opening bar 3 with a `Fine` at its end. The `Fine` is
+written with no `<sound>` on purpose, to show the shape an instruction takes
+when the score names something it does not draw. The complete file is
+published as [`docs/examples/navigation.musicxml`](examples/navigation.musicxml)
+and is validated by the test suite; only the `<direction>` elements are shown
+here, each in the position within its measure that says when it applies.
+
+```xml
+<measure number="1">
+  ...
+  <direction placement="above">
+    <direction-type><segno /></direction-type>
+    <sound segno="segno" />
+  </direction>
+  ... the measure's notes ...
+  <direction placement="above">
+    <direction-type><words>To Coda</words></direction-type>
+    <sound tocoda="coda" />
+  </direction>
+</measure>
+<measure number="2">
+  ... the measure's notes ...
+  <direction placement="above">
+    <direction-type><words>D.S. al Coda</words></direction-type>
+    <sound dalsegno="segno" />
+  </direction>
+</measure>
+<measure number="3">
+  <direction placement="above">
+    <direction-type><coda /></direction-type>
+    <sound coda="coda" />
+  </direction>
+  ... the measure's notes ...
+  <direction placement="above">
+    <direction-type><words>Fine</words></direction-type>
+  </direction>
+</measure>
+```
+
+The things to note:
+
+- The segno and the coda are written **before** their measure's notes and the
+  instructions **after** them. That position is the only thing in the file
+  that says whether a mark opens the measure or fires at the end of it.
+- A sign is written as `<segno/>` or `<coda/>`, never as the word an engraver
+  prints beside it — the word is a label for the sign, and the sign is the
+  mark.
+- The `Fine` carries no `<sound fine="yes"/>`. Rule 16's conditional half:
+  the words are what the page prints and are always written; the `<sound>` is
+  an assertion about playback and is written only where its target was read
+  off the same score.
+- No `<direction>` moves a single note or rest, for the same reason no
+  `<barline>` does.
+
 ## Checking a file
 
 Fermata's own output is checked three ways, and any implementation of this
@@ -1062,9 +1209,12 @@ promise more interoperability than exists.
 - Ties (`<tie>`, `<tied>`) and slurs.
 - Grace notes, which the schema handles as a separate `<note>` branch with no
   `<duration>` at all.
-- Codas, segnos, and text navigation instructions (`D.C.`, `D.S.`, `Fine`,
-  `al Coda`) — see [Rule 15](#repeat-structure-rule-15) for why the
-  structural repeats are in scope and these are not.
+- A `<segno/>` or `<coda/>` written inside a `<barline>` rather than as a
+  `<direction>`. The schema allows both; this profile writes the direction,
+  which is where a sign that is not on a barline has to go anyway — see
+  [Rule 16](#navigation-marks-rule-16).
+- `<sound>` as a direct child of `<measure>`, and every `<sound>` attribute
+  other than `tempo` and the four jumps of Rule 16.
 - Beaming (`<beam>`). Readers group notes into beams themselves.
 - Note values shorter than a 32nd, and more than two augmentation dots.
 

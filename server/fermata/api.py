@@ -1486,7 +1486,12 @@ _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
              # #116 itself but never HERE (issue #143), so a reloaded
              # transcription reported every disclosure the decoder made
              # except this one.
-             "coincident_unsplit_pairs", "staves_coincident_unsplit")
+             "coincident_unsplit_pairs", "staves_coincident_unsplit",
+             # Navigation marks read but not written in full (issue #134
+             # phase 2, Rule 16), here for the same reason the repeat/volta
+             # keys above are: a caller with only the API must not have to
+             # infer the caveat from a file that looks complete.
+             "nav_marks_unanchored", "nav_marks_unresolved")
 
 # WHICH bars those were, as data and not only inside the warning prose. The
 # prose names them, but it caps the list, and the profile document states that a
@@ -1508,7 +1513,12 @@ _BAR_LIST_KEYS = ("padded_bars", "unread_bars", "spacing_bars", "degraded_bars",
                    # / endings_unread / endings_truncated / form_marks_unanchored
                    # keys above.
                    "repeats_unread_bars", "endings_unread_bars",
-                   "endings_truncated_bars", "form_marks_unanchored_bars")
+                   "endings_truncated_bars", "form_marks_unanchored_bars",
+                   # WHICH bars carry a navigation instruction whose jump
+                   # target the score does not draw. `nav_marks_unanchored`
+                   # has no list of its own on purpose: a mark with no bar
+                   # to name has no bar number to report.
+                   "nav_marks_unresolved_bars")
 _BAR_AMOUNT_KEYS = ("inferred_rest_quarters",)
 
 
@@ -1752,6 +1762,9 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             "form_marks_unanchored": result.form_marks_unanchored,
             "form_marks_unanchored_bars": result.form_marks_unanchored_bars,
             "endings_incomplete": result.endings_incomplete,
+            "nav_marks_unanchored": result.nav_marks_unanchored,
+            "nav_marks_unresolved": result.nav_marks_unresolved,
+            "nav_marks_unresolved_bars": result.nav_marks_unresolved_bars,
             "time_signature": list(result.time_signature) if result.time_signature else None,
             "time_signature_source": result.time_signature_source,
             "key_fifths": result.key_fifths,

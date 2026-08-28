@@ -397,7 +397,11 @@ BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
             # to_dict with #116 itself but never _BAR_KEYS in api.py nor
             # HERE (issue #143), so their reload path went unexercised until
             # now.
-            "coincident_unsplit_pairs", "staves_coincident_unsplit")
+            "coincident_unsplit_pairs", "staves_coincident_unsplit",
+            # And for issue #134 phase 2's navigation disclosures, added to
+            # _BAR_KEYS and exercised here in the same change rather than
+            # left for a later review to find missing.
+            "nav_marks_unanchored", "nav_marks_unresolved")
 # Which bars, and how much silence - the figures that only exist as data. The
 # warning prose caps its bar list, and the profile document promises a consumer
 # that `inferred_rest_quarters` is the sum of the `<forward>` durations in the
@@ -409,7 +413,8 @@ BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
 BAR_DETAIL_KEYS = ("padded_bars", "unread_bars", "inferred_rest_quarters",
                    "spacing_bars", "degraded_bars",
                    "repeats_unread_bars", "endings_unread_bars",
-                   "endings_truncated_bars", "form_marks_unanchored_bars")
+                   "endings_truncated_bars", "form_marks_unanchored_bars",
+                   "nav_marks_unresolved_bars")
 
 
 def test_bar_conformance_survives_a_reload(app_env, engraved, monkeypatch, insert_score):
@@ -847,4 +852,44 @@ def test_repeat_and_volta_disclosures_survive_the_api_round_trip(
     assert fetched["repeats_unread_bars"] == [8]
     assert fetched["warnings"] == posted["warnings"]
     assert any("could not be resolved to a clean forward/backward" in w
+               for w in fetched["warnings"])
+
+
+def test_navigation_disclosures_survive_the_api_round_trip(
+    app_env, phantom_train_pdf, monkeypatch, insert_score
+):
+    """The same check for issue #134 phase 2's two navigation disclosures.
+    Against a fixture with a genuinely nonzero count rather than the zero
+    case, for the reason the test above states: a persistence bug that
+    unconditionally wrote 0/[] would pass every zero-valued assertion in
+    this file.
+
+    This score prints "To Coda" closing bar 22 on a page that draws no coda
+    sign and prints no coda label anywhere at all, so the instruction is
+    written as the words the page prints, with no `<sound tocoda=>` beside
+    it, and the bar is reported here.
+
+    It used to be Victory Fanfare, on the strength of its "D.S." having no
+    segno to name - which was never true of that score, or of 82 others. Its
+    segno was drawn in Finale's Maestro at the glyph ID this project's table
+    labelled "simile", so the count this test needed to be nonzero was
+    nonzero because of a bug, and the fix took it to 0. Picked for having
+    nothing to do with the segno at all."""
+    pdf = phantom_train_pdf
+    monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    assert posted["nav_marks_unresolved"] == 1
+    assert len(posted["nav_marks_unresolved_bars"]) == 1
+    assert posted["nav_marks_unanchored"] == 0
+
+    fetched = api.get_transcription(score_id)
+    for key in ("nav_marks_unresolved", "nav_marks_unanchored",
+                "nav_marks_unresolved_bars"):
+        assert fetched[key] == posted[key], key
+    assert fetched["nav_marks_unresolved"] > 0, (
+        "the whole point: this must not be the zero case")
+    assert any("naming a jump this transcription holds no target for" in w
                for w in fetched["warnings"])

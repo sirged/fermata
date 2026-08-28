@@ -492,6 +492,8 @@ class TranscriptionOut(BaseModel):
     unison_digits_shared: int | None
     coincident_unsplit_pairs: int | None
     staves_coincident_unsplit: int | None
+    nav_marks_unanchored: int | None
+    nav_marks_unresolved: int | None
 
     # _BAR_LIST_KEYS
     padded_bars: list[int] | None
@@ -502,6 +504,10 @@ class TranscriptionOut(BaseModel):
     endings_unread_bars: list[int] | None
     endings_truncated_bars: list[int] | None
     form_marks_unanchored_bars: list[int] | None
+    # `nav_marks_unanchored` has no list of its own on purpose: a navigation
+    # mark with no bar to name has no bar number to report (issue #134
+    # phase 2, Rule 16).
+    nav_marks_unresolved_bars: list[int] | None
 
     # _BAR_AMOUNT_KEYS
     inferred_rest_quarters: float | None

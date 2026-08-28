@@ -127,6 +127,28 @@ _FIXTURE_RELATIVE_PATHS = {
     # dropped silently. The only real fixture in the library with this shape
     # (2 instances, both on this one barline group's two measure sides).
     "tarrega_estudio_em": "Classical/Tarrega/Tarrega-Estudio-Em-Werner.pdf",
+    # The coda-system layout: the coda is engraved as a short system to the
+    # RIGHT of the last full system, on the same band. That right-hand
+    # system is lost whole by the staff detector (issue #152), and the coda
+    # sign it carries then sits 7.5 staff spaces past the left-hand system's
+    # right end - where clamping put it on that system's LAST bar, which is
+    # the bar the D.S. jumps FROM. The page prints its coda at bar 18.
+    # (issue #134 phase 2 adversarial review, blocker 2)
+    "one_am": "Patreon/John Oeth/Animal Crossing/1 AM (Animal Crossing New Leaf).pdf",
+    # The same layout with a D.C. rather than a D.S., and a coda the page
+    # prints at bar 37 that the clamp emitted at 36.
+    "kakariko_village": (
+        "Patreon/John Oeth/The Legend of Zelda/"
+        "Kakariko Village (The Legend of Zelda Series).pdf"),
+    # A "To Coda" on a score that draws no coda sign and prints no coda
+    # label anywhere - so `nav_marks_unresolved` is genuinely 1, on a score
+    # whose every other structure figure is 0 (issue #134 phase 2).
+    "phantom_train": "Patreon/John Oeth/Final Fantasy/FF VI/Phantom Train (Final Fantasy VI).pdf",
+    # "To Coda (sign)": the coda glyph printed INSIDE the instruction's own
+    # text line, which was read as a coda section head on the To Coda's own
+    # bar (issue #134 phase 2 adversarial review, blocker 4).
+    "bygone_days": (
+        "Patreon/John Oeth/Octopath Traveler/Bygone Days (Octopath Traveler II).pdf"),
 }
 
 # Skips for want of a library are COUNTED HERE as they happen, rather than
@@ -382,6 +404,41 @@ def tarrega_estudio_em_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing Tarrega-Estudio-Em fixture)")
+    return p
+
+
+@pytest.fixture
+def one_am_pdf() -> Path:
+    p = _fixture_path("one_am")
+    if p is None:
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing '1 AM' fixture)")
+    return p
+
+
+@pytest.fixture
+def kakariko_village_pdf() -> Path:
+    p = _fixture_path("kakariko_village")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Kakariko Village' fixture)")
+    return p
+
+
+@pytest.fixture
+def phantom_train_pdf() -> Path:
+    p = _fixture_path("phantom_train")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Phantom Train' fixture)")
+    return p
+
+
+@pytest.fixture
+def bygone_days_pdf() -> Path:
+    p = _fixture_path("bygone_days")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Bygone Days' fixture)")
     return p
 
 
