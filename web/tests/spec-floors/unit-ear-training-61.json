@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/ear-training.spec.js",
+  "count": 18,
+  "reason": "issue #61: which four notes get offered, an instrument's own range (capo, frets, absence), a range too narrow to ask in, and the drill's wording never carrying a grading word or a percentage."
+}

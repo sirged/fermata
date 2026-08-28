@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/instruments.spec.js",
+  "count": 14,
+  "reason": "the instrument editor (presets, capo, reference pitch, save/delete/retry) plus issue #120's real-audio string-audition check."
+}

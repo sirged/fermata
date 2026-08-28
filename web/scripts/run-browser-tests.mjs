@@ -1,7 +1,7 @@
-// Wraps `playwright test` so the minimum-test-count guard (tests/minimum-
-// tests.js) cannot be switched off by a `--reporter` flag on the command
-// line - which npm run test:browser -- --reporter=list, or any CI step that
-// grows one, would otherwise do silently.
+// Wraps `playwright test` so the spec-floor guard (tests/minimum-tests.js,
+// tests/spec-floors/) cannot be switched off by a `--reporter` flag on the
+// command line - which npm run test:browser -- --reporter=list, or any CI
+// step that grows one, would otherwise do silently.
 //
 // Playwright's own --reporter CLI flag REPLACES the config file's entire
 // `reporter` array; it does not merge with it. minimum-tests.js is only
@@ -18,15 +18,25 @@
 // strips any --reporter the caller passed before it ever reaches Playwright,
 // and always adds its own JSON summary reporter (which nothing here treats
 // as optional). It then reads that summary itself, after the process exits,
-// and enforces the same floor minimum-tests.js does - a belt to its
-// suspenders, checked from a place a CLI flag has no way to reach.
+// and applies tests/spec-floor-guard.js's rule to counts it derived on its
+// own from the JSON tree - a belt to minimum-tests.js's suspenders, checked
+// from a place a CLI flag has no way to reach. The two deliberately learn
+// "what ran" two different ways - one from Playwright's in-process reporter
+// callbacks, one from parsing the JSON file back out afterward - so a bug or
+// an omission in one path is not also a bug in the other.
+//
+// Also not evaluated when the run itself stopped early - see
+// bailedOnMaxFailures below - for the same reason tests/minimum-tests.js
+// skips its own check on an interrupted or timed-out run: every file the run
+// had not reached yet would otherwise look exactly like a deleted one.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { MINIMUM_TESTS } from "../tests/minimum-tests.js";
+import { loadSpecFloors } from "../tests/spec-floors.js";
+import { checkSpecFloors } from "../tests/spec-floor-guard.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.dirname(here);
@@ -45,7 +55,7 @@ for (let i = 0; i < passedArgs.length; i++) {
 if (filteredArgs.length !== passedArgs.length) {
   console.error(
     "run-browser-tests: a --reporter argument was dropped - this script always " +
-      "runs its own reporter set so the minimum-test-count guard cannot be bypassed.",
+      "runs its own reporter set so the spec-floor guard cannot be bypassed.",
   );
 }
 
@@ -61,36 +71,85 @@ const result = spawnSync("npx", ["playwright", "test", `--reporter=${reporters}`
   env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: summaryPath },
 });
 
-// Counted the same way tests/minimum-tests.js counts it - executed and not
-// skipped, regardless of pass/fail/flaky, so this can never itself invent a
-// "tests have gone missing" complaint on top of an ordinary failing run. The
-// two are independent implementations of the identical rule on purpose:
-// this file's whole reason to exist is covering the case where
-// minimum-tests.js's own reporter never got to run at all, so it cannot be
-// the only place that rule is expressed.
-function countExecuted(summary) {
-  const stats = summary?.stats;
-  if (!stats) return null;
-  return (stats.expected ?? 0) + (stats.unexpected ?? 0) + (stats.flaky ?? 0);
+// spec.file inside the JSON tree is relative to config.rootDir (Playwright's
+// testDir), and every entry in tests/spec-floors/ is written as
+// "tests/browser/x.spec.js" relative to web/. rootDir is normally
+// .../web/tests (playwright.config.js sets testDir: "tests"), which is where
+// the hardcoded "tests/" prefix below comes from - asserted here rather than
+// assumed, because if testDir ever moved, this script would silently start
+// comparing the wrong keys and every file would look deleted.
+function assertRootDirIsTests(summary) {
+  const rootDir = summary?.config?.rootDir ?? "";
+  if (!rootDir.endsWith("/tests")) {
+    throw new Error(
+      `run-browser-tests: expected the JSON summary's config.rootDir to end in "/tests" (playwright.config.js's ` +
+        `testDir), got ${JSON.stringify(rootDir)} - the "tests/" prefix this script builds spec-floor keys with ` +
+        `would be wrong.`,
+    );
+  }
 }
 
-let executed = null;
+// Walks the JSON reporter's suite tree (one top-level suite per spec file,
+// possibly with further suites nested inside for a test.describe block) and
+// counts, per spec file, the tests whose outcome was not "skipped" - the
+// same rule minimum-tests.js applies from inside the run, arrived at
+// independently from the file Playwright wrote rather than from its own
+// onTestEnd callbacks.
+function countByFile(summary) {
+  const byFile = new Map();
+  function walk(suite) {
+    for (const spec of suite.specs ?? []) {
+      const file = `tests/${spec.file}`;
+      for (const test of spec.tests ?? []) {
+        if (test.status === "skipped") continue;
+        byFile.set(file, (byFile.get(file) ?? 0) + 1);
+      }
+    }
+    for (const sub of suite.suites ?? []) walk(sub);
+  }
+  for (const suite of summary?.suites ?? []) walk(suite);
+  return byFile;
+}
+
+// The in-process reporter's onEnd sees FullResult.status directly, which is
+// "interrupted" for a real SIGINT but - confirmed by hand, not assumed -
+// "failed" for a run that stopped early because --max-failures/-x was
+// reached; nothing in that status distinguishes the two. This script has no
+// access to FullResult at all (it only reads the JSON back afterward), so it
+// uses the JSON summary's own signal instead: config.maxFailures is the
+// configured ceiling, and stats.unexpected is exactly the count Playwright
+// stops scheduling more tests against once it is reached. Reaching it means
+// every spec file the run had not gotten to yet has zero recorded tests,
+// which looks identical to that file being deleted or unwired - the real
+// failure is already on screen from the run itself, so the floor is not
+// worth evaluating (and would only bury it) this time.
+function bailedOnMaxFailures(summary) {
+  const maxFailures = summary?.config?.maxFailures ?? 0;
+  const unexpected = summary?.stats?.unexpected ?? 0;
+  return maxFailures > 0 && unexpected >= maxFailures;
+}
+
+let summary = null;
+let byFile = null;
 try {
-  const summary = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
-  executed = countExecuted(summary);
+  summary = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
+  assertRootDirIsTests(summary);
+  byFile = countByFile(summary);
 } catch (e) {
   console.error(`run-browser-tests: could not read the JSON summary at ${summaryPath} - ${e.message}`);
 }
 
-if (!process.env.PLAYWRIGHT_ALLOW_PARTIAL) {
-  if (executed == null) {
-    console.error("run-browser-tests: the minimum-test-count floor could not be checked at all - failing closed.");
+if (!process.env.PLAYWRIGHT_ALLOW_PARTIAL && !(summary && bailedOnMaxFailures(summary))) {
+  if (byFile == null) {
+    console.error("run-browser-tests: the spec-floor guard could not be checked at all - failing closed.");
     process.exit(1);
   }
-  if (executed < MINIMUM_TESTS) {
+  const { ok, problems } = checkSpecFloors(byFile, loadSpecFloors());
+  if (!ok) {
     console.error(
-      `run-browser-tests: expected at least ${MINIMUM_TESTS} tests to run, only ${executed} did. ` +
-        "Tests have gone missing, or the floor needs raising on purpose - see tests/minimum-tests.js.",
+      "run-browser-tests: tests have gone missing (skipped, filtered, deleted, or unwired), or " +
+        "tests/spec-floors/ needs a new entry on purpose:\n" +
+        problems.map((p) => `  - ${p}`).join("\n"),
     );
     process.exit(1);
   }

@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/practice-shortcuts.spec.js",
+  "count": 24,
+  "reason": "issue #92's single-key shortcuts for the practice/staff view, across the demo score, a repeat fixture, a two-voice fixture, the tag editor's focus guard, and ScoreCompare's side-by-side/gig-mode keyboard gating."
+}

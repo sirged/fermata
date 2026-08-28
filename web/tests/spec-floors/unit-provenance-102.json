@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/provenance.spec.js",
+  "count": 7,
+  "reason": "issues #102/#103: sorting what was read from what was assumed, an unrecognised source claiming neither, and the three things a tuning may say - name recognised, instruction unread, nothing."
+}

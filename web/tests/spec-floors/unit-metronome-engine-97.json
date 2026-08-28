@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/metronome-engine.spec.js",
+  "count": 21,
+  "reason": "issue #97: the engine's own rate arithmetic, range-exhausted reporting, and mode-change tempo seeding, plus issue #121's subdivision/meter-change click realignment."
+}

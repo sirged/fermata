@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/zz-library-missing.spec.js",
+  "count": 3,
+  "reason": "issue #95: a score whose file has gone is shown as missing rather than vanishing, and a refused/repeated reconciliation says so on the page."
+}

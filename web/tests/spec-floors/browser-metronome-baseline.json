@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/metronome.spec.js",
+  "count": 12,
+  "reason": "the metronome as a real, independent audio path against a real score: real oscillators, the live rate readout, 6/8's three levels, fixed-BPM mode, proportion tracking, gig mode, count-in silence, repeats, and scheduler stalls."
+}
