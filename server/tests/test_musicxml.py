@@ -934,6 +934,78 @@ def test_the_profile_document_quotes_the_footnote_this_emitter_writes():
         "the footnote in musicxml.py is not the one Rule 14 publishes")
 
 
+def _profile_section(text, heading, next_heading):
+    """The text of one `## heading` section, up to (not including) the next
+    top-level heading - so a fenced block can be found by which example it
+    belongs to rather than by guessing from its first line."""
+    start = text.index(heading) + len(heading)
+    end = text.index(next_heading, start)
+    return text[start:end]
+
+
+def _first_fenced_xml_block(section_text):
+    m = re.search(r"```xml\n(.*?)\n```", section_text, flags=re.S)
+    assert m, "no ```xml fenced block in this section"
+    return m.group(1)
+
+
+def _elements_equal(a, b):
+    """Structural equality - tag, attributes, direct text, and children,
+    recursively - not a string compare, because the doc's snippet and the
+    published file are indented differently (the snippet drops the levels
+    above the shown element)."""
+    if a.tag != b.tag or a.attrib != b.attrib:
+        return False
+    if (a.text or "").strip() != (b.text or "").strip():
+        return False
+    ac, bc = list(a), list(b)
+    return len(ac) == len(bc) and all(_elements_equal(x, y) for x, y in zip(ac, bc))
+
+
+def test_example_1_and_2_note_listings_match_their_published_files():
+    """Issue #150's review: writing ids on every <note> doubled the
+    hand-copied surface for Examples 1 and 2, which are the only two that
+    show a full, literal note listing - once in the doc's own fenced
+    snippet, once in docs/examples/*.musicxml. Two hand-maintained copies of
+    the same note ids are two chances for them to quietly disagree.
+
+    Examples 3 and 4 elide every <note> with "..." (see Rule 15's and Rule
+    16's own example sections) and never had a note listing to duplicate, so
+    there is nothing for this test to check there - not skipped for being
+    expensive, skipped for having no target.
+    """
+    import pathlib
+
+    root_dir = pathlib.Path(__file__).resolve().parents[2] / "docs"
+    profile = root_dir / "musicxml-tab-profile.md"
+    if not profile.is_file():
+        pytest.skip("docs/musicxml-tab-profile.md is not present in this checkout")
+    text = profile.read_text(encoding="utf-8")
+
+    example_1 = _first_fenced_xml_block(
+        _profile_section(text, "## Example 1: one monophonic bar",
+                         "## Example 2: two voices in one bar"))
+    example_2 = _first_fenced_xml_block(
+        _profile_section(text, "## Example 2: two voices in one bar",
+                         "## Example 3: repeat barline and two endings"))
+
+    published_1 = ET.parse(root_dir / "examples" / "monophonic.musicxml").getroot()
+    assert _elements_equal(ET.fromstring(example_1), published_1), (
+        "Example 1's inline snippet has drifted from monophonic.musicxml")
+
+    # Example 2's <attributes> deliberately elides the six <staff-tuning>
+    # elements behind a comment ("identical to Example 1"), so only the
+    # note-bearing children after it - the actual duplicated surface - are
+    # compared; <attributes> is not.
+    published_2_measure = ET.parse(
+        root_dir / "examples" / "two-voice.musicxml").getroot().find("./part/measure")
+    example_2_body = [c for c in ET.fromstring(example_2) if c.tag != "attributes"]
+    published_2_body = [c for c in published_2_measure if c.tag != "attributes"]
+    assert len(example_2_body) == len(published_2_body) and all(
+        _elements_equal(x, y) for x, y in zip(example_2_body, published_2_body)), (
+        "Example 2's inline note/backup listing has drifted from two-voice.musicxml")
+
+
 def test_the_published_examples_exist_and_conform():
     """docs/musicxml-tab-profile.md publishes these as reference files for
     another implementation to compare against, so they have to keep passing the

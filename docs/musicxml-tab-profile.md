@@ -700,6 +700,33 @@ reject the whole file. Nothing else in a file this profile writes begins with
 `<midi-instrument>` write `P1` / `P1-I1` — so a note id can never collide with
 one of those either.
 
+**Uniqueness precondition: one part, one staff.** The formula's uniqueness
+rests on measure, voice, onset and chord member each being unique within the
+scope the axis above it names — and that chain only reaches the whole
+document because this profile writes exactly one `<part>` and one staff (see
+[Scope](#scope)). #10's proposed second staff (tablature paired with its own
+notation staff) and #93's proposed multiple tracks each add an axis the
+formula does not currently name: a note at measure 3, voice 1, onset 0 on a
+second staff or a second track would compute the identical id string to the
+one at that position on the first. Either extension has to add a part or
+staff component to the formula before this rule's uniqueness claim would
+still hold across the whole document — it is not automatic.
+
+**The chord ordinal is emission-derived; the onset is not, and that
+asymmetry is real.** `onset` counts every beat in the *model's* voice list,
+written or not, so a beat that never gets written (a zero-duration beat, an
+inferred rest) does not shift a later beat's onset. `chord` is assigned
+during *emission*, from position in the list of chord members that survive
+[Rule 11](#fret-string-and-pitch-rules-9-13)'s pitch-representability
+filter — so a chord member Rule 11 drops shifts every later member's
+`chord` index down by one: a four-note chord whose second member is
+unrepresentable writes `chord` 0, 1, 2 on its three survivors, not 0, 2, 3,
+and a later fix that makes that pitch representable again would renumber
+the other two. Onset avoids this because the model is fixed before emission
+decides anything; chord does not, because representability is decided per
+note inside one beat, and unlike an unwritten beat, a dropped chord member
+leaves no placeholder to number around.
+
 **Why every note, rests included, rather than only the ones that sound.** The
 alternative considered was to skip rests, on the reasoning that a rest is
 never a target of anything downstream: the alternative renderer measured
@@ -716,6 +743,22 @@ an exception to the first. Writing one rule — every `<note>` element gets an
 is exactly what a rest's id looks like) and leaves nothing for a consumer to
 special-case.
 
+**What this does not cover: inferred silence has no id, and cannot.**
+Writing ids on rests closes the gap between a sounding note's position and a
+printed rest's position — it does not close the gap between either of those
+and [Rule 14](#inferred-silence-rule-14)'s `<forward>`. The schema's
+`forward` type carries no `optional-unique-id` attribute group at all, so
+inferred silence is not merely written without an id by this profile's
+choice — it has no `id` attribute to write. Measured on the library this
+profile was developed against: 5450 `<forward>` elements, none nameable.
+A consumer building a positional map over every onset a voice holds,
+silence included, therefore has partial coverage from ids alone — sounding
+notes and printed rests are addressable, inferred silence is not — and has
+to fall back to counting `<forward>` elements by position for that part of
+the map, the same way [Rule 8](#voices-rules-6-8) checking already does.
+Say this plainly because it is easy to read Rule 17 as closing the gap
+entirely once rests are included: it closes exactly one of the two gaps.
+
 **Determinism, and what it does and does not promise.** The id is computed
 from nothing but the beat's own position among the voices and measures
 `build()` was handed — never a random value, a clock, or a counter carried
@@ -728,6 +771,24 @@ measure numbers already have — an id names a *position*, not the note
 itself — and it is what "auditable against the file as emitted" means: a
 consumer checks a positional map against *this* emission's ids, not against
 ids the previous emission wrote for what looks like the same note.
+
+**Ids are emitter-owned: a document mutated outside `build()` has to
+re-derive them, not mint one.** The formula is defined over an entire
+voice's beat sequence, not over one note in isolation, so keeping it valid
+after an edit means recomputing every id in the edited voice from that
+voice's new beat sequence — never assigning a fresh, one-off id to an
+inserted note while leaving its neighbours' onset numbers as they were,
+because the neighbours after the insertion point are no longer at the
+onsets their old ids name. This is not hypothetical for this project:
+`PUT /scores/{score_id}/transcription` stores whatever content a client
+sends as the edited transcription, verbatim, with no id validation of any
+kind. A saved edit that inserts a note without renumbering what follows it
+in the same voice writes either a duplicate id — two notes now claiming the
+same onset — or, in the case that mangles the `n` prefix along the way, an
+id that is not a legal NCName; either fails validation against the MusicXML
+4.0 XSD outright (`id` is `xs:ID`, checked exactly this way under [Checking
+a file](#checking-a-file)). Renumbering the affected voice is the editor's
+responsibility, not this emitter's — this is where that contract is stated.
 
 **The invariant this rule does not disturb.** An id is one attribute on an
 element that was already being written; it adds nothing else to the
