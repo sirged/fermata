@@ -1,5 +1,0 @@
-{
-  "file": "tests/browser/version.spec.js",
-  "count": 5,
-  "reason": "TEST MUTATION: misnamed uppercase-extension file - a reviewer expecting this to raise the floor by 5 should get a loud failure, not a silent no-op."
-}
