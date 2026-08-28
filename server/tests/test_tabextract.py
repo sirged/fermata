@@ -3823,12 +3823,13 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     assert totals["bars_padded"] == 3619         # 3603 + 16 (issue #152)
     assert totals["inferred_rest_quarters"] == 4923.0   # 4899.0 + 24.0 (issue #152)
     # The systems still lost, named. Both are 7-line groups - a 6-line tab
-    # staff with ONE extra full-width rule ruled 14.3pt below it, inside the
-    # 15.0pt cluster gap - which is a different defect from #152's two
-    # systems side by side, and one no split by x extent can reach, because
-    # the stray rule spans the same extent the staff does. Dynamis p1 and
-    # Hide, Hideaway p2. Before this change the same measurement over the
-    # library counted 41 such systems across 22 files.
+    # staff ruled at 7.7pt with ONE extra full-width rule below its last
+    # line, close enough to fall inside the 15.0pt cluster gap: Dynamis p1 at
+    # 14.3pt and Hide, Hideaway p2 at 12.8pt. A different defect from #152's
+    # two systems side by side, and one no split by x extent can reach,
+    # because the stray rule spans the same extent the staff does. Before
+    # this change the same measurement over the library counted 41 such
+    # systems across 22 files.
     assert totals["systems_unread"] == 2
     assert scores_with_systems_unread == 2
     # The whole of #137's effect on this library, disclosed as data: 16 notes
@@ -4021,7 +4022,12 @@ def test_library_wide_note_ids_are_unique_and_valid_ncnames(library_root):
     is for. What this identity catches is scope creep or a miscount in
     EITHER independent count feeding it. (Cross-check, not asserted: on the
     library this was measured against, the identity holds as
-    100017 == 98704 sounding + 1313 rests.)
+    100809 == 99461 sounding + 1348 rests. It read
+    100017 == 98704 + 1313 until issue #152 read the systems printed beside
+    the last one on a band - 130 recovered bars carrying 757 sounding notes
+    and 35 rests - which is exactly the library-composition dependence the
+    paragraph above declines to pin, arriving from a decoder change rather
+    than from the library gaining a file.)
     """
     scores_checked = 0
     identity_mismatches = []

@@ -639,7 +639,7 @@ last full system on the same horizontal band, and staff detection lost that
 whole system, so its coda sign was read off the page and had no bar to name
 because this transcription held none of that system's bars. Reading the
 system is what fixed it — see **A system that was not read** below — and it
-took `nav_marks_unresolved` from 87 bars to 8 at the same time. The 8 that
+took `nav_marks_unresolved` from 87 bars to 7 at the same time. The 7 that
 remain are scores that genuinely name a target their page does not draw.
 
 ### A system that was not read

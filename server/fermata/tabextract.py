@@ -520,15 +520,31 @@ STAFF_LINE_SIBLING_TOLERANCE = 2.0
 # perfectly ordinary 5+6 staff pair 89.4pt wide.
 SHORT_STAFF_LEN_RATIO = 0.10
 
-# The closest two staff lines ever are. Notation staves in the library are
-# ruled 5.1pt apart and tablature staves 7.7pt; the decorations that clear
-# the sibling test are much tighter than either. Two title-block ornaments
-# were measured at gaps of 1.2-2.6pt - four rows at one extent, which passes
-# the sibling test on its own - and admitting them cost a real staff: on
-# "Troian Beauty" p3 the ornament's rows fell in the same 15.0pt band as the
-# page's first notation staff and swallowed it into an 11-line group. So the
-# spacing is the test that makes the lower floor safe, and 3.0pt sits below
-# every real staff and above every decoration measured.
+# The closest two staff lines ever are, and THE TEST THAT ACTUALLY SEPARATES
+# A STAFF FROM A DECORATION. Notation staves in the library are ruled 5.1pt
+# apart and tablature staves 7.7pt; everything else that clears the length
+# floor and the sibling test is much tighter than either.
+#
+# Measured over the library at the floor above: 89 same-extent sibling groups
+# clear both of those tests and are refused here, from six files. Four draw a
+# title-block ornament whose rows alternate 2.5 and 1.3pt (Troian Beauty,
+# Moonlit Shadows, Carcelera, Celes's Theme); two method books draw
+# chord-grid rows at 2.4-2.7pt (Recuerdos de la Alhambra, Classical Guitar
+# Method Vol. 1). Every real staff admitted alongside them has a minimum row
+# gap of 5.00pt or more, so 3.0 sits in a clear band: worst admitted 5.00,
+# closest refused 2.60.
+#
+# THE LENGTHS OVERLAP AND THE SPACINGS DO NOT, which is why this is the
+# load-bearing test and the length floor is not. The refused groups run up to
+# 0.2145 of the page width while the real short staves start at 0.1235 - so
+# no length floor anywhere could separate these two sets, and one drawn
+# through the overlap would throw away real systems to catch ornaments it
+# would still miss. A future tuner should move this constant, not that one.
+#
+# Admitting them is not merely noisy, it costs real music: on "Troian Beauty"
+# p3 the ornament's rows fall in the same 15.0pt band as the page's first
+# notation staff and swallow it into an 11-line group, which is then
+# discarded.
 STAFF_LINE_MIN_SPACING = 3.0
 
 # A rule drawn along the page's own edge is page furniture, not a staff.
