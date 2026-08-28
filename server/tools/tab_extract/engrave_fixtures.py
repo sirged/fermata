@@ -623,13 +623,19 @@ def fixture_harmonics_dense():
 
 def fixture_tab_only_short_last_system():
     """Eight bars of tablature, which MuseScore lays out as six bars and
-    then two - and a two-bar system is not stretched to the page width, so
-    its staff lines fall under the length floor and the system is not
-    detected at all. Two bars of music are lost with nothing said.
+    then two - and a two-bar system is not stretched to the page width.
 
-    This is a real limitation of detecting a staff by the length of its
-    lines, and it is engraved here so that fixing it, or making it worse,
-    changes something. `tab_only` is twelve bars precisely to avoid it."""
+    Engraved as a tripwire for a real limitation of detecting a staff by the
+    length of its lines: this system's lines fell under the length floor and
+    the system was not detected at all, so two bars of music were lost with
+    nothing said. `tab_only` is twelve bars precisely to avoid it.
+
+    The tripwire has since fired. Issue #152 is the same defect at library
+    scale - the floor also hid the right-hand coda system on 54 systems
+    across the maintainer's library - and all eight bars are now read (see
+    tabextract.SHORT_STAFF_LEN_RATIO). The fixture stays exactly as it is,
+    because a short final system is still the shape that would be lost if
+    that floor were ever raised again."""
     bar = "".join([note(("E", 4), "quarter", staff=1), note(("F", 4), "eighth", staff=1),
                    note(("G", 4), "eighth", staff=1), note(("A", 4), "half", staff=1)])
     return score("Guitar", [attributes(staves=1) + bar] + [bar] * 7)

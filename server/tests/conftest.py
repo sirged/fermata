@@ -150,6 +150,16 @@ _FIXTURE_RELATIVE_PATHS = {
     # having silently merged into one full-width staff instead); the page
     # prints 35 bars and the extractor reported 31.
     "imprisoned_town": "Patreon/John Oeth/Suikoden/Imprisoned Town (Suikoden II).pdf",
+    # A system that is STILL lost after issue #152, and lost for a different
+    # reason - so `systems_unread` has a score with a genuinely nonzero count
+    # to be exercised on. Page 1's third band comes back as a 7-line group:
+    # an ordinary 6-line tab staff ruled at 7.7pt, plus ONE extra rule 14.3pt
+    # below the last line, which falls inside the 15.0pt cluster gap. Not two
+    # systems side by side - the stray rule spans the same full width the
+    # staff does - so no split by x extent can separate them, and the group
+    # is discarded whole with its bars.
+    "dynamis": (
+        "Patreon/John Oeth/Final Fantasy/FF XIV/Dynamis (Final Fantasy XIV Endwalker).pdf"),
     # The same shape showing BOTH halves of it at once: a 10-line group (two
     # notation staves) and a 12-line group (two tab staves) on one band,
     # both discarded. Named in issue #153 as the one coda sign no test
@@ -450,6 +460,14 @@ def kakariko_village_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing 'Kakariko Village' fixture)")
+    return p
+
+
+@pytest.fixture
+def dynamis_pdf() -> Path:
+    p = _fixture_path("dynamis")
+    if p is None:
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing 'Dynamis' fixture)")
     return p
 
 

@@ -3126,6 +3126,131 @@ def test_a_mark_drawn_entirely_outside_the_staff_is_refused_not_clamped():
     assert refused == [before]
 
 
+def _page_with_rules(rules, width=612.0, height=792.0):
+    """A one-page PDF carrying exactly the horizontal rules given, as
+    (y, x0, x1). Built rather than engraved on purpose.
+
+    Two systems printed side by side on one band is a horizontal-frame
+    layout, which plain MusicXML has no way to express - so the engraved
+    fixtures cannot produce the geometry issue #152 turns on, and the four
+    library pages that do are gitignored and skip in CI. Drawing the rules
+    directly is what lets the split be tested where it has to hold: the
+    input to _detect_staves is line primitives and nothing else, so a page
+    of line primitives exercises exactly the code under test and no more.
+    """
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=width, height=height)
+    shape = page.new_shape()
+    for y, x0, x1 in rules:
+        shape.draw_line(fitz.Point(x0, y), fitz.Point(x1, y))
+    shape.finish(width=0.5)
+    shape.commit()
+    return doc
+
+
+def _staff_rules(top, x0, x1, lines, spacing):
+    return [(top + i * spacing, x0, x1) for i in range(lines)]
+
+
+def test_two_systems_on_one_band_split_into_two_staves_when_interleaved():
+    """The 12-line group of issue #152, as geometry, in CI.
+
+    Two 6-line tab staves printed side by side and ruled 1.7pt apart - the
+    offset an engraver produces when the two systems carry different content
+    above them. Their y values interleave inside the 15.0pt cluster gap, so
+    clustering by vertical gap alone returned ONE group of twelve lines,
+    which is neither 5 nor 6 and was discarded whole, taking the band's bars
+    with it. This is Imprisoned Town's last band and both of The Nautilus
+    Knoweth's, to scale.
+    """
+    doc = _page_with_rules(
+        _staff_rules(300.0, 54.0, 341.7, 6, 7.7)
+        + _staff_rules(301.7, 378.2, 575.9, 6, 7.7))
+    with doc:
+        staves, anomalies = tabextract._detect_staves(doc[0])
+
+    assert anomalies == [], "no 12-line group survives the split"
+    assert [(s.kind, round(s.x0, 1), round(s.x1, 1)) for s in staves] == [
+        ("tab", 54.0, 341.7), ("tab", 378.2, 575.9)]
+    # One band, and the two are ordered left to right within it.
+    assert len({s.band for s in staves}) == 1
+    assert [s.reading_order for s in staves] == sorted(s.reading_order for s in staves)
+
+
+def test_two_systems_ruled_at_the_same_y_are_not_one_full_width_staff():
+    """The other half of the same defect, and the quieter one.
+
+    Where the two systems are ruled at the IDENTICAL y - which is what
+    Imprisoned Town does with its notation staves, and Bygone Days and Our
+    Terms with both - the rows collapsed into a single staff record spanning
+    the whole band, 54.0 to 575.9. Nothing was reported: the extractor
+    simply held a staff that claimed music across the 36.5pt gap where the
+    page draws none, and the gap then produced a bar boundary the page does
+    not draw, so those scores came out a bar LONG.
+    """
+    doc = _page_with_rules(
+        _staff_rules(300.0, 54.0, 341.7, 5, 5.1)
+        + _staff_rules(300.0, 378.2, 575.9, 5, 5.1))
+    with doc:
+        staves, anomalies = tabextract._detect_staves(doc[0])
+
+    assert anomalies == []
+    assert [(s.kind, round(s.x0, 1), round(s.x1, 1)) for s in staves] == [
+        ("standard", 54.0, 341.7), ("standard", 378.2, 575.9)]
+    assert not any(s.x0 < 100 and s.x1 > 500 for s in staves), (
+        "no staff may span the gap between the two systems")
+
+
+def test_a_short_system_is_read_but_a_tight_ornament_is_not():
+    """What makes the lower length floor safe (issue #152).
+
+    A half-width system's staff lines are under the 0.25-of-page-width floor
+    - 89.4pt to 134.5pt across the library - so a second, lower floor admits
+    them. On its own that is exactly how a decoration becomes a staff, and
+    two title-block ornaments in the library prove it: four rows at one
+    extent, over 100pt long, which clears both the length floor and the
+    sibling test. What they do not clear is the SPACING: they are ruled
+    1.2-2.6pt apart, where no engraver rules a staff closer than 5.1.
+
+    Admitting one cost a real staff rather than merely adding a phantom: on
+    Troian Beauty p3 the ornament's rows fell in the same 15.0pt band as the
+    page's first notation staff and swallowed it into an 11-line group.
+    """
+    ornament = [(100.0, 200.0, 320.0), (102.5, 200.0, 320.0),
+                (103.8, 200.0, 320.0), (106.4, 200.0, 320.0),
+                (107.6, 200.0, 320.0)]
+    doc = _page_with_rules(
+        ornament
+        + _staff_rules(300.0, 54.0, 450.8, 6, 7.7)
+        + _staff_rules(300.0, 486.5, 575.9, 6, 7.7))
+    with doc:
+        staves, anomalies = tabextract._detect_staves(doc[0])
+
+    # The 89.4pt right-hand system is read...
+    assert [(s.kind, round(s.x0, 1), round(s.x1, 1)) for s in staves] == [
+        ("tab", 54.0, 450.8), ("tab", 486.5, 575.9)]
+    # ... and the ornament is not a staff, at any count.
+    assert all(a["line_count"] < 5 for a in anomalies), anomalies
+    assert not any(round(s.x0, 1) == 200.0 for s in staves)
+
+
+def test_rows_packed_tighter_than_a_staff_are_not_staff_lines():
+    """STAFF_LINE_MIN_SPACING on its own terms, both sides of it.
+
+    The gap BETWEEN two staves at one extent is large and must pass - a
+    notation staff and the tab staff below it are ruled to the same x, so
+    the sibling set spans both and holds one gap of 40pt among gaps of 5.
+    """
+    assert tabextract._rows_are_staff_spaced([100.0, 105.1, 110.2, 115.3, 120.4])
+    assert tabextract._rows_are_staff_spaced([100.0, 107.7, 115.4, 155.0, 162.7])
+    assert not tabextract._rows_are_staff_spaced(
+        [100.0, 102.5, 103.8, 106.4, 107.6])
+    # One tight gap anywhere is enough to refuse the set.
+    assert not tabextract._rows_are_staff_spaced([100.0, 105.1, 106.3, 111.4])
+
+
 def test_a_right_hand_coda_system_is_read_in_its_printed_order(
         one_am_pdf, kakariko_village_pdf, imprisoned_town_pdf, nautilus_knoweth_pdf):
     """Issue #152 on the four library pages it was verified against by
