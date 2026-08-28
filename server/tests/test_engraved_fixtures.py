@@ -1023,9 +1023,16 @@ def test_navigation_pdf_binds_every_mark_to_the_bar_it_is_engraved_over(engraved
     the coda sign opening 6, "Fine" closing 7 and "D.C. al Fine" closing 8.
 
     Every one of the six resolves to a <sound> as well as to its text,
-    because this fixture draws both signs - which is exactly what the real
-    library cannot do (155 coda signs across 142 files and not one segno),
-    and why the fixture exists.
+    because this fixture draws both signs. It was justified here as covering
+    something "the real library cannot do (155 coda signs across 142 files
+    and not one segno)". The library draws 87 segnos across 83 files; that
+    claim was a mislabelled row in the Maestro glyph table and is retracted
+    in Rule 16. The fixture keeps its value on a better ground: it reaches
+    its segno through a published SMuFL codepoint, an entirely different
+    route from the Finale glyph ID every library segno arrives by, so the two
+    paths are covered by different tests and neither stands in for the other
+    (the Maestro path is
+    test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws).
 
     Note what the bar numbers prove. Three of these instructions
     (2, 4, 7) are engraved LEFT-aligned at the barline they close, so their

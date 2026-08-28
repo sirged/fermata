@@ -542,10 +542,13 @@ def fixture_navigation():
     """Navigation marks: a segno, a "To Coda", a "D.S. al Coda", the coda
     sign itself, a "Fine" and a "D.C. al Fine" (issue #134 phase 2).
 
-    Deliberately carries BOTH signs, which no score in this project's own
-    library does - 155 coda signs across 142 files and not one segno, so the
-    segno half of the reader has nothing real to be exercised on and would
-    otherwise be pinned only by a unit test of its own regex.
+    Deliberately carries BOTH signs. This said the library drew "155 coda
+    signs across 142 files and not one segno"; it draws 87 segnos across 83
+    files, and the zero was a mislabelled row in the Maestro glyph table
+    (see Rule 16, which retracts the claim). What the fixture still supplies
+    that the library cannot is the OTHER route to a segno: MuseScore draws it
+    as a published SMuFL codepoint, where every library segno is a Finale
+    glyph ID, and the two are decoded by completely separate code paths.
 
     It carries every placement the reader has to tell apart:
 

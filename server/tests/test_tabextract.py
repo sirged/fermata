@@ -3127,7 +3127,13 @@ def test_a_coda_drawn_on_a_lost_right_hand_system_is_disclosed_not_moved(
     1 AM prints its coda at bar 18 and was emitting it at 17; Kakariko
     Village prints 37 and was emitting 36. Now: no coda measure at all, one
     unanchored mark each, and the "To Coda" left without a target and
-    disclosed as unresolved rather than pointed at the jump's own bar."""
+    disclosed as unresolved rather than pointed at the jump's own bar.
+
+    This catches 40 of the 41 such marks in the library. The residual is
+    named in _apply_nav_marks' docstring: The Nautilus Knoweth's last band
+    has its two systems MERGED into 10- and 12-line groups rather than
+    dropped, so its coda attaches to the system above, whose staff record
+    spans the whole page width - no x test can reach that one."""
     from test_engraved_fixtures import _navigation_structure
 
     one_am = tabextract.extract(one_am_pdf)
@@ -3302,11 +3308,24 @@ def test_a_navigation_mark_on_a_staff_with_no_bar_grid_is_disclosed():
 
 
 def test_a_d_s_with_no_segno_is_written_as_words_with_no_jump_and_disclosed():
-    """The library's dominant case, and the reason phase 2 cannot simply
-    write every jump it reads: 86 of 297 files print "D.S." and not one file
-    in the library draws a segno for it to name - measured twice, once over
-    every categorised music glyph and once over every UNcategorised one, and
-    the word "Segno" appears in no file's text layer either.
+    """The library's RAREST navigation case, and still the reason phase 2
+    cannot simply write every jump it reads.
+
+    An earlier version of this docstring called it the dominant case, on the
+    strength of "86 of 297 files print D.S. and not one file in the library
+    draws a segno for it to name - measured twice, once over every
+    categorised music glyph and once over every UNcategorised one". That is
+    false and the method named in it is the reason it went unnoticed: the
+    library draws 87 segnos across 83 files, all of them Finale's Maestro
+    glyph ID 4, which the calibrated table labelled "simile" - and a glyph in
+    the WRONG category is in neither of those two sweeps. See Rule 16 in
+    docs/musicxml-tab-profile.md, which retracts the claim in full.
+
+    Measured now: 86 files print a "D.S." and 83 of them draw the segno it
+    names. Three do not - Hollow (Final Fantasy VII Remake), Rebel Army Theme
+    (Final Fantasy II), and Rito Village - Night, the last because its
+    Maestro embed is filtered out before any glyph on it is read at all
+    (#154). Those three are what this branch exists for.
 
     A `<sound dalsegno=>` naming a segno that is not in the file would make
     the transcription play a form nobody engraved, so the instruction is
@@ -3314,7 +3333,7 @@ def test_a_d_s_with_no_segno_is_written_as_words_with_no_jump_and_disclosed():
     ds = tabextract._NavMark("jump", "D.S. al Coda", 100.0, 0, 160.0, 5,
                              back_to="segno", until="coda")
     coda = tabextract._NavMark("coda", "", 40.0, 0, 52.0, 5)
-    directions, unresolved = tabextract._resolve_nav_marks([(4, ds), (6, coda)])
+    directions, unresolved, _refused = tabextract._resolve_nav_marks([(4, ds), (6, coda)])
     assert unresolved == [4]
     assert directions[4]["after"] == [{"words": "D.S. al Coda", "sound": None}]
     # The coda sign itself is still written: it was read in full.
@@ -3322,7 +3341,7 @@ def test_a_d_s_with_no_segno_is_written_as_words_with_no_jump_and_disclosed():
 
     # Give it a segno and the same instruction resolves.
     segno = tabextract._NavMark("segno", "", 40.0, 0, 52.0, 5)
-    directions, unresolved = tabextract._resolve_nav_marks(
+    directions, unresolved, _refused = tabextract._resolve_nav_marks(
         [(1, segno), (4, ds), (6, coda)])
     assert unresolved == []
     assert directions[4]["after"] == [
@@ -3337,13 +3356,13 @@ def test_a_d_c_needs_no_mark_to_point_at_but_its_al_fine_half_does():
     either way and the bar is disclosed when the Fine is missing."""
     dc = tabextract._NavMark("jump", "D.C. al Fine", 100.0, 0, 160.0, 5,
                              back_to="start", until="fine")
-    directions, unresolved = tabextract._resolve_nav_marks([(8, dc)])
+    directions, unresolved, _refused = tabextract._resolve_nav_marks([(8, dc)])
     assert directions[8]["after"] == [
         {"words": "D.C. al Fine", "sound": {"dacapo": "yes"}}]
     assert unresolved == [8]
 
     fine = tabextract._NavMark("fine", "Fine", 40.0, 0, 60.0, 5)
-    directions, unresolved = tabextract._resolve_nav_marks([(6, fine), (8, dc)])
+    directions, unresolved, _refused = tabextract._resolve_nav_marks([(6, fine), (8, dc)])
     assert unresolved == []
     assert directions[6]["after"] == [{"words": "Fine", "sound": {"fine": "yes"}}]
 
@@ -3357,7 +3376,7 @@ def test_a_numbered_to_coda_names_the_coda_that_carries_the_same_number():
     coda1 = tabextract._NavMark("coda", "", 40.0, 0, 52.0, 5, number=1)
     coda2 = tabextract._NavMark("coda", "", 40.0, 0, 52.0, 5, number=2)
     to2 = tabextract._NavMark("tocoda", "To Coda 2", 100.0, 0, 150.0, 5, number=2)
-    directions, unresolved = tabextract._resolve_nav_marks(
+    directions, unresolved, _refused = tabextract._resolve_nav_marks(
         [(4, to2), (10, coda1), (14, coda2)])
     assert unresolved == []
     assert directions[4]["after"] == [
@@ -3366,10 +3385,63 @@ def test_a_numbered_to_coda_names_the_coda_that_carries_the_same_number():
     assert directions[14]["before"] == [{"symbol": "coda", "sound": {"coda": "coda2"}}]
 
     plain = tabextract._NavMark("tocoda", "To Coda", 100.0, 0, 150.0, 5)
-    _d, unresolved = tabextract._resolve_nav_marks([(4, plain), (10, coda1), (14, coda2)])
+    _d, unresolved, _refused = tabextract._resolve_nav_marks([(4, plain), (10, coda1), (14, coda2)])
     assert unresolved == [4], "two codas, and nothing says which one"
-    _d, unresolved = tabextract._resolve_nav_marks([(4, plain), (10, coda1)])
+    _d, unresolved, _refused = tabextract._resolve_nav_marks([(4, plain), (10, coda1)])
     assert unresolved == []
+
+
+def test_a_refused_coda_changes_the_disclosure_wording_and_not_a_single_count():
+    """One root cause, two counters, one sentence that says which.
+
+    Measured over the library: 79 of the 87 `nav_marks_unresolved` bars, in
+    40 of the 47 files, are on scores whose coda sign was REFUSED for sitting
+    outside its staff - the same defect `nav_marks_unanchored` is already
+    reporting on the same score. Only 8 bars, in 7 files, name a target the
+    page genuinely does not draw.
+
+    The fix is prose, not arithmetic: no bar moves between the counters and
+    no third counter exists, because `nav_marks_unresolved` means exactly one
+    thing. What changes is whether the score is told "no coda read" or "the
+    coda is drawn on a system this transcription does not hold"."""
+    tocoda = tabextract._NavMark("tocoda", "To Coda", 100.0, 0, 150.0, 5)
+    coda = tabextract._NavMark("coda", "", 480.0, 0, 492.0, 5)
+
+    _d, unresolved, refused_flag = tabextract._resolve_nav_marks([(4, tocoda)])
+    assert unresolved == [4] and refused_flag is False, "nothing was refused"
+
+    _d, unresolved, refused_flag = tabextract._resolve_nav_marks(
+        [(4, tocoda)], refused=[coda])
+    assert unresolved == [4], "the count is identical either way"
+    assert refused_flag is True
+
+    # A refused mark that is not a coda says nothing about a missing coda.
+    jump = tabextract._NavMark("jump", "D.S. 2", 480.0, 0, 520.0, 5,
+                               back_to="segno")
+    _d, _u, refused_flag = tabextract._resolve_nav_marks(
+        [(4, tocoda)], refused=[jump])
+    assert refused_flag is False
+
+
+def test_the_unresolved_warning_says_which_cause_it_was(
+        one_am_pdf, phantom_train_pdf):
+    """The same distinction on the two real scores that isolate it.
+
+    *1 AM* draws its coda on a system this transcription loses, so its
+    "To Coda" is unresolved for a reason the unanchored count is already
+    reporting. *Phantom Train* prints a "To Coda" on a score that draws no
+    coda sign and no coda label anywhere at all - genuinely target-less, and
+    `nav_marks_unanchored` is 0 for it, so there is nothing else to point
+    at."""
+    refused = tabextract.extract(one_am_pdf)
+    assert refused.nav_marks_unanchored == 1
+    assert any("draws on a system this transcription does not hold" in w
+               for w in refused.warnings), refused.warnings
+
+    absent = tabextract.extract(phantom_train_pdf)
+    assert absent.nav_marks_unanchored == 0
+    assert any("al Coda with no coda read" in w for w in absent.warnings), \
+        absent.warnings
 
 
 def _library_pdfs(library_root):

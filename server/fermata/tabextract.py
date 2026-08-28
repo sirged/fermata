@@ -1507,8 +1507,9 @@ NAV_BOUNDARY_SNAP_SPACES = 2.0
 # gap above one system's notation staff is also the gap BELOW the previous
 # system's tab staff, and "nearest staff" picks the wrong one about a third
 # of the time - measured, not estimated: nearest-by-distance names a
-# different staff than nearest-below for 170 of the 567 navigation marks this
-# extractor reads off the library, 30.0%. Measured in detail on Zelda's
+# different staff than nearest-below for 170 of the 569 navigation marks this
+# extractor reads off the library, 29.9%. (Two of the 569 are owned by no
+# staff either way and so cannot disagree.) Measured in detail on Zelda's
 # Lullaby, where the answer is known from the page's own printed bar numbers:
 #
 #   "D.C. al Coda"  6.9pt below system 3's tab staff, 29.9pt above system
@@ -1834,6 +1835,25 @@ def _apply_nav_marks(marks, bounds, staff_first_bar, spacing):
     clamp emitted it at 17, alongside that bar's "D.S. al Coda"; on "Kakariko
     Village" the page prints 37 and the clamp emitted 36.
 
+    THIS CATCHES 40 OF THE 41. ONE RESIDUAL REMAINS, NAMED. "The Nautilus
+    Knoweth (Final Fantasy XIV Endwalker)" has the same layout and escapes by
+    a different route: its last band's two systems sit at the same y, so the
+    staff-line clusterer MERGES them - the two 5-line notation staves come
+    back as one 10-line group and the two 6-line tab staves as one 12-line
+    group, both discarded as anomalies, so that band yields no staff at all.
+    Its coda sign then falls to the "no staff below" case, attaches to the
+    system ABOVE, and that staff's x span is the full page width - so the
+    coda at x=423.5 is INSIDE the bounds and this refusal never fires. The
+    page prints 57 bars (a three-bar system opening at 54 and a coda system
+    opening at 57 to its right); the extractor reports 53. That is issue #152
+    again by the MERGE route rather than the drop route, and no x test can
+    reach it: the staff record it is measured against spans the whole page.
+
+    Library-wide, bars carrying both a coda sign and a jump therefore go from
+    43 to 2 - The Nautilus Knoweth's bar 52, above, and "Eyes on Me (Final
+    Fantasy VIII)" bar 71, which is not a defect at all: that page really
+    does print a one-bar system carrying both "(sign) Coda 1" and "D.S. 2".
+
     A mark that merely OVERHANGS an end (a right-aligned instruction whose
     text runs past the last barline, which is ordinary engraving) still
     anchors: it is the "entirely outside" case that is refused, not the
@@ -1892,10 +1912,10 @@ def _apply_nav_marks(marks, bounds, staff_first_bar, spacing):
     return anchored, refused
 
 
-def _resolve_nav_marks(anchored):
+def _resolve_nav_marks(anchored, refused=()):
     """Turn anchored navigation marks into MusicXML `<direction>` records.
 
-    Returns (directions, unresolved_bars): directions is
+    Returns (directions, unresolved_bars, coda_was_refused): directions is
     {measure -> {"before": [...], "after": [...]}} for musicxml.build's
     `directions` parameter, and unresolved_bars is the bars carrying an
     instruction whose jump target this transcription does not hold - either
@@ -1903,6 +1923,27 @@ def _resolve_nav_marks(anchored):
     could not be anchored to a bar (nav_marks_unanchored, disclosed
     separately). Counted by distinct BAR, so two instructions closing the
     same bar contribute one.
+
+    WHY `refused` IS PASSED IN, AND WHAT IT MAY AND MAY NOT DO. One root
+    cause reaches the reader through two counters. Measured over the library:
+    of the 87 bars in nav_marks_unresolved, 79 - across 40 of the 47 files -
+    are on scores whose coda sign was REFUSED for sitting outside its staff
+    (see _apply_nav_marks), which is the same defect nav_marks_unanchored is
+    already reporting. Only 8 bars, across 7 files, name a target the page
+    genuinely does not draw.
+
+    That is a fact about the DISCLOSURE, not about the counts, and it is
+    fixed as one. `coda_was_refused` feeds the warning PROSE and nothing
+    else: no bar moves between the two counters and no third counter is
+    added, because nav_marks_unresolved means exactly one thing - "this
+    instruction went out without its jump" - and splitting it by cause would
+    make it mean two. What the reader gets instead is a sentence that says
+    which cause it was, and points at the other counter.
+
+    `coda_was_refused` is true when at least one coda mark on this score was
+    read off the page and then refused for having no bar to name. That is
+    precisely the condition under which "the coda this score draws sits on a
+    system this transcription does not hold" is a true sentence.
 
     WHAT IS WRITTEN, AND WHAT IS NOT. Every mark that was read is written -
     as the words the page prints, or as the sign it draws - because that is
@@ -1976,7 +2017,8 @@ def _resolve_nav_marks(anchored):
                     or (mark.until == "fine" and fine is None)):
                 unresolved.append(bar)
             add(bar, "after", {"words": mark.text, "sound": sound})
-    return directions, sorted(set(unresolved))
+    coda_was_refused = any(mark.kind == "coda" for mark in refused)
+    return directions, sorted(set(unresolved)), coda_was_refused
 
 
 # ---------------------------------------------------------------------------
@@ -4489,6 +4531,11 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     # _resolve_nav_marks).
     nav_anchored = []
     nav_unanchored = 0
+    # The marks that were read and could not be given a bar. Kept, not just
+    # counted, because WHICH KIND was refused is what tells the unresolved
+    # disclosure whether a missing coda is one the page never drew or one
+    # this transcription could not place - see _resolve_nav_marks.
+    nav_refused = []
     for page_idx, page, tab_staves, std_staves in pages_with_tab:
         tokens = _extract_digit_tokens(page)
         by_staff, unmatched = _assign_tokens_to_tab_staves(tokens, tab_staves)
@@ -4715,6 +4762,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                 staff.spacing)
             nav_anchored.extend(staff_nav)
             nav_unanchored += len(staff_nav_refused)
+            nav_refused.extend(staff_nav_refused)
 
         # Marks bucketed to a tab staff the loop above skipped whole - a
         # staff with no fret-number token on it has no bar grid at all, so
@@ -4823,20 +4871,34 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         )
     # Navigation marks, resolved once the whole document's bars exist: a
     # "To Coda" on page 1 names a coda sign that is usually on page 2.
-    nav_directions, nav_unresolved_bars = _resolve_nav_marks(nav_anchored)
+    nav_directions, nav_unresolved_bars, nav_coda_was_refused = _resolve_nav_marks(
+        nav_anchored, nav_refused)
     if nav_unresolved_bars:
+        # Prose only, and it moves no count: where the coda this score is
+        # missing was read off the page and then refused for having no bar
+        # (nav_marks_unanchored), saying "no coda read" would be false and
+        # would hide that the two disclosures are one defect.
+        coda_clause = (
+            "a To Coda or al Coda whose coda this score draws on a system this "
+            "transcription does not hold (see the unanchored count below)"
+            if nav_coda_was_refused else
+            "a To Coda or al Coda with no coda read"
+        )
         warnings.append(
             f"{len(nav_unresolved_bars)} bar(s) carry a navigation instruction naming a jump "
-            "this transcription holds no target for - a D.S. with no segno read, a To Coda or "
-            "al Coda with no coda read, or an al Fine with no Fine - so each is written as the "
-            "words the page prints, with no playback jump attached. The bars are: "
+            f"this transcription holds no target for - a D.S. with no segno read, {coda_clause}, "
+            "or an al Fine with no Fine - so each is written as the words the page prints, with "
+            "no playback jump attached. The bars are: "
             f"{', '.join(str(n) for n in nav_unresolved_bars[:_BARS_LISTED])}."
         )
     if nav_unanchored:
         warnings.append(
             f"{nav_unanchored} navigation mark(s) were read off the page but sit against no bar "
-            "this transcription holds - too far from any staff, or on a staff no fret numbers "
-            "were read from - and were left out"
+            "this transcription holds - drawn outside the horizontal span of the staff below "
+            "them (usually a coda engraved as its own short system, which the staff detector "
+            "does not report), too far from any staff, or on a staff no fret numbers were read "
+            "from - and were left out rather than moved onto a bar the page does not draw them "
+            "over"
         )
     endings_incomplete = 0
     if ending_numbers_seen:
