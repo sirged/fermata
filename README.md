@@ -109,6 +109,12 @@ them.
   folder and are indexed immediately.
 - **Single container** — SQLite inside, two volume mounts, no external
   services.
+- **A documented REST API** — everything above is one client of `/api`, which
+  is documented, not just present: `/docs` for interactive Swagger UI,
+  `/openapi.json` for the schema itself, generated from response models kept
+  in sync with what each endpoint actually returns. Enough to script the
+  library, log practice, or build a companion app against — see
+  [the API guide](docs/api.md).
 
 ## Quick start
 

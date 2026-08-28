@@ -26,6 +26,10 @@ dev = [
     # this is what makes running it possible rather than what triggers it.
     # See docs/musicxml-tab-profile.md#checking-a-file.
     "lxml>=5.0",
+    # Validates GET /api/openapi.json against the OpenAPI 3.1 meta-schema -
+    # see tests/test_api_docs.py. FastAPI generating SOME document is not the
+    # same claim as the document being one a client's codegen can trust.
+    "openapi-spec-validator>=0.7",
 ]
 
 [tool.hatch.build.targets.wheel]
