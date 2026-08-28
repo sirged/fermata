@@ -337,6 +337,28 @@ class ExtractionResult:
     nav_marks_unanchored: int = 0
     nav_marks_unresolved: int = 0
     nav_marks_unresolved_bars: list[int] = field(default_factory=list)
+    # A SYSTEM whose bars were not read at all (issue #152). Every other
+    # figure on this result describes music that reached the transcription
+    # and says how well it was read; this one says how much music never
+    # reached it, which is the only defect none of the others can express.
+    # A staff-sized group of staff lines was found on the page, could not be
+    # read as a staff (its line count was neither 5 nor 6 - see
+    # _detect_staves and _STAFF_SIZED_GROUP), and so contributed no bars.
+    #
+    # THERE IS NO `*_bars` LIST FOR IT, and that is the point rather than an
+    # omission: a system that was never read has no bar numbers to report,
+    # because bar numbers are assigned by the grid these bars never entered.
+    # `systems_unread_pages` is the coordinate that does exist - a page a
+    # reader can turn to and compare against - the same role `padded_bars`
+    # plays for bars that were read.
+    #
+    # WHY IT MUST BE COUNTED. Bars that vanish are as likely as any to be the
+    # ones that did not add up, so losing a system can move `bars_defective`
+    # DOWN: a figure that improves when music disappears is worse than no
+    # figure. `bars`, `notes` and every Rule 8 count here describe only the
+    # systems that were read, and this is the number that says so.
+    systems_unread: int = 0
+    systems_unread_pages: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -394,6 +416,8 @@ class ExtractionResult:
             "nav_marks_unanchored": self.nav_marks_unanchored,
             "nav_marks_unresolved": self.nav_marks_unresolved,
             "nav_marks_unresolved_bars": list(self.nav_marks_unresolved_bars),
+            "systems_unread": self.systems_unread,
+            "systems_unread_pages": list(self.systems_unread_pages),
         }
 
 
@@ -403,11 +427,20 @@ class ExtractionResult:
 
 
 class _Staff:
-    def __init__(self, kind, line_ys, x0, x1):
+    def __init__(self, kind, line_ys, x0, x1, band=0):
         self.kind = kind  # "tab" (6 lines) or "standard" (5 lines)
         self.line_ys = line_ys  # sorted top->bottom
         self.x0 = x0
         self.x1 = x1
+        # Which horizontal band of the page this staff was ruled on. Staves
+        # printed SIDE BY SIDE share a band and have nearly equal `top` in
+        # an order the engraving decides, so (band, x0) is the reading order
+        # and `top` is not - see _detect_staves.
+        self.band = band
+
+    @property
+    def reading_order(self):
+        return (self.band, self.x0)
 
     @property
     def top(self):
@@ -450,6 +483,54 @@ STAFF_LINE_SIBLINGS_REQUIRED = 4
 # staff are drawn to the same x - so this is slack, not a threshold.
 STAFF_LINE_SIBLING_TOLERANCE = 2.0
 
+# A SECOND, lower length floor, for staff lines that are short because the
+# system they belong to is short (issue #152).
+#
+# The primary floor above is a quarter of the page width. That is the right
+# size for a system that runs the width of the page, and it is why a
+# right-hand system printed on the same band as the last full one was not
+# merely misread but INVISIBLE: on "1 AM (Animal Crossing New Leaf)" the coda
+# system's six tab lines run x 441.2-575.7, which is 134.5pt on a 612pt page
+# - 0.220 of the width, under the 0.25 floor - so they were dropped before
+# staff detection ever saw them, no anomaly was reported, and the page's bar
+# 18 simply did not exist. "Kakariko Village" is the same shape at 133.5pt.
+# Measured over the library, 54 systems are drawn this way.
+#
+# A lower floor on its own is exactly how a volta bracket or a chord grid
+# becomes a staff, so a run admitted by it must ALSO look like a staff line
+# in the two ways a decoration does not: it must have
+# STAFF_LINE_SIBLINGS_REQUIRED siblings at its own extent (as any short run
+# must - see _has_staff_siblings), and those siblings must be spaced far
+# enough apart to be staff lines at all (STAFF_LINE_MIN_SPACING).
+#
+# THE VALUE IS SET BY A MEASUREMENT, and the measurement says the length is
+# not what is doing the work. Scanning the whole library for every run
+# between 0.04 and 0.25 of the page width that passes both of those tests
+# finds 54 groups, and all 54 are real: every one comes back with exactly 11
+# rows - a 5-line notation staff and a 6-line tab staff ruled to the same x -
+# which is a side-by-side system and cannot be anything else. Their lengths
+# run from 0.1235 (Fond Memories, 75.6pt) to 0.2488 (Melodies of Life), and
+# BELOW 0.1235 the scan finds nothing whatsoever down to 0.04. So the floor
+# is not separating staves from decorations - the sibling and spacing tests
+# are - and 0.10 is placed in the empty band under the smallest real staff,
+# where it admits all 54 and cannot be the thing that decides.
+#
+# It was 0.15 first, which is inside the real range and cost 12 of the 54 -
+# among them "Rito Village - Night" at 0.1461, whose coda system is a
+# perfectly ordinary 5+6 staff pair 89.4pt wide.
+SHORT_STAFF_LEN_RATIO = 0.10
+
+# The closest two staff lines ever are. Notation staves in the library are
+# ruled 5.1pt apart and tablature staves 7.7pt; the decorations that clear
+# the sibling test are much tighter than either. Two title-block ornaments
+# were measured at gaps of 1.2-2.6pt - four rows at one extent, which passes
+# the sibling test on its own - and admitting them cost a real staff: on
+# "Troian Beauty" p3 the ornament's rows fell in the same 15.0pt band as the
+# page's first notation staff and swallowed it into an 11-line group. So the
+# spacing is the test that makes the lower floor safe, and 3.0pt sits below
+# every real staff and above every decoration measured.
+STAFF_LINE_MIN_SPACING = 3.0
+
 # A rule drawn along the page's own edge is page furniture, not a staff.
 PAGE_EDGE_TOLERANCE = 1.0
 
@@ -479,7 +560,8 @@ PAGE_EDGE_TOLERANCE = 1.0
 BARLINE_STROKE_MERGE_SPACES = 1.0
 
 
-def _long_horizontal_segments(page, min_len_ratio=0.25):
+def _long_horizontal_segments(page, min_len_ratio=0.25,
+                              short_len_ratio=SHORT_STAFF_LEN_RATIO):
     """Near-horizontal vector primitives long enough to plausibly be staff
     lines, as opposed to beams, ledger lines, or stems.
 
@@ -557,61 +639,149 @@ def _long_horizontal_segments(page, min_len_ratio=0.25):
         runs.append((y, run_x0, run_x1, pieces))
 
     long_enough = [r for r in runs if r[2] - r[1] >= min_len]
-    return [(y, x0, x1) for y, x0, x1, pieces in long_enough
-            if pieces == 1 or _has_staff_siblings(y, x0, x1, long_enough)]
+    kept = [r for r in long_enough
+            if r[3] == 1 or _has_staff_siblings(r[0], r[1], r[2], long_enough)]
+
+    # Runs too short for the primary floor, kept only where they look like the
+    # lines of a short system rather than a decoration - see
+    # SHORT_STAFF_LEN_RATIO. Their siblings are searched among the SHORT runs
+    # alone, not among all of them: a half-width system's lines are all short
+    # together, so nothing is lost by it, and it means this cannot reach back
+    # and change which long runs are kept. The long path above is therefore
+    # byte-for-byte the behaviour it always had.
+    short_len = page.rect.width * short_len_ratio
+    short = [r for r in runs if short_len <= r[2] - r[1] < min_len]
+    for r in short:
+        rows = _staff_sibling_rows(r[0], r[1], r[2], short)
+        if len(rows) - 1 < STAFF_LINE_SIBLINGS_REQUIRED:
+            continue
+        if not _rows_are_staff_spaced(rows):
+            continue
+        kept.append(r)
+
+    return [(y, x0, x1) for y, x0, x1, pieces in kept]
+
+
+def _staff_sibling_rows(y, x0, x1, runs):
+    """Every row carrying a run at this run's x extent, this row included."""
+    tol = STAFF_LINE_SIBLING_TOLERANCE
+    rows = {other_y for other_y, ox0, ox1, _pieces in runs
+            if abs(ox0 - x0) <= tol and abs(ox1 - x1) <= tol}
+    rows.add(y)
+    return sorted(rows)
 
 
 def _has_staff_siblings(y, x0, x1, runs):
     """Do enough other rows span this run's extent for it to be a staff line?"""
-    tol = STAFF_LINE_SIBLING_TOLERANCE
-    rows = {other_y for other_y, ox0, ox1, _pieces in runs
-            if other_y != y and abs(ox0 - x0) <= tol and abs(ox1 - x1) <= tol}
-    return len(rows) >= STAFF_LINE_SIBLINGS_REQUIRED
+    return len(_staff_sibling_rows(y, x0, x1, runs)) - 1 >= STAFF_LINE_SIBLINGS_REQUIRED
+
+
+def _rows_are_staff_spaced(rows):
+    """Are consecutive rows far enough apart to be lines of a staff?
+
+    The gap BETWEEN two staves in the set is large and passes trivially; what
+    this refuses is a set whose rows are packed tighter than any engraver
+    rules a staff - see STAFF_LINE_MIN_SPACING.
+    """
+    return all(b - a >= STAFF_LINE_MIN_SPACING for a, b in zip(rows, rows[1:]))
 
 
 def _detect_staves(page):
     """Cluster long horizontal line primitives into staff systems.
 
-    Returns (staves, anomalies): anomalies records line-groups whose size was
-    neither 5 nor 6, so callers can surface what was thrown away.
+    Returns (staves, anomalies) with the staves in READING ORDER - band by
+    band down the page, and left to right within a band. anomalies records
+    line-groups whose size was neither 5 nor 6, so callers can surface what
+    was thrown away.
+
+    A band is split into COLUMNS before its lines are counted (issue #152).
+    Clustering by vertical gap alone answers "which lines are level with each
+    other", which is not the same question as "which lines belong to one
+    staff": the house layout these arrangements use prints the coda system to
+    the RIGHT of the last full system, on the same band. Level, and two
+    different staves.
+
+    Merging the two cost music in two different ways, and both were measured:
+
+      - Where the two systems are ruled at the SAME y, the rows collapsed
+        into one full-width staff record. "Imprisoned Town (Suikoden II)" p2
+        reported a standard staff at x 54.0-575.9 for a band that actually
+        holds one system at 54.0-341.7 and another at 378.2-575.9. Nothing
+        said anything was wrong; the staff simply described music that was
+        not there, and its x span then swallowed marks belonging to the
+        right-hand system (see _apply_nav_marks, which could not test its way
+        out of a staff record spanning the whole page).
+
+      - Where they are ruled 1.5-1.7pt apart - which is what an engraver
+        does when the two systems have different content above them - the y
+        values interleave inside the 15.0pt band and the group came back with
+        TWICE the lines. That is the 12-line group issue #152 opens with:
+        Imprisoned Town's last band, and both of "The Nautilus Knoweth" p3's
+        (a 10-line pair of notation staves and a 12-line pair of tab staves),
+        discarded whole. Imprisoned Town lost 4 printed bars, Nautilus 5.
+
+    Splitting by x extent answers the second question directly, and the tell
+    is unambiguous: two side-by-side systems do not overlap in x at all (the
+    measured gaps are 36.5pt and 30.7pt) while the lines of one staff are
+    drawn to the same x within STAFF_LINE_SIBLING_TOLERANCE. A column is
+    therefore a maximal run of x-overlapping rows, and a page that prints one
+    system per band yields exactly one column per band - which is why this
+    moves no output on the 230 library files that have no such band.
+
+    READING ORDER IS NOT TOP ORDER, and that is why this returns an order at
+    all. Two side-by-side systems have nearly equal `top`, and which of them
+    is the smaller number is decided by the 1.5pt engraving offset above -
+    on "Troian Beauty" p3 the RIGHT-hand system is the higher one. Sorting
+    staves by `top` would therefore have put the coda system's bars BEFORE
+    the bars of the system printed to its left. Callers order by
+    (band, x0) - see _Staff.band.
     """
     segs = _long_horizontal_segments(page)
     if not segs:
         return [], []
 
-    by_y = {}
-    for y, x0, x1 in segs:
-        key = round(y, 1)
-        if key not in by_y:
-            by_y[key] = [x0, x1]
-        else:
-            by_y[key][0] = min(by_y[key][0], x0)
-            by_y[key][1] = max(by_y[key][1], x1)
-    ys = sorted(by_y.keys())
-
-    clusters = []
-    cur = [ys[0]]
+    ys = sorted({round(y, 1) for y, _x0, _x1 in segs})
+    band_of = {ys[0]: 0}
+    band = 0
     for prev, y in zip(ys, ys[1:]):
         if (y - prev) > 15.0:
-            clusters.append(cur)
-            cur = [y]
-        else:
-            cur.append(y)
-    clusters.append(cur)
+            band += 1
+        band_of[y] = band
+
+    bands = collections.defaultdict(list)
+    for y, x0, x1 in segs:
+        bands[band_of[round(y, 1)]].append((y, x0, x1))
 
     staves = []
     anomalies = []
-    for c in clusters:
-        n = len(c)
-        x0 = min(by_y[y][0] for y in c)
-        x1 = max(by_y[y][1] for y in c)
-        if n == 6:
-            staves.append(_Staff("tab", c, x0, x1))
-        elif n == 5:
-            staves.append(_Staff("standard", c, x0, x1))
-        else:
-            anomalies.append({"line_count": n, "ys": c, "x0": x0, "x1": x1})
+    for band in sorted(bands):
+        for x0, x1, rows in _band_columns(bands[band]):
+            c = sorted({round(y, 1) for y, _a, _b in rows})
+            n = len(c)
+            if n == 6:
+                staves.append(_Staff("tab", c, x0, x1, band))
+            elif n == 5:
+                staves.append(_Staff("standard", c, x0, x1, band))
+            else:
+                anomalies.append({"line_count": n, "ys": c, "x0": x0, "x1": x1,
+                                  "band": band})
     return staves, anomalies
+
+
+def _band_columns(rows):
+    """Split one horizontal band into the systems printed side by side in it.
+
+    Returns [(x0, x1, rows), ...] left to right, each a maximal run of rows
+    whose x extents overlap. See _detect_staves for why a band is not a staff.
+    """
+    columns = []
+    for y, x0, x1 in sorted(rows, key=lambda r: (r[1], r[2])):
+        if columns and x0 <= columns[-1][1]:
+            columns[-1][1] = max(columns[-1][1], x1)
+            columns[-1][2].append((y, x0, x1))
+        else:
+            columns.append([x0, x1, [(y, x0, x1)]])
+    return [(x0, x1, rows) for x0, x1, rows in columns]
 
 
 def _vertical_segments(page, min_len=15.0):
@@ -1191,10 +1361,19 @@ def _read_volta_number(spans, left_x, line_y, spacing):
     return best
 
 
-def _read_volta_brackets(page, band_top, spacing):
+def _read_volta_brackets(page, band_top, spacing, x0=None, x1=None):
     """Numbered volta brackets whose line sits above `band_top` (the
     system's topmost staff line - never the tab staff, see issue #134 S2.4),
     read fresh from the drawing primitives. Returns (brackets, hooks):
+
+    `x0`/`x1` bound the search to ONE system's own horizontal extent. A band
+    can hold two systems printed side by side (issue #152), and the y band
+    above a staff runs the width of the page: without this, the "2." bracket
+    drawn over the left-hand system was found AGAIN for the right-hand one
+    and written a second time onto the coda system's bar. Measured on "Our
+    Terms (Final Fantasy XVI)", which emitted ending 2 over both bar 27 and
+    bar 28. A page with one system per band passes its full width here and
+    nothing is excluded.
     brackets is (left_x, right_x, line_y, number) left-to-right; hooks is
     every downward stroke found in the search band, passed through so
     _associate_voltas can look for a closing hook at the boundary it
@@ -1215,9 +1394,15 @@ def _read_volta_brackets(page, band_top, spacing):
     y_lo = band_top - spacing * VOLTA_HEIGHT_MAX_SPACES
     y_reach_lo = band_top - spacing * VOLTA_HEIGHT_MIN_SPACES
     hooks = _volta_hooks(page, y_lo, y_hi, spacing)
+    if x0 is not None:
+        hooks = [h for h in hooks if x0 <= h[0] <= x1]
     if not hooks:
         return [], []
     pieces = _volta_horizontal_pieces(page, y_lo, y_hi)
+    if x0 is not None:
+        # Overlap, not containment: a bracket's drawn line may overhang its
+        # system's last barline slightly, as ordinary engraving.
+        pieces = [pc for pc in pieces if pc[1] <= x1 and pc[2] >= x0]
     if not pieces:
         return [], hooks
     spans = _text_spans(page)
@@ -1751,6 +1936,33 @@ def _read_navigation_marks(page):
     return sorted(signs + kept, key=lambda m: (m.y0, m.x0))
 
 
+def _nav_owner_in_band(nearest, candidates, mark):
+    """Which of the staves sharing `nearest`'s band the mark is drawn over.
+
+    Vertical order alone picks the owner wrongly as soon as a band holds two
+    systems printed side by side (issue #152). The two are ruled 1.5-1.7pt
+    apart and which one is the higher is an engraving detail, so "the first
+    staff below the mark" is a coin toss between the system the mark is over
+    and the one beside it. Measured over the library, taking the coin toss
+    left 20 coda signs owned by the system to their LEFT - and the x refusal
+    in _apply_nav_marks then correctly declined to anchor them, turning a
+    mark that has a perfectly good bar into a disclosed unanchored one.
+
+    So among the staves on that one band, the mark belongs to the one it
+    horizontally overlaps most, and only where it overlaps none of them does
+    the nearest-by-y answer stand - whereupon _apply_nav_marks refuses it as
+    it always did. A page with one system per band has one candidate and
+    this returns it unchanged.
+    """
+    mates = [s for s in candidates if s.band == nearest.band]
+    best, best_overlap = nearest, 0.0
+    for s in mates:
+        overlap = min(s.x1, mark.x1) - max(s.x0, mark.x0)
+        if overlap > best_overlap:
+            best, best_overlap = s, overlap
+    return best
+
+
 def _assign_nav_marks(marks, staves, tab_for_top):
     """Bucket this page's navigation marks by the tab staff whose bars they
     belong to. Returns ({id(tab_staff): [marks]}, unowned).
@@ -1772,11 +1984,12 @@ def _assign_nav_marks(marks, staves, tab_for_top):
     buckets = collections.defaultdict(list)
     unowned = []
     for mark in marks:
-        owner = next((s for s in by_top if s.top >= mark.y1 - 0.5), None)
+        below = [s for s in by_top if s.top >= mark.y1 - 0.5]
+        owner = _nav_owner_in_band(below[0], below, mark) if below else None
         gap = (owner.top - mark.y1) if owner is not None else None
         if owner is None:
-            owner = next((s for s in reversed(by_bottom) if s.bottom <= mark.y0 + 0.5),
-                          None)
+            above = [s for s in reversed(by_bottom) if s.bottom <= mark.y0 + 0.5]
+            owner = _nav_owner_in_band(above[0], above, mark) if above else None
             gap = (mark.y0 - owner.bottom) if owner is not None else None
         if owner is None or gap > owner.spacing * NAV_BAND_SPACES:
             unowned.append(mark)
@@ -3223,7 +3436,13 @@ _STAFF_SIZED_GROUP = 5
 def _discard_report(discarded_groups):
     """Say what was thrown away, and cap the fret confidence if it mattered.
 
-    Returns (warnings, fret_confidence_override | None).
+    Returns (warnings, fret_confidence_override | None, systems_unread,
+    systems_unread_pages) - the last two being the COUNT of what was lost,
+    which issue #152 added because prose is not a figure. A caller comparing
+    two extractions, or a client reading this back out of storage, cannot
+    grep a sentence; `systems_unread` is the same fact as a number, and the
+    rule it exists to keep is that a system whose bars were not read must be
+    counted.
 
     A group of staff lines whose count is neither 5 nor 6 cannot be read, and
     it used to be reported as "N staff-line group(s) with an unexpected line
@@ -3240,30 +3459,35 @@ def _discard_report(discarded_groups):
     the claim it undermines, because a whole system's digits are missing.
     """
     if not discarded_groups:
-        return [], None
+        return [], None, 0, []
     warnings = []
     staff_sized = 0
+    staff_sized_pages = []
     for page_no, anomalies in discarded_groups:
         counts = sorted(a.get("line_count", 0) for a in anomalies)
-        staff_sized += sum(1 for n in counts if n >= _STAFF_SIZED_GROUP)
+        on_this_page = sum(1 for n in counts if n >= _STAFF_SIZED_GROUP)
+        staff_sized += on_this_page
+        if on_this_page:
+            staff_sized_pages.append(page_no)
         warnings.append(
             f"page {page_no}: {len(anomalies)} group(s) of staff lines could not be read as a "
             f"staff and were ignored (line counts: {counts}) - a staff has 5 lines and a "
             "tablature staff 6, so any other count is a group this pass cannot interpret"
         )
     if not staff_sized:
-        return warnings, None
+        return warnings, None, 0, []
     warnings.append(
         f"{staff_sized} of the ignored group(s) had at least {_STAFF_SIZED_GROUP} lines, which "
         "is the size of a staff - if any of those was one, that whole system's bars and notes "
         "are MISSING from this transcription rather than wrong in it, and every count and "
-        "bar-conformance figure here describes only the systems that were read"
+        f"bar-conformance figure here describes only the systems that were read "
+        f"(systems_unread={staff_sized}, on page(s) {_bar_list(staff_sized_pages)})"
     )
     return warnings, (
         "medium - read directly from vector text spans, but "
         f"{staff_sized} staff-sized group(s) of lines on this score could not be read as a "
         "staff and were skipped, so notes may be missing entirely rather than misread"
-    )
+    ), staff_sized, staff_sized_pages
 
 
 def _resolve_rhythm_source(page, std_staff, pair_reason, decoded):
@@ -4309,8 +4533,14 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         staves, anomalies = _detect_staves(page)
         if anomalies:
             discarded_groups.append((page_no + 1, anomalies))
-        tab_staves = sorted((s for s in staves if s.kind == "tab"), key=lambda s: s.top)
-        std_staves = sorted((s for s in staves if s.kind == "standard"), key=lambda s: s.top)
+        # Reading order, NOT top order: a coda system printed to the right of
+        # the last full system shares its band and can be ruled a shade
+        # HIGHER, so ordering by `top` would emit its bars first (issue
+        # #152). On a page with one system per band the two orders agree.
+        tab_staves = sorted((s for s in staves if s.kind == "tab"),
+                            key=lambda s: s.reading_order)
+        std_staves = sorted((s for s in staves if s.kind == "standard"),
+                            key=lambda s: s.reading_order)
         tab_count += len(tab_staves)
         std_count += len(std_staves)
 
@@ -4339,7 +4569,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     # carries it too: a page whose staff-sized line groups were all discarded
     # is refused for "no tab staff found", which is true and yet says nothing
     # about the six lines that were thrown away to make it true.
-    discard_warnings, discard_note = _discard_report(discarded_groups)
+    (discard_warnings, discard_note,
+     systems_unread, systems_unread_pages) = _discard_report(discarded_groups)
     warnings.extend(discard_warnings)
 
     if vector_pages == 0:
@@ -4358,6 +4589,11 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             tab_staff_count=tab_count,
             standard_staff_count=std_count,
             warnings=warnings,
+            # A refusal carries the count too: "no tab staff found" is true
+            # and says nothing about the staff-sized groups that were thrown
+            # away to make it true (issue #152).
+            systems_unread=systems_unread,
+            systems_unread_pages=systems_unread_pages,
         )
 
     # Time signature, now that we know there is tab worth extracting. Read at
@@ -4749,7 +4985,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                 # bracket only 3.28 std-staff-spaces tall as too short,
                 # because 2.5 TAB-staff-spaces is a taller absolute distance.
                 brackets, volta_hooks = _read_volta_brackets(
-                    page, std_staff.top, std_staff.spacing)
+                    page, std_staff.top, std_staff.spacing,
+                    std_staff.x0, std_staff.x1)
                 endings, unread, volta_unanchored = _associate_voltas(
                     brackets, volta_hooks, barline_recs, bounds, lo, hi, staff_first_bar,
                     std_staff.spacing, staff.spacing)
@@ -4935,6 +5172,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             standard_staff_count=std_count,
             pages_processed=len(pages_with_tab),
             warnings=warnings,
+            systems_unread=systems_unread,
+            systems_unread_pages=systems_unread_pages,
         )
 
     title = Path(pdf_path).stem
@@ -4981,7 +5220,21 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
                          + len(endings_truncated_bars) + len(form_marks_unanchored_bars)
                          + endings_incomplete
                          + len(nav_unresolved_bars) + nav_unanchored)
-    if not form_marks and not nav_directions and not structure_issues:
+    # A lost SYSTEM outranks any of the above, and is stated first (issue
+    # #152). The marks that were read may be complete and still describe a
+    # form this transcription cannot play, because the bars a jump names are
+    # on the system that was not read - so "high" would be a claim about the
+    # structure of a score this file does not contain. It is also the one
+    # case here where a bar-level figure cannot express the loss: an absent
+    # system has no bar to attach a caveat to.
+    if systems_unread:
+        structure_confidence = (
+            f"low - {systems_unread} system(s) on this score could not be read at all (page(s) "
+            f"{_bar_list(systems_unread_pages)}), so their bars are missing from this "
+            "transcription entirely and any repeat or navigation mark naming them has nothing "
+            "to point at"
+        )
+    elif not form_marks and not nav_directions and not structure_issues:
         structure_confidence = (
             "n/a - no repeat barlines, volta brackets or navigation marks were found on this "
             "score"
@@ -5065,6 +5318,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         form_marks_unanchored=len(form_marks_unanchored_bars),
         form_marks_unanchored_bars=list(form_marks_unanchored_bars),
         endings_incomplete=endings_incomplete,
+        systems_unread=systems_unread,
+        systems_unread_pages=systems_unread_pages,
         nav_marks_unanchored=nav_unanchored,
         nav_marks_unresolved=len(nav_unresolved_bars),
         nav_marks_unresolved_bars=nav_unresolved_bars,

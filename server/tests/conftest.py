@@ -127,19 +127,39 @@ _FIXTURE_RELATIVE_PATHS = {
     # dropped silently. The only real fixture in the library with this shape
     # (2 instances, both on this one barline group's two measure sides).
     "tarrega_estudio_em": "Classical/Tarrega/Tarrega-Estudio-Em-Werner.pdf",
-    # The coda-system layout: the coda is engraved as a short system to the
-    # RIGHT of the last full system, on the same band. That right-hand
-    # system is lost whole by the staff detector (issue #152), and the coda
-    # sign it carries then sits 7.5 staff spaces past the left-hand system's
-    # right end - where clamping put it on that system's LAST bar, which is
-    # the bar the D.S. jumps FROM. The page prints its coda at bar 18.
-    # (issue #134 phase 2 adversarial review, blocker 2)
+    # The coda-system layout, in the two shapes issue #152 covers. In both,
+    # the coda is engraved as a short system to the RIGHT of the last full
+    # system, on the same horizontal band.
+    #
+    # SHAPE 1 - the right-hand system's staff lines are SHORT (134.5pt on a
+    # 612pt page, under the old 0.25 length floor), so they never reached
+    # staff detection at all and the system was invisible: no staff, no
+    # anomaly, no bars, nothing said. 40 files library-wide. The page prints
+    # 18 bars and the extractor reported 17.
     "one_am": "Patreon/John Oeth/Animal Crossing/1 AM (Animal Crossing New Leaf).pdf",
-    # The same layout with a D.C. rather than a D.S., and a coda the page
-    # prints at bar 37 that the clamp emitted at 36.
+    # The same shape with a D.C. rather than a D.S.: the page prints 37 bars
+    # and the extractor reported 36.
     "kakariko_village": (
         "Patreon/John Oeth/The Legend of Zelda/"
         "Kakariko Village (The Legend of Zelda Series).pdf"),
+    # SHAPE 2 - both systems on the band are long enough to be seen, but
+    # they are ruled 1.5-1.7pt apart, so their rows interleave inside the
+    # 15.0pt cluster gap and the pair came back as ONE group with twice the
+    # lines, which was discarded whole. Imprisoned Town's last band is a
+    # 12-line tab group (its two notation staves, ruled at the SAME y,
+    # having silently merged into one full-width staff instead); the page
+    # prints 35 bars and the extractor reported 31.
+    "imprisoned_town": "Patreon/John Oeth/Suikoden/Imprisoned Town (Suikoden II).pdf",
+    # The same shape showing BOTH halves of it at once: a 10-line group (two
+    # notation staves) and a 12-line group (two tab staves) on one band,
+    # both discarded. Named in issue #153 as the one coda sign no test
+    # inside the navigation reader could reach, because the staff its mark
+    # was measured against spanned the whole page width. The page prints 58
+    # bars - a three-bar system opening at 54 and a two-bar coda system
+    # opening at 57 beside it - and the extractor reported 53.
+    "nautilus_knoweth": (
+        "Patreon/John Oeth/Final Fantasy/FF XIV/"
+        "The Nautilus Knoweth (Final Fantasy XIV Endwalker).pdf"),
     # A "To Coda" on a score that draws no coda sign and prints no coda
     # label anywhere - so `nav_marks_unresolved` is genuinely 1, on a score
     # whose every other structure figure is 0 (issue #134 phase 2).
@@ -430,6 +450,24 @@ def kakariko_village_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing 'Kakariko Village' fixture)")
+    return p
+
+
+@pytest.fixture
+def imprisoned_town_pdf() -> Path:
+    p = _fixture_path("imprisoned_town")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Imprisoned Town' fixture)")
+    return p
+
+
+@pytest.fixture
+def nautilus_knoweth_pdf() -> Path:
+    p = _fixture_path("nautilus_knoweth")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'The Nautilus Knoweth' fixture)")
     return p
 
 

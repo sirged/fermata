@@ -401,7 +401,11 @@ BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
             # And for issue #134 phase 2's navigation disclosures, added to
             # _BAR_KEYS and exercised here in the same change rather than
             # left for a later review to find missing.
-            "nav_marks_unanchored", "nav_marks_unresolved")
+            "nav_marks_unanchored", "nav_marks_unresolved",
+            # And for issue #152's lost-system counter, in the same change
+            # as _BAR_KEYS and the confidence_json write - the reload path
+            # exercised here rather than assumed.
+            "systems_unread")
 # Which bars, and how much silence - the figures that only exist as data. The
 # warning prose caps its bar list, and the profile document promises a consumer
 # that `inferred_rest_quarters` is the sum of the `<forward>` durations in the
@@ -414,7 +418,10 @@ BAR_DETAIL_KEYS = ("padded_bars", "unread_bars", "inferred_rest_quarters",
                    "spacing_bars", "degraded_bars",
                    "repeats_unread_bars", "endings_unread_bars",
                    "endings_truncated_bars", "form_marks_unanchored_bars",
-                   "nav_marks_unresolved_bars")
+                   "nav_marks_unresolved_bars",
+                   # Pages, not bars - a system that was never read has no
+                   # bar numbers to report (issue #152).
+                   "systems_unread_pages")
 
 
 def test_bar_conformance_survives_a_reload(app_env, engraved, monkeypatch, insert_score):

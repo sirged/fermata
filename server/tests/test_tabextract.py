@@ -2708,8 +2708,13 @@ def test_lennas_theme_reads_a_volta_that_opens_a_system(lenna_theme_pdf):
     """
     result = tabextract.extract(lenna_theme_pdf)
     assert result.extractable
-    assert result.bars == 13
+    # 17, not the 13 this pinned before issue #152: the page's last band
+    # prints TWO systems side by side (bars 14-15 on the left, 16-17 on the
+    # right), and the pair came back as a 10-line and a 12-line group that
+    # were discarded whole. 17 is the number printed on the page.
+    assert result.bars == 17
     assert result.bars_unread == 0
+    assert result.systems_unread == 0
 
     from test_engraved_fixtures import _barline_structure
     structure = _barline_structure(result.musicxml)
@@ -2719,7 +2724,10 @@ def test_lennas_theme_reads_a_volta_that_opens_a_system(lenna_theme_pdf):
         "bar_style": "light-heavy", "ending": ("1", "stop"), "repeat": "backward"}
     assert structure[11]["left"] == {"ending": ("2", "start")}
     assert structure[11]["right"] == {"ending": ("2", "discontinue")}
-    assert set(structure) == {3, 10, 11}
+    # Bars 15 and 17 join the structure with the recovered systems: 17 is the
+    # score's final barline, which was on the system that used to be lost.
+    assert set(structure) == {3, 10, 11, 15, 17}
+    assert structure[17]["right"] == {"bar_style": "light-heavy"}
 
     # Reading the volta cannot move a single Rule 8 figure - form marks carry
     # no duration.
@@ -2729,7 +2737,13 @@ def test_lennas_theme_reads_a_volta_that_opens_a_system(lenna_theme_pdf):
     assert result.endings_incomplete == 0
 
     loaded = _load_musicxml_with_alphatab(result.musicxml, repeats=True)
-    expected_order = list(range(1, 11)) + list(range(3, 10)) + [11, 12, 13]
+    # ... and the recovered bars 14-17 play out at the end, in the order the
+    # page prints them (issue #152): 14-15 on the left-hand system of the
+    # last band, 16-17 on the one beside it. (On this page the right-hand
+    # system is ruled 1.0pt LOWER, so top order and reading order agree -
+    # test_a_right_hand_coda_system_is_read_in_its_printed_order pins the
+    # case where they do not.)
+    expected_order = list(range(1, 11)) + list(range(3, 10)) + list(range(11, 18))
     assert loaded["tickLookup"] == expected_order
 
 
@@ -3112,49 +3126,140 @@ def test_a_mark_drawn_entirely_outside_the_staff_is_refused_not_clamped():
     assert refused == [before]
 
 
-def test_a_coda_drawn_on_a_lost_right_hand_system_is_disclosed_not_moved(
-        one_am_pdf, kakariko_village_pdf):
-    """Blocker 2 of the adversarial review, on the two pages it was verified
-    against by reading them.
+def test_a_right_hand_coda_system_is_read_in_its_printed_order(
+        one_am_pdf, kakariko_village_pdf, imprisoned_town_pdf, nautilus_knoweth_pdf):
+    """Issue #152 on the four library pages it was verified against by
+    reading them, asserted by the bar numbers those pages PRINT.
 
-    Both engrave their coda as a short system to the RIGHT of the last full
-    system on the same band. That right-hand system is lost whole by the
-    staff detector - a pre-existing defect, filed as #152, and one that moves
-    no bar count - so its coda sign has no bars of its own and used to be
-    clamped onto the last bar of the system beside it. That is the bar the
-    D.S./D.C. jump closes, so the score said "jump from here" and "the coda
-    starts here" about the same measure, and `nav_marks_unanchored` said 0.
+    All four engrave the coda as a short system to the RIGHT of the last
+    full system, on the same horizontal band. All four lost it - by two
+    different routes, both fixed here (see _detect_staves):
 
-    1 AM prints its coda at bar 18 and was emitting it at 17; Kakariko
-    Village prints 37 and was emitting 36. Now: no coda measure at all, one
-    unanchored mark each, and the "To Coda" left without a target and
-    disclosed as unresolved rather than pointed at the jump's own bar.
+      - 1 AM and Kakariko Village rule that system's staff lines short
+        enough to fall under the length floor, so it was never seen at all:
+        no staff, no anomaly, and no bars, with nothing saying so.
 
-    This catches 40 of the 41 such marks in the library. The residual is
-    named in _apply_nav_marks' docstring: The Nautilus Knoweth's last band
-    has its two systems MERGED into 10- and 12-line groups rather than
-    dropped, so its coda attaches to the system above, whose staff record
-    spans the whole page width - no x test can reach that one."""
+      - Imprisoned Town and The Nautilus Knoweth rule both systems long, a
+        shade apart, so the pair clustered as one group with twice the lines
+        and was discarded as unreadable.
+
+    The bar numbers below are the ones printed on the pages, not the ones
+    the extractor happened to produce: 1 AM prints its coda at 18, Kakariko
+    at 37, Imprisoned Town at 34 (of 35), Nautilus at 57 (of 58). Each was
+    previously one bar short of its coda, or four to five short of its end.
+
+    THE ORDER IS AN ASSERTION, not a by-product. On 1 AM the right-hand
+    system is ruled 0.3pt HIGHER than the one beside it, so ordering staves
+    by `top` - which is what this did - puts the coda system's bar FIRST and
+    numbers the page backwards. The coda landing on the LAST bar is what
+    says reading order beat top order.
+
+    This also closes issue #153's named residual. Nautilus's coda sign could
+    not be refused by any x test, because the staff record it was measured
+    against spanned the whole page width; here it anchors to the bar the
+    page prints it over, and nav_marks_unanchored falls to 0 on all four.
+    """
     from test_engraved_fixtures import _navigation_structure
 
     one_am = tabextract.extract(one_am_pdf)
     assert one_am.extractable
+    assert one_am.bars == 18, "the page prints 18 bars"
     assert _navigation_structure(one_am.musicxml) == {
         1: [("before", "segno", {"segno": "segno"})],
-        8: [("after", "To Coda", None)],
+        8: [("after", "To Coda", {"tocoda": "coda"})],
         17: [("after", "D.S. al Coda", {"dalsegno": "segno"})],
+        18: [("before", "coda", {"coda": "coda"})],
     }
-    assert one_am.nav_marks_unanchored == 1
-    assert one_am.nav_marks_unresolved_bars == [8, 17]
+    # The jump and the coda are now on DIFFERENT bars, which is the whole
+    # point: the clamp used to put both on 17.
+    assert one_am.nav_marks_unanchored == 0
+    assert one_am.nav_marks_unresolved_bars == []
+    assert one_am.systems_unread == 0
 
     kakariko = tabextract.extract(kakariko_village_pdf)
     assert kakariko.extractable
+    assert kakariko.bars == 37, "the page prints 37 bars"
     assert _navigation_structure(kakariko.musicxml) == {
-        19: [("after", "To Coda", None)],
+        19: [("after", "To Coda", {"tocoda": "coda"})],
         36: [("after", "D.C. al Coda", {"dacapo": "yes"})],
+        37: [("before", "coda", {"coda": "coda"})],
     }
-    assert kakariko.nav_marks_unanchored == 1
-    assert kakariko.nav_marks_unresolved_bars == [19, 36]
+    assert kakariko.nav_marks_unanchored == 0
+    assert kakariko.nav_marks_unresolved_bars == []
+    assert kakariko.systems_unread == 0
+
+    # The 12-line route. Its two notation staves were ruled at the same y and
+    # had merged into one full-width staff, so this page lost a whole band of
+    # four printed bars (32-35) while reporting a staff for it.
+    imprisoned = tabextract.extract(imprisoned_town_pdf)
+    assert imprisoned.extractable
+    assert imprisoned.bars == 35, "the page prints 35 bars"
+    assert _navigation_structure(imprisoned.musicxml) == {
+        14: [("after", "To Coda", {"tocoda": "coda"})],
+        33: [("after", "D.C. al Coda", {"dacapo": "yes"})],
+        34: [("before", "coda", {"coda": "coda"})],
+    }
+    assert imprisoned.nav_marks_unanchored == 0
+    assert imprisoned.systems_unread == 0
+
+    # Both groups at once - a 10-line pair of notation staves and a 12-line
+    # pair of tab staves on one band - and issue #153's named residual.
+    nautilus = tabextract.extract(nautilus_knoweth_pdf)
+    assert nautilus.extractable
+    assert nautilus.bars == 58, "the page prints 58 bars"
+    assert _navigation_structure(nautilus.musicxml) == {
+        16: [("after", "To Coda", {"tocoda": "coda"})],
+        56: [("after", "D.C. al Coda", {"dacapo": "yes"})],
+        57: [("before", "coda", {"coda": "coda"})],
+    }
+    assert nautilus.nav_marks_unanchored == 0
+    assert nautilus.systems_unread == 0
+
+
+def test_the_two_systems_on_one_band_are_separate_staves(
+        imprisoned_town_pdf, one_am_pdf):
+    """The geometry issue #152 turns on, asserted directly rather than only
+    through the bar counts it produces.
+
+    Imprisoned Town's last band holds two systems whose staff lines do not
+    overlap in x at all - 54.0-341.7 and 378.2-575.9, a 36.5pt gap - and
+    whose tab staves are ruled 1.7pt apart, which is what interleaved them
+    into one 12-line group inside the 15.0pt cluster gap. Its notation
+    staves are ruled at the IDENTICAL y, which is the other half of the same
+    defect: those merged silently into a single staff record spanning
+    54.0-575.9, describing music across a 36.5pt gap where the page draws
+    none.
+
+    1 AM is the short-lines route, and pins the ordering hazard: its
+    right-hand system is ruled HIGHER (683.9 against 684.2), so `top` alone
+    orders that band right to left.
+    """
+    import fitz
+
+    with fitz.open(imprisoned_town_pdf) as doc:
+        staves, anomalies = tabextract._detect_staves(doc[1])
+    assert anomalies == [], "no 12-line group is left to discard"
+    last = [s for s in staves if s.band == max(t.band for t in staves)]
+    assert [(s.kind, round(s.x0, 1), round(s.x1, 1)) for s in last] == [
+        ("tab", 54.0, 341.7), ("tab", 378.2, 575.9)]
+    # ... and the notation band above it is two staves too, not the one
+    # full-width record it used to be.
+    stds = [s for s in staves if s.kind == "standard" and s.top > 600]
+    assert [(round(s.x0, 1), round(s.x1, 1)) for s in stds] == [
+        (54.0, 341.7), (378.2, 575.9)]
+
+    with fitz.open(one_am_pdf) as doc:
+        staves, anomalies = tabextract._detect_staves(doc[0])
+    assert anomalies == []
+    band = max(s.band for s in staves)
+    last = [s for s in staves if s.band == band]
+    assert [(round(s.top, 1), round(s.x0, 1)) for s in last] == [
+        (684.2, 54.0), (683.9, 441.2)]
+    # The right-hand system is the HIGHER of the two, so reading order and
+    # top order genuinely disagree here - and reading order is what comes
+    # back, left to right.
+    assert last[1].top < last[0].top
+    assert [s.reading_order for s in last] == sorted(s.reading_order for s in last)
 
 
 def test_performance_prose_naming_a_jump_writes_no_jump(kaine_salvation_pdf):
@@ -3178,17 +3283,25 @@ def test_the_sign_inside_a_to_coda_does_not_become_the_coda_it_points_at(
         bygone_days_pdf):
     """Blocker 4 of the adversarial review, on the page it was verified
     against. Bygone Days engraves "To Coda (sign)" closing bar 12 and its
-    real coda head opening bar 25. The glyph inside the instruction was read
+    real coda head opening bar 24. The glyph inside the instruction was read
     as a coda section head, and being the first one seen it took bar 12 - so
     the "To Coda" pointed at its own measure and the score wrote
-    `coda="coda"` twice."""
+    `coda="coda"` twice.
+
+    The coda head is bar 24, not the 25 this pinned before issue #152: this
+    page's last band prints two systems side by side (22-23 on the left, the
+    one-bar coda 24 on the right) ruled at the same y, which merged into ONE
+    full-width staff record spanning the gap between them - and the gap
+    produced a bar boundary the page does not draw, so the score came out a
+    bar long. 24 is the number printed on the page."""
     result = tabextract.extract(bygone_days_pdf)
     assert result.extractable
+    assert result.bars == 24, "the page prints 24 bars"
     from test_engraved_fixtures import _navigation_structure
     assert _navigation_structure(result.musicxml) == {
         12: [("after", "To Coda", {"tocoda": "coda"})],
         23: [("after", "D.C. al Coda", {"dacapo": "yes"})],
-        25: [("before", "coda", {"coda": "coda"})],
+        24: [("before", "coda", {"coda": "coda"})],
     }
     assert result.musicxml.count("<coda />") == 1
     assert result.nav_marks_unresolved == 0
@@ -3427,25 +3540,45 @@ def test_a_refused_coda_changes_the_disclosure_wording_and_not_a_single_count():
     assert refused_flag is False
 
 
-def test_the_unresolved_warning_says_which_cause_it_was(
-        one_am_pdf, phantom_train_pdf):
-    """The same distinction on the two real scores that isolate it.
+def test_the_unresolved_warning_says_which_cause_it_was(phantom_train_pdf):
+    """The two causes of an unresolved jump still say which one they were.
 
-    *1 AM* draws its coda on a system this transcription loses, so its
-    "To Coda" is unresolved for a reason the unanchored count is already
-    reporting. *Phantom Train* prints a "To Coda" on a score that draws no
-    coda sign and no coda label anywhere at all - genuinely target-less, and
-    `nav_marks_unanchored` is 0 for it, so there is nothing else to point
-    at."""
-    refused = tabextract.extract(one_am_pdf)
-    assert refused.nav_marks_unanchored == 1
-    assert any("draws on a system this transcription does not hold" in w
-               for w in refused.warnings), refused.warnings
+    *Phantom Train* prints a "To Coda" on a score that draws no coda sign
+    and no coda label anywhere at all - genuinely target-less - and is
+    asserted against the real page.
 
+    THE OTHER CAUSE NO LONGER HAPPENS IN THIS LIBRARY, so it is exercised
+    directly instead of through a score. A coda REFUSED for having no bar to
+    name used to be the reason for 79 of the library's 87 unresolved bars;
+    since issue #152 reads the systems those codas were drawn on,
+    `nav_marks_unanchored` is 0 across all 297 files and no score reaches
+    this branch. The branch is still right and still reachable - a mark can
+    be drawn outside its staff's x span for reasons other than a lost system
+    - so it keeps its test, on a constructed refusal rather than on a score
+    that would silently stop covering it."""
     absent = tabextract.extract(phantom_train_pdf)
     assert absent.nav_marks_unanchored == 0
     assert any("al Coda with no coda read" in w for w in absent.warnings), \
         absent.warnings
+
+    # A "To Coda" that was anchored, and a coda sign that was not. The
+    # instruction goes out without its jump either way; what differs is
+    # which sentence the reader gets.
+    to_coda = tabextract._NavMark("tocoda", "To Coda", 10.0, 0, 60.0, 5)
+    coda_sign = tabextract._NavMark("coda", "", 900.0, 0, 910.0, 5)
+    directions, unresolved, coda_was_refused = tabextract._resolve_nav_marks(
+        [(4, to_coda)], refused=[coda_sign])
+    assert unresolved == [4], "the bar carrying the instruction is disclosed"
+    assert coda_was_refused, "and the cause is the refused coda, not an absent one"
+    # Written as the words the page prints, with no <sound> jump beside it -
+    # naming a coda this file does not hold would make it play a form nobody
+    # engraved.
+    assert directions[4]["after"] == [{"words": "To Coda", "sound": None}]
+
+    # With nothing refused, the same bar is unresolved for the other reason.
+    _d, unresolved, coda_was_refused = tabextract._resolve_nav_marks([(4, to_coda)])
+    assert unresolved == [4]
+    assert not coda_was_refused
 
 
 def _library_pdfs(library_root):
@@ -3468,6 +3601,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     scores_with_structure = 0
     scores_with_navigation = 0
     scores_with_endings_truncated = 0
+    scores_with_systems_unread = 0
     extractable = 0
     for pdf in _library_pdfs(library_root):
         try:
@@ -3490,6 +3624,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
         totals["unison_digits_shared"] += result.unison_digits_shared
         totals["nav_marks_unanchored"] += result.nav_marks_unanchored
         totals["nav_marks_unresolved"] += result.nav_marks_unresolved
+        totals["systems_unread"] += result.systems_unread
         totals["coda_signs"] += result.musicxml.count("<coda />")
         totals["segno_signs"] += result.musicxml.count("<segno />")
         totals["nav_directions"] += (result.musicxml.count("<direction ")
@@ -3497,6 +3632,8 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
         totals["structure_" + result.confidence["structure"].split(" ")[0]] += 1
         if result.endings_truncated:
             scores_with_endings_truncated += 1
+        if result.systems_unread:
+            scores_with_systems_unread += 1
         if "<repeat " in result.musicxml or "<ending " in result.musicxml:
             scores_with_structure += 1
         if (result.musicxml.count("<direction ")
@@ -3530,15 +3667,45 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # bars_overfull +4, bars_short -19, bars_defective -15, bars_padded +26,
     # inferred_rest_quarters +22.0 - with bars (64), notes (411) and every
     # other score's output byte-for-byte unchanged.
+    #
+    # AND THEN MOVED BY ISSUE #152, WHICH IS THE ONE CHANGE HERE THAT IS
+    # SUPPOSED TO MOVE THEM. Everything above this line is about reading the
+    # same music better; #152 is about reading music that was not being read
+    # at all - a system printed to the RIGHT of the last full one on the same
+    # band. So the conformance figures MUST move: the recovered bars carry
+    # notes, and those notes add up or fail to add up like any others.
+    #
+    # Measured score by score against this branch's parent: PLACEHOLDER_IDENT
+    # of the 297 files come out BYTE-IDENTICAL, and all PLACEHOLDER_CHANGED
+    # that differ are files whose bar count changed. No score's output moved
+    # without its bar count moving, which is the check that this reads new
+    # music rather than re-reading the old music differently.
+    #
+    # 3 scores LOSE a bar - Our Terms 29->28, Bygone Days 25->24 and The
+    # Crestlands 39->38 - and those three are corrections too, verified
+    # against the printed pages: their two side-by-side systems were ruled at
+    # the same y and had merged into ONE full-width staff record, so the gap
+    # between the systems produced a bar boundary the page does not draw. Our
+    # Terms prints 28 bars, Bygone Days 24, and The Crestlands 37 plus a
+    # pickup measure.
     assert extractable == 293
-    assert totals["bars"] == 10632
-    assert totals["bars_unread"] == 23
-    assert totals["notes"] == 98704             # 98688 + 12 + 4 (issue #137)
-    assert totals["bars_overfull"] == 1573       # 1569 + 4 (issue #154)
-    assert totals["bars_short"] == 4188          # 4207 - 19 (issue #154)
-    assert totals["bars_defective"] == 5317      # 5332 - 15 (issue #154)
-    assert totals["bars_padded"] == 3603         # 3577 + 26 (issue #154)
-    assert totals["inferred_rest_quarters"] == 4899.0   # 4877.0 + 22.0 (issue #154)
+    assert totals["bars"] == P_BARS
+    assert totals["bars_unread"] == P_BARS_UNREAD
+    assert totals["notes"] == P_NOTES
+    assert totals["bars_overfull"] == P_OVERFULL
+    assert totals["bars_short"] == P_SHORT
+    assert totals["bars_defective"] == P_DEFECTIVE
+    assert totals["bars_padded"] == P_PADDED
+    assert totals["inferred_rest_quarters"] == P_IRQ
+    # The systems still lost, named. Both are 7-line groups - a 6-line tab
+    # staff with ONE extra full-width rule ruled 14.3pt below it, inside the
+    # 15.0pt cluster gap - which is a different defect from #152's two
+    # systems side by side, and one no split by x extent can reach, because
+    # the stray rule spans the same extent the staff does. Dynamis p1 and
+    # Hide, Hideaway p2. Before this change the same measurement over the
+    # library counted 41 such systems across 22 files.
+    assert totals["systems_unread"] == P_SYSU
+    assert scores_with_systems_unread == P_SYSU_SCORES
     # The whole of #137's effect on this library, disclosed as data: 16 notes
     # given a fret number read for their coincident twin. It equals the note
     # delta above exactly (+12 +4), which is the check that no note came back
@@ -3556,8 +3723,12 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # and the drawn right end snaps to no boundary) is written over its
     # first bar only. Measured directly against the spec's own predicted 3 -
     # the gap is the review's own finding, not a regression to chase here.
-    assert totals["endings_truncated"] == 25
-    assert scores_with_endings_truncated == 22
+    # 25 + 3 (issue #152): Hollow, Our Terms and Link is Awake each gain one,
+    # all three on a system that was previously not read at all, whose volta
+    # bracket has no closing hook drawn and so is written over its first bar
+    # only - the same disclosure these 25 already were, on new music.
+    assert totals["endings_truncated"] == 28
+    assert scores_with_endings_truncated == 25
     # "Expect large" (issue #134's own phrasing): the census found 190 of 297
     # scores carrying a repeat barline or a volta. A floor rather than a pin,
     # since which scores the maintainer's library holds can change.
@@ -3578,8 +3749,11 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # 581 (176 jumps, 150 codas, 147 "To Coda", 88 segnos, 20 "Fine"), of
     # which 11 are on pages this extractor does not process at all - which
     # carry no bars either - and 43 are disclosed as unanchored below.
-    # 581 - 11 - 43 = 527.
-    assert totals["nav_directions"] == 527
+    # 581 - 11 - 43 = 527, before issue #152.
+    #
+    # 527 + PLACEHOLDER_NAVD (issue #152): the 43 marks that used to be
+    # disclosed as unanchored now name a bar and are written as directions.
+    assert totals["nav_directions"] == P_NAVDIR
     assert scores_with_navigation == 166
     # 109 coda signs written, of the 156 the library draws. The 47 not
     # written: 41 sit entirely past their staff's right end, on the
@@ -3603,8 +3777,14 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # is Rito Village - Night: issue #154 fixed load_music_fonts rejecting
     # its Maestro subset by resource name (embedded as "CIDFont+F1") before
     # the fingerprint that would have recognised it regardless ever ran.
-    assert totals["coda_signs"] == 109
-    assert totals["segno_signs"] == 88
+    #
+    # 109 + 41 (issue #152), and the accounting is exact: of the 43 marks
+    # that were unanchored, 41 are coda signs - the 40 sitting entirely past
+    # their staff's right end, plus Imprisoned Town's, whose system had no
+    # bars at all - and every one of them now anchors to the bar its page
+    # prints it over. The other 2 were a "D.S. 2" and Imprisoned Town's D.C.
+    assert totals["coda_signs"] == P_CODA
+    assert totals["segno_signs"] == P_SEGNO
     # The disclosure, pinned rather than assumed. 87 BARS (the counter counts
     # distinct bars, so two instructions closing one bar contribute one)
     # carry an instruction naming a jump this transcription holds no target
@@ -3629,8 +3809,22 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # coda signs and one "D.S. 2"), and Imprisoned Town's two, whose last
     # system's tab staff comes back as a 12-line anomaly so that system has
     # no bars at all.
-    assert totals["nav_marks_unresolved"] == 87
-    assert totals["nav_marks_unanchored"] == 43
+    # ISSUE #152 ANSWERS BOTH OF THESE, and answers them by reading the music
+    # rather than by describing the loss better. 87 -> 8 and 43 -> 0.
+    #
+    # 8 bars over 7 files, and every one is now a score that genuinely names
+    # a target its page does not draw: Rebel Army Theme, Vamo alla Flamenco,
+    # Phantom Train, Hollow, Spoken Without End, Heartgem's Burden (2) and
+    # Rito Village - whose Maestro embed this decoder reads no glyphs from,
+    # so its "D.S." has no segno to point at whatever else is fixed. The
+    # other 79 were all the lost coda system, exactly as the note on
+    # _resolve_nav_marks predicted.
+    #
+    # 0 unanchored. Not "near zero" - the library now holds no navigation
+    # mark at all that was read off a page and has no bar to name, because
+    # the systems those marks were drawn over are read.
+    assert totals["nav_marks_unresolved"] == 8
+    assert totals["nav_marks_unanchored"] == 0
     # What all of that costs the score a reader actually sees. On this
     # branch's parent the library reports 263 scores at `structure` high, 29
     # medium and 1 "n/a - nothing found"; reading navigation marks moves 43
@@ -3639,8 +3833,15 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # downgraded for a D.S. whose segno was on the page all along, which is
     # the figure that makes the mislabel a user-visible defect rather than a
     # tidiness one.
-    assert totals["structure_high"] == 221
-    assert totals["structure_medium"] == 72
+    # And issue #152 moves 34 of the medium ones back to high, because the
+    # thing they were medium FOR was a mark that could not be placed on a
+    # system this transcription did not hold. The 2 "low" are the two scores
+    # that still lose a system: a lost system outranks every other structure
+    # term, since the marks that were read may be complete and still describe
+    # a form built out of bars the file does not contain.
+    assert totals["structure_high"] == 255
+    assert totals["structure_medium"] == 36
+    assert totals["structure_low"] == 2
     assert totals["structure_n/a"] == 0
 
 
