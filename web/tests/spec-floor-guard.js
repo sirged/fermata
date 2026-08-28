@@ -11,11 +11,11 @@
 // slashes, relative to web/) to the number of tests in it that actually ran
 // and were not skipped.
 //
-// entries: the SPEC_FLOORS array from tests/spec-floors.js - a list of
-// { file, count, reason } contributions. More than one entry may name the
-// same file; their counts are summed. That is what lets two PRs that both
-// touch the same spec file each append their own line instead of one of
-// them having to edit the other's.
+// entries: the array returned by loadSpecFloors() (tests/spec-floors.js) - a
+// list of { file, count, reason } contributions. More than one entry may
+// name the same file; their counts are summed. That is what lets two PRs
+// that both touch the same spec file each add their own new file instead of
+// one of them having to edit the other's.
 export function checkSpecFloors(executedByFile, entries) {
   const claimedByFile = new Map();
   for (const entry of entries) {
@@ -37,13 +37,16 @@ export function checkSpecFloors(executedByFile, entries) {
   }
 
   // An entry whose file ran FEWER tests than it claims - because the file
-  // was deleted or unwired entirely (0 ran), or because some of its tests
-  // are now skipped, filtered, or otherwise ghosted - is the other half.
+  // was deleted or unwired entirely (0 ran), because some of its tests are
+  // now conditionally skipped (against policy - see tests/spec-floors.js),
+  // or because they were otherwise filtered or ghosted - is the other half.
   for (const [file, claimed] of claimedByFile) {
     const executed = executedByFile.get(file) ?? 0;
     if (executed < claimed) {
       problems.push(
-        `${file}: tests/spec-floors/ entries claim ${claimed}, only ${executed} ran - the file may be deleted, unwired from the runner, or missing tests it used to run.`,
+        `${file}: tests/spec-floors/ entries claim ${claimed}, only ${executed} ran - the file may be deleted, ` +
+          `unwired from the runner, have some of its tests conditionally skipped, or otherwise run fewer than ` +
+          `it used to.`,
       );
     }
   }

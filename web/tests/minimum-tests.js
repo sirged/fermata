@@ -24,6 +24,11 @@
 // thing that switches the check off. Narrowing a run on purpose is what the
 // escape hatch below is for, and CI never sets it.
 //
+// Also not evaluated at all when the run itself was cut short - --max-
+// failures reached, a global timeout, or a user's Ctrl+C - because every
+// spec file the run had not gotten to yet would otherwise look exactly like
+// a deleted or unwired one. See the check in onEnd.
+//
 // This is also read directly by scripts/run-browser-tests.mjs, which is the
 // OTHER half of this guard - see that file's own comment for why counting
 // here is not, by itself, enough. Both apply tests/spec-floor-guard.js to
@@ -61,9 +66,20 @@ export default class MinimumTests {
     // whole point of #126: the guard can now name which file came up short
     // instead of only reporting a suite-wide number nobody can act on.
     this.executedByFile = new Map();
+    // maxFailures and a count of unexpected (failing) outcomes, so onEnd can
+    // tell "the run reached --max-failures and stopped scheduling the rest
+    // of the suite on purpose" from "a file is actually missing or
+    // shrunk" - see the comment in onEnd for why that distinction matters.
+    this.maxFailures = 0;
+    this.unexpectedCount = 0;
+  }
+
+  onBegin(config) {
+    this.maxFailures = config.maxFailures ?? 0;
   }
 
   onTestEnd(test, result) {
+    if (test.outcome() === "unexpected") this.unexpectedCount += 1;
     if (result.status === "skipped") return;
     const file = relativeSpecPath(test.location.file);
     this.executedByFile.set(file, (this.executedByFile.get(file) ?? 0) + 1);
@@ -71,6 +87,22 @@ export default class MinimumTests {
 
   async onEnd(result) {
     if (process.env.PLAYWRIGHT_ALLOW_PARTIAL) return;
+    // A run that hit --max-failures/-x stops SCHEDULING further tests once
+    // enough have failed; Playwright still calls onEnd normally afterward
+    // (result.status here is "failed", not the "interrupted" the type
+    // reserves for a user-sent SIGINT - confirmed by hand, not assumed).
+    // Every file the run had not reached yet has zero onTestEnd calls, which
+    // looks IDENTICAL to that file being deleted or unwired - exactly the
+    // "every not-yet-run file produces a bogus missing-file line, burying
+    // the real failure" case, and the real failure is already reported by
+    // Playwright's own output. So once the observed failure count reaches
+    // the configured ceiling, the floor is not evaluated at all this run;
+    // the failures that triggered the bail are the signal, not this guard.
+    // A true SIGINT ('interrupted') or a blown globalTimeout ('timedout')
+    // get the same treatment for the same reason - neither means anything
+    // about which spec files are still wired in.
+    const bailedOnMaxFailures = this.maxFailures > 0 && this.unexpectedCount >= this.maxFailures;
+    if (result.status === "interrupted" || result.status === "timedout" || bailedOnMaxFailures) return;
     const { ok, problems } = checkSpecFloors(this.executedByFile, loadSpecFloors());
     if (ok) return;
     console.error(

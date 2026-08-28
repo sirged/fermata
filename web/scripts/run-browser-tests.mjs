@@ -24,6 +24,11 @@
 // "what ran" two different ways - one from Playwright's in-process reporter
 // callbacks, one from parsing the JSON file back out afterward - so a bug or
 // an omission in one path is not also a bug in the other.
+//
+// Also not evaluated when the run itself stopped early - see
+// bailedOnMaxFailures below - for the same reason tests/minimum-tests.js
+// skips its own check on an interrupted or timed-out run: every file the run
+// had not reached yet would otherwise look exactly like a deleted one.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -66,6 +71,24 @@ const result = spawnSync("npx", ["playwright", "test", `--reporter=${reporters}`
   env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: summaryPath },
 });
 
+// spec.file inside the JSON tree is relative to config.rootDir (Playwright's
+// testDir), and every entry in tests/spec-floors/ is written as
+// "tests/browser/x.spec.js" relative to web/. rootDir is normally
+// .../web/tests (playwright.config.js sets testDir: "tests"), which is where
+// the hardcoded "tests/" prefix below comes from - asserted here rather than
+// assumed, because if testDir ever moved, this script would silently start
+// comparing the wrong keys and every file would look deleted.
+function assertRootDirIsTests(summary) {
+  const rootDir = summary?.config?.rootDir ?? "";
+  if (!rootDir.endsWith("/tests")) {
+    throw new Error(
+      `run-browser-tests: expected the JSON summary's config.rootDir to end in "/tests" (playwright.config.js's ` +
+        `testDir), got ${JSON.stringify(rootDir)} - the "tests/" prefix this script builds spec-floor keys with ` +
+        `would be wrong.`,
+    );
+  }
+}
+
 // Walks the JSON reporter's suite tree (one top-level suite per spec file,
 // possibly with further suites nested inside for a test.describe block) and
 // counts, per spec file, the tests whose outcome was not "skipped" - the
@@ -88,15 +111,35 @@ function countByFile(summary) {
   return byFile;
 }
 
+// The in-process reporter's onEnd sees FullResult.status directly, which is
+// "interrupted" for a real SIGINT but - confirmed by hand, not assumed -
+// "failed" for a run that stopped early because --max-failures/-x was
+// reached; nothing in that status distinguishes the two. This script has no
+// access to FullResult at all (it only reads the JSON back afterward), so it
+// uses the JSON summary's own signal instead: config.maxFailures is the
+// configured ceiling, and stats.unexpected is exactly the count Playwright
+// stops scheduling more tests against once it is reached. Reaching it means
+// every spec file the run had not gotten to yet has zero recorded tests,
+// which looks identical to that file being deleted or unwired - the real
+// failure is already on screen from the run itself, so the floor is not
+// worth evaluating (and would only bury it) this time.
+function bailedOnMaxFailures(summary) {
+  const maxFailures = summary?.config?.maxFailures ?? 0;
+  const unexpected = summary?.stats?.unexpected ?? 0;
+  return maxFailures > 0 && unexpected >= maxFailures;
+}
+
+let summary = null;
 let byFile = null;
 try {
-  const summary = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
+  summary = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
+  assertRootDirIsTests(summary);
   byFile = countByFile(summary);
 } catch (e) {
   console.error(`run-browser-tests: could not read the JSON summary at ${summaryPath} - ${e.message}`);
 }
 
-if (!process.env.PLAYWRIGHT_ALLOW_PARTIAL) {
+if (!process.env.PLAYWRIGHT_ALLOW_PARTIAL && !(summary && bailedOnMaxFailures(summary))) {
   if (byFile == null) {
     console.error("run-browser-tests: the spec-floor guard could not be checked at all - failing closed.");
     process.exit(1);

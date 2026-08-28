@@ -25,9 +25,11 @@
 // api.tickPosition/api.playbackRange live rather than tracking a separate
 // counter (see score-render.js's own comment on publishCursor for why that
 // distinction is the one metronome.spec.js's header warns matters) - never a
-// value sampled immediately after a keypress with no wait. See
-// tests/minimum-tests.js for how these were checked against a mutation of
-// the behaviour they claim.
+// value sampled immediately after a keypress with no wait. See pull request
+// #142 (issue #92) for how these were checked against a mutation of the
+// behaviour they claim - that record used to be copied into
+// tests/minimum-tests.js's own comment, which #126 replaced with per-file
+// entries under tests/spec-floors/ that do not have room to carry it.
 import { expect, test } from "@playwright/test";
 import { stubMetronomeScore, stubMetronomeScoreRepeat } from "./fixtures/metronome-score.js";
 import { CLEAN_CONFIDENCE, MIN_PDF, SCORE, stubScoreApi, transcriptionResponse } from "./fixtures/transcription-warnings.js";
