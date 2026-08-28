@@ -29,6 +29,7 @@ several things this profile has to decide.
   - [Inferred silence](#inferred-silence-rule-14)
   - [Repeat structure](#repeat-structure-rule-15)
   - [Navigation marks](#navigation-marks-rule-16)
+  - [Note identifiers](#note-identifiers-rule-17)
 - [Example 1: one monophonic bar](#example-1-one-monophonic-bar)
 - [Example 2: two voices in one bar](#example-2-two-voices-in-one-bar)
 - [Checking a file](#checking-a-file)
@@ -662,6 +663,142 @@ that shape would not be more correct either. MuseScore 4.6.3 imports these
 directions as staff text on the right measures and drops the `<sound>`
 attributes, so a round trip through it keeps the marks and loses the jumps.
 
+### Note identifiers (Rule 17)
+
+**Rule 17.** Every `<note>` — rest or sounding, single note or chord member —
+carries an `id` attribute, unique within the document and stable across
+re-emission of the same content:
+
+```
+n{measure}-{voice}-{onset}-{chord}
+```
+
+`measure` is the same 1-based number the enclosing `<measure number=>` itself
+carries. `voice` is the same 1-based number the note's own `<voice>` carries.
+`onset` is the position (from 0) of this note's *beat* within its voice, and
+counts every beat the producer processed for that voice — including one that
+resolved to no writable duration and one written as `<forward>` rather than a
+`<note>` — so it never shifts because something elsewhere in the measure did
+or did not get written. `chord` is the position (from 0) of this note among
+its own beat's written notes: 0 for a rest or an unaccompanied note,
+incrementing for each further member of a chord (Rule 7).
+
+```xml
+<note id="n3-2-4-0">
+```
+
+is the note written from voice 2's fifth beat (index 4) in measure 3 — the
+first (and, since `chord` is 0, only) note at that onset.
+
+The schema's `optional-unique-id` attribute group types `id` as `xs:ID`,
+which the specification requires to be unique across the **whole** document,
+not merely among notes — and `xs:ID` is in turn constrained to `xs:NCName`,
+which cannot begin with a digit. `n` is prefixed for exactly that reason: a
+bare `3-2-4-0` is not a legal NCName, and a schema-validating parser would
+reject the whole file. Nothing else in a file this profile writes begins with
+`n` followed by a digit — `<score-part>`, `<score-instrument>` and
+`<midi-instrument>` write `P1` / `P1-I1` — so a note id can never collide with
+one of those either.
+
+**Uniqueness precondition: one part, one staff.** The formula's uniqueness
+rests on measure, voice, onset and chord member each being unique within the
+scope the axis above it names — and that chain only reaches the whole
+document because this profile writes exactly one `<part>` and one staff (see
+[Scope](#scope)). #10's proposed second staff (tablature paired with its own
+notation staff) and #93's proposed multiple tracks each add an axis the
+formula does not currently name: a note at measure 3, voice 1, onset 0 on a
+second staff or a second track would compute the identical id string to the
+one at that position on the first. Either extension has to add a part or
+staff component to the formula before this rule's uniqueness claim would
+still hold across the whole document — it is not automatic.
+
+**The chord ordinal is emission-derived; the onset is not, and that
+asymmetry is real.** `onset` counts every beat in the *model's* voice list,
+written or not, so a beat that never gets written (a zero-duration beat, an
+inferred rest) does not shift a later beat's onset. `chord` is assigned
+during *emission*, from position in the list of chord members that survive
+[Rule 11](#fret-string-and-pitch-rules-9-13)'s pitch-representability
+filter — so a chord member Rule 11 drops shifts every later member's
+`chord` index down by one: a four-note chord whose second member is
+unrepresentable writes `chord` 0, 1, 2 on its three survivors, not 0, 2, 3,
+and a later fix that makes that pitch representable again would renumber
+the other two. Onset avoids this because the model is fixed before emission
+decides anything; chord does not, because representability is decided per
+note inside one beat, and unlike an unwritten beat, a dropped chord member
+leaves no placeholder to number around.
+
+**Why every note, rests included, rather than only the ones that sound.** The
+alternative considered was to skip rests, on the reasoning that a rest is
+never a target of anything downstream: the alternative renderer measured
+against this profile carries an id through to its own output for every
+*sounding* note and drops the rest of the attribute set from a rest entirely.
+That is a real property of one consumer, not a reason to special-case the
+rule here. An id exists so a positional map — MusicXML document order against
+a renderer's own bar → voice → beat → note order — can be checked rather than
+assumed, and a rest occupies a position in that order exactly as a sounding
+note does; a reader walking the file to audit its own alignment has to skip
+rests deliberately if they carry no id, which is a second rule disguised as
+an exception to the first. Writing one rule — every `<note>` element gets an
+`id` — costs nothing (the `chord`-0 case an unaccompanied note already needs
+is exactly what a rest's id looks like) and leaves nothing for a consumer to
+special-case.
+
+**What this does not cover: inferred silence has no id, and cannot.**
+Writing ids on rests closes the gap between a sounding note's position and a
+printed rest's position — it does not close the gap between either of those
+and [Rule 14](#inferred-silence-rule-14)'s `<forward>`. The schema's
+`forward` type carries no `optional-unique-id` attribute group at all, so
+inferred silence is not merely written without an id by this profile's
+choice — it has no `id` attribute to write. Measured on the library this
+profile was developed against: 5450 `<forward>` elements, none nameable.
+A consumer building a positional map over every onset a voice holds,
+silence included, therefore has partial coverage from ids alone — sounding
+notes and printed rests are addressable, inferred silence is not — and has
+to fall back to counting `<forward>` elements by position for that part of
+the map, the same way [Rule 8](#voices-rules-6-8) checking already does.
+Say this plainly because it is easy to read Rule 17 as closing the gap
+entirely once rests are included: it closes exactly one of the two gaps.
+
+**Determinism, and what it does and does not promise.** The id is computed
+from nothing but the beat's own position among the voices and measures
+`build()` was handed — never a random value, a clock, or a counter carried
+between notes — so extracting the same score twice, or re-emitting the same
+beats model, produces byte-identical ids down to the ordering of chord
+members. It is NOT stable across an edit that inserts or removes a beat
+earlier in the same voice: every onset after the edit shifts, and every id
+built from that onset shifts with it. That is the same shape Rule 15's
+measure numbers already have — an id names a *position*, not the note
+itself — and it is what "auditable against the file as emitted" means: a
+consumer checks a positional map against *this* emission's ids, not against
+ids the previous emission wrote for what looks like the same note.
+
+**Ids are emitter-owned: a document mutated outside `build()` has to
+re-derive them, not mint one.** The formula is defined over an entire
+voice's beat sequence, not over one note in isolation, so keeping it valid
+after an edit means recomputing every id in the edited voice from that
+voice's new beat sequence — never assigning a fresh, one-off id to an
+inserted note while leaving its neighbours' onset numbers as they were,
+because the neighbours after the insertion point are no longer at the
+onsets their old ids name. This is not hypothetical for this project:
+`PUT /scores/{score_id}/transcription` stores whatever content a client
+sends as the edited transcription, verbatim, with no id validation of any
+kind. A saved edit that inserts a note without renumbering what follows it
+in the same voice writes either a duplicate id — two notes now claiming the
+same onset — or, in the case that mangles the `n` prefix along the way, an
+id that is not a legal NCName; either fails validation against the MusicXML
+4.0 XSD outright (`id` is `xs:ID`, checked exactly this way under [Checking
+a file](#checking-a-file)). Renumbering the affected voice is the editor's
+responsibility, not this emitter's — this is where that contract is stated.
+
+**The invariant this rule does not disturb.** An id is one attribute on an
+element that was already being written; it adds nothing else to the
+document and moves no Rule 8 figure. Measured on the library this profile was
+developed against: adding note ids to all 293 extractable scores left
+`bars`, `bars_measured`, `bars_overfull`, `bars_short`, `bars_defective`,
+`bars_padded`, `inferred_rest_quarters`, `notes` and `beats` exactly where
+they were before the change, and every byte of every emitted file was
+unchanged apart from the `id="…"` attribute added to each `<note>`.
+
 ## Example 1: one monophonic bar
 
 One bar of 4/4 at 80 bpm in standard tuning: open first string (E4), second
@@ -746,7 +883,7 @@ validated by the test suite.
         </direction-type>
         <sound tempo="80" />
       </direction>
-      <note>
+      <note id="n1-1-0-0">
         <pitch>
           <step>E</step>
           <octave>4</octave>
@@ -761,7 +898,7 @@ validated by the test suite.
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-1-0">
         <pitch>
           <step>C</step>
           <alter>1</alter>
@@ -777,7 +914,7 @@ validated by the test suite.
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-2-0">
         <pitch>
           <step>A</step>
           <octave>3</octave>
@@ -792,7 +929,7 @@ validated by the test suite.
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-3-0">
         <pitch>
           <step>G</step>
           <octave>4</octave>
@@ -813,7 +950,8 @@ validated by the test suite.
 ```
 
 Rule 8 checks out: the measure duration is `480 × 4 × 4 ÷ 4 = 1920`, and voice
-1 holds four notes of 480 each.
+1 holds four notes of 480 each. Note ids: `n1-1-0-0` through `n1-1-3-0` — one
+measure, one voice, four onsets in order, no chords (Rule 17).
 
 The tempo direction is optional; a file with no tempo simply omits it. The
 `<metronome>` is what gets engraved and `<sound tempo=>` is what a player
@@ -848,7 +986,7 @@ meter, so only the measure is shown here.
       <!-- six <staff-tuning> elements, exactly as in Example 1 -->
     </staff-details>
   </attributes>
-  <note>
+  <note id="n1-1-0-0">
     <pitch>
       <step>E</step>
       <octave>4</octave>
@@ -863,7 +1001,7 @@ meter, so only the measure is shown here.
       </technical>
     </notations>
   </note>
-  <note>
+  <note id="n1-1-1-0">
     <pitch>
       <step>D</step>
       <octave>4</octave>
@@ -878,7 +1016,7 @@ meter, so only the measure is shown here.
       </technical>
     </notations>
   </note>
-  <note>
+  <note id="n1-1-2-0">
     <pitch>
       <step>F</step>
       <alter>1</alter>
@@ -897,7 +1035,7 @@ meter, so only the measure is shown here.
   <backup>
     <duration>1440</duration>
   </backup>
-  <note>
+  <note id="n1-2-0-0">
     <pitch>
       <step>A</step>
       <octave>2</octave>
@@ -918,6 +1056,10 @@ meter, so only the measure is shown here.
 
 The things to note:
 
+- Note ids run per-voice: voice 1's three notes are `n1-1-0-0` through
+  `n1-1-2-0`, and voice 2's one note starts its own onset count over at
+  `n1-2-0-0` — the `<backup>` between them rewinds the writing position, and
+  Rule 17's onset index rewinds with it.
 - The measure duration is `480 × 4 × 3 ÷ 4 = 1440`. Voice 1 holds three notes
   of 480; voice 2 holds one of 1440. Both sum to 1440, so Rule 8 holds.
 - The `<backup>` duration is 1440 — the whole of what voice 1 wrote — which

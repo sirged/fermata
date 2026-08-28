@@ -378,15 +378,23 @@ def _sub(parent, tag, text=None, **attrib):
     return el
 
 
-def _append_note(measure, duration, type_name, dots, voice, string=None,
+def _append_note(measure, duration, type_name, dots, voice, note_id, string=None,
                  fret=None, midi=None, fifths=0, chord=False):
     """One `<note>`. The schema's sequence for a normal note is: chord?,
     (pitch|unpitched|rest), duration, tie*, instrument*, footnote?, level?,
     voice?, type?, dot*, accidental?, ..., notations* - so voice comes BEFORE
     type, and notations last. A rest is the same shape with `<rest/>` in
     place of `<pitch>` and no `<notations>`.
+
+    `note_id` is written as the note's `id` attribute (Rule 17) - the schema's
+    `optional-unique-id` attribute group types it `xs:ID`, so it has to be a
+    valid NCName and unique across the whole document. It is always supplied
+    by the caller rather than computed here: build() derives it from where
+    this note sits - measure, voice, onset, chord member - which is what makes
+    it stable across re-emission of the same content, not an accident of
+    iteration order.
     """
-    note = _sub(measure, "note")
+    note = _sub(measure, "note", id=note_id)
     if string is None:
         _sub(note, "rest")
     else:
@@ -586,6 +594,20 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
     that fires at the end of the bar (D.C., D.S., To Coda, Fine). Like a
     barline it carries no duration.
 
+    Every `<note>` this writes - rest or sounding, single or chord member -
+    carries a stable `id` (Rule 17): `n{measure}-{voice}-{onset}-{chord}`,
+    built from nothing but where the note sits. `measure` is the same 1-based
+    number the `<measure>` element itself carries; `voice` is the same
+    1-based number `<voice>` carries; `onset` is this beat's own position
+    (from 0) in ITS voice's beat list, counting every beat the producer
+    processed for that voice - including one skipped for resolving to no
+    duration and one written as `<forward>` - so an id never shifts because
+    something elsewhere in the measure did; `chord` is the position (from 0)
+    of this note among its beat's own written notes - 0 for a rest or a
+    single note, incrementing for each further chord member. Deterministic by
+    construction: nothing here reads a clock, a counter shared across calls,
+    or anything but the beats already given.
+
     `measures` is a list of (beats, measure_ts) pairs - or bare beats lists,
     for a caller with no per-measure meter to carry - where beats is a list of
     VOICES and each voice a list of (duration_code, dots, notes), notes being
@@ -647,7 +669,8 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
     in_effect = tuple(ts) if ts else None
     for index, measure_in in enumerate(measures):
         beats_in, measure_ts = _split_measure(measure_in, in_effect)
-        measure = _sub(part, "measure", number=index + 1)
+        measure_number = index + 1
+        measure = _sub(part, "measure", number=measure_number)
         opening = index == 0
         if opening or measure_ts != in_effect:
             _append_attributes(measure, measure_ts, fifths, tuning, capo, opening)
@@ -655,10 +678,10 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
         if opening and tempo:
             _append_tempo(measure, tempo)
 
-        marks = (barlines or {}).get(index + 1, {})
+        marks = (barlines or {}).get(measure_number, {})
         if "left" in marks:
             _append_barline(measure, "left", marks["left"])
-        nav = (directions or {}).get(index + 1, {})
+        nav = (directions or {}).get(measure_number, {})
         for record in nav.get("before", ()):
             _append_navigation(measure, record)
 
@@ -668,12 +691,14 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
                 backup = _sub(measure, "backup")
                 _sub(backup, "duration", written)
             written = 0
-            for duration_code, dots, notes in voice:
+            for onset_index, (duration_code, dots, notes) in enumerate(voice):
                 duration = beat_divisions(duration_code, dots)
                 if duration < _MIN_DURATION:
                     # <duration> is positive-divisions, so there is no way to
                     # write a zero-length beat. Nothing sounds for no time
-                    # either, so dropping it loses nothing.
+                    # either, so dropping it loses nothing. onset_index still
+                    # advances (it comes from enumerate(voice), not from a
+                    # counter of what got written) - see Rule 17.
                     continue
                 if not writes_a_note(duration_code, dots, notes):
                     # Everything writes_a_note rejects EXCEPT the zero-duration
@@ -703,12 +728,16 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
                     if is_representable(midi, fifths):
                         writable.append((string, fret, midi))
                 if not writable:
-                    _append_note(measure, duration, type_name, dot_count, voice_number)
+                    note_id = f"n{measure_number}-{voice_number}-{onset_index}-0"
+                    _append_note(measure, duration, type_name, dot_count, voice_number,
+                                 note_id)
                 else:
                     for position, (string, fret, midi) in enumerate(writable):
+                        note_id = (
+                            f"n{measure_number}-{voice_number}-{onset_index}-{position}")
                         _append_note(
                             measure, duration, type_name, dot_count, voice_number,
-                            string=string, fret=fret, midi=midi,
+                            note_id, string=string, fret=fret, midi=midi,
                             fifths=fifths, chord=position > 0,
                         )
                 written += duration

@@ -671,6 +671,126 @@ def test_directions_are_placed_above_and_carry_no_duration():
 
 
 # ---------------------------------------------------------------------------
+# Rule 17: note identifiers
+# ---------------------------------------------------------------------------
+
+# xs:NCName: (Letter | '_') (NCNameChar)* - a prefixed digit run is not one,
+# which is exactly why every id here is prefixed with "n" (Rule 17).
+_NCNAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+
+
+def _ids(root):
+    return [n.get("id") for n in root.findall("./part/measure/note")]
+
+
+def test_every_note_carries_an_id_including_rests():
+    """Rule 17: every `<note>` gets an id, rests included - one rule rather
+    than a rule with an exception, and the reason is in the profile doc."""
+    beats = [[(4, 0, [(1, 0)]), (4, 0, []), (4, 0, [(1, 78)])]]  # note, rest,
+    # and a note with no writable pitch (Rule 11) - also written as a rest
+    root = _root(_one_bar(beats))
+    ids = _ids(root)
+    assert len(ids) == 3
+    assert all(ids), "every <note>, sounding or not, carries an id"
+
+
+def test_ids_are_valid_ncnames():
+    """`id` is `xs:ID`, which is in turn `xs:NCName` - it cannot begin with a
+    digit. The `n` prefix is the only thing standing between a bare
+    `1-1-0-0` and a document that fails schema validation outright."""
+    root = _root(_one_bar([[(4, 0, [(1, 0), (2, 2)]), (4, 0, [])]]))
+    for note_id in _ids(root):
+        assert _NCNAME_RE.match(note_id), note_id
+
+
+def test_ids_are_unique_within_a_chord_and_across_beats():
+    """A four-note chord shares one onset (Rule 7) but needs four distinct
+    ids, and consecutive beats must not collide either."""
+    beats = [[(4, 0, [(6, 0), (5, 2), (4, 2), (3, 1)])] + [(4, 0, [(1, 0)])] * 3]
+    root = _root(_one_bar(beats))
+    ids = _ids(root)
+    assert len(ids) == len(set(ids)) == 7, ids
+
+
+def test_ids_are_unique_across_voices_and_measures():
+    beats = [
+        [(4, 0, [(1, 0)]), (4, 0, [(1, 2)]), (4, 0, [(1, 3)])],
+        [(2, 1, [(5, 0)])],
+    ]
+    measures = [(beats, (3, 4))] * 3
+    root = _root(musicxml.build("T", None, DEFAULT_TUNING, (3, 4), measures))
+    ids = [n.get("id") for n in root.findall("./part/measure/note")]
+    assert len(ids) == len(set(ids)) == 12, ids
+
+
+def test_chord_members_get_distinct_ids_by_position():
+    """The `chord` component of the id is the position among a beat's own
+    written notes - 0 for the first (no `<chord/>`), incrementing for each
+    further member, and independent of `voice` or `onset`."""
+    root = _root(_one_bar([[(4, 0, [(6, 0), (5, 2), (4, 2)])]]))
+    notes = root.findall("./part/measure/note")
+    assert [n.get("id") for n in notes] == ["n1-1-0-0", "n1-1-0-1", "n1-1-0-2"]
+
+
+def test_a_dropped_beat_still_advances_the_onset_index():
+    """A beat that resolves to no duration (Rule 2's `_MIN_DURATION` guard)
+    writes nothing, but Rule 17's onset index counts it anyway - it comes
+    from enumerating the voice's own beats, not from a counter of what got
+    written - so a later note's id does not depend on an earlier beat's
+    survival."""
+    # duration_code 0 has no entry in TYPE_NAMES and resolves to 0 divisions
+    beats = [[(4, 0, [(1, 0)]), (0, 0, [(1, 1)]), (4, 0, [(1, 2)])]]
+    root = _root(_one_bar(beats))
+    ids = [n.get("id") for n in root.findall("./part/measure/note")]
+    # onset 1 (the dropped beat) never appears, but onset 2 keeps its own
+    # number rather than sliding down to fill the gap
+    assert ids == ["n1-1-0-0", "n1-1-2-0"]
+
+
+def test_a_forward_still_advances_the_onset_index_for_the_notes_after_it():
+    """Inferred silence (Rule 14) is written as `<forward>`, never a `<note>`,
+    but its onset is still counted - so the id of the note that follows it
+    names the true position in the voice's own beat list, not a compacted
+    one."""
+    beats = [[(4, 0, [(1, 0)]), (2, 0, musicxml.inferred_rest()),
+              (4, 0, [(1, 2)])]]
+    root = _root(_one_bar(beats, ts=(3, 4)))
+    ids = [n.get("id") for n in root.findall("./part/measure/note")]
+    assert ids == ["n1-1-0-0", "n1-1-2-0"]
+
+
+def test_ids_are_deterministic_across_re_emission():
+    """The whole point: the same beats model handed to build() twice, or a
+    score extracted twice, must write byte-identical ids - nothing here may
+    read a clock, a random source, or any counter not derived from position."""
+    beats = [
+        [(4, 0, [(1, 0)]), (4, 0, [(1, 2), (2, 2)]), (4, 0, [])],
+        [(2, 1, [(5, 0)])],
+    ]
+    first = _one_bar(beats, ts=(3, 4))
+    second = _one_bar(beats, ts=(3, 4))
+    assert first == second
+
+
+def test_ids_are_stable_under_an_unrelated_measure_change():
+    """An id names a position (measure, voice, onset, chord member), so a
+    change to a DIFFERENT measure must not perturb it - unlike, say, a
+    counter shared across the whole document."""
+    measure_a = [[(4, 0, [(1, 0)]), (4, 0, [(1, 2)])]]
+    other_measures = [
+        [[(4, 0, [(1, 0)])] * 4],
+        [[(4, 0, [(1, 0)])] * 4, [(4, 0, [(1, 0)])] * 4],
+    ]
+    for other in other_measures:
+        root = _root(musicxml.build(
+            "T", None, DEFAULT_TUNING, (4, 4),
+            [(measure_a, (4, 4)), (other, (4, 4))]))
+        first_measure_ids = [n.get("id") for n in
+                             root.find("./part/measure[@number='1']").findall("note")]
+        assert first_measure_ids == ["n1-1-0-0", "n1-1-1-0"]
+
+
+# ---------------------------------------------------------------------------
 # Validation against the real schema
 # ---------------------------------------------------------------------------
 
@@ -812,6 +932,78 @@ def test_the_profile_document_quotes_the_footnote_this_emitter_writes():
     text = profile.read_text(encoding="utf-8")
     assert musicxml.INFERRED_REST_FOOTNOTE in text, (
         "the footnote in musicxml.py is not the one Rule 14 publishes")
+
+
+def _profile_section(text, heading, next_heading):
+    """The text of one `## heading` section, up to (not including) the next
+    top-level heading - so a fenced block can be found by which example it
+    belongs to rather than by guessing from its first line."""
+    start = text.index(heading) + len(heading)
+    end = text.index(next_heading, start)
+    return text[start:end]
+
+
+def _first_fenced_xml_block(section_text):
+    m = re.search(r"```xml\n(.*?)\n```", section_text, flags=re.S)
+    assert m, "no ```xml fenced block in this section"
+    return m.group(1)
+
+
+def _elements_equal(a, b):
+    """Structural equality - tag, attributes, direct text, and children,
+    recursively - not a string compare, because the doc's snippet and the
+    published file are indented differently (the snippet drops the levels
+    above the shown element)."""
+    if a.tag != b.tag or a.attrib != b.attrib:
+        return False
+    if (a.text or "").strip() != (b.text or "").strip():
+        return False
+    ac, bc = list(a), list(b)
+    return len(ac) == len(bc) and all(_elements_equal(x, y) for x, y in zip(ac, bc))
+
+
+def test_example_1_and_2_note_listings_match_their_published_files():
+    """Issue #150's review: writing ids on every <note> doubled the
+    hand-copied surface for Examples 1 and 2, which are the only two that
+    show a full, literal note listing - once in the doc's own fenced
+    snippet, once in docs/examples/*.musicxml. Two hand-maintained copies of
+    the same note ids are two chances for them to quietly disagree.
+
+    Examples 3 and 4 elide every <note> with "..." (see Rule 15's and Rule
+    16's own example sections) and never had a note listing to duplicate, so
+    there is nothing for this test to check there - not skipped for being
+    expensive, skipped for having no target.
+    """
+    import pathlib
+
+    root_dir = pathlib.Path(__file__).resolve().parents[2] / "docs"
+    profile = root_dir / "musicxml-tab-profile.md"
+    if not profile.is_file():
+        pytest.skip("docs/musicxml-tab-profile.md is not present in this checkout")
+    text = profile.read_text(encoding="utf-8")
+
+    example_1 = _first_fenced_xml_block(
+        _profile_section(text, "## Example 1: one monophonic bar",
+                         "## Example 2: two voices in one bar"))
+    example_2 = _first_fenced_xml_block(
+        _profile_section(text, "## Example 2: two voices in one bar",
+                         "## Example 3: repeat barline and two endings"))
+
+    published_1 = ET.parse(root_dir / "examples" / "monophonic.musicxml").getroot()
+    assert _elements_equal(ET.fromstring(example_1), published_1), (
+        "Example 1's inline snippet has drifted from monophonic.musicxml")
+
+    # Example 2's <attributes> deliberately elides the six <staff-tuning>
+    # elements behind a comment ("identical to Example 1"), so only the
+    # note-bearing children after it - the actual duplicated surface - are
+    # compared; <attributes> is not.
+    published_2_measure = ET.parse(
+        root_dir / "examples" / "two-voice.musicxml").getroot().find("./part/measure")
+    example_2_body = [c for c in ET.fromstring(example_2) if c.tag != "attributes"]
+    published_2_body = [c for c in published_2_measure if c.tag != "attributes"]
+    assert len(example_2_body) == len(published_2_body) and all(
+        _elements_equal(x, y) for x, y in zip(example_2_body, published_2_body)), (
+        "Example 2's inline note/backup listing has drifted from two-voice.musicxml")
 
 
 def test_the_published_examples_exist_and_conform():

@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import fitz
@@ -3605,3 +3606,97 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     assert totals["structure_high"] == 221
     assert totals["structure_medium"] == 72
     assert totals["structure_n/a"] == 0
+
+
+# xs:NCName: (Letter | '_') (NCNameChar)* - a bare digit run is not one,
+# which is why every id musicxml.py writes is prefixed with "n" (Rule 17).
+_NCNAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+
+
+def _assert_no_offenders(scores, label, sample=6):
+    """assert-empty for a library-wide list of offending filenames, without
+    dumping the whole library at a reader when a defect is systemic. A
+    mutation that breaks uniqueness (or NCName validity) across the board -
+    see the two mutation tests this is written to survive - named ~279 (and
+    ~213) files in one AssertionError before this existed, which buried the
+    one thing worth reading (that it IS systemic) under noise nobody was
+    going to read."""
+    if not scores:
+        return
+    shown = scores[:sample]
+    remainder = len(scores) - len(shown)
+    message = f"{label}, {len(scores)} score(s): {shown}"
+    if remainder:
+        message += f" and {remainder} more"
+    raise AssertionError(message)
+
+
+def test_library_wide_note_ids_are_unique_and_valid_ncnames(library_root):
+    """Rule 17, library-wide (issue #150). Every `<note>` this project emits -
+    from every PDF the library this profile was developed against holds, not
+    a hand-built beats model - carries an id, every id is a legal xs:NCName,
+    and no two ids collide within their own document.
+
+    Run across the whole configured library, the same shape as
+    test_library_wide_repeat_structure_leaves_conformance_untouched: one
+    fixture proves the rule holds in principle, this proves it holds at
+    the scale a real library actually reaches.
+
+    Deliberately NOT pinned to an exact score count or an exact total id
+    count (PR #156 review): both are library-composition-dependent, and a
+    decoder change that reads one more or fewer note anywhere in the library
+    - which is any ordinary decoder improvement, not a Rule 17 regression -
+    would break an exact pin with no signal that ids are the problem. What
+    IS asserted is the identity that actually follows from Rule 17: every
+    `<note>` counted here is either a sounding note or a rest, so the total
+    must equal `result.notes` - the sounding-note count, computed from the
+    beats model BEFORE emission (see tabextract.py's own `notes_total`),
+    entirely independent of parsing the id-bearing XML this test reads -
+    plus the rests counted straight out of that same XML. If Rule 17 ever
+    stopped writing an id on some `<note>`, or wrote one on something that
+    is not a `<note>`, ids-vs-elements would still balance and this identity
+    would not catch it - that failure mode is what missing_id_scores below
+    is for. What this identity catches is scope creep or a miscount in
+    EITHER independent count feeding it. (Cross-check, not asserted: on the
+    library this was measured against, the identity holds as
+    100017 == 98704 sounding + 1313 rests.)
+    """
+    scores_checked = 0
+    identity_mismatches = []
+    duplicate_scores = []
+    invalid_ncname_scores = []
+    missing_id_scores = []
+    for pdf in _library_pdfs(library_root):
+        try:
+            result = tabextract.extract(pdf)
+        except Exception:
+            continue
+        if not result.extractable or not result.musicxml:
+            continue
+        root = ET.fromstring(result.musicxml)
+        notes = root.findall("./part/measure/note")
+        if not notes:
+            continue
+        scores_checked += 1
+        ids = [n.get("id") for n in notes]
+        sounding = sum(1 for n in notes if n.find("rest") is None)
+        if sounding != result.notes:
+            identity_mismatches.append((pdf.name, sounding, result.notes))
+        if not all(ids):
+            missing_id_scores.append(pdf.name)
+        if not all(_NCNAME_RE.match(i) for i in ids if i):
+            invalid_ncname_scores.append(pdf.name)
+        if len(set(ids)) != len(ids):
+            duplicate_scores.append(pdf.name)
+
+    _assert_no_offenders(missing_id_scores, "note(s) missing an id")
+    _assert_no_offenders(invalid_ncname_scores, "id(s) not a valid NCName")
+    _assert_no_offenders(duplicate_scores, "duplicate id(s) within a document")
+    assert identity_mismatches == [], (
+        f"XML sounding-note count disagrees with result.notes (score, xml_sounding, "
+        f"result.notes): {identity_mismatches[:10]}"
+        + (f" and {len(identity_mismatches) - 10} more" if len(identity_mismatches) > 10 else ""))
+    # A floor rather than a pin (see docstring): which PDFs in the maintainer's
+    # library extract cleanly can change, but the check must not have silently
+    # stopped running against anything close to the whole library.
+    assert scores_checked >= 250, f"only {scores_checked} scores were checked"

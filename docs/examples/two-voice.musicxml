@@ -64,7 +64,7 @@
           </staff-tuning>
         </staff-details>
       </attributes>
-      <note>
+      <note id="n1-1-0-0">
         <pitch>
           <step>E</step>
           <octave>4</octave>
@@ -79,7 +79,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-1-0">
         <pitch>
           <step>D</step>
           <octave>4</octave>
@@ -94,7 +94,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-2-0">
         <pitch>
           <step>F</step>
           <alter>1</alter>
@@ -113,7 +113,7 @@
       <backup>
         <duration>1440</duration>
       </backup>
-      <note>
+      <note id="n1-2-0-0">
         <pitch>
           <step>A</step>
           <octave>2</octave>
