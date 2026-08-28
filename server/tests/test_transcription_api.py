@@ -383,7 +383,12 @@ BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
             # nor exercised HERE, so a reader of a reloaded transcription got
             # none of them even after api.py caught up.
             "repeats_unread", "endings_unread", "endings_truncated",
-            "form_marks_unanchored", "endings_incomplete")
+            "form_marks_unanchored", "endings_incomplete",
+            # Same gap, same fix again, for issue #137's shared-unison digit:
+            # added to _BAR_KEYS at the same time as ExtractionResult and
+            # to_dict rather than after an adversarial review found it
+            # missing, and exercised HERE so its reload path is real.
+            "unison_digits_shared")
 # Which bars, and how much silence - the figures that only exist as data. The
 # warning prose caps its bar list, and the profile document promises a consumer
 # that `inferred_rest_quarters` is the sum of the `<forward>` durations in the

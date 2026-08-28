@@ -338,6 +338,143 @@ def test_a_coincident_pair_with_no_second_stem_is_disclosed_not_silently_doubled
     assert any("coincident duplicate notehead pair" in w for w in result.warnings)
 
 
+def _onset_columns(heads_by_group, digits):
+    """One onset, run through _match_onset_columns: `heads_by_group` is a list
+    of (x, y) lists, one per stem group, and `digits` the (string, fret) pairs
+    the tab column at that onset holds. Returns {group index: digits given},
+    how many noteheads were left with none, and how many were given a digit
+    read for their coincident twin (issue #137's disclosure)."""
+    groups = []
+    for positions in heads_by_group:
+        members = [glyph_rhythm.NoteEvent(x, y, 1.0, 0, 0, False, "notehead_filled",
+                                          notehead_kind="notehead_filled")
+                   for x, y in positions]
+        groups.append(tabextract._StemGroup(members))
+    col = {"x": groups[0].x, "xc": groups[0].x, "notes": list(digits)}
+    per_group, missing, shared = tabextract._match_onset_columns(
+        groups, [col], [col["xc"]], [False], 6.0, 3.0)
+    return {i: per_group[id(g)] for i, g in enumerate(groups)}, missing, shared
+
+
+def test_a_unison_inside_a_chord_is_given_the_digit_its_twin_got():
+    """Issue #137's decision, at the level it is made. An upper voice's
+    two-note chord (100, 90) and (100, 100), and a lower voice whose own
+    notehead is a coincident copy of the chord's lower member - three
+    noteheads, two positions - over a tab column holding exactly two digits,
+    one per position. The lower voice must come away with the chord's own
+    lower digit rather than with nothing: the page names one string there and
+    both stems sound it."""
+    per_group, missing, shared = _onset_columns(
+        [[(100.0, 90.0), (100.0, 100.0)], [(100.0, 100.0)]],
+        [(2, "1"), (3, "00")])
+    assert per_group[0] == [(2, "1"), (3, "00")], "the chord keeps both its own"
+    assert per_group[1] == [(3, "00")], "and the lower voice sounds the shared string"
+    assert missing == 0
+    assert shared == 1, "and the inference is counted, not silent"
+
+
+def test_a_coincident_pair_alone_at_an_onset_is_not_given_a_second_note():
+    """The boundary, and the reason issue #137's fix is not simply "a
+    coincident copy inherits its twin's digit". Where the WHOLE onset is the
+    pair - one printed notehead over one printed digit - the page is
+    self-consistent as a single note, and the only thing suggesting two is
+    the two-opposing-stem signature that #116 measured to be unreliable on
+    its own (Carulli-Moderato reads as single notes on the printed page and
+    carries exactly that signature 74 times). Doubling it here would invent a
+    sounding note; the copy stays without a digit and is reported as one.
+    Library-wide this shape is 500 onsets against the chord shape's 65."""
+    per_group, missing, shared = _onset_columns(
+        [[(100.0, 100.0)], [(100.0, 100.0)]], [(3, "00")])
+    assert per_group[0] == [(3, "00")]
+    assert per_group[1] == [], "no evidence of a second sounding note"
+    assert missing == 1, "and the notehead with no fret number is still counted"
+    assert shared == 0
+
+
+def test_a_coincident_pair_that_stayed_in_one_voice_is_not_doubled_into_it():
+    """The other refusal: where the two copies could not be split across two
+    stems they sit in ONE group (glyph.decode_note_events's
+    coincident_unsplit_pairs), and handing the second copy the same digit
+    would put the note in that voice twice rather than give another voice its
+    own. The chord's shape is otherwise exactly the sharing case above."""
+    per_group, missing, shared = _onset_columns(
+        [[(100.0, 90.0), (100.0, 100.0), (100.0, 100.0)]],
+        [(2, "1"), (3, "00")])
+    assert per_group[0] == [(2, "1"), (3, "00")], "one note per sounding string"
+    assert missing == 1
+    assert shared == 0
+
+
+def test_a_chord_the_tab_never_fully_named_is_not_patched_from_a_twin():
+    """A column short of a digit for a position that has no twin at all is
+    not this defect and must not be papered over: with three positions and
+    only two digits the tab is genuinely missing information, so the third
+    notehead goes without and says so, coincident copy elsewhere or not."""
+    per_group, missing, shared = _onset_columns(
+        [[(100.0, 80.0), (100.0, 90.0), (100.0, 100.0)], [(100.0, 100.0)]],
+        [(1, "5"), (2, "1")])
+    assert missing == 2
+    assert shared == 0
+    assert per_group[1] == []
+
+
+def test_the_cosmic_wheel_chord_unison_stops_costing_it_twelve_bars(cosmic_wheel_pdf):
+    """Issue #137's whole subject, on the score it was filed for. Twelve
+    onsets across four pages write an upper voice's two-note chord whose
+    LOWER member is the lower voice's own eighth: three noteheads at two
+    positions, and two tab digits, because the unison is one plucked string.
+
+    Before the shared digit (see tabextract._share_unison_digits) the chord's
+    own two positions took both digits, the third notehead got none, and the
+    lower voice lost its note on each of those twelve beats - twelve bars
+    read an eighth short of 4/4 and were padded with silence nothing on the
+    page prints. Measured on this score: 35 defective bars, of which 31
+    short, 902 notes. With it: 23 / 19 / 914, and the twelve recovered notes
+    are the point rather than the bar count alone - 23 is also what this
+    score read BEFORE #116's stem split, but with the shared note in only
+    one of its two voices.
+
+    The 8 OVERFULL bars are deliberately still 8 and are not this defect.
+    One of them, bar 13, is the whole note issue #137 named in its text
+    (`:16 3.1 :1 5.1`, 4.25 quarters in 4/4): a harmonic's hollow notehead
+    read as a whole note. It predates #116 entirely - the same string is
+    emitted at d07387d - and is tracked as issue #140."""
+    result = tabextract.extract(cosmic_wheel_pdf)
+    assert result.extractable
+    assert result.bars == 78
+    assert result.notes == 914
+    assert result.bars_overfull == 8
+    assert result.bars_short == 19
+    assert result.bars_defective == 23
+    # The twelve recovered notes are an INFERENCE about which string they are
+    # on - the tablature printed no number for those noteheads - so they are
+    # disclosed rather than folded into the note count silently, and the
+    # count has to be exactly the twelve.
+    assert result.unison_digits_shared == 12
+    assert any("coincident notehead at the same position" in w for w in result.warnings)
+
+
+def test_a_unison_on_a_chords_top_member_is_left_exactly_as_it_was(spanish_romance_pdf):
+    """The known limitation, pinned so it cannot drift unnoticed. Sharing can
+    only reach a coincident copy that sorts LAST in pitch order - i.e. the
+    unison is the chord's LOWEST member - because the rank match consumes
+    heads from the top and only then is a leftover head's twin among the
+    matched ones. Spanish Romance is the library's largest population of the
+    other arrangement (34 of the 48 onsets where the leftover head has no
+    twin at its own position), and it must read exactly as it did before this
+    change: nothing shared, and its conformance figures untouched.
+
+    This is a DIFFERENT defect, not one this refuses on evidence - see
+    issue #141 - and the assertion here is that #137 neither fixed nor
+    worsened it."""
+    result = tabextract.extract(spanish_romance_pdf)
+    assert result.extractable
+    assert result.unison_digits_shared == 0
+    assert result.bars == 32
+    assert result.notes == 312
+    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (1, 1, 1)
+
+
 def test_notation_only_pdf_has_no_tab_staves(tarrega_pdf):
     info = tabextract.analyze(tarrega_pdf)
     assert info["extractable"] is False
@@ -685,11 +822,20 @@ def _col(x, *notes):
     return {"x": x, "xc": x + 2.0, "notes": list(notes)}
 
 
-def _measure(cols, events, budget=None, x_tol=12.0, spacing=5.125):
+def _measure_full(cols, events, budget=None, x_tol=12.0, spacing=5.125):
+    """The builder's whole answer: (voices, unmatched_columns,
+    unmatched_glyph_notes, unison_digits_shared)."""
     events = sorted(events, key=lambda n: n.x)
     return tabextract._build_measure_beats_glyph(
         cols, 90.0, 600.0, events, [n.x for n in events],
         x_tol=x_tol, notation_spacing=spacing, budget=budget)
+
+
+def _measure(cols, events, budget=None, x_tol=12.0, spacing=5.125):
+    """The first three of the builder's four return values - what almost every
+    test here asks it. Use _measure_full for the shared-unison disclosure
+    count (issue #137)."""
+    return _measure_full(cols, events, budget, x_tol, spacing)[:3]
 
 
 def _inferred_quarters(voices):
@@ -2628,22 +2774,40 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
         totals["inferred_rest_quarters"] += result.inferred_rest_quarters
         totals["form_marks_unanchored"] += result.form_marks_unanchored
         totals["endings_truncated"] += result.endings_truncated
+        totals["unison_digits_shared"] += result.unison_digits_shared
         if result.endings_truncated:
             scores_with_endings_truncated += 1
         if "<repeat " in result.musicxml or "<ending " in result.musicxml:
             scores_with_structure += 1
 
     # The exact figures issue #134's commit 1 fix produces on this library -
-    # see the same numbers pinned by the library-wide scan in the PR/issue.
+    # see the same numbers pinned by the library-wide scan in the PR/issue -
+    # as moved, once, by issue #137's shared-unison digit (see
+    # tabextract._share_unison_digits). #137 changes exactly two scores and
+    # nothing else in these 293, measured score by score rather than in
+    # aggregate: The Cosmic Wheel (FF XI), where 12 bars stop being short of
+    # an eighth they were padded with silence for (notes +12, bars_short and
+    # bars_defective and bars_padded -12, inferred_rest_quarters -6.0), and
+    # Castti, the Apothecary (Octopath Traveler II), where 4 notes come back
+    # into a voice that had been padded around them (notes +4,
+    # inferred_rest_quarters -2.0) with every conformance figure of its own
+    # unmoved. bars, bars_unread, bars_overfull and the form-mark figures do
+    # not move at all: nothing here reads a barline or a bracket.
     assert extractable == 293
     assert totals["bars"] == 10632
     assert totals["bars_unread"] == 23
-    assert totals["notes"] == 98688
+    assert totals["notes"] == 98704             # 98688 + 12 + 4 (issue #137)
     assert totals["bars_overfull"] == 1569
-    assert totals["bars_short"] == 4219
-    assert totals["bars_defective"] == 5344
-    assert totals["bars_padded"] == 3589
-    assert totals["inferred_rest_quarters"] == 4885.0
+    assert totals["bars_short"] == 4207          # 4219 - 12 (issue #137)
+    assert totals["bars_defective"] == 5332      # 5344 - 12 (issue #137)
+    assert totals["bars_padded"] == 3577         # 3589 - 12 (issue #137)
+    assert totals["inferred_rest_quarters"] == 4877.0   # 4885.0 - 8.0 (issue #137)
+    # The whole of #137's effect on this library, disclosed as data: 16 notes
+    # given a fret number read for their coincident twin. It equals the note
+    # delta above exactly (+12 +4), which is the check that no note came back
+    # by any other route - a shared digit is the ONLY way this change can add
+    # a note, so any drift between these two numbers is a different defect.
+    assert totals["unison_digits_shared"] == 16
     # Not a judgement call - issue #134 S3.2 measured 0 of 513 repeat marks
     # in the library landing inside a bar with no boundary to anchor to, and
     # this stays 0 for volta brackets too once the adversarial review's
