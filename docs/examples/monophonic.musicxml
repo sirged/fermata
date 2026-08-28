@@ -73,7 +73,7 @@
         </direction-type>
         <sound tempo="80" />
       </direction>
-      <note>
+      <note id="n1-1-0-0">
         <pitch>
           <step>E</step>
           <octave>4</octave>
@@ -88,7 +88,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-1-0">
         <pitch>
           <step>C</step>
           <alter>1</alter>
@@ -104,7 +104,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-2-0">
         <pitch>
           <step>A</step>
           <octave>3</octave>
@@ -119,7 +119,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-3-0">
         <pitch>
           <step>G</step>
           <octave>4</octave>

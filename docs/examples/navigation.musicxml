@@ -70,7 +70,7 @@
         </direction-type>
         <sound segno="segno" />
       </direction>
-      <note>
+      <note id="n1-1-0-0">
         <pitch>
           <step>E</step>
           <octave>4</octave>
@@ -85,7 +85,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-1-0">
         <pitch>
           <step>F</step>
           <alter>1</alter>
@@ -101,7 +101,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-2-0">
         <pitch>
           <step>G</step>
           <octave>4</octave>
@@ -116,7 +116,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-3-0">
         <pitch>
           <step>A</step>
           <octave>4</octave>
@@ -139,7 +139,7 @@
       </direction>
     </measure>
     <measure number="2">
-      <note>
+      <note id="n2-1-0-0">
         <pitch>
           <step>B</step>
           <octave>3</octave>
@@ -154,7 +154,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n2-1-1-0">
         <pitch>
           <step>C</step>
           <alter>1</alter>
@@ -170,7 +170,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n2-1-2-0">
         <pitch>
           <step>D</step>
           <octave>4</octave>
@@ -185,7 +185,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n2-1-3-0">
         <pitch>
           <step>E</step>
           <octave>4</octave>
@@ -214,7 +214,7 @@
         </direction-type>
         <sound coda="coda" />
       </direction>
-      <note>
+      <note id="n3-1-0-0">
         <pitch>
           <step>G</step>
           <octave>3</octave>
@@ -229,7 +229,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n3-1-1-0">
         <pitch>
           <step>A</step>
           <octave>3</octave>
@@ -244,7 +244,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n3-1-2-0">
         <pitch>
           <step>B</step>
           <alter>-1</alter>
@@ -260,7 +260,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n3-1-3-0">
         <pitch>
           <step>C</step>
           <octave>4</octave>
