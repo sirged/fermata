@@ -3800,8 +3800,8 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # band. So the conformance figures MUST move: the recovered bars carry
     # notes, and those notes add up or fail to add up like any others.
     #
-    # Measured score by score against this branch's parent: PLACEHOLDER_IDENT
-    # of the 297 files come out BYTE-IDENTICAL, and all PLACEHOLDER_CHANGED
+    # Measured score by score against this branch's parent: 220
+    # of the 297 files come out BYTE-IDENTICAL, and all 77
     # that differ are files whose bar count changed. No score's output moved
     # without its bar count moving, which is the check that this reads new
     # music rather than re-reading the old music differently.
@@ -3814,14 +3814,14 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # Terms prints 28 bars, Bygone Days 24, and The Crestlands 37 plus a
     # pickup measure.
     assert extractable == 293
-    assert totals["bars"] == P_BARS
-    assert totals["bars_unread"] == P_BARS_UNREAD
-    assert totals["notes"] == P_NOTES
-    assert totals["bars_overfull"] == P_OVERFULL
-    assert totals["bars_short"] == P_SHORT
-    assert totals["bars_defective"] == P_DEFECTIVE
-    assert totals["bars_padded"] == P_PADDED
-    assert totals["inferred_rest_quarters"] == P_IRQ
+    assert totals["bars"] == 10762               # 10632 + 130 (issue #152)
+    assert totals["bars_unread"] == 20           # 23 - 3 (issue #152)
+    assert totals["notes"] == 99461              # 98704 + 757 (issue #152)
+    assert totals["bars_overfull"] == 1590       # 1573 + 17 (issue #152)
+    assert totals["bars_short"] == 4216          # 4188 + 28 (issue #152)
+    assert totals["bars_defective"] == 5359      # 5317 + 42 (issue #152)
+    assert totals["bars_padded"] == 3619         # 3603 + 16 (issue #152)
+    assert totals["inferred_rest_quarters"] == 4923.0   # 4899.0 + 24.0 (issue #152)
     # The systems still lost, named. Both are 7-line groups - a 6-line tab
     # staff with ONE extra full-width rule ruled 14.3pt below it, inside the
     # 15.0pt cluster gap - which is a different defect from #152's two
@@ -3829,8 +3829,8 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # the stray rule spans the same extent the staff does. Dynamis p1 and
     # Hide, Hideaway p2. Before this change the same measurement over the
     # library counted 41 such systems across 22 files.
-    assert totals["systems_unread"] == P_SYSU
-    assert scores_with_systems_unread == P_SYSU_SCORES
+    assert totals["systems_unread"] == 2
+    assert scores_with_systems_unread == 2
     # The whole of #137's effect on this library, disclosed as data: 16 notes
     # given a fret number read for their coincident twin. It equals the note
     # delta above exactly (+12 +4), which is the check that no note came back
@@ -3876,9 +3876,9 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # carry no bars either - and 43 are disclosed as unanchored below.
     # 581 - 11 - 43 = 527, before issue #152.
     #
-    # 527 + PLACEHOLDER_NAVD (issue #152): the 43 marks that used to be
+    # 527 + 43 (issue #152): the 43 marks that used to be
     # disclosed as unanchored now name a bar and are written as directions.
-    assert totals["nav_directions"] == P_NAVDIR
+    assert totals["nav_directions"] == 570
     assert scores_with_navigation == 166
     # 109 coda signs written, of the 156 the library draws. The 47 not
     # written: 41 sit entirely past their staff's right end, on the
@@ -3908,8 +3908,8 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # their staff's right end, plus Imprisoned Town's, whose system had no
     # bars at all - and every one of them now anchors to the bar its page
     # prints it over. The other 2 were a "D.S. 2" and Imprisoned Town's D.C.
-    assert totals["coda_signs"] == P_CODA
-    assert totals["segno_signs"] == P_SEGNO
+    assert totals["coda_signs"] == 150
+    assert totals["segno_signs"] == 88
     # The disclosure, pinned rather than assumed. 87 BARS (the counter counts
     # distinct bars, so two instructions closing one bar contribute one)
     # carry an instruction naming a jump this transcription holds no target
@@ -3937,18 +3937,18 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # ISSUE #152 ANSWERS BOTH OF THESE, and answers them by reading the music
     # rather than by describing the loss better. 87 -> 8 and 43 -> 0.
     #
-    # 8 bars over 7 files, and every one is now a score that genuinely names
+    # 7 bars over 6 files, and every one is now a score that genuinely names
     # a target its page does not draw: Rebel Army Theme, Vamo alla Flamenco,
-    # Phantom Train, Hollow, Spoken Without End, Heartgem's Burden (2) and
-    # Rito Village - whose Maestro embed this decoder reads no glyphs from,
-    # so its "D.S." has no segno to point at whatever else is fixed. The
-    # other 79 were all the lost coda system, exactly as the note on
-    # _resolve_nav_marks predicted.
+    # Phantom Train, Hollow, Spoken Without End and Heartgem's Burden (2).
+    # The other 80 were all the lost coda system, exactly as the note on
+    # _resolve_nav_marks predicted. Rito Village was on this list until
+    # issue #154 let its segno be read at all; between the two changes it
+    # now both reads its segno and holds the bars its coda names.
     #
     # 0 unanchored. Not "near zero" - the library now holds no navigation
     # mark at all that was read off a page and has no bar to name, because
     # the systems those marks were drawn over are read.
-    assert totals["nav_marks_unresolved"] == 8
+    assert totals["nav_marks_unresolved"] == 7
     assert totals["nav_marks_unanchored"] == 0
     # What all of that costs the score a reader actually sees. On this
     # branch's parent the library reports 263 scores at `structure` high, 29
@@ -3964,8 +3964,8 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # that still lose a system: a lost system outranks every other structure
     # term, since the marks that were read may be complete and still describe
     # a form built out of bars the file does not contain.
-    assert totals["structure_high"] == 255
-    assert totals["structure_medium"] == 36
+    assert totals["structure_high"] == 256
+    assert totals["structure_medium"] == 35
     assert totals["structure_low"] == 2
     assert totals["structure_n/a"] == 0
 
