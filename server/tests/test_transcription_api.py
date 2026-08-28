@@ -856,7 +856,7 @@ def test_repeat_and_volta_disclosures_survive_the_api_round_trip(
 
 
 def test_navigation_disclosures_survive_the_api_round_trip(
-    app_env, victory_fanfare_pdf, monkeypatch, insert_score
+    app_env, phantom_train_pdf, monkeypatch, insert_score
 ):
     """The same check for issue #134 phase 2's two navigation disclosures.
     Against a fixture with a genuinely nonzero count rather than the zero
@@ -864,11 +864,18 @@ def test_navigation_disclosures_survive_the_api_round_trip(
     unconditionally wrote 0/[] would pass every zero-valued assertion in
     this file.
 
-    This score prints "D.S. al Coda" and, like every one of the 86 files in
-    the library that print a "D.S.", draws no segno for it to name - so the
-    instruction is written as the words the page prints, with no
-    `<sound dalsegno=>` beside it, and the bar is reported here."""
-    pdf = victory_fanfare_pdf
+    This score prints "To Coda" closing bar 22 on a page that draws no coda
+    sign and prints no coda label anywhere at all, so the instruction is
+    written as the words the page prints, with no `<sound tocoda=>` beside
+    it, and the bar is reported here.
+
+    It used to be Victory Fanfare, on the strength of its "D.S." having no
+    segno to name - which was never true of that score, or of 82 others. Its
+    segno was drawn in Finale's Maestro at the glyph ID this project's table
+    labelled "simile", so the count this test needed to be nonzero was
+    nonzero because of a bug, and the fix took it to 0. Picked for having
+    nothing to do with the segno at all."""
+    pdf = phantom_train_pdf
     monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
     conn = db.connect()
     score_id = insert_score(conn, pdf.name)
@@ -884,5 +891,5 @@ def test_navigation_disclosures_survive_the_api_round_trip(
         assert fetched[key] == posted[key], key
     assert fetched["nav_marks_unresolved"] > 0, (
         "the whole point: this must not be the zero case")
-    assert any("name a jump this score does not draw a target for" in w
+    assert any("naming a jump this transcription holds no target for" in w
                for w in fetched["warnings"])

@@ -620,17 +620,33 @@ segno, `tocoda` names a coda — and naming a target that is not in the file
 would make the transcription play a form nobody engraved. So an instruction
 whose target the score does not draw is written as words alone, and the
 measure is reported in `nav_marks_unresolved` / `nav_marks_unresolved_bars`.
-A mark with no measure to name at all — too far from any staff, or over a
-staff no music was read from — is reported in `nav_marks_unanchored`, which
-has no bar list precisely because it has no bar. Both feed the `structure`
-confidence key.
+A mark with no measure to name at all — too far from any staff, over a staff
+no music was read from, or lying entirely outside the horizontal span of the
+staff whose bars it would otherwise be clamped onto — is reported in
+`nav_marks_unanchored`, which has no bar list precisely because it has no
+bar. Both feed the `structure` confidence key.
 
 This is not a rare branch. In the library this profile was developed against,
-**86 of 297 scores print "D.S." and not one score in the library draws a
-segno** — measured twice, once over every music glyph that resolved to a
-category and once over every glyph that resolved to none, with the word
-"Segno" appearing in no file's text layer either. Those 86 get their words
-and no `dalsegno`.
+**86 of 297 scores print "D.S.", and 43 marks over the library are read off
+the page and anchored to no bar.** Of those 86, three draw no segno for the
+D.S. to name and get their words and no `dalsegno`; the other 83 do draw one.
+
+**A correction, stated plainly, because an earlier version of this rule said
+the opposite.** This document previously claimed that *no score in the
+library draws a segno at all*, and that the claim had been "measured twice —
+once over every music glyph that resolved to a category and once over every
+glyph that resolved to none". The claim was false: the library draws **87
+segno signs across 83 files**. Every one of them is Finale's Maestro glyph ID
+4, which this project's calibrated glyph table labelled `"simile"`. That is
+precisely the error a two-sided census cannot see — a *wrongly categorised*
+glyph is in neither bucket, because it is not unmapped (so the "what are we
+missing" sweep skips it) and it is not a segno (so the "what did we find"
+sweep never counts it). Only rendering the outline and looking at it settles
+that class of question, which is the standard the glyph table claims for
+itself; GID 4 renders as an unmistakable segno, and every one of the 83 files
+carrying it also prints a "D.S.". What survives from the old claim is
+narrower and still true: **the word "Segno" appears in no file's text layer**,
+so the sign is the only evidence there ever was.
 
 **What the renderer does with it.** This project's own player, alphaTab
 1.8.4, reads a jump only from a `<sound>` that is a direct child of

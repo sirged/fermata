@@ -2747,12 +2747,12 @@ def test_an_incomplete_ending_run_alone_downgrades_structure_confidence(victory_
     number in the message drops by exactly one, which is what the exact
     count below is asserted for rather than the word "medium".
 
-    Phase 2 (issue #134) adds one more term to the same sum on this score:
-    it prints "D.S. al Coda" and, like every other "D.S." in the library,
-    draws no segno for it to name, so `nav_marks_unresolved` is 1 as well.
-    The count is 2 for those two reasons, and the isolation the test was
-    written for survives intact - dropping `endings_incomplete` from the sum
-    makes it read 1.
+    Phase 2 (issue #134) leaves that isolation exactly as it was. The score
+    prints a "D.S." AND draws the segno it names (see
+    test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws), so it
+    contributes no navigation term at all and the count is 1 - from
+    `endings_incomplete` alone, which is what makes dropping that term from
+    the sum visible as 1 -> 0 rather than as one less of several.
     """
     result = tabextract.extract(victory_fanfare_pdf)
     assert result.extractable
@@ -2761,10 +2761,36 @@ def test_an_incomplete_ending_run_alone_downgrades_structure_confidence(victory_
     assert result.endings_unread == 0
     assert result.endings_truncated == 0
     assert result.form_marks_unanchored == 0
-    assert result.nav_marks_unresolved == 1
+    assert result.nav_marks_unresolved == 0
     assert result.nav_marks_unanchored == 0
     assert result.confidence["structure"].startswith("medium"), result.confidence["structure"]
-    assert "2 repeat/volta/navigation mark(s)" in result.confidence["structure"]
+    assert "1 repeat/volta/navigation mark(s)" in result.confidence["structure"]
+
+
+def test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws(
+        victory_fanfare_pdf):
+    """Blocker 1 of the adversarial review on this branch, on a real score.
+
+    The library DOES draw segnos - 87 of them across 83 files - and every one
+    is Finale's Maestro glyph ID 4, which glyph_rhythm's calibrated table
+    labelled "simile" until the outline was rendered and looked at. While it
+    did, every "D.S." in the library was written as words with no
+    `<sound dalsegno=>` and disclosed as unresolved, and 76 scores were
+    downgraded from `structure` high to medium for it.
+
+    This score is the smallest real case: a segno opening bar 4 and a bare
+    "D.S." closing bar 11, and nothing else navigational on the page. The
+    engraved `navigation` fixture covers the same shape in a SMuFL font,
+    which reaches the segno by an entirely different route (a published
+    codepoint, not a glyph ID), so it could never have caught this."""
+    result = tabextract.extract(victory_fanfare_pdf)
+    assert result.extractable
+    from test_engraved_fixtures import _navigation_structure
+    assert _navigation_structure(result.musicxml) == {
+        4: [("before", "segno", {"segno": "segno"})],
+        11: [("after", "D.S.", {"dalsegno": "segno"})],
+    }
+    assert result.nav_marks_unresolved == 0
 
 
 def test_two_thick_strokes_with_no_readable_dots_emit_heavy_heavy_not_nothing(
@@ -2865,6 +2891,61 @@ def test_prose_that_merely_contains_a_marks_words_is_not_a_mark(text):
     assert _nav(text) is None, f"{text!r} was read as a navigation mark"
 
 
+@pytest.mark.parametrize("text", [
+    # Every one of these is a text line in this project's library, verbatim,
+    # and every one was being emitted as a live <direction>. The first three
+    # are performance prose - an instruction to the PLAYER about a jump, not
+    # the jump - and "repeat after D.C." was giving Kaine Salvation a
+    # <sound dacapo="yes"/> on measure 1 with nothing disclosing it.
+    "repeat after D.C.",
+    "after D.S. repeat this",
+    "on return D.S.",
+    "To Coda after repeat",
+    # Two lines from one score's own performance notes, which name a D.S.
+    # and then say which repeat to take on it.
+    "D.S. 1: use second repeat",
+    "D.S. 2: use first repeat to Coda",
+    # Method-book glosses: the phrase followed by its definition.
+    "D.C. al Fine = Return to the beginning of the piece and play to the fine.",
+    "D.C. al Fine - Return to beginning and play until the Fine.",
+    "Da Capo al Fine - Return to the beginning and play until the Fine at the "
+    "final barline.",
+    "Students should observe the legato use of 3 on A when E occurs before or "
+    "after, especially at the D.C. al Fine.",
+])
+def test_a_line_that_only_contains_a_jump_phrase_is_prose_not_a_jump(text):
+    """Blocker 3 of the adversarial review on this branch. The jump and
+    "To Coda" patterns were searched for ANYWHERE in a text line while the
+    "Fine" one was anchored, so a sentence mentioning a jump became one -
+    written out as words with a live <sound> beside it, which tells a reader
+    to play a form the engraver never wrote.
+
+    Both patterns are now anchored to the whole line. All 10 lines here are
+    refused; all 176 real jump marks and all 147 real "To Coda" marks in the
+    library still read (see the vocabulary test above, which covers every
+    distinct form of them the library prints)."""
+    assert _nav(text) is None, f"{text!r} was read as a navigation mark"
+
+
+@pytest.mark.parametrize("text,number", [
+    ("D.S. al Coda 1", None),      # the coda's number, after the phrase
+    ("D.C. al Coda 2", None),
+    ("D.S. 1 al Coda 1", 1),       # the D.S.'s own number, before it
+    ("D.S. 2 al Coda", 2),
+    ("D.C. al Coda x2", None),     # "play it twice"
+    ("D.S. al Coda x2", None),
+    ("D.C. al Fine.", None),       # a closing full stop
+    ("To Coda 1 & 2", None),
+])
+def test_the_tails_the_library_prints_after_a_jump_still_read(text, number):
+    """The other half of anchoring the patterns: the real marks that carry
+    something after the phrase must still match. Each of these is a library
+    line verbatim."""
+    mark = _nav(text)
+    assert mark is not None, f"{text!r} was not read as a navigation mark"
+    assert mark.number == number
+
+
 def test_a_numbered_to_coda_list_is_read_without_a_number_rather_than_wrongly():
     """"To Coda 1, 2" names two different codas from one mark, which
     MusicXML's `tocoda` cannot express (it takes one id). Read as an
@@ -2898,6 +2979,45 @@ def test_a_coda_label_gives_its_number_to_the_sign_it_labels_not_a_mark_of_its_o
     assert marks[0].x0 == sign.x0, "the sign's position, not the line's"
 
 
+def test_the_sign_printed_inside_a_to_coda_is_that_instructions_glyph_not_a_coda(
+        monkeypatch):
+    """Blocker 4 of the adversarial review on this branch. Six library files
+    engrave the instruction as "To Coda (sign)" - the coda glyph inside the
+    instruction's own text line, naming the sign it sends the player to.
+    Read as a coda SECTION head it took the "To Coda"'s own bar (it is the
+    first coda seen, and `codas.setdefault` keeps the first), so the
+    instruction pointed at itself and the score wrote `coda="coda"` twice.
+
+    The boxes below are Bygone Days' own, at the coordinates the page
+    reports: the glyph's box sits inside the text line's, which is what
+    distinguishes it from that score's REAL coda head lower down the page
+    (x 417.9-427.8, y 616.6-637.1), which is inside no text line at all."""
+    sign = tabextract._NavMark("coda", "", 244.29, 345.18, 254.17, 365.68)
+    monkeypatch.setattr(tabextract.glyph, "navigation_glyph_events",
+                        lambda page: [_FakeGlyph(sign)])
+    monkeypatch.setattr(tabextract, "_text_lines", lambda page: [
+        ("To Coda", 197.1, 327.58, 254.17, 377.51),
+    ])
+    marks = tabextract._read_navigation_marks(object())
+    assert [m.kind for m in marks] == ["tocoda"]
+
+
+def test_a_coda_sign_beside_a_to_coda_rather_than_inside_it_is_still_a_coda(
+        monkeypatch):
+    """The other side of the test above, so the exclusion cannot be widened
+    into "any coda near a To Coda". Containment is the whole rule: a sign
+    drawn clear of the instruction's box is a section head, wherever it
+    happens to be on the page."""
+    sign = tabextract._NavMark("coda", "", 417.9, 616.59, 427.78, 637.09)
+    monkeypatch.setattr(tabextract.glyph, "navigation_glyph_events",
+                        lambda page: [_FakeGlyph(sign)])
+    monkeypatch.setattr(tabextract, "_text_lines", lambda page: [
+        ("To Coda", 197.1, 327.58, 254.17, 377.51),
+    ])
+    marks = tabextract._read_navigation_marks(object())
+    assert sorted(m.kind for m in marks) == ["coda", "tocoda"]
+
+
 class _FakeGlyph:
     """Just enough of a glyph event for _read_navigation_marks."""
 
@@ -2928,7 +3048,9 @@ def test_a_jump_and_a_sign_are_anchored_by_different_ends_of_their_own_text():
     spacing = 5.0
 
     def bar_of(mark):
-        anchored = tabextract._apply_nav_marks([mark], bounds, 1, spacing)
+        anchored, refused = tabextract._apply_nav_marks(
+            [mark], bounds, 1, spacing)
+        assert not refused, f"{mark!r} was refused, not anchored"
         return anchored[0][0]
 
     # Finale: the instruction is right-aligned, so its text ENDS at bar 2's
@@ -2948,12 +3070,116 @@ def test_a_jump_and_a_sign_are_anchored_by_different_ends_of_their_own_text():
     # is in, rather than snapping across half a bar to the nearest barline.
     adrift = tabextract._NavMark("jump", "D.C.", 240.0, 0, 260.0, 5)
     assert bar_of(adrift) == 3
-    # Drawn past either end of the grid: the bar at that end, by the clamp
-    # rather than by a case of its own.
+    # A mark that merely OVERHANGS an end still anchors: a right-aligned
+    # instruction whose text runs past the last barline is ordinary
+    # engraving, and the bar it closes is the last one.
+    overhanging = tabextract._NavMark("jump", "D.C.", 380.0, 0, 440.0, 5)
+    assert bar_of(overhanging) == 4
+
+
+def test_a_mark_drawn_entirely_outside_the_staff_is_refused_not_clamped():
+    """Blocker 2 of the adversarial review on this branch. A mark past either
+    end of the bar grid used to be clamped onto the bar at that end. On the
+    layouts that engrave the coda system to the RIGHT of the last system on
+    the same band - and whose right-hand system the staff detector loses
+    whole (issue #152) - that put the coda sign on the same bar as the
+    D.C./D.S. that jumps to it: 40 coda signs library-wide, each one a bar
+    off what the page prints, and disclosed as nothing at all.
+
+    Refused instead, and counted in `nav_marks_unanchored`, which is how a
+    mark with no bar to name is already handled everywhere else."""
+    bounds = [0.0, 100.0, 200.0, 300.0, 400.0]
+    spacing = 5.0
+    # 1 AM's geometry, to scale: the coda sign sits 7.5 staff spaces past its
+    # staff's right end. Nothing in the library sits closer than 3.42 spaces
+    # out, so there is no borderline case between this and the overhang above.
+    past_the_end = tabextract._NavMark("coda", "", 437.5, 0, 447.4, 5)
+    anchored, refused = tabextract._apply_nav_marks(
+        [past_the_end], bounds, 1, spacing)
+    assert anchored == []
+    assert refused == [past_the_end]
+    # And the same on the left, which the library happens not to draw.
     before = tabextract._NavMark("coda", "", -20.0, 0, -8.0, 5)
-    assert bar_of(before) == 1
-    after = tabextract._NavMark("jump", "D.C.", 420.0, 0, 460.0, 5)
-    assert bar_of(after) == 4
+    anchored, refused = tabextract._apply_nav_marks([before], bounds, 1, spacing)
+    assert anchored == []
+    assert refused == [before]
+
+
+def test_a_coda_drawn_on_a_lost_right_hand_system_is_disclosed_not_moved(
+        one_am_pdf, kakariko_village_pdf):
+    """Blocker 2 of the adversarial review, on the two pages it was verified
+    against by reading them.
+
+    Both engrave their coda as a short system to the RIGHT of the last full
+    system on the same band. That right-hand system is lost whole by the
+    staff detector - a pre-existing defect, filed as #152, and one that moves
+    no bar count - so its coda sign has no bars of its own and used to be
+    clamped onto the last bar of the system beside it. That is the bar the
+    D.S./D.C. jump closes, so the score said "jump from here" and "the coda
+    starts here" about the same measure, and `nav_marks_unanchored` said 0.
+
+    1 AM prints its coda at bar 18 and was emitting it at 17; Kakariko
+    Village prints 37 and was emitting 36. Now: no coda measure at all, one
+    unanchored mark each, and the "To Coda" left without a target and
+    disclosed as unresolved rather than pointed at the jump's own bar."""
+    from test_engraved_fixtures import _navigation_structure
+
+    one_am = tabextract.extract(one_am_pdf)
+    assert one_am.extractable
+    assert _navigation_structure(one_am.musicxml) == {
+        1: [("before", "segno", {"segno": "segno"})],
+        8: [("after", "To Coda", None)],
+        17: [("after", "D.S. al Coda", {"dalsegno": "segno"})],
+    }
+    assert one_am.nav_marks_unanchored == 1
+    assert one_am.nav_marks_unresolved_bars == [8, 17]
+
+    kakariko = tabextract.extract(kakariko_village_pdf)
+    assert kakariko.extractable
+    assert _navigation_structure(kakariko.musicxml) == {
+        19: [("after", "To Coda", None)],
+        36: [("after", "D.C. al Coda", {"dacapo": "yes"})],
+    }
+    assert kakariko.nav_marks_unanchored == 1
+    assert kakariko.nav_marks_unresolved_bars == [19, 36]
+
+
+def test_performance_prose_naming_a_jump_writes_no_jump(kaine_salvation_pdf):
+    """Blocker 3 of the adversarial review, on the page it was verified
+    against. Kaine Salvation prints "only do the second / repeat after D.C."
+    as a note to the player above its first system; the unanchored jump
+    pattern read the second line of that as a D.C. and gave measure 1 a live
+    `<sound dacapo="yes"/>`, disclosed as nothing. The score's one REAL jump,
+    a bare "D.C." closing its last bar, still reads."""
+    result = tabextract.extract(kaine_salvation_pdf)
+    assert result.extractable
+    from test_engraved_fixtures import _navigation_structure
+    assert _navigation_structure(result.musicxml) == {
+        42: [("after", "D.C.", {"dacapo": "yes"})],
+    }
+    assert result.nav_marks_unresolved == 0
+    assert result.nav_marks_unanchored == 0
+
+
+def test_the_sign_inside_a_to_coda_does_not_become_the_coda_it_points_at(
+        bygone_days_pdf):
+    """Blocker 4 of the adversarial review, on the page it was verified
+    against. Bygone Days engraves "To Coda (sign)" closing bar 12 and its
+    real coda head opening bar 25. The glyph inside the instruction was read
+    as a coda section head, and being the first one seen it took bar 12 - so
+    the "To Coda" pointed at its own measure and the score wrote
+    `coda="coda"` twice."""
+    result = tabextract.extract(bygone_days_pdf)
+    assert result.extractable
+    from test_engraved_fixtures import _navigation_structure
+    assert _navigation_structure(result.musicxml) == {
+        12: [("after", "To Coda", {"tocoda": "coda"})],
+        23: [("after", "D.C. al Coda", {"dacapo": "yes"})],
+        25: [("before", "coda", {"coda": "coda"})],
+    }
+    assert result.musicxml.count("<coda />") == 1
+    assert result.nav_marks_unresolved == 0
+    assert result.nav_marks_unanchored == 0
 
 
 def _zelda_page_staves():
@@ -3026,9 +3252,10 @@ def test_a_navigation_mark_belongs_to_the_nearest_staff_below_it():
 def test_a_navigation_mark_between_a_systems_two_staves_belongs_to_that_system():
     """The second entry `tab_for_top` carries. A mark drawn between a
     system's notation staff and its tablature has the TAB staff as the
-    nearest thing below it, and belongs to that system - 59 of the
-    library's 509 navigation marks are placed there, and without this they
-    were disclosed as having no bar grid to land on when they had one."""
+    nearest thing below it, and belongs to that system - 57 of the 569
+    navigation marks this extractor reads off the library are placed there,
+    and without this they were disclosed as having no bar grid to land on
+    when they had one."""
     staves = _zelda_page_staves()
     between = tabextract._NavMark("fine", "Fine", 340.0, 400.0, 360.0, 410.0)
     assert _assign_on(staves, between) == "s3_tab"
@@ -3185,6 +3412,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
         totals["segno_signs"] += result.musicxml.count("<segno />")
         totals["nav_directions"] += (result.musicxml.count("<direction ")
                                      - result.musicxml.count("<metronome>"))
+        totals["structure_" + result.confidence["structure"].split(" ")[0]] += 1
         if result.endings_truncated:
             scores_with_endings_truncated += 1
         if "<repeat " in result.musicxml or "<ending " in result.musicxml:
@@ -3247,29 +3475,55 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # bars_padded/inferred_rest_quarters/notes/beats came out identical on
     # all 297, with 166 of them gaining navigation marks in their MusicXML.
     #
-    # 492 <direction> elements over the library, and the accounting for it
+    # 526 <direction> elements over the library, and the accounting for it
     # is exact: a full-page census of every navigation mark on every page
-    # finds 510 (186 jumps, 156 codas, 148 "To Coda", 20 "Fine"), of which
-    # 16 are on pages with no tab staff at all - which this extractor does
-    # not process, and which carry no bars either - and 2 are disclosed as
-    # unanchored below. 510 - 16 - 2 = 492.
-    assert totals["nav_directions"] == 492
+    # reads 580 (176 jumps, 150 codas, 147 "To Coda", 87 segnos, 20 "Fine"),
+    # of which 11 are on pages this extractor does not process at all - which
+    # carry no bars either - and 43 are disclosed as unanchored below.
+    # 580 - 11 - 43 = 526.
+    assert totals["nav_directions"] == 526
     assert scores_with_navigation == 166
-    # 155 coda signs written. The library draws 155 of them, of which one -
-    # Imprisoned Town's, on a last system whose tab staff the staff-line
-    # detector reports as a 12-line anomaly - has no bar to name, and one
-    # more score (Rito Village) draws its coda in a font this decoder does
-    # not recognise and is read from the word beside it instead.
+    # 109 coda signs written, of the 155 the library draws. The 46 not
+    # written: 40 sit entirely past their staff's right end, on the
+    # coda-system layout whose right-hand system the staff detector loses
+    # (see test_a_coda_drawn_on_a_lost_right_hand_system_is_disclosed_not_moved
+    # and issue #152) and are disclosed as unanchored rather than clamped
+    # onto the jump's own bar; 6 are the reference glyph printed inside a
+    # "To Coda" and are that instruction's, not section heads. Two more
+    # coda MARKS reach the count from elsewhere: Imprisoned Town's sign has
+    # no bars on its system, and Rito Village draws its coda in a font this
+    # decoder reads no glyphs from and is read from the word beside it.
     #
-    # And ZERO segnos, because the library draws none: 86 files print "D.S."
-    # and not one of them draws the sign it refers to.
-    assert totals["coda_signs"] == 155
-    assert totals["segno_signs"] == 0
-    # The disclosure, pinned rather than assumed to be zero. 99 instructions
-    # name a jump the score does not draw a target for. 97 of them are on a
-    # file that prints "D.S." - the segno-less case. The other two are both
-    # a "To Coda" with nothing to go to: Imprisoned Town's coda sign is the
-    # unanchored mark above, and Phantom Train prints "To Coda" on a page
-    # that draws no coda sign and no coda label anywhere at all.
-    assert totals["nav_marks_unresolved"] == 99
-    assert totals["nav_marks_unanchored"] == 2
+    # And 87 segnos, from 83 files - all of them Finale's Maestro GID 4,
+    # which the calibrated glyph table labelled "simile" until the outline
+    # was rendered and looked at. While it did, this assertion read 0 and
+    # every "D.S." in the library went out without its jump.
+    assert totals["coda_signs"] == 109
+    assert totals["segno_signs"] == 87
+    # The disclosure, pinned rather than assumed. 87 BARS (the counter counts
+    # distinct bars, so two instructions closing one bar contribute one)
+    # carry an instruction naming a jump this transcription holds no target
+    # for. By reason, over 87 instructions on 87 distinct bars in 47 files:
+    # 45 a "To Coda" with no coda read, 39 an "al Coda" with none, and 3 a
+    # "D.S." on a score that genuinely draws no segno - Hollow, Rebel Army
+    # Theme, and Rito Village (whose Maestro embed this decoder reads no
+    # glyphs from at all). Most of the first two are the lost coda system
+    # above: the page draws the coda, this transcription could not place it.
+    #
+    # 43 unanchored: 41 drawn entirely outside their staff's own x span (40
+    # coda signs and one "D.S. 2"), and Imprisoned Town's two, whose last
+    # system's tab staff comes back as a 12-line anomaly so that system has
+    # no bars at all.
+    assert totals["nav_marks_unresolved"] == 87
+    assert totals["nav_marks_unanchored"] == 43
+    # What all of that costs the score a reader actually sees. On this
+    # branch's parent the library reports 263 scores at `structure` high, 29
+    # medium and 1 "n/a - nothing found"; reading navigation marks moves 43
+    # of the high ones to medium and gives the "n/a" one marks to report, so
+    # 221 / 72. It was 188 / 105 while GID 4 was mislabelled - 76 scores
+    # downgraded for a D.S. whose segno was on the page all along, which is
+    # the figure that makes the mislabel a user-visible defect rather than a
+    # tidiness one.
+    assert totals["structure_high"] == 221
+    assert totals["structure_medium"] == 72
+    assert totals["structure_n/a"] == 0
