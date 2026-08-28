@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import fitz
@@ -3605,3 +3606,56 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     assert totals["structure_high"] == 221
     assert totals["structure_medium"] == 72
     assert totals["structure_n/a"] == 0
+
+
+# xs:NCName: (Letter | '_') (NCNameChar)* - a bare digit run is not one,
+# which is why every id musicxml.py writes is prefixed with "n" (Rule 17).
+_NCNAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+
+
+def test_library_wide_note_ids_are_unique_and_valid_ncnames(library_root):
+    """Rule 17, library-wide (issue #150). Every `<note>` this project emits -
+    from every PDF the library this profile was developed against holds, not
+    a hand-built beats model - carries an id, every id is a legal xs:NCName,
+    and no two ids collide within their own document.
+
+    Run across the whole configured library (297 PDFs), the same shape as
+    test_library_wide_repeat_structure_leaves_conformance_untouched: one
+    fixture proves the rule holds in principle, this proves it holds at
+    the scale a real library actually reaches.
+    """
+    scores_checked = 0
+    total_note_ids = 0
+    duplicate_scores = []
+    invalid_ncname_scores = []
+    missing_id_scores = []
+    for pdf in _library_pdfs(library_root):
+        try:
+            result = tabextract.extract(pdf)
+        except Exception:
+            continue
+        if not result.extractable or not result.musicxml:
+            continue
+        root = ET.fromstring(result.musicxml)
+        ids = [n.get("id") for n in root.findall("./part/measure/note")]
+        if not ids:
+            continue
+        scores_checked += 1
+        total_note_ids += len(ids)
+        if not all(ids):
+            missing_id_scores.append(pdf.name)
+        if not all(_NCNAME_RE.match(i) for i in ids if i):
+            invalid_ncname_scores.append(pdf.name)
+        if len(set(ids)) != len(ids):
+            duplicate_scores.append(pdf.name)
+
+    assert missing_id_scores == [], f"note(s) missing an id: {missing_id_scores}"
+    assert invalid_ncname_scores == [], f"id(s) not a valid NCName: {invalid_ncname_scores}"
+    assert duplicate_scores == [], f"duplicate id(s) within a document: {duplicate_scores}"
+    # The exact figures issue #150's fix produces on this library. notes_no_stem_bar
+    # aside, note ids are written for every <note> emitted regardless of pitch,
+    # so this is strictly larger than the `notes` total (98704, sounding notes
+    # only) pinned in test_library_wide_repeat_structure_leaves_conformance_untouched
+    # above - it also counts every rest.
+    assert scores_checked == 293
+    assert total_note_ids == 100017

@@ -68,7 +68,7 @@
         <bar-style>heavy-light</bar-style>
         <repeat direction="forward" />
       </barline>
-      <note>
+      <note id="n1-1-0-0">
         <pitch>
           <step>E</step>
           <octave>4</octave>
@@ -83,7 +83,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-1-0">
         <pitch>
           <step>F</step>
           <alter>1</alter>
@@ -99,7 +99,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-2-0">
         <pitch>
           <step>G</step>
           <octave>4</octave>
@@ -114,7 +114,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n1-1-3-0">
         <pitch>
           <step>A</step>
           <octave>4</octave>
@@ -134,7 +134,7 @@
       <barline location="left">
         <ending number="1" type="start" />
       </barline>
-      <note>
+      <note id="n2-1-0-0">
         <pitch>
           <step>B</step>
           <octave>3</octave>
@@ -149,7 +149,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n2-1-1-0">
         <pitch>
           <step>C</step>
           <alter>1</alter>
@@ -165,7 +165,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n2-1-2-0">
         <pitch>
           <step>D</step>
           <octave>4</octave>
@@ -180,7 +180,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n2-1-3-0">
         <pitch>
           <step>E</step>
           <octave>4</octave>
@@ -205,7 +205,7 @@
       <barline location="left">
         <ending number="2" type="start" />
       </barline>
-      <note>
+      <note id="n3-1-0-0">
         <pitch>
           <step>G</step>
           <octave>3</octave>
@@ -220,7 +220,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n3-1-1-0">
         <pitch>
           <step>A</step>
           <octave>3</octave>
@@ -235,7 +235,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n3-1-2-0">
         <pitch>
           <step>B</step>
           <alter>-1</alter>
@@ -251,7 +251,7 @@
           </technical>
         </notations>
       </note>
-      <note>
+      <note id="n3-1-3-0">
         <pitch>
           <step>C</step>
           <octave>4</octave>

@@ -2105,3 +2105,45 @@ def test_the_committed_musicxml_still_matches_its_generator():
     spec.loader.exec_module(module)
     drifted = module.write_musicxml(check_only=True)
     assert drifted == [], drifted
+
+
+# ---------------------------------------------------------------------------
+# Rule 17: note identifiers, pinned across every committed engraved fixture
+# ---------------------------------------------------------------------------
+
+_NCNAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+
+
+def test_every_engraved_fixtures_note_id_is_unique_and_a_valid_ncname():
+    """Rule 17, exercised against real extraction rather than build() called
+    directly: every `<note>` id in every score this repository can commit -
+    the full PDF pipeline, not a hand-assembled beats model - is present,
+    unique within its own document, and a legal xs:NCName.
+
+    Iterates every committed *.pdf in the engraved fixtures directory rather
+    than one name at a time, the same shape as the library-wide scan in
+    test_tabextract.py, so a new fixture is covered the day it is added
+    without anyone remembering to list it here."""
+    checked = 0
+    total_notes = 0
+    for pdf in sorted(ENGRAVED_DIR.glob("*.pdf")):
+        result = tabextract.extract(pdf)
+        if not result.extractable or not result.musicxml:
+            continue
+        root = ET.fromstring(result.musicxml)
+        ids = [n.get("id") for n in root.findall("./part/measure/note")]
+        assert ids, f"{pdf.name}: extractable but wrote no <note> ids"
+        assert all(ids), f"{pdf.name}: a <note> is missing its id"
+        for note_id in ids:
+            assert _NCNAME_RE.match(note_id), f"{pdf.name}: {note_id!r} is not a valid NCName"
+        duplicates = [i for i in set(ids) if ids.count(i) > 1]
+        assert not duplicates, f"{pdf.name}: duplicate note id(s) {duplicates}"
+        checked += 1
+        total_notes += len(ids)
+    # A floor rather than a pin on the exact fixture count, for the same
+    # reason test_library_wide_repeat_structure_leaves_conformance_untouched
+    # uses one for scores_with_structure: which fixtures extract cleanly can
+    # change as fixtures are added, but the check must not have silently
+    # stopped running against anything at all.
+    assert checked >= 20, "fewer engraved fixtures were checked than expected"
+    assert total_notes > 0
