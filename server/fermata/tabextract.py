@@ -1467,11 +1467,13 @@ def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first
 # can be from the music it annotates, not a discriminator - the phrase
 # itself is what identifies a navigation mark.
 NAV_BAND_SPACES = 12.0
-# A coda sign's own number ("Coda 2"), printed immediately to its right.
-# Measured at 0.0-1.6 spaces from the sign's right edge on the numbered
-# codas in the library; 3.0 clears them all without reaching the next bar's
-# music.
-NAV_LABEL_DX_SPACES = 3.0
+# How far a coda's LABEL ("Coda", "Coda 2") may be from the sign it labels,
+# as a multiple of the sign's own drawn height. Usually zero: the engraver
+# draws the sign inside the same text line as the word, so the two boxes
+# overlap and the gap is 0 by inspection. The allowance is for the pages
+# that draw the sign in the music font and the word in a text font a little
+# apart - measured at up to 1.6 sign-heights in the library.
+NAV_LABEL_GAP_HEIGHTS = 3.0
 # How close a bar boundary has to be to an instruction's own text before
 # that boundary is taken as the barline the instruction fires on, in TAB
 # staff spaces (the staff the bar grid belongs to). Measured over the
@@ -1524,9 +1526,16 @@ _NAV_JUMP_RE = re.compile(
 # cannot express, so it is read as an unnumbered instruction and disclosed.
 _NAV_TO_CODA_RE = re.compile(r"\bTo\s*Coda\b(?:\s*(?P<num>\d+)\s*(?![,\d]))?",
                               re.IGNORECASE)
-# A coda SECTION label - the word beside the sign. Anchored at both ends so
-# "To Coda" and "D.S. al Coda" cannot match it.
-_NAV_CODA_LABEL_RE = re.compile(r"^Coda\b(?:\s*(?P<num>\d+))?$", re.IGNORECASE)
+# A coda SECTION label - the word beside the sign, and the number after it
+# where the score numbers its codas. Anchored at both ends so "To Coda" and
+# "D.S. al Coda" cannot match it (they are tested for first in any case).
+# The optional leading integer is the BAR NUMBER an engraver prints at the
+# head of the system: Finale puts it in the same text line as the label, so
+# a line reads "41 Coda" or "55 Coda 1" once the sign's private-use
+# codepoint is stripped out, and anchoring without it lost the coda's own
+# number on every such page.
+_NAV_CODA_LABEL_RE = re.compile(
+    r"^(?:\d+\s*)?Coda\b(?:\s*(?P<num>\d+))?$", re.IGNORECASE)
 # "Fine" as the whole of a text span, so a method book's "Fine = Finish, end
 # of the piece" (2 occurrences in the library) is not read as a mark.
 _NAV_FINE_RE = re.compile(r"^Fine\.?$")
@@ -1543,10 +1552,12 @@ class _NavMark:
     `kind` is "segno", "coda", "tocoda", "jump" or "fine". `number` is the
     integer a numbered coda carries ("To Coda 2" / "Coda 2"), or None.
     `back_to` is "start" for a D.C. and "segno" for a D.S.; `until` is
-    "coda" or "fine" where the instruction names one. `anchor_x` is the
-    x the mark is anchored by - its LEFT edge for a sign that opens a
-    section, its RIGHT edge for an instruction that closes one, because
-    that is the end the engraver aligns to the music (see _apply_nav_marks).
+    "coda" or "fine" where the instruction names one.
+
+    `opens_a_section` is what decides how the mark is anchored and where in
+    its measure it is written: a segno or a coda opens the bar it sits in,
+    and everything else fires at the end of one (see _apply_nav_marks and
+    musicxml.build's `directions`).
     """
 
     __slots__ = ("kind", "text", "number", "back_to", "until",
@@ -1562,10 +1573,6 @@ class _NavMark:
         self.x0, self.y0, self.x1, self.y1 = x0, y0, x1, y1
 
     @property
-    def anchor_x(self):
-        return self.x0 if self.kind in ("segno", "coda") else self.x1
-
-    @property
     def opens_a_section(self):
         return self.kind in ("segno", "coda")
 
@@ -1574,15 +1581,15 @@ class _NavMark:
                 f"x={self.x0:.1f}-{self.x1:.1f}, y={self.y0:.1f})")
 
 
-def _nav_text_marks(spans):
+def _nav_text_marks(lines):
     """Navigation marks in this page's plain text, given _text_lines output.
 
-    One mark per span at most, and the tests are ordered so a phrase that
+    One mark per line at most, and the tests are ordered so a phrase that
     contains another cannot be read as the shorter one: "To Coda" holds the
     word "Coda", and "D.S. al Coda" holds both.
     """
     marks = []
-    for text, x0, y0, x1, y1 in spans:
+    for text, x0, y0, x1, y1 in lines:
         clean = _PUA_RE.sub("", text).strip()
         if not clean:
             continue
@@ -1616,37 +1623,45 @@ def _read_navigation_marks(page):
     font, and the instructions from the text layer.
 
     A coda SIGN and the word beside it ("Coda", "Coda 2") are one mark, not
-    two - the sign is what carries the position (a Maestro page draws the
-    two in a single text span whose left edge is sometimes a bar number, so
-    the sign's own x is the only trustworthy one) and the word is what
-    carries the number.
+    two - the sign is what carries the position (a Maestro page draws both
+    inside a single text line whose left edge is the system's printed bar
+    number, so the sign's own x is the only trustworthy one) and the word is
+    what carries the number.
     """
     text_marks = _nav_text_marks(_text_lines(page))
     signs = []
     for ev in glyph.navigation_glyph_events(page):
         signs.append(_NavMark(ev.category, "", ev.x0, ev.y0, ev.x1, ev.y1))
 
-    # Fold a coda LABEL into the sign it labels: same row, within
-    # NAV_LABEL_DX_SPACES to the sign's right. The label supplies the
-    # number; the sign keeps the position. A label with no sign anywhere
-    # near it stays a mark of its own - one library file draws its coda in a
-    # font this decoder does not recognise and prints only the word.
+    # Fold a coda LABEL into the sign it labels. The label supplies the
+    # NUMBER; the sign keeps the POSITION, which is the half that has to be
+    # right: a Maestro page draws the sign inside the same text line as the
+    # word AND as the system's printed bar number, so that line's own left
+    # edge is the bar number's, several bars' width from where the coda
+    # actually is.
+    #
+    # Matched by the gap between the two boxes rather than by the label
+    # starting to the sign's right, for the same reason - a line that
+    # CONTAINS the sign has a gap of zero and a negative "distance to the
+    # right", and both shapes occur.
     kept = []
     for mark in text_marks:
         if mark.kind != "coda":
             kept.append(mark)
             continue
         owner = None
+        best_gap = None
         for sign in signs:
             if sign.kind != "coda":
                 continue
             height = max(sign.y1 - sign.y0, 1.0)
             if abs(sign.y0 - mark.y0) > height:
                 continue
-            if not (-height <= mark.x0 - sign.x1 <= height * NAV_LABEL_DX_SPACES):
+            gap = max(mark.x0 - sign.x1, sign.x0 - mark.x1, 0.0)
+            if gap > height * NAV_LABEL_GAP_HEIGHTS:
                 continue
-            if owner is None or abs(sign.x1 - mark.x0) < abs(owner.x1 - mark.x0):
-                owner = sign
+            if best_gap is None or gap < best_gap:
+                owner, best_gap = sign, gap
         if owner is None:
             kept.append(mark)
         elif owner.number is None:

@@ -2830,6 +2830,11 @@ def _nav(text):
     ("To Coda 2", "tocoda", None, None, 2),
     ("Coda", "coda", None, None, None),
     ("Coda 1", "coda", None, None, 1),
+    # Finale draws the sign inside the same text line as the system's own
+    # printed bar number, so the line reads like this once the sign's
+    # private-use codepoint is stripped out.
+    ("41 Coda", "coda", None, None, None),
+    ("55 Coda 1", "coda", None, None, 1),
     ("Fine", "fine", None, None, None),
 ])
 def test_a_navigation_phrase_is_read_as_the_instruction_it_prints(
@@ -2872,6 +2877,47 @@ def test_a_numbered_to_coda_list_is_read_without_a_number_rather_than_wrongly():
     assert (mark.kind, mark.number) == ("tocoda", None)
 
 
+def test_a_coda_label_gives_its_number_to_the_sign_it_labels_not_a_mark_of_its_own(
+        monkeypatch):
+    """A Maestro page draws the coda sign, the word "Coda", its number and
+    the system's own printed bar number as ONE text line, so the line's left
+    edge is the bar number's - several bars from where the coda is. The sign
+    is what carries the position and the label is what carries the number,
+    and the two have to end up as one mark rather than two."""
+    sign = tabextract._NavMark("coda", "", 392.3, 609.3, 402.2, 629.8)
+    monkeypatch.setattr(tabextract.glyph, "navigation_glyph_events",
+                        lambda page: [_FakeGlyph(sign)])
+    monkeypatch.setattr(tabextract, "_text_lines", lambda page: [
+        # The bar number, the sign and the label, in one line - the sign's
+        # own box sits INSIDE this line's box.
+        ("55 Coda 1", 360.0, 610.1, 432.6, 623.3),
+    ])
+    marks = tabextract._read_navigation_marks(object())
+    assert len(marks) == 1
+    assert (marks[0].kind, marks[0].number) == ("coda", 1)
+    assert marks[0].x0 == sign.x0, "the sign's position, not the line's"
+
+
+class _FakeGlyph:
+    """Just enough of a glyph event for _read_navigation_marks."""
+
+    def __init__(self, mark):
+        self.category = mark.kind
+        self.x0, self.y0, self.x1, self.y1 = mark.x0, mark.y0, mark.x1, mark.y1
+
+
+def test_a_coda_label_with_no_sign_near_it_is_still_a_coda(monkeypatch):
+    """One library file draws its coda in a font this decoder does not
+    recognise and prints only the word, so the word alone has to be enough."""
+    monkeypatch.setattr(tabextract.glyph, "navigation_glyph_events",
+                        lambda page: [])
+    monkeypatch.setattr(tabextract, "_text_lines", lambda page: [
+        ("Coda", 76.0, 610.0, 104.0, 623.0),
+    ])
+    marks = tabextract._read_navigation_marks(object())
+    assert [(m.kind, m.x0) for m in marks] == [("coda", 76.0)]
+
+
 def test_a_jump_and_a_sign_are_anchored_by_different_ends_of_their_own_text():
     """The alignment problem, isolated (issue #134 phase 2). Four bars, 100pt
     each. A sign opening a section is anchored by containment of its LEFT
@@ -2905,51 +2951,100 @@ def test_a_jump_and_a_sign_are_anchored_by_different_ends_of_their_own_text():
     assert bar_of(adrift) == 3
 
 
-def test_a_navigation_mark_belongs_to_the_nearest_staff_below_it():
-    """Two systems of notation-over-tab. A mark in the gap between them is
-    NEARER system 1's tab staff than system 2's notation staff, and belongs
-    to system 2 - see the block comment in tabextract, and Zelda's Lullaby,
-    where reading it the other way puts the D.C. four bars early and leaves
-    four bars of the piece unplayed."""
+def _zelda_page_staves():
+    """Systems 3, 4 and 5 of Zelda's Lullaby's only page, at the coordinates
+    the staff detector actually reports for them - so the assertions below
+    are about the real geometry rather than about numbers chosen to make a
+    rule look good."""
     def staff(kind, top, spacing, lines):
         return tabextract._Staff(
-            kind, [top + i * spacing for i in range(lines)], 40.0, 570.0)
+            kind, [top + i * spacing for i in range(lines)], 41.2, 575.9)
 
-    sys1_std = staff("standard", 100.0, 5.0, 5)
-    sys1_tab = staff("tab", 150.0, 7.7, 6)      # bottom 188.5
-    sys2_std = staff("standard", 220.0, 5.0, 5)
-    sys2_tab = staff("tab", 270.0, 7.7, 6)
-    staves = [sys1_std, sys1_tab, sys2_std, sys2_tab]
-    tab_for_top = {id(sys1_std): sys1_tab, id(sys1_tab): sys1_tab,
-                   id(sys2_std): sys2_tab, id(sys2_tab): sys2_tab}
+    return {
+        "s3_std": staff("standard", 361.5, 5.12, 5),
+        "s3_tab": staff("tab", 427.1, 7.68, 6),     # bottom 465.5
+        "s4_std": staff("standard", 515.5, 5.12, 5),
+        "s4_tab": staff("tab", 576.1, 7.68, 6),     # bottom 614.5
+        "s5_std": staff("standard", 658.5, 5.12, 5),
+        "s5_tab": staff("tab", 721.7, 7.70, 6),
+    }
 
-    # 15.3pt below system 1's tab staff, 13.8pt above system 2's notation
-    # staff - the exact gap "To Coda" sits in on Zelda's Lullaby.
-    mark = tabextract._NavMark("tocoda", "To Coda", 340.0, 203.8, 385.0, 206.2)
+
+def _assign_on(staves_by_name, mark):
+    staves = list(staves_by_name.values())
+    tab_for_top = {}
+    for name, s in staves_by_name.items():
+        if name.endswith("_std"):
+            tab_for_top[id(s)] = staves_by_name[name.replace("_std", "_tab")]
+        else:
+            tab_for_top[id(s)] = s
     buckets, unowned = tabextract._assign_nav_marks([mark], staves, tab_for_top)
-    assert unowned == []
-    assert list(buckets) == [id(sys2_tab)]
+    if unowned:
+        return None
+    owner_id = next(iter(buckets))
+    return next(n for n, s in staves_by_name.items() if id(s) == owner_id)
 
-    # A mark BETWEEN a system's own two staves belongs to that system, not
-    # to the next one - the tab staff is what is nearest below it.
-    between = tabextract._NavMark("fine", "Fine", 340.0, 140.0, 360.0, 145.0)
-    buckets, unowned = tabextract._assign_nav_marks([between], staves, tab_for_top)
-    assert unowned == []
-    assert list(buckets) == [id(sys1_tab)]
 
-    # Far above everything - page furniture, not an annotation on a system.
-    # NAV_BAND_SPACES is 12 of the owning staff's spaces, so 5.0 * 12 = 60pt.
-    high = tabextract._NavMark("fine", "Fine", 340.0, 20.0, 360.0, 25.0)
-    buckets, unowned = tabextract._assign_nav_marks([high], staves, tab_for_top)
-    assert buckets == {}
-    assert unowned == [high]
+def test_a_navigation_mark_belongs_to_the_nearest_staff_below_it():
+    """The rule, on the geometry that discriminates it.
 
-    # Below the last staff on the page, where an engraver puts a closing
-    # instruction: nothing follows it, so the staff above owns it.
-    below = tabextract._NavMark("jump", "D.C.", 500.0, 320.0, 560.0, 325.0)
-    buckets, unowned = tabextract._assign_nav_marks([below], staves, tab_for_top)
-    assert unowned == []
-    assert list(buckets) == [id(sys2_tab)]
+    A guitar system is notation over tablature, so the gap above one
+    system's notation staff is also the gap below the previous system's tab
+    staff - and on Zelda's Lullaby, where the page prints its own bar
+    numbers to check the answer against, the mark is NEARER the wrong one:
+
+      "D.C. al Coda"  6.9pt below system 3's tab staff and 29.9pt above
+                      system 4's notation staff, and it is system 4's.
+      the coda sign   7.4pt below system 4's tab staff and 16.1pt above
+                      system 5's notation staff, and it is system 5's,
+                      which is what the page prints beside that system.
+
+    Nearest-staff-by-distance gets both of those wrong, in the direction
+    that leaves four bars of the piece played by nothing."""
+    staves = _zelda_page_staves()
+
+    dc = tabextract._NavMark("jump", "D.C. al Coda", 508.9, 472.4, 575.6, 485.6)
+    assert _assign_on(staves, dc) == "s4_tab"
+
+    coda = tabextract._NavMark("coda", "", 76.0, 621.9, 85.9, 642.4)
+    assert _assign_on(staves, coda) == "s5_tab"
+
+    # And the case where the two readings agree, so that the rule is shown
+    # to be right rather than merely different: "To Coda" sits 15.3pt below
+    # system 1's tab staff and 13.8pt above system 2's notation staff.
+    two = {"s3_std": staves["s3_std"], "s3_tab": staves["s3_tab"],
+           "s4_std": staves["s4_std"], "s4_tab": staves["s4_tab"]}
+    to_coda = tabextract._NavMark("tocoda", "To Coda", 340.4, 480.8, 384.6, 494.1)
+    assert _assign_on(two, to_coda) == "s4_tab"
+
+
+def test_a_navigation_mark_between_a_systems_two_staves_belongs_to_that_system():
+    """The second entry `tab_for_top` carries. A mark drawn between a
+    system's notation staff and its tablature has the TAB staff as the
+    nearest thing below it, and belongs to that system - 59 of the
+    library's 509 navigation marks are placed there, and without this they
+    were disclosed as having no bar grid to land on when they had one."""
+    staves = _zelda_page_staves()
+    between = tabextract._NavMark("fine", "Fine", 340.0, 400.0, 360.0, 410.0)
+    assert _assign_on(staves, between) == "s3_tab"
+
+
+def test_a_navigation_mark_too_far_from_any_staff_is_page_furniture():
+    """NAV_BAND_SPACES is 12 of the owning staff's own spaces - 61pt on
+    these notation staves - against a measured worst case of 10.87 spaces
+    across every navigation mark in the library. A phrase farther off than
+    that is annotating nothing."""
+    staves = _zelda_page_staves()
+    high = tabextract._NavMark("fine", "Fine", 340.0, 280.0, 360.0, 290.0)
+    assert _assign_on(staves, high) is None
+
+
+def test_a_navigation_mark_below_the_last_staff_belongs_to_the_staff_above_it():
+    """Where an engraver puts a closing instruction. Nothing follows it, so
+    there is nothing for it to be ambiguous with."""
+    staves = _zelda_page_staves()
+    below = tabextract._NavMark("jump", "D.C.", 500.0, 775.0, 560.0, 785.0)
+    assert _assign_on(staves, below) == "s5_tab"
 
 
 def test_a_navigation_mark_on_a_staff_with_no_bar_grid_is_disclosed():
@@ -3147,24 +3242,29 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # bars_padded/inferred_rest_quarters/notes/beats came out identical on
     # all 297, with 166 of them gaining navigation marks in their MusicXML.
     #
-    # 491 <direction> elements over the library, of the 509 navigation marks
-    # a full-page census finds: 16 of the difference are on pages with no
-    # tab staff at all, which this extractor does not process (they carry no
-    # bars either), and 2 are disclosed as unanchored below.
-    assert totals["nav_directions"] == 491
+    # 492 <direction> elements over the library, and the accounting for it
+    # is exact: a full-page census of every navigation mark on every page
+    # finds 510 (186 jumps, 156 codas, 148 "To Coda", 20 "Fine"), of which
+    # 16 are on pages with no tab staff at all - which this extractor does
+    # not process, and which carry no bars either - and 2 are disclosed as
+    # unanchored below. 510 - 16 - 2 = 492.
+    assert totals["nav_directions"] == 492
     assert scores_with_navigation == 166
-    # 154 coda signs written, against 155 drawn in the library - the missing
-    # one is Imprisoned Town's, on a last system whose tab staff the
-    # staff-line detector reports as a 12-line anomaly, so there is no bar
-    # for it to name. And ZERO segnos, because the library draws none: 86
-    # files print "D.S." and not one of them draws the sign it refers to.
-    assert totals["coda_signs"] == 154
+    # 155 coda signs written. The library draws 155 of them, of which one -
+    # Imprisoned Town's, on a last system whose tab staff the staff-line
+    # detector reports as a 12-line anomaly - has no bar to name, and one
+    # more score (Rito Village) draws its coda in a font this decoder does
+    # not recognise and is read from the word beside it instead.
+    #
+    # And ZERO segnos, because the library draws none: 86 files print "D.S."
+    # and not one of them draws the sign it refers to.
+    assert totals["coda_signs"] == 155
     assert totals["segno_signs"] == 0
-    # The disclosure, pinned rather than assumed to be zero. 103 instructions
-    # name a jump the score does not draw a target for; 101 of them are on a
-    # file that prints "D.S.", which is the segno-less case. The other two
-    # are a "To Coda" on a score whose coda sign is drawn in a font this
-    # decoder does not recognise, and a "To Coda" whose coda sign is the one
-    # unanchored mark above.
-    assert totals["nav_marks_unresolved"] == 103
+    # The disclosure, pinned rather than assumed to be zero. 99 instructions
+    # name a jump the score does not draw a target for. 97 of them are on a
+    # file that prints "D.S." - the segno-less case. The other two are both
+    # a "To Coda" with nothing to go to: Imprisoned Town's coda sign is the
+    # unanchored mark above, and Phantom Train prints "To Coda" on a page
+    # that draws no coda sign and no coda label anywhere at all.
+    assert totals["nav_marks_unresolved"] == 99
     assert totals["nav_marks_unanchored"] == 2
