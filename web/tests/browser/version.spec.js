@@ -24,7 +24,7 @@ test("the build indicator is on screen without any interaction", async ({ page, 
   await expect(tag).toHaveText(`v${body.version} (dev)`);
 });
 
-test.skip("the indicator needs no hover - it renders in the initial layout", async ({ page }) => {
+test("the indicator needs no hover - it renders in the initial layout", async ({ page }) => {
   // This app's primary form factor is a tablet with no pointer, so anything
   // that only appeared on :hover would be permanently invisible there. Read
   // straight off the accessibility tree / layout rather than via a hover
