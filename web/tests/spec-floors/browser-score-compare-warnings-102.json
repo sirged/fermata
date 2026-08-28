@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-compare-warnings.spec.js",
+  "count": 20,
+  "reason": "ScoreCompare's warnings summary and gig-mode marks, including (issues #102/#103) an assumed meter or tuning saying so rather than being stated as read."
+}

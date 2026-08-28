@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/pitch.spec.js",
+  "count": 23,
+  "reason": "pitch/frequency arithmetic: concert-A pivot, octave and semitone ratios, capo transposition (including at the twelfth fret and past MIDI range), reference-pitch validation, and rounding."
+}

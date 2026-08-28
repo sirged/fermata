@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/metronome.spec.js",
+  "count": 42,
+  "reason": "clickLevel, seconds-per-click, and the bar/phase lookup functions the real-audio metronome specs build on, including issue #121's compound-meter clickLevel cases."
+}

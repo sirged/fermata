@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/viewer-practice.spec.js",
+  "count": 6,
+  "reason": "the practice timer panel on a real viewer: session storage on stop, empty-vs-zero fields, panel lifecycle across closing and switching scores, midnight-crossing sessions, and reaching the library's own view."
+}
