@@ -1025,7 +1025,7 @@ def test_navigation_pdf_binds_every_mark_to_the_bar_it_is_engraved_over(engraved
     Every one of the six resolves to a <sound> as well as to its text,
     because this fixture draws both signs. It was justified here as covering
     something "the real library cannot do (155 coda signs across 142 files
-    and not one segno)". The library draws 87 segnos across 83 files; that
+    and not one segno)". The library draws 88 segnos across 84 files; that
     claim was a mislabelled row in the Maestro glyph table and is retracted
     in Rule 16. The fixture keeps its value on a better ground: it reaches
     its segno through a published SMuFL codepoint, an entirely different

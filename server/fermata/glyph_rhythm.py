@@ -49,6 +49,26 @@ How this works (full validation detail):
   maestro_fingerprint_ok); a rejected font is treated as unrecognised so
   tabextract's honest spacing fallback engages and says so.
 
+  THE NAME IS A FAST PATH, NOT A GATE (issue #154). A PDF producer that
+  renames every embedded font generically defeats a name-first filter
+  outright: "Rito Village - Night (BotW)" embeds its Maestro subset as
+  resource "CIDFont+F1" - the CID-subsetting tool renamed all eight of its
+  embedded fonts to "CIDFont+F1".."CIDFont+F8" and left none of them named
+  "Maestro" - and used to yield zero glyph events on all three of that
+  score's pages because the resource was rejected by name before the
+  fingerprint that would have recognised it ever ran. So a TrueType resource
+  that fails the name check is not simply skipped: it is fingerprinted
+  anyway, on the same evidence and the same threshold as a resource that IS
+  named "Maestro" (see load_music_fonts / _load_one_font). A font that
+  passes is Maestro whatever it is called; one that fails is silently
+  ignored unless it left genuine partial evidence (at least one glyph outline
+  that matches a calibrated digest exactly), which - measured over every
+  embedded TrueType font in the library that is NOT named Maestro/Opus/
+  OpusSpecial (2,259 of them) - happens for zero fonts that are not actually
+  Rito's renamed Maestro. An ordinary unrelated font (body text, lyrics, tab
+  numerals) can and does fill some of the same GID slots the calibrated
+  subset uses, but never with byte-identical outlines by coincidence.
+
   Sibelius exports embed "Opus"/"OpusSpecial"/"OpusText" as TrueType
   subsets whose post table format DOES retain names, but as PUA codepoint
   labels like "uniF0CF" rather than "noteheadBlack" - not semantically
@@ -872,6 +892,38 @@ class MusicFont:
 # glyphs with no calibrated category (there is no note/rest/digit meaning to
 # give them), which did nothing but inflate the "unknown_glyphs" honesty
 # metric with irrelevant text characters that were never a real decode gap.
+
+# WHY ONLY MAESTRO GETS A NAME-FALLBACK (issue #154's "check whether the same
+# defect exists for Opus/OpusSpecial" question). Structurally, yes: a
+# resource named neither "Maestro" nor "Opus"/"OpusSpecial" is filtered out
+# in load_music_fonts before anything about its CONTENT is consulted, and
+# Opus's own identifying signal - its glyph NAMES - is exactly the kind of
+# thing that travels with the outline the way Maestro's GIDs do not (see the
+# module docstring), so in principle a renamed Opus resource could be
+# recognised the same way a renamed Maestro one now is.
+#
+# In practice, checked and not fixed: a full-library sweep of every embedded
+# TrueType resource NOT named Maestro/Opus/OpusSpecial (2,260 of them) found
+# ZERO that are an Opus/OpusSpecial export under a different name. The three
+# resources that share ANY glyph name with OPUS_NAME_MAP/OPUS_SPECIAL_NAME_MAP
+# are not that: two are "OpusPercussion" (a real, distinct Sibelius family,
+# correctly out of scope the same way OpusText is - it is honestly named, just
+# uncalibrated), and one is a Finale "EngraverTextT" (fingering/technique
+# annotation text) that happens to carry 3 of the 13 digit-style "uniF03X"
+# labels among its own glyphs. That is the actual hazard a name-overlap
+# fallback would face and there is no reason to expect it is rare: "uniF0XX"
+# is fontTools' own generic post-table label for ANY glyph mapped from a PUA
+# codepoint, not a signature unique to Opus, so unlike Maestro's byte-exact
+# outline digest (measured, over the same sweep, to NEVER collide) a
+# name-overlap test has no equivalent proof against false positives and no
+# calibrated floor to measure one against - MAESTRO_FINGERPRINT_MIN_GLYPHS
+# exists because 548 real Maestro resources were available to calibrate it
+# against; there is no renamed-Opus sample in this library to calibrate an
+# analogous threshold with. Guessing one would repeat the mistake the module
+# docstring's "measured, not assumed" standard exists to rule out. If a
+# renamed Opus/OpusSpecial resource is ever found in the wild, build its
+# fallback the same way Maestro's was: from real, confirmed samples, not
+# blind extrapolation from this table's keys.
 MUSIC_FONT_FAMILIES = ("Maestro", "Opus", "OpusSpecial")
 
 # pymupdf's own extension marker for an embedded font's outline flavour.
@@ -914,15 +966,30 @@ def _font_cache(doc):
     return _doc_cache(doc, _FONT_CACHE_ATTR)
 
 
-def _load_one_font(doc, xref, base, ext):
+def _load_one_font(doc, xref, base, ext, named=True):
     """Extract, parse and validate one embedded music font resource.
     Returns (MusicFont | None, warning | None) and never raises: a truncated
     or otherwise unreadable embedded font must degrade this page to the
     spacing fallback, not fail the whole extraction. TTFont parses lazily,
-    so glyph-order and outline access have to happen inside the guard too."""
+    so glyph-order and outline access have to happen inside the guard too.
+
+    `named` is False when `base` (the resource's basefont, minus any
+    subset tag) is NOT one of MUSIC_FONT_FAMILIES - load_music_fonts still
+    calls this for a TrueType resource in that case, to give the Maestro
+    fingerprint a chance to recognise it anyway (see issue #154 and the
+    module docstring's "THE NAME IS A FAST PATH, NOT A GATE"). Every
+    rejection in that branch is silent unless it left genuine partial
+    evidence: warning about the common case - an ordinary text font that
+    happens to fill a few of the same GID slots - would bury the one warning
+    that matters in noise about fonts that were never music fonts."""
     if ext not in _TRUETYPE_EXTS:
         # CFF-flavour embeds are reported by pymupdf as "cff" and are not
-        # covered by either calibrated map.
+        # covered by either calibrated map. An unnamed candidate has no
+        # outlines this could ever recognise either way, so there is nothing
+        # to warn about - only a resource that CLAIMED to be Maestro/Opus/
+        # OpusSpecial and isn't shaped like one is worth saying so about.
+        if not named:
+            return None, None
         return None, f"{base} is embedded with {ext!r} outlines, which this decoder is not calibrated for"
     ttfont_cls = _ttfont_class()
     if ttfont_cls is None:
@@ -932,14 +999,17 @@ def _load_one_font(doc, xref, base, ext):
         if isinstance(content, tuple):
             content = content[-1]
         if not content:
-            return None, f"{base} font resource is empty"
+            return (None, f"{base} font resource is empty") if named else (None, None)
         tt = ttfont_cls(io.BytesIO(content), fontNumber=0)
         if "glyf" not in tt:
+            if not named:
+                return None, None
             return None, (
                 f"{base} is embedded without TrueType `glyf` outlines, which this decoder "
                 "is not calibrated for"
             )
-        if base == "Maestro":
+        family = base
+        if named and base == "Maestro":
             ok, detail = maestro_fingerprint_ok(tt)
             if not ok:
                 return None, (
@@ -947,28 +1017,68 @@ def _load_one_font(doc, xref, base, ext):
                     f"({detail}) - its glyph IDs cannot be trusted to mean what this decoder "
                     "thinks they mean, so rhythm falls back to note spacing for it"
                 )
-        mf = MusicFont(base, xref, tt)
+        elif not named:
+            # Not recognised by its resource name at all - a renamed / re-
+            # subset export (this exact file embeds Maestro as "CIDFont+F1").
+            # The fingerprint is the only honest way to tell whether it is
+            # secretly the calibrated Maestro subset; see maestro_fingerprint_ok
+            # and the module docstring. Recompute matched GIDs directly
+            # (rather than parse maestro_fingerprint_ok's message) so a
+            # rejection can tell "no evidence at all" apart from "some
+            # evidence, still refused" without relying on its wording.
+            found = _glyf_digests(tt, sorted(MAESTRO_GID_MAP))
+            matched = [gid for gid, digest in found.items() if MAESTRO_GLYF_DIGESTS.get(gid) == digest]
+            ok, detail = maestro_fingerprint_ok(tt)
+            if not ok:
+                if matched:
+                    return None, (
+                        f"font resource {xref} (named {base!r}) partially matches the "
+                        f"calibrated Maestro subset ({len(matched)} glyph outline(s) match, "
+                        f"{detail}) but is not recognised as it - not treated as Maestro"
+                    )
+                return None, None
+            family = "Maestro"
+        mf = MusicFont(family, xref, tt)
         if not mf.glyph_order:
-            return None, f"{base} font resource has no readable glyph order"
+            return (None, f"{base} font resource has no readable glyph order") if named else (None, None)
     except Exception as exc:
-        return None, f"{base} font resource could not be read ({type(exc).__name__}) - ignored"
+        return (
+            (None, f"{base} font resource could not be read ({type(exc).__name__}) - ignored")
+            if named else (None, None)
+        )
     return mf, None
 
 
 def load_music_fonts(doc, page):
-    """Return ({family_name: [MusicFont, ...]}, warnings) - one entry per
-    distinct font RESOURCE (xref) using that family name on this page. Most
-    pages have exactly one resource per family; when a page genuinely has
-    more than one (see MusicFont's docstring), keeping all of them - rather
-    than silently keeping only the first-seen xref and resolving every
-    span's GIDs against it regardless of which resource actually drew them -
-    lets extract_glyph_events try each candidate resource per glyph instead
-    of committing to a possibly-wrong one.
+    """Return ({resource_name: [MusicFont, ...]}, warnings) - one entry per
+    distinct font RESOURCE (xref) recognised on this page, keyed by the same
+    basefont-derived name extract_glyph_events will look candidates up by
+    (see its `fname`). Most pages have exactly one resource per family; when
+    a page genuinely has more than one (see MusicFont's docstring), keeping
+    all of them - rather than silently keeping only the first-seen xref and
+    resolving every span's GIDs against it regardless of which resource
+    actually drew them - lets extract_glyph_events try each candidate
+    resource per glyph instead of committing to a possibly-wrong one.
 
-    A resource that is rejected (wrong outline flavour, unreadable, or a
-    "Maestro" that fails its fingerprint) is left out AND reported, so the
-    caller can degrade honestly instead of decoding with a font whose glyph
-    IDs mean something else."""
+    THE NAME IS A FAST PATH, NOT A GATE (issue #154). A resource named
+    "Maestro"/"Opus"/"OpusSpecial" is handled exactly as before. One that
+    ISN'T is not simply skipped when it is TrueType: `_load_one_font` still
+    fingerprints it, because a producer that renames every embedded font
+    generically (CID subsetting does this routinely) can rename the real
+    Maestro subset right along with everything else - see the module
+    docstring. A recovered resource is filed under its OWN (renamed) key,
+    same as a correctly-named one is filed under "Maestro" - the key has to
+    match whatever extract_glyph_events's span-derived `fname` will be,
+    which is the resource's actual name on the page, not the family
+    `_load_one_font` decided it belongs to (MusicFont.family carries that).
+
+    A resource that is rejected (wrong outline flavour, unreadable, a
+    "Maestro" that fails its fingerprint, or an unnamed resource that fails
+    it too) is left out; the named cases are also reported so the caller can
+    degrade honestly instead of decoding with a font whose glyph IDs mean
+    something else. An unnamed rejection is reported only when it left
+    genuine partial evidence of being Maestro - see _load_one_font - so an
+    ordinary text font on the same page does not bury that warning in noise."""
     cache = _font_cache(doc)
     by_family = collections.defaultdict(list)
     warnings = []
@@ -979,12 +1089,19 @@ def load_music_fonts(doc, page):
         return {}, ["page font list could not be read"]
     for f in fonts:
         xref, ext, _ftype, basefont = f[0], f[1], f[2], f[3]
+        if xref in seen_xrefs:
+            continue
         base = basefont.split("+")[-1]
-        if base not in MUSIC_FONT_FAMILIES or xref in seen_xrefs:
+        named = base in MUSIC_FONT_FAMILIES
+        if not named and ext not in _TRUETYPE_EXTS:
+            # Cannot be the calibrated Maestro subset without glyf outlines
+            # to fingerprint, and Opus/OpusSpecial are recognised by NAME
+            # alone (see module docstring) - a renamed Opus has nothing here
+            # to confirm it by. Nothing to probe, so nothing worth caching.
             continue
         seen_xrefs.add(xref)
         if xref not in cache:
-            cache[xref] = _load_one_font(doc, xref, base, ext)
+            cache[xref] = _load_one_font(doc, xref, base, ext, named)
         mf, warn = cache[xref]
         if warn:
             warnings.append(warn)

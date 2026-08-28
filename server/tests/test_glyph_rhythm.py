@@ -5,6 +5,7 @@ failure modes under test are all "which vector primitive did this notehead
 attach to, and what did that make its duration", which is far clearer to pin
 down from explicit coordinates than from a synthesised engraving.
 """
+import collections
 import io
 import struct
 
@@ -136,6 +137,135 @@ def test_fingerprint_needs_enough_evidence_to_bless_a_font():
         assert "need" in detail
     finally:
         G._glyf_digests = original
+
+
+# ---------------------------------------------------------------------------
+# A renamed Maestro resource is still recognised (issue #154)
+# ---------------------------------------------------------------------------
+
+
+class _FakeFontDoc:
+    """Just enough of a pymupdf Document for _load_one_font /
+    load_music_fonts to extract a font resource's raw bytes from."""
+
+    def __init__(self, content_by_xref):
+        self._content = content_by_xref
+
+    def extract_font(self, xref):
+        return self._content[xref]
+
+
+def test_a_renamed_maestro_is_still_loaded_by_its_fingerprint(zanarkand_pdf):
+    """Issue #154, on the real calibrated bytes rather than a synthesised
+    outline this test's own author might get wrong: 'Rito Village - Night
+    (The Legend of Zelda Breath of the Wild)' embeds its Maestro subset as a
+    PDF resource literally named 'CIDFont+F1' - every embedded font in that
+    file was renamed generically - and load_music_fonts used to reject it by
+    that name before maestro_fingerprint_ok ever ran, so the file read zero
+    glyph events on all three of its pages.
+
+    This takes real Maestro bytes from a DIFFERENT, correctly-named library
+    file (zanarkand_pdf) and hands them to _load_one_font exactly the way
+    load_music_fonts now does for a resource whose basefont it does not
+    recognise: named=False. A font that passes maestro_fingerprint_ok is
+    Maestro whatever it is called."""
+    raw = _embedded_maestro_bytes(zanarkand_pdf)
+    assert raw, "expected an embedded Maestro in the reference file"
+
+    mf, warn = G._load_one_font(_FakeFontDoc({11: raw}), xref=11, base="F1",
+                                ext="ttf", named=False)
+    assert mf is not None, warn
+    assert warn is None
+    assert mf.family == "Maestro"
+    # A real calibrated GID, not a guess - proves the recovered font's GIDs
+    # are readable through the SAME map a correctly-named Maestro resource
+    # uses, not some parallel path that only pretends to.
+    assert mf.category(157) == "notehead_filled"
+
+
+def test_load_music_fonts_recognises_a_renamed_maestro_resource(zanarkand_pdf):
+    """The same fix one level up: load_music_fonts itself, given a page
+    whose only font resource is named the way Rito Village's is, must still
+    find the Maestro subset in it - and file it under the RENAMED key, since
+    that is the same basefont-derived name extract_glyph_events's `fname`
+    will look candidates up by (see load_music_fonts' own docstring)."""
+    raw = _embedded_maestro_bytes(zanarkand_pdf)
+    assert raw
+
+    doc = _FakeFontDoc({11: raw})
+
+    class _FakePage:
+        parent = doc
+
+        def get_fonts(self, full=True):
+            # (xref, ext, ftype, basefont, name, encoding, flags) - the exact
+            # shape Rito Village's own PDF reports for its Maestro resource.
+            return [(11, "ttf", "Type0", "CIDFont+F1", "F1", "Identity-H", 0)]
+
+    fonts, warnings = G.load_music_fonts(doc, _FakePage())
+    assert warnings == []
+    assert list(fonts) == ["F1"], f"expected the renamed resource as the key, got {list(fonts)}"
+    assert len(fonts["F1"]) == 1
+    assert fonts["F1"][0].family == "Maestro"
+
+
+def test_an_unrelated_renamed_font_is_not_mistaken_for_maestro(engraved):
+    """The other half of the same fix: a TrueType font that is NOT Maestro
+    under a name this decoder does not recognise must stay silently ignored,
+    not warned about - see _load_one_font's docstring on why noise here would
+    bury the one warning that matters. Uses a real embedded text font from a
+    committed fixture (FreeSans, from notation_and_tab.pdf) rather than a
+    synthesised one, so this is exercising the same code path on real bytes
+    the way the Maestro-recognition tests above do."""
+    import fitz
+
+    doc = fitz.open(engraved("notation_and_tab"))
+    try:
+        xref = None
+        for f in doc[0].get_fonts(full=True):
+            if f[3].split("+")[-1] == "FreeSans":
+                xref = f[0]
+                break
+        assert xref is not None, "expected the notation_and_tab fixture to embed FreeSans"
+
+        mf, warn = G._load_one_font(doc, xref=xref, base="F12", ext="ttf", named=False)
+        assert mf is None
+        assert warn is None
+    finally:
+        doc.close()
+
+
+def test_rito_village_night_draws_glyph_events_on_every_page(rito_village_pdf):
+    """The library-gated acceptance case for issue #154: before the fix,
+    'Rito Village - Night (The Legend of Zelda Breath of the Wild)' read
+    ZERO glyph events on every one of its 3 pages, because its Maestro
+    subset is embedded as a PDF resource named 'CIDFont+F1' and
+    load_music_fonts rejected it by that name before its fingerprint was
+    ever consulted - no noteheads, no rhythm, nothing.
+
+    Pinned directly against the real file, at the fixture level: every page
+    now yields a non-zero count, and the segno sign issue #134 taught this
+    decoder to read (also invisible while the font was rejected) is drawn on
+    the first page."""
+    import fitz
+
+    doc = fitz.open(rito_village_pdf)
+    try:
+        assert doc.page_count == 3, (
+            "the reference score is expected to be exactly 3 pages - if this "
+            "fails, the wrong file is configured as the rito_village fixture")
+        counts = [len(G.extract_glyph_events(doc[pno]).events)
+                  for pno in range(doc.page_count)]
+        assert all(c > 0 for c in counts), (
+            f"expected non-zero glyph events on every page, got {counts}")
+        categories = collections.Counter(
+            ev.category
+            for pno in range(doc.page_count)
+            for ev in G.extract_glyph_events(doc[pno]).events)
+        assert categories["notehead_filled"] > 0
+        assert categories["segno"] == 1
+    finally:
+        doc.close()
 
 
 # ---------------------------------------------------------------------------

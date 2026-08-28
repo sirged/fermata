@@ -1450,25 +1450,34 @@ def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first
 #   "To Coda"                                            143 / 297 (147 marks)
 #   a coda SIGN in the music font                        142 / 297 (155 signs)
 #   a standalone "Fine"                                   16 / 297 (20 marks)
-#   a segno SIGN                                          83 / 297 (87 signs)
+#   a segno SIGN                                          84 / 297 (88 signs)
 #   the word "Segno" anywhere in the text layer            0
 #
 # So this is not a long tail: a navigation instruction is on more than half
 # the library's pages.
 #
-# THE SEGNO ROW WAS 0 UNTIL THE GLYPH WAS RENDERED. Every one of those 87
-# signs is Finale's Maestro GID 4, which glyph_rhythm's calibrated map
-# labelled "simile" - so a census that swept the mapped glyphs and then swept
-# the UNMAPPED ones, twice over, could not see them either time. The
-# consequence here was not cosmetic: 86 files print a "D.S.", and 83 of them
-# do draw the sign it names. Only three do not - "Hollow (Final Fantasy VII
-# Remake)", "Rebel Army Theme (Final Fantasy II)" and "Rito Village - Night
-# (The Legend of Zelda Breath of the Wild)", the last of these because it
-# embeds Maestro in a form this decoder reads no glyphs from at all. Those
-# three are written as the words the page prints, with no <sound> jump
-# attached, and counted (nav_marks_unresolved). Inventing a segno at bar 1
-# for the other 83 would have been the wrong fix for a problem that was a
-# mislabelled table row.
+# THE SEGNO ROW WAS 0 UNTIL THE GLYPH WAS RENDERED. Every one of those signs
+# is Finale's Maestro GID 4, which glyph_rhythm's calibrated map labelled
+# "simile" - so a census that swept the mapped glyphs and then swept the
+# UNMAPPED ones, twice over, could not see them either time. The consequence
+# here was not cosmetic: 86 files print a "D.S.", and (as of issue #154)
+# 84 of them do draw the sign it names. Only two do not - "Hollow (Final
+# Fantasy VII Remake)" and "Rebel Army Theme (Final Fantasy II)" - written as
+# the words the page prints, with no <sound> jump attached, and counted
+# (nav_marks_unresolved). Inventing a segno at bar 1 for the other 84 would
+# have been the wrong fix for a problem that was a mislabelled table row.
+#
+# A THIRD FILE WAS IN THAT LIST TOO, FOR A DIFFERENT REASON (issue #154):
+# "Rito Village - Night (The Legend of Zelda Breath of the Wild)" embeds its
+# Maestro subset as a resource literally named "CIDFont+F1" - every embedded
+# font in that PDF was renamed generically by whatever tool produced it, none
+# of them named "Maestro" - and glyph_rhythm.load_music_fonts used to reject
+# a resource by that name before its fingerprint was ever consulted, so this
+# file read NO music glyphs at all: no noteheads, no rhythm, not just no
+# segno. Fixed by fingerprinting first (see load_music_fonts / _load_one_font
+# and the module docstring's "THE NAME IS A FAST PATH, NOT A GATE"); this
+# file's segno sign is counted in the 84/88 above, and its notes/bars/beats
+# figures moved from the spacing-fallback numbers to glyph-decoded ones.
 
 # How far above the staff it belongs to a navigation mark may sit, in that
 # staff's own spaces. Measured with the attribution rule _assign_nav_marks
