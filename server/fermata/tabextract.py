@@ -1711,7 +1711,7 @@ def _assign_nav_marks(marks, staves, tab_for_top):
     return buckets, unowned
 
 
-def _apply_nav_marks(marks, bounds, lo, hi, staff_first_bar, spacing):
+def _apply_nav_marks(marks, bounds, staff_first_bar, spacing):
     """This staff's navigation marks, as [(document-level bar number, mark)].
 
     A navigation mark names a BAR, not a barline - which is where it differs
@@ -1731,8 +1731,8 @@ def _apply_nav_marks(marks, bounds, lo, hi, staff_first_bar, spacing):
         measured over the library, the instruction's RIGHT edge sits a
         median 0.15 staff spaces from a bar boundary (0.39 for a "To
         Coda"). MuseScore left-aligns at the same barline, so its text
-        starts there and runs on into the NEXT bar - the committed
-        navigation.pdf puts every one of its instructions that way.
+        starts there and runs on into the NEXT bar - three of the four
+        instructions on the committed navigation.pdf are drawn that way.
 
         Anchoring by either edge alone therefore gets one engraver wrong by
         exactly one bar. So neither edge decides: the boundary NEAREST THE
@@ -1742,10 +1742,14 @@ def _apply_nav_marks(marks, bounds, lo, hi, staff_first_bar, spacing):
         no boundary within NAV_BOUNDARY_SNAP_SPACES of it is not aligned to
         a barline at all and falls back to the bar its left edge is in.
 
-    A mark left of the staff's first fret column belongs to its first bar
-    and one right of the last to its last, exactly as _anchor_mark's cases 2
-    and 3 do for a repeat: the fret-column filter carved those boundaries
-    out of `bounds`, so there is nothing there to contain anything.
+    A mark drawn past either end of the bar grid belongs to the bar at that
+    end, which the clamp below is all it takes: `bounds` runs from the
+    staff's own x0 to its own x1, and every boundary the fret-column filter
+    dropped was dropped for being OUTSIDE the fret columns and therefore
+    outside no bar the grid holds. (_anchor_mark needs explicit cases for
+    this because it answers "which boundary", where the clef region and the
+    tail past the last note are genuinely different answers; this answers
+    "which bar", where they are not.)
 
     `bounds` always holds at least the staff's own two ends, so there is no
     "no bar to anchor to" case here at all - a navigation mark that reaches
@@ -1762,24 +1766,18 @@ def _apply_nav_marks(marks, bounds, lo, hi, staff_first_bar, spacing):
         if not mark.opens_a_section:
             # Distance from each boundary to the text's own extent, which is
             # zero for a boundary the text straddles - the MuseScore case
-            # and the Finale case both come out at ~0 here.
+            # and the Finale case both come out at ~0 here. The staff's own
+            # left end is skipped: nothing lies to the left of it for a mark
+            # aligned there to be closing.
             best = None
-            for i, b in enumerate(bounds):
-                if i == 0:
-                    continue    # nothing to the left of the staff's own start
+            for i, b in enumerate(bounds[1:], start=1):
                 d = max(mark.x0 - b, b - mark.x1, 0.0)
                 if d <= snap and (best is None or d < best[0]):
                     best = (d, i - 1)
             if best is not None:
                 local = best[1]
         if local is None:
-            x = mark.x0
-            if x < lo:
-                local = 0
-            elif x > hi:
-                local = n_bars - 1
-            else:
-                local = bisect.bisect_right(bounds, x) - 1
+            local = bisect.bisect_right(bounds, mark.x0) - 1
         local = min(max(local, 0), n_bars - 1)
         anchored.append((staff_first_bar + local, mark))
     return anchored
@@ -4599,7 +4597,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             # (issue #134 phase 2). Anchored here, resolved into <direction>
             # records once the whole document's bars exist.
             nav_anchored.extend(_apply_nav_marks(
-                nav_marks.pop(id(staff), ()), bounds, lo, hi, staff_first_bar,
+                nav_marks.pop(id(staff), ()), bounds, staff_first_bar,
                 staff.spacing))
 
         # Marks bucketed to a tab staff the loop above skipped whole - a

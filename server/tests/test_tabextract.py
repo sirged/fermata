@@ -2928,8 +2928,7 @@ def test_a_jump_and_a_sign_are_anchored_by_different_ends_of_their_own_text():
     spacing = 5.0
 
     def bar_of(mark):
-        anchored = tabextract._apply_nav_marks(
-            [mark], bounds, 5.0, 395.0, 1, spacing)
+        anchored = tabextract._apply_nav_marks([mark], bounds, 1, spacing)
         return anchored[0][0]
 
     # Finale: the instruction is right-aligned, so its text ENDS at bar 2's
@@ -2949,6 +2948,12 @@ def test_a_jump_and_a_sign_are_anchored_by_different_ends_of_their_own_text():
     # is in, rather than snapping across half a bar to the nearest barline.
     adrift = tabextract._NavMark("jump", "D.C.", 240.0, 0, 260.0, 5)
     assert bar_of(adrift) == 3
+    # Drawn past either end of the grid: the bar at that end, by the clamp
+    # rather than by a case of its own.
+    before = tabextract._NavMark("coda", "", -20.0, 0, -8.0, 5)
+    assert bar_of(before) == 1
+    after = tabextract._NavMark("jump", "D.C.", 420.0, 0, 460.0, 5)
+    assert bar_of(after) == 4
 
 
 def _zelda_page_staves():
