@@ -18,6 +18,38 @@ from pydantic import BaseModel, Field, StrictInt
 
 from . import instruments, practice, scanner
 from . import version as version_info
+from .api_models import (
+    ByActivityOut,
+    ByScoreOut,
+    CollectionOut,
+    CurrentGoalOut,
+    DuplicateGroupOut,
+    GoalDeleteOut,
+    GoalListOut,
+    GoalOut,
+    HealthOut,
+    InstrumentDeleteOut,
+    InstrumentOut,
+    InstrumentPresetOut,
+    LogPracticeOut,
+    PracticeHistoryOut,
+    PracticeReviewOut,
+    PracticeSessionOut,
+    PracticeSummaryOut,
+    ScanStatusOut,
+    ScanTriggerOut,
+    ScoreOut,
+    ScorePracticeOut,
+    SessionDeleteOut,
+    SessionListOut,
+    SettingsOut,
+    TagOut,
+    TranscribeResultOut,
+    TranscriptionAnalysisOut,
+    TranscriptionOut,
+    UploadOut,
+    VersionOut,
+)
 from .config import FILE_TYPES, LIBRARY_DIR
 from .db import DEFAULT_OWNER, connect, tx, write_tx
 from .glyph_rhythm import VALID_TS_DENOMINATORS
@@ -25,6 +57,18 @@ from .tabextract import analyze as analyze_pdf, extract as extract_pdf
 from .thumbs import thumb_path
 
 router = APIRouter(prefix="/api")
+
+# Every route below carries a `tags=[...]` entry grouping it in /docs, and a
+# `response_model=` pinning its shape - see api_models.py for what each model
+# documents and why it lives apart from the routes. TAG_* names are declared
+# once here so a route and /docs agree on the exact string.
+TAG_SYSTEM = "system"
+TAG_SETTINGS = "settings"
+TAG_INSTRUMENTS = "instruments"
+TAG_LIBRARY = "library"
+TAG_PRACTICE = "practice"
+TAG_TRANSCRIPTION = "transcription"
+TAG_SCAN = "scan"
 
 # SQLite's INTEGER is 64-bit, and handing the driver anything wider raises
 # OverflowError from inside the query - a 500 for what is only ever a row that
@@ -132,19 +176,22 @@ def _with_tags(conn, rows):
     return out
 
 
-@router.get("/health")
+@router.get("/health", tags=[TAG_SYSTEM], response_model=HealthOut)
 def health():
+    """Whether the process is up and answering requests at all."""
     return {"status": "ok"}
 
 
-@router.get("/version")
+@router.get("/version", tags=[TAG_SYSTEM], response_model=VersionOut)
 def get_version():
     """What build is actually running - see fermata/version.py."""
     return version_info.info()
 
 
-@router.get("/settings")
+@router.get("/settings", tags=[TAG_SETTINGS], response_model=SettingsOut)
 def get_settings():
+    """Every user preference, defaulted for anything never written - see
+    SETTINGS_DEFAULTS."""
     conn = connect()
     rows = conn.execute(
         "SELECT key, value FROM settings WHERE owner = ?", (DEFAULT_OWNER,)
@@ -169,8 +216,11 @@ def get_settings():
     return result
 
 
-@router.put("/settings")
+@router.put("/settings", tags=[TAG_SETTINGS], response_model=SettingsOut)
 def put_settings(patch: dict[str, str] = Body(...)):
+    """Write one or more preferences and return the settings as they now
+    stand. A key not already known, or a value not among its choices, fails
+    the whole call - see the module comment on SETTINGS_CHOICES."""
     # A settings store that takes arbitrary keys becomes a junk drawer - only
     # known keys are accepted, and a key with choices in SETTINGS_CHOICES must
     # be one of them.
@@ -255,8 +305,9 @@ def _normalise_instrument(body: InstrumentIn) -> dict:
         raise HTTPException(422, str(e)) from None
 
 
-@router.get("/instruments")
+@router.get("/instruments", tags=[TAG_INSTRUMENTS], response_model=list[InstrumentOut])
 def list_instruments():
+    """Every instrument the player has defined, in name order."""
     conn = connect()
     rows = conn.execute(
         "SELECT * FROM instruments WHERE owner = ? ORDER BY name COLLATE NOCASE, id",
@@ -268,13 +319,18 @@ def list_instruments():
 # Declared before /instruments/{instrument_id}: FastAPI matches in declaration
 # order, and the other way round "presets" would be tried as an int path
 # parameter and answered with a 422 about parsing rather than with the presets.
-@router.get("/instruments/presets")
+@router.get(
+    "/instruments/presets", tags=[TAG_INSTRUMENTS], response_model=list[InstrumentPresetOut]
+)
 def list_instrument_presets():
+    """Built-in tunings a player can start a definition from - see
+    instruments.PRESETS."""
     return instruments.presets()
 
 
-@router.post("/instruments")
+@router.post("/instruments", tags=[TAG_INSTRUMENTS], response_model=InstrumentOut)
 def create_instrument(body: InstrumentIn):
+    """Save a new instrument definition."""
     fields = _normalise_instrument(body)
     with write_tx() as conn:
         cur = conn.execute(
@@ -297,13 +353,14 @@ def create_instrument(body: InstrumentIn):
     return get_instrument(instrument_id)
 
 
-@router.get("/instruments/{instrument_id}")
+@router.get("/instruments/{instrument_id}", tags=[TAG_INSTRUMENTS], response_model=InstrumentOut)
 def get_instrument(instrument_id: RowId):
+    """One instrument definition."""
     conn = connect()
     return _instrument_dict(_instrument_row(conn, instrument_id))
 
 
-@router.put("/instruments/{instrument_id}")
+@router.put("/instruments/{instrument_id}", tags=[TAG_INSTRUMENTS], response_model=InstrumentOut)
 def update_instrument(instrument_id: RowId, body: InstrumentIn):
     """Replace a definition in place.
 
@@ -341,7 +398,9 @@ def update_instrument(instrument_id: RowId, body: InstrumentIn):
     return get_instrument(instrument_id)
 
 
-@router.delete("/instruments/{instrument_id}")
+@router.delete(
+    "/instruments/{instrument_id}", tags=[TAG_INSTRUMENTS], response_model=InstrumentDeleteOut
+)
 def delete_instrument(instrument_id: RowId):
     """Forget an instrument the player no longer has. Scores that referenced it
     keep their own rows - scores.instrument_id is ON DELETE SET NULL, so they
@@ -362,7 +421,7 @@ def delete_instrument(instrument_id: RowId):
     return {"deleted": instrument_id, "scores_unlinked": unlinked}
 
 
-@router.get("/scores")
+@router.get("/scores", tags=[TAG_LIBRARY], response_model=list[ScoreOut])
 def list_scores(
     search: str = "",
     collection: str = "",
@@ -371,6 +430,11 @@ def list_scores(
     favorite: bool = False,
     practiced: str = "",
 ):
+    """The library, filtered and searched. `search` matches title, composer,
+    source or series; `practiced` is 'recent' (practised in the last 14 days)
+    or 'neglected' (present on disk, and either never practised or not
+    practised in 30 days) - see the query's own comments for why those two
+    views disagree about a score whose file has gone missing."""
     if practiced and practiced not in VALID_PRACTICED:
         raise HTTPException(422, f"practiced must be one of {sorted(VALID_PRACTICED)}")
     conn = connect()
@@ -446,7 +510,7 @@ def list_scores(
     return _with_tags(conn, rows)
 
 
-@router.get("/duplicates")
+@router.get("/duplicates", tags=[TAG_LIBRARY], response_model=list[DuplicateGroupOut])
 def list_duplicates():
     """Copies of the same content that are BOTH ON DISK.
 
@@ -475,7 +539,7 @@ def list_duplicates():
     return groups
 
 
-@router.get("/collections")
+@router.get("/collections", tags=[TAG_LIBRARY], response_model=list[CollectionOut])
 def list_collections():
     """Every collection, with how many of its scores are there and how many are not.
 
@@ -504,8 +568,9 @@ def list_collections():
     return [dict(r) for r in rows]
 
 
-@router.get("/tags")
+@router.get("/tags", tags=[TAG_LIBRARY], response_model=list[TagOut])
 def list_tags():
+    """Every tag in use, and how many scores carry it."""
     conn = connect()
     rows = conn.execute(
         """SELECT t.name, COUNT(st.score_id) AS count FROM tags t
@@ -515,8 +580,9 @@ def list_tags():
     return [dict(r) for r in rows]
 
 
-@router.get("/scores/{score_id}")
+@router.get("/scores/{score_id}", tags=[TAG_LIBRARY], response_model=ScoreOut)
 def get_score(score_id: RowId):
+    """One score, with its tags, transcription flag and practice totals."""
     conn = connect()
     return _with_tags(conn, [_score_row(conn, score_id)])[0]
 
@@ -534,8 +600,11 @@ class ScorePatch(BaseModel):
     instrument_id: int | None = Field(default=None, ge=1, le=SQLITE_MAX_INTEGER)
 
 
-@router.patch("/scores/{score_id}")
+@router.patch("/scores/{score_id}", tags=[TAG_LIBRARY], response_model=ScoreOut)
 def patch_score(score_id: RowId, patch: ScorePatch):
+    """Change one or more fields on a score. `tags` replaces the whole tag
+    set when present; an explicit `instrument_id: null` clears it, which is
+    different from omitting the field entirely."""
     if patch.content_kind is not None and patch.content_kind not in VALID_KINDS:
         raise HTTPException(422, f"content_kind must be one of {sorted(VALID_KINDS)}")
     with write_tx() as conn:
@@ -757,8 +826,12 @@ def _session_row(conn, session_id: int):
     return row
 
 
-@router.post("/scores/{score_id}/practice")
+@router.post(
+    "/scores/{score_id}/practice", tags=[TAG_PRACTICE], response_model=LogPracticeOut
+)
 def log_practice(score_id: RowId, body: PracticeIn):
+    """Log a practice session against this score, and return it alongside
+    the score's recent sessions and totals."""
     with write_tx() as conn:
         _score_row(conn, score_id)
         fields = body.model_dump()
@@ -785,8 +858,11 @@ def _recent_sessions(conn, score_id: int):
     ).fetchall()
 
 
-@router.get("/scores/{score_id}/practice")
+@router.get(
+    "/scores/{score_id}/practice", tags=[TAG_PRACTICE], response_model=ScorePracticeOut
+)
 def get_practice(score_id: RowId):
+    """This score's recent sessions (up to 50) and its all-time totals."""
     conn = connect()
     _score_row(conn, score_id)
     return {
@@ -795,7 +871,7 @@ def get_practice(score_id: RowId):
     }
 
 
-@router.post("/practice/sessions")
+@router.post("/practice/sessions", tags=[TAG_PRACTICE], response_model=PracticeSessionOut)
 def log_session(body: SessionIn):
     """Log practice that is not necessarily against a piece.
 
@@ -808,8 +884,13 @@ def log_session(body: SessionIn):
         return practice.session_dict(_insert_session(conn, values))
 
 
-@router.patch("/practice/sessions/{session_id}")
+@router.patch(
+    "/practice/sessions/{session_id}", tags=[TAG_PRACTICE], response_model=PracticeSessionOut
+)
 def patch_session(session_id: RowId, patch: SessionPatch):
+    """Add or correct detail on a session already logged. An explicit null on
+    any field clears it; the whole record is re-validated, not just the
+    changed fields - see the function's own comments for why."""
     with write_tx() as conn:
         row = _session_row(conn, session_id)
         # The whole record is rebuilt and re-checked, not just the changed
@@ -845,7 +926,9 @@ def patch_session(session_id: RowId, patch: SessionPatch):
         return practice.session_dict(updated)
 
 
-@router.delete("/practice/sessions/{session_id}")
+@router.delete(
+    "/practice/sessions/{session_id}", tags=[TAG_PRACTICE], response_model=SessionDeleteOut
+)
 def delete_session(session_id: RowId):
     """Remove a session that should not be in the record.
 
@@ -863,7 +946,7 @@ def delete_session(session_id: RowId):
     return {"deleted": session_id}
 
 
-@router.get("/practice/sessions")
+@router.get("/practice/sessions", tags=[TAG_PRACTICE], response_model=SessionListOut)
 def list_sessions(
     start: str = "",
     end: str = "",
@@ -921,7 +1004,7 @@ def list_sessions(
     }
 
 
-@router.get("/practice/summary")
+@router.get("/practice/summary", tags=[TAG_PRACTICE], response_model=PracticeSummaryOut)
 def practice_summary():
     """The last seven days, for the library header.
 
@@ -958,7 +1041,7 @@ def practice_summary():
     }
 
 
-@router.get("/practice/history")
+@router.get("/practice/history", tags=[TAG_PRACTICE], response_model=PracticeHistoryOut)
 def practice_history(days: int = practice.DEFAULT_HISTORY_DAYS, today: str | None = None):
     """Where the time went over a stretch of days.
 
@@ -1056,8 +1139,11 @@ def _normalise_goal(conn, fields: dict, allow_missing_score: bool = False) -> di
         raise HTTPException(422, str(e)) from None
 
 
-@router.post("/practice/goals")
+@router.post("/practice/goals", tags=[TAG_PRACTICE], response_model=GoalOut)
 def set_goal(body: GoalIn, today: str | None = None):
+    """Set a goal for a period, replacing any goal already set for it - see
+    the function's own comments for what replacing carries over and what it
+    does not."""
     day = _today(today)
     fields = body.model_dump()
     if not fields.get("period_start"):
@@ -1113,7 +1199,7 @@ def set_goal(body: GoalIn, today: str | None = None):
 
 # Declared before the {goal_id} routes so "current" is not parsed as an id -
 # FastAPI matches in declaration order.
-@router.get("/practice/goals/current")
+@router.get("/practice/goals/current", tags=[TAG_PRACTICE], response_model=CurrentGoalOut)
 def current_goal(today: str | None = None):
     """The goal covering today, or nothing.
 
@@ -1140,8 +1226,9 @@ def current_goal(today: str | None = None):
     }
 
 
-@router.get("/practice/goals")
+@router.get("/practice/goals", tags=[TAG_PRACTICE], response_model=GoalListOut)
 def list_goals(limit: int = practice.MAX_REVIEW_WEEKS, today: str | None = None):
+    """Recent goals, most recent period first, each with its progress."""
     day = _today(today)
     if not 1 <= limit <= practice.MAX_REVIEW_WEEKS:
         raise HTTPException(422, f"limit must be between 1 and {practice.MAX_REVIEW_WEEKS}")
@@ -1154,8 +1241,11 @@ def list_goals(limit: int = practice.MAX_REVIEW_WEEKS, today: str | None = None)
     return {"goals": [practice.goal_dict(conn, r, day) for r in rows]}
 
 
-@router.patch("/practice/goals/{goal_id}")
+@router.patch("/practice/goals/{goal_id}", tags=[TAG_PRACTICE], response_model=GoalOut)
 def patch_goal(goal_id: RowId, patch: GoalPatch, today: str | None = None):
+    """Change a goal's targets, or record a reflection on how its period
+    went. `period_start` cannot be patched - see the function's own
+    comments."""
     day = _today(today)
     with write_tx() as conn:
         row = _goal_row(conn, goal_id)
@@ -1204,7 +1294,9 @@ def patch_goal(goal_id: RowId, patch: GoalPatch, today: str | None = None):
         return practice.goal_dict(conn, updated, day)
 
 
-@router.delete("/practice/goals/{goal_id}")
+@router.delete(
+    "/practice/goals/{goal_id}", tags=[TAG_PRACTICE], response_model=GoalDeleteOut
+)
 def delete_goal(goal_id: RowId):
     """Forget a goal.
 
@@ -1222,7 +1314,7 @@ def delete_goal(goal_id: RowId):
     return {"deleted": goal_id}
 
 
-@router.get("/practice/review")
+@router.get("/practice/review", tags=[TAG_PRACTICE], response_model=PracticeReviewOut)
 def practice_review(weeks: int = practice.DEFAULT_REVIEW_WEEKS, today: str | None = None):
     """Recent weeks, each stating what happened in it.
 
@@ -1268,8 +1360,15 @@ def practice_review(weeks: int = practice.DEFAULT_REVIEW_WEEKS, today: str | Non
     return {"today": day.isoformat(), "week_starts_on": starts_on, "weeks": out}
 
 
-@router.get("/scores/{score_id}/file")
+@router.get(
+    "/scores/{score_id}/file",
+    tags=[TAG_LIBRARY],
+    responses={200: {"content": {"application/pdf": {}, "application/octet-stream": {}}}},
+)
 def get_file(score_id: RowId):
+    """The score's own file - a PDF or, for anything else FILE_TYPES admits,
+    an octet stream. No response_model: this returns a FileResponse, whose
+    body is the file's bytes rather than JSON."""
     conn = connect()
     row = _score_row(conn, score_id)
     path = LIBRARY_DIR / row["path"]
@@ -1279,8 +1378,13 @@ def get_file(score_id: RowId):
     return FileResponse(path, media_type=media, filename=path.name)
 
 
-@router.get("/scores/{score_id}/thumb")
+@router.get(
+    "/scores/{score_id}/thumb",
+    tags=[TAG_LIBRARY],
+    responses={200: {"content": {"image/png": {}}}},
+)
 def get_thumb(score_id: RowId):
+    """The score's cached first-page thumbnail, if one has been generated."""
     conn = connect()
     row = _score_row(conn, score_id)
     path = thumb_path(row["hash"])
@@ -1483,8 +1587,12 @@ def _transcription_dict(row) -> dict:
     return d
 
 
-@router.get("/scores/{score_id}/transcription")
+@router.get(
+    "/scores/{score_id}/transcription", tags=[TAG_TRANSCRIPTION], response_model=TranscriptionOut
+)
 def get_transcription(score_id: RowId):
+    """The score's transcription - a hand edit if one exists, otherwise the
+    extraction - see _transcription_row."""
     conn = connect()
     _score_row(conn, score_id)
     row = _transcription_row(conn, score_id)
@@ -1493,8 +1601,14 @@ def get_transcription(score_id: RowId):
     return _transcription_dict(row)
 
 
-@router.get("/scores/{score_id}/transcription/analysis")
+@router.get(
+    "/scores/{score_id}/transcription/analysis",
+    tags=[TAG_TRANSCRIPTION],
+    response_model=TranscriptionAnalysisOut,
+)
 def get_transcription_analysis(score_id: RowId):
+    """Cheap triage of whether this score is worth extracting - see
+    tabextract.analyze."""
     conn = connect()
     row = _score_row(conn, score_id)
     if row["file_type"] != "pdf":
@@ -1532,8 +1646,16 @@ def _validate_time_signature(ts: tuple[int, int]) -> None:
             422, f"time_signature denominator must be one of {sorted(VALID_TS_DENOMINATORS)}")
 
 
-@router.post("/scores/{score_id}/transcribe")
+@router.post(
+    "/scores/{score_id}/transcribe",
+    tags=[TAG_TRANSCRIPTION],
+    response_model=TranscribeResultOut,
+)
 def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
+    """Extract tablature from this score's PDF and store it, replacing any
+    previous extraction (never a hand edit - see the function's own
+    comments). Only valid for pdf scores with a tab staff; an unreadable
+    time signature or a non-extractable pdf is a 422."""
     conn = connect()
     row = _score_row(conn, score_id)
     if row["file_type"] != "pdf":
@@ -1683,8 +1805,13 @@ def _sniff_transcription_format(content: str) -> str:
     return "musicxml" if content.lstrip().startswith("<") else "alphatex"
 
 
-@router.put("/scores/{score_id}/transcription")
+@router.put(
+    "/scores/{score_id}/transcription", tags=[TAG_TRANSCRIPTION], response_model=TranscriptionOut
+)
 def save_transcription(score_id: RowId, body: TranscriptionEditIn):
+    """Save a hand edit, replacing any hand edit already stored - never the
+    extraction. `format` is sniffed from the content when not given - see
+    _sniff_transcription_format."""
     fmt = body.format or _sniff_transcription_format(body.content)
     if fmt not in VALID_TRANSCRIPTION_FORMATS:
         raise HTTPException(
@@ -1706,7 +1833,9 @@ def save_transcription(score_id: RowId, body: TranscriptionEditIn):
     return _transcription_dict(row)
 
 
-@router.delete("/scores/{score_id}/transcription")
+@router.delete(
+    "/scores/{score_id}/transcription", tags=[TAG_TRANSCRIPTION], response_model=TranscriptionOut
+)
 def delete_transcription(score_id: RowId):
     """Discard a hand edit, reverting to the extracted transcription.
 
@@ -1728,14 +1857,17 @@ def delete_transcription(score_id: RowId):
     return _transcription_dict(row)
 
 
-@router.post("/scan")
+@router.post("/scan", tags=[TAG_SCAN], response_model=ScanTriggerOut)
 def trigger_scan():
+    """Start a library scan if one is not already running, and return the
+    status left behind by whichever pass is now current."""
     started = scanner.start_scan()
     return {"started": started, **scanner.scan_status()}
 
 
-@router.get("/scan/status")
+@router.get("/scan/status", tags=[TAG_SCAN], response_model=ScanStatusOut)
 def get_scan_status():
+    """Where the most recent (or currently running) scan stands."""
     return scanner.scan_status()
 
 
@@ -1746,7 +1878,7 @@ class ScanAcknowledgement(BaseModel):
     token: str = Field(min_length=1, max_length=128)
 
 
-@router.post("/scan/acknowledge")
+@router.post("/scan/acknowledge", tags=[TAG_SCAN], response_model=ScanTriggerOut)
 def acknowledge_scan(body: ScanAcknowledgement):
     """Say, once, that a refused reconciliation was meant.
 
@@ -1776,8 +1908,11 @@ def acknowledge_scan(body: ScanAcknowledgement):
 _SAFE_SEGMENT = re.compile(r"^[^/\\]+$")
 
 
-@router.post("/upload")
+@router.post("/upload", tags=[TAG_LIBRARY], response_model=UploadOut)
 async def upload(file: UploadFile, folder: str = "Uploads"):
+    """Save a file into the library under `folder` (created if needed) and
+    trigger a scan to pick it up. `folder` may not contain `..` or an
+    absolute path segment."""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in FILE_TYPES:
         raise HTTPException(422, f"unsupported file type {suffix!r}")
