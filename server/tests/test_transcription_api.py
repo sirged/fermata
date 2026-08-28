@@ -401,7 +401,11 @@ BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
             # And for issue #134 phase 2's navigation disclosures, added to
             # _BAR_KEYS and exercised here in the same change rather than
             # left for a later review to find missing.
-            "nav_marks_unanchored", "nav_marks_unresolved")
+            "nav_marks_unanchored", "nav_marks_unresolved",
+            # And for issue #152's lost-system counter, in the same change
+            # as _BAR_KEYS and the confidence_json write - the reload path
+            # exercised here rather than assumed.
+            "systems_unread")
 # Which bars, and how much silence - the figures that only exist as data. The
 # warning prose caps its bar list, and the profile document promises a consumer
 # that `inferred_rest_quarters` is the sum of the `<forward>` durations in the
@@ -414,7 +418,10 @@ BAR_DETAIL_KEYS = ("padded_bars", "unread_bars", "inferred_rest_quarters",
                    "spacing_bars", "degraded_bars",
                    "repeats_unread_bars", "endings_unread_bars",
                    "endings_truncated_bars", "form_marks_unanchored_bars",
-                   "nav_marks_unresolved_bars")
+                   "nav_marks_unresolved_bars",
+                   # Pages, not bars - a system that was never read has no
+                   # bar numbers to report (issue #152).
+                   "systems_unread_pages")
 
 
 def test_bar_conformance_survives_a_reload(app_env, engraved, monkeypatch, insert_score):
@@ -853,6 +860,56 @@ def test_repeat_and_volta_disclosures_survive_the_api_round_trip(
     assert fetched["warnings"] == posted["warnings"]
     assert any("could not be resolved to a clean forward/backward" in w
                for w in fetched["warnings"])
+
+
+def test_a_lost_system_survives_the_api_round_trip(
+    app_env, dynamis_pdf, monkeypatch, insert_score
+):
+    """Issue #152's counter, on a score whose count is genuinely nonzero.
+
+    Every other figure this API reports describes the systems that WERE
+    read. `systems_unread` is the one that says how far that qualification
+    reaches - music ABSENT from the transcription rather than imperfect in
+    it - so a reader who reloads a transcription and gets None for it is
+    holding a set of numbers that silently excludes a page's worth of music,
+    and cannot know.
+
+    Run against a nonzero score deliberately, for the reason the tests above
+    state: a persistence bug that unconditionally wrote 0 and [] would pass
+    every zero-valued assertion in this file. Dynamis loses one system on
+    page 1 to a 7-line group (see the conftest note), and it is one of only
+    two scores in the library that still lose one at all.
+
+    This is the round trip #146 was filed for after `unison_digits_shared`
+    reached ExtractionResult, to_dict() and _BAR_KEYS but never the
+    confidence_json dict that is the only path into storage - so the prose
+    reached a reader and the number read back as None. Asserted here, in the
+    same change that added the field, rather than left for a later review.
+    """
+    pdf = dynamis_pdf
+    monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    assert posted["systems_unread"] == 1
+    assert posted["systems_unread_pages"] == [1]
+
+    fetched = api.get_transcription(score_id)
+    for key in ("systems_unread", "systems_unread_pages"):
+        assert fetched[key] == posted[key], key
+        assert fetched[key] is not None, key
+    assert fetched["systems_unread"] > 0, (
+        "the whole point: this must not be the zero case")
+    # The prose half of the same disclosure, which is what a reader who never
+    # looks at the figures actually sees.
+    assert any("systems_unread=1" in w for w in fetched["warnings"]), \
+        fetched["warnings"]
+    # And a lost system caps the structure claim, because the marks that were
+    # read may be complete and still describe a form built out of bars this
+    # file does not contain.
+    assert fetched["confidence"]["confidence"]["structure"].startswith("low"), \
+        fetched["confidence"]["confidence"]
 
 
 def test_navigation_disclosures_survive_the_api_round_trip(

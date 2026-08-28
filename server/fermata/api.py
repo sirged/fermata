@@ -1491,7 +1491,17 @@ _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
              # phase 2, Rule 16), here for the same reason the repeat/volta
              # keys above are: a caller with only the API must not have to
              # infer the caveat from a file that looks complete.
-             "nav_marks_unanchored", "nav_marks_unresolved")
+             "nav_marks_unanchored", "nav_marks_unresolved",
+             # `systems_unread` (issue #152): a SYSTEM whose bars were never
+             # read - the only disclosure here about music that is ABSENT
+             # from the transcription rather than imperfect in it. It has to
+             # survive a reload for the same reason the rest do, and more
+             # sharply: every other figure in this blob describes the
+             # systems that WERE read, so a reader without this one is
+             # holding a set of numbers that silently excludes a page's
+             # worth of music. Losing a system can even move
+             # `bars_defective` down.
+             "systems_unread")
 
 # WHICH bars those were, as data and not only inside the warning prose. The
 # prose names them, but it caps the list, and the profile document states that a
@@ -1518,7 +1528,14 @@ _BAR_LIST_KEYS = ("padded_bars", "unread_bars", "spacing_bars", "degraded_bars",
                    # target the score does not draw. `nav_marks_unanchored`
                    # has no list of its own on purpose: a mark with no bar
                    # to name has no bar number to report.
-                   "nav_marks_unresolved_bars")
+                   "nav_marks_unresolved_bars",
+                   # WHICH PAGES a lost system was on (issue #152). This is a
+                   # page list where its neighbours are bar lists, and that is
+                   # forced by the defect: a system that was never read has no
+                   # bar numbers, because bar numbers come from the grid its
+                   # bars never entered. A page is the coordinate that does
+                   # exist, and the one a reader can turn to.
+                   "systems_unread_pages")
 _BAR_AMOUNT_KEYS = ("inferred_rest_quarters",)
 
 
@@ -1765,6 +1782,13 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             "nav_marks_unanchored": result.nav_marks_unanchored,
             "nav_marks_unresolved": result.nav_marks_unresolved,
             "nav_marks_unresolved_bars": result.nav_marks_unresolved_bars,
+            # systems_unread / systems_unread_pages (issue #152) - written
+            # here, the only path into storage, and not merely produced on
+            # ExtractionResult. That gap is the one #143 and #146 each shipped
+            # once; the structural guard in test_transcription_api.py now
+            # fails by name if a _BAR_KEYS entry never reaches this dict.
+            "systems_unread": result.systems_unread,
+            "systems_unread_pages": result.systems_unread_pages,
             "time_signature": list(result.time_signature) if result.time_signature else None,
             "time_signature_source": result.time_signature_source,
             "key_fifths": result.key_fifths,

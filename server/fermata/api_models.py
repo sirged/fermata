@@ -494,6 +494,11 @@ class TranscriptionOut(BaseModel):
     staves_coincident_unsplit: int | None
     nav_marks_unanchored: int | None
     nav_marks_unresolved: int | None
+    # A system whose bars were not read at all (issue #152) - music ABSENT
+    # from this transcription rather than imperfect in it. Every other figure
+    # on this model describes only the systems that WERE read, which makes
+    # this the one that says how far that qualification reaches.
+    systems_unread: int | None
 
     # _BAR_LIST_KEYS
     padded_bars: list[int] | None
@@ -508,6 +513,10 @@ class TranscriptionOut(BaseModel):
     # mark with no bar to name has no bar number to report (issue #134
     # phase 2, Rule 16).
     nav_marks_unresolved_bars: list[int] | None
+    # PAGES, not bars, and for the reason `nav_marks_unanchored` has no list
+    # at all: a system that was never read has no bar numbers to report. The
+    # page is the coordinate that survives (issue #152).
+    systems_unread_pages: list[int] | None
 
     # _BAR_AMOUNT_KEYS
     inferred_rest_quarters: float | None

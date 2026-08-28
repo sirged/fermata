@@ -1281,23 +1281,34 @@ def test_a_degraded_system_names_the_bars_it_produced(engraved):
     assert "The bars they produced are: 1, 2, 3, 4." in named
 
 
-def test_a_final_system_too_short_to_detect_loses_its_bars(engraved):
-    """A known limitation, engraved so that it is a tripwire rather than a
-    sentence in a README.
+def test_a_final_system_too_short_to_detect_is_read(engraved):
+    """The tripwire this fixture was engraved to be, now that it has fired.
 
-    A staff is found by the length of its lines, and an engraver does not
-    stretch a final system that is only part full - so a two-bar last system
-    has lines under the length floor and is not detected at all. This fixture
-    writes eight bars and six are read. The silence is the part worth
-    knowing: `tab_only` is twelve bars precisely to avoid this, and if that
-    had been the only fixture nothing here would say it happens."""
+    A staff used to be found by the length of its lines alone, and an
+    engraver does not stretch a final system that is only part full - so this
+    fixture's two-bar last system had lines under the length floor and was
+    not detected at all. Eight bars were engraved and six were read, with
+    nothing saying so. `tab_only` is twelve bars precisely to avoid the same
+    fate, and had that been the only fixture nothing here would have said it
+    happened.
+
+    Issue #152 is that defect at library scale - the same floor hides the
+    right-hand coda system on 40 of the library's files - and this asserts
+    the fix on a page whose contents are known exactly, because they were
+    written here: all eight bars, from two tab staves, one of them short.
+    See tabextract.SHORT_STAFF_LEN_RATIO for the floor that admits it and
+    STAFF_LINE_MIN_SPACING for what keeps a decoration from coming with it.
+    """
     assert len(source_beats("tab_only_short_last_system")) == 8
     result = tabextract.extract(engraved("tab_only_short_last_system"))
     assert result.extractable
-    assert result.bars == 6, "six of the eight bars engraved"
-    assert result.tab_staff_count == 1, "the second system was not found at all"
-    assert not any("were not detected" in w for w in result.warnings), (
-        "and nothing reports the two missing bars - which is the defect")
+    assert result.bars == 8, "every bar engraved, including the short system's two"
+    assert result.tab_staff_count == 2, "the short second system is a staff"
+    assert result.notes == 32
+    # Nothing was lost, so nothing is counted as lost - the counter is only
+    # honest if it can also say zero (issue #152).
+    assert result.systems_unread == 0
+    assert result.systems_unread_pages == []
 
 
 # ---------------------------------------------------------------------------

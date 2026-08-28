@@ -29,6 +29,7 @@ several things this profile has to decide.
   - [Inferred silence](#inferred-silence-rule-14)
   - [Repeat structure](#repeat-structure-rule-15)
   - [Navigation marks](#navigation-marks-rule-16)
+    - [A system that was not read](#a-system-that-was-not-read)
   - [Note identifiers](#note-identifiers-rule-17)
 - [Example 1: one monophonic bar](#example-1-one-monophonic-bar)
 - [Example 2: two voices in one bar](#example-2-two-voices-in-one-bar)
@@ -628,9 +629,45 @@ staff whose bars it would otherwise be clamped onto — is reported in
 bar. Both feed the `structure` confidence key.
 
 This is not a rare branch. In the library this profile was developed against,
-**86 of 297 scores print "D.S.", and 43 marks over the library are read off
-the page and anchored to no bar.** Of those 86, two draw no segno for the
+**86 of 297 scores print "D.S."** Of those 86, two draw no segno for the
 D.S. to name and get their words and no `dalsegno`; the other 84 do draw one.
+
+**`nav_marks_unanchored` is now 0 over that library, and it used to be 43.**
+Those 43 were almost entirely one defect, and not a defect in reading marks:
+these arrangements print the coda as a short system to the *right* of the
+last full system on the same horizontal band, and staff detection lost that
+whole system, so its coda sign was read off the page and had no bar to name
+because this transcription held none of that system's bars. Reading the
+system is what fixed it — see **A system that was not read** below — and it
+took `nav_marks_unresolved` from 87 bars to 7 at the same time. The 7 that
+remain are scores that genuinely name a target their page does not draw.
+
+### A system that was not read
+
+Every figure above describes music that reached the transcription and says
+how well it was read. `systems_unread` says how much never reached it: a
+staff-sized group of staff lines was found on a page, could not be read as a
+staff, and so contributed no bars at all. `systems_unread_pages` says which
+pages — **pages, not bars, and for the same reason `nav_marks_unanchored`
+has no bar list: a system that was never read has no bar numbers, because
+bar numbers are assigned by a grid its bars never entered.**
+
+It has to be counted, and counted separately, because of an asymmetry that
+makes silence here worse than error. The bars that vanish with a system are
+as likely as any others to be the ones that did not add up — so losing a
+system can move `bars_defective` *down*. A conformance figure that improves
+when music disappears is worse than no figure, and `systems_unread` is the
+number that stops it being read that way: **`bars`, `notes` and every Rule 8
+count describe only the systems that were read, and this is what says so.**
+
+A score with a lost system also reports `structure` confidence as `low`,
+outranking every other structure term. The repeat and navigation marks that
+were read may be perfectly complete and still describe a form built out of
+bars the file does not contain.
+
+In the library this profile was developed against, `systems_unread` is **2**,
+on 2 files. Before the side-by-side systems above were read it was **41**,
+across 22 files.
 
 **A correction, stated plainly, because an earlier version of this rule said
 the opposite.** This document previously claimed that *no score in the
