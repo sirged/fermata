@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/version.spec.js",
+  "count": 2,
+  "reason": "issue #119: the build indicator is on screen unprompted and agrees with what GET /api/version actually reports."
+}
