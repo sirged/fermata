@@ -1540,13 +1540,14 @@ NAV_BOUNDARY_SNAP_SPACES = 2.0
 # found: "repeat after D.C.", "after D.S. repeat this", "on return D.S.",
 # "D.S. 1: use second repeat", "D.S. 2: use first repeat to Coda" (and
 # "To Coda after repeat", which _NAV_TO_CODA_RE below now refuses the same
-# way), plus five method-book glosses of the form "D.C. al Fine = Return to
-# the beginning of the piece and play to the fine."
+# way), plus five method-book lines of the form "D.C. al Fine = Return to the
+# beginning of the piece and play to the fine." - 11 lines over the library,
+# 10 of them read as jumps and one as a "To Coda".
 #
 # The tail this still accepts is what the library's real marks print after
 # the phrase and nothing else: the coda's own number ("D.S. al Coda 1"), a
 # repeat count ("D.C. al Coda x2") and a closing full stop. Every one of the
-# 176 real jump marks in the library matches; all 10 prose lines do not. A
+# 176 real jump marks in the library matches; all 11 prose lines do not. A
 # leading bar number is deliberately NOT allowed the way _NAV_CODA_LABEL_RE
 # allows one - an engraver prints the system's bar number beside the sign at
 # the head of a system, which is where a coda label sits and is not where a

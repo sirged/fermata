@@ -2905,8 +2905,11 @@ def test_prose_that_merely_contains_a_marks_words_is_not_a_mark(text):
     # and then say which repeat to take on it.
     "D.S. 1: use second repeat",
     "D.S. 2: use first repeat to Coda",
-    # Method-book glosses: the phrase followed by its definition.
+    # Method-book lines: the phrase followed by its definition. The library
+    # prints the first of these twice, once with an "fi" ligature in "fine",
+    # which is a different string to match and so is listed as one.
     "D.C. al Fine = Return to the beginning of the piece and play to the fine.",
+    "D.C. al Fine = Return to the beginning of the piece and play to the ﬁne.",
     "D.C. al Fine - Return to beginning and play until the Fine.",
     "Da Capo al Fine - Return to the beginning and play until the Fine at the "
     "final barline.",
@@ -2920,10 +2923,13 @@ def test_a_line_that_only_contains_a_jump_phrase_is_prose_not_a_jump(text):
     written out as words with a live <sound> beside it, which tells a reader
     to play a form the engraver never wrote.
 
-    Both patterns are now anchored to the whole line. All 10 lines here are
-    refused; all 176 real jump marks and all 147 real "To Coda" marks in the
-    library still read (see the vocabulary test above, which covers every
-    distinct form of them the library prints)."""
+    Both patterns are now anchored to the whole line. These 11 lines are
+    every prose line in the library that either pattern matched - 10 read as
+    a jump and one as a "To Coda", of which six were on pages the extractor
+    processes and so were actually written out - and all 11 are refused. All
+    176 real jump marks and all 147 real "To Coda" marks in the library still
+    read (see the vocabulary tests above and below, which between them cover
+    every distinct form of them the library prints)."""
     assert _nav(text) is None, f"{text!r} was read as a navigation mark"
 
 
