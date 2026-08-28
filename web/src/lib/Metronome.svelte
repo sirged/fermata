@@ -127,6 +127,14 @@
     mode = $bindable(null),
     proportion = $bindable(null),
     bpm = $bindable(null),
+    // A single-key shortcut token to show beside the toggle's own label -
+    // "N" in the score viewer's toolbar (#92), null everywhere else this
+    // component is used. This component has no keydown listener of its own;
+    // the caller that wires the key (TabViewer) is also the one place that
+    // has one to show, so this is purely the label - see toggle()'s own
+    // comment for why the keyboard path calls setEnabled directly instead
+    // of going through this function.
+    keyHint = null,
   } = $props();
 
   // Persistence, decided per site rather than globally, because "what should
@@ -519,7 +527,7 @@
     {#if prominent}
       {enabled ? "■ Stop" : "▶ Start"}
     {:else}
-      Metronome
+      Metronome{#if keyHint} (({keyHint})){/if}
       {#if enabled && liveTempo != null}
         <span class="metronome-readout" title="clicks per minute">{liveTempo}</span>
       {/if}

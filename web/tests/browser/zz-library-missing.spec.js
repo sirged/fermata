@@ -52,15 +52,58 @@ async function scores(request) {
   return (await request.get("/api/scores")).json();
 }
 
-/** Wait for a scan to finish, then hand back its final status. */
-async function scanAndWait(request) {
-  await request.post("/api/scan");
-  for (let attempt = 0; attempt < 120; attempt += 1) {
+const SCAN_DEADLINE_MS = 30_000;
+
+/** Wait until no scan at all is running, then hand back the idle status. */
+async function scanSettled(request, deadline) {
+  for (;;) {
     const status = await (await request.get("/api/scan/status")).json();
     if (!status.scanning) return status;
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (Date.now() > deadline) throw new Error("a scan never finished");
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("the scan never finished");
+}
+
+/**
+ * Run a scan THIS CALL started, and hand back its final status.
+ *
+ * "This call started" is the whole point, and used to be assumed rather than
+ * checked. POST /api/scan does not queue: scanner.start_scan() declines
+ * outright when a scan is already running, answering `{"started": false}` -
+ * and every upload starts one of its own (see api.upload's own
+ * scanner.start_scan()). Posting and then waiting only for `scanning` to go
+ * false therefore waits out WHOEVER'S scan was in flight and reads its
+ * findings as though they were this call's - findings from a directory
+ * listing taken before this test's files were in place.
+ *
+ * Both of this file's CI failures were that, and the traces say so outright.
+ * The refusal test uploaded two files 68ms apart, the first upload's own scan
+ * was still running when the second file landed, its POST /api/scan was
+ * declined, and the scan it waited out had already listed the library without
+ * the second file - so the freshly uploaded score came back with
+ * `missing_since` still set. The restored-count test hit the same decline one
+ * scan earlier, which left a `restored` for the NEXT scan to report:
+ * `{"missing":1,"restored":1}` where the test had just asserted there was
+ * nothing yet to report, and the page duly showed the "found again" notice
+ * the next assertion required to be absent.
+ *
+ * This is issue #110's pattern - reading state out of band without waiting
+ * for the thing that produces it - so the fix is the same shape: keep every
+ * assertion, and make the read a barrier. Nothing here retries an assertion;
+ * it retries until the scan being asserted about is genuinely this one.
+ */
+async function scanAndWait(request) {
+  const deadline = Date.now() + SCAN_DEADLINE_MS;
+  for (;;) {
+    // Let whatever is already running finish, so the post below is not
+    // declined for it. Something else can still slip in between this and the
+    // post, which is why `started` is checked rather than assumed.
+    await scanSettled(request, deadline);
+    const res = await (await request.post("/api/scan")).json();
+    if (res.started) break;
+    if (Date.now() > deadline) throw new Error("no scan this call started ever began");
+  }
+  return scanSettled(request, deadline);
 }
 
 async function upload(request, name) {

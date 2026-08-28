@@ -208,7 +208,110 @@
 // evidence against the freeze this issue also reported, which never
 // reproduced: a heartbeat interval kept advancing across a sounding in the
 // investigation, and this keeps that fact checked rather than assumed.
-export const MINIMUM_TESTS = 265;
+//
+// Plus 22 for issue #92 - single-key shortcuts for the practice/staff view -
+// in tests/browser/practice-shortcuts.spec.js.
+//
+// Against the bundled "/#/demo" sample (no library needed): Space play/
+// pause; Backspace stopping and returning the cursor to the start; L/S/N/C
+// in one test (loop, speed, metronome, count-in); T cycling the staff theme
+// back to where it started, read rather than assumed so a theme left over
+// from an earlier run cannot make it flaky; 1/2/3 switching the notation/
+// tab/both profile; the arrow keys moving the cursor a beat and a bar
+// WITHOUT starting playback; 40 rapid ArrowRights never stalling or
+// stepping backwards (see below); Shift+arrows growing and shrinking the
+// loop boundary; double-clicking a specific rendered beat (found by DOM
+// inspection - alphaTab marks each one with its own stable class, not
+// documented) seeking to and playing from it; and every wired control's
+// accessible name carrying its own key, machine-read off aria-label or text
+// content rather than eyeballed.
+//
+// Against a stubbed repeat fixture (stubMetronomeScoreRepeat, already built
+// for metronome.spec.js): forward arrow-key stepping stays monotonic across
+// a repeated section end to end (22 beats, two bars repeated once then a
+// third), and double-clicking a beat placed AFTER the repeat lands on its
+// real, later playback tick rather than inside the repeat's second pass.
+//
+// Against a purpose-built two-voice MusicXML fixture: cursor stepping
+// visits a second voice's interior onsets (its own quarter notes), not only
+// the first voice's (its two half notes).
+//
+// Against a stubbed real score page (the focus guard needs a text field
+// "/#/demo" has none of): typing "lop" into the tag editor changes nothing
+// about the loop AND the letters still land in the field (proving the guard
+// did not simply eat the keystrokes, which would pass the first half for
+// the wrong reason); Esc closes that editor even pressed from inside the
+// very field it closes, and discards what was typed - asserted explicitly,
+// not merely inferred from the editor closing, since Esc is the FIRST
+// cancel-without-saving path that editor has ever had; and the ordinary
+// keyboard works again once focus has left it.
+//
+// Against a stubbed real ScoreCompare (a PDF with a ready transcription, in
+// two more scenarios): ScoreCompare mounts a PdfViewer and a TabViewer AT
+// THE SAME TIME and only hides whichever pane is off screen with CSS, never
+// unmounting either - and PdfViewer already owned Space/arrows for turning
+// pages (issue #106's gig mode) before this issue gave TabViewer several of
+// the same keys. Without gating each on which pane is actually visible, a
+// Space press on the PDF-only layout would have also toggled the hidden
+// staff pane's playback. Two more test "side-by-side" specifically - the
+// DEFAULT layout the instant a score has a transcription - keeps the PDF
+// pane's page-turn keys rather than silently losing them the way an
+// earlier version of this branch did (nothing had exercised that layout's
+// keyboard at all, which is how that regression shipped green). And a
+// further two enter gig mode FOR REAL (Viewer.svelte's own "f" shortcut),
+// covering the default side-by-side-forced-to-PDF case and the staff-layout
+// case - gig mode is the pedal-driven mode this issue is justified by, and
+// no test before these actually entered it.
+//
+// Raised deliberately, and every one of the 22 was shown to fail against a
+// mutation of the behaviour it claims: isTypingTarget() hardcoded to
+// `false` turned the focus-guard test red (and only it); rewriting
+// nudgeLoopBoundary's growth branch to be unreachable turned the Shift+
+// arrows test red; commenting out TabViewer's own `if (!active) return`
+// turned the PDF-pane-only test red while its staff-pane-only sibling
+// stayed green; reverting positionTick to drop the pass-specific
+// masterBar.start turned the repeat-monotonicity test (and, incidentally,
+// the 40-rapid-ArrowRights one) red; and reverting playFromBeat's tick
+// conversion to the old notated-space field turned the double-click-after-
+// the-repeat test red while the plain double-click test - no repeat in that
+// fixture - stayed green - see the pull request for each.
+//
+// The implementation itself needed real fixing found BY these tests before
+// they passed clean, across two rounds: first, api.tickCache.findBeat() and
+// a MasterBarTickLookup's own firstBeat/nextBeat (alphaTab's built-in ways
+// to answer "which beat is at this tick") both answered wrong or empty when
+// called cold with no currentBeatHint from a previous call, which nothing
+// here has for a one-off keyboard nudge - measured directly, a plain
+// forward arrow-key nudge stepped the cursor BACKWARDS after a handful of
+// presses. Rebuilt on the score's own parsed model (Track/Staff/Bar/Voice/
+// Beat) instead. Second, an adversarial re-review of that fix found it
+// still mixed two different tick spaces on any score with a repeat -
+// Beat.absolutePlaybackStart is NOTATED order, api.tickPosition is the
+// repeat-EXPANDED PLAYBACK order the generated MIDI actually runs on -
+// which the no-repeat fixtures used everywhere else in this file could not
+// have caught; see score-render.js's own long comment on positionTick for
+// the fix and the two-space explanation, and the repeat- and voice-specific
+// tests above for what pins each half of it down now.
+//
+// Plus 2 more from a third review pass. One: nudging the loop boundary many
+// times in a row does not drift the cursor - nudgeLoopBoundary saves the
+// cursor's tick before writing a new playbackRange (whose own setter
+// relocates tickPosition as a side effect) and restores it after, but the
+// value saved used to be a raw api.tickPosition READ-BACK, and reading it
+// back after writing it was measured returning a deterministic +1 on this
+// fixture - not an occasional artifact, a consistent one, so saving and
+// restoring that read-back accumulated one tick of drift on every nudge
+// (-462 ticks over 600 nudges in the original measurement, eventually
+// landing cursor stepping a beat behind). Fixed by restoring the beat's own
+// canonical tick, computed from plain integers on the parsed model, instead
+// of the engine's lossy read-back. Two: Space on a focused button activates
+// the button rather than reaching TabViewer's transport - onKey used to
+// preventDefault() Space unconditionally, which suppresses a focused
+// BUTTON's own native Space-activates-click default action; every other
+// test in this file that clicks a button before testing Space now has to
+// blur() it first, which is the accessibility-correct behaviour working as
+// intended, not a workaround.
+export const MINIMUM_TESTS = 289;
 
 export default class MinimumTests {
   constructor() {

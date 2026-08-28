@@ -451,7 +451,31 @@
 
 {#snippet pdfPane(hidden)}
   <div class="pane" class:hidden>
-    <PdfViewer {score} {gigMode} {onToggleGig} {practiceLabel} {onStopPractice} />
+    <!-- active: in "pdf" AND in "side" - deliberately NOT the same rule
+         TabViewer gets below. Page-turning on Space/arrows predates #92
+         (issue #106, the same gig-mode-pedal reasoning this issue cites as
+         its own justification) and "side" - two panes visible together -
+         is the DEFAULT layout the moment a score has a transcription at
+         all (see `layout`'s own initial value above). Gating this off in
+         "side" the same way TabViewer's new shortcuts are gated off there
+         would have been a real regression: arrow keys turn PDF pages in
+         side-by-side on main, and this branch would have silently stopped
+         that for most scores with a transcription - not just in gig mode,
+         where activeLayout can never actually be "side" (see its own
+         definition), but in the ordinary desktop side-by-side view too.
+         So the PDF pane keeps the keys it has always had in "side", and
+         TabViewer's newer ones stand down there instead (see its own
+         comment) - a single keypress in "side" can only ever mean one
+         thing, and page-turning is the one with the longer history and
+         the pedal-specific justification. -->
+    <PdfViewer
+      {score}
+      {gigMode}
+      {onToggleGig}
+      {practiceLabel}
+      {onStopPractice}
+      active={activeLayout === "pdf" || activeLayout === "side"}
+    />
   </div>
 {/snippet}
 
@@ -591,6 +615,7 @@
           {onToggleGig}
           {practiceLabel}
           {onStopPractice}
+          active={activeLayout === "staff"}
         />
       </div>
     {/if}

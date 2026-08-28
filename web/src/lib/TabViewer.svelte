@@ -35,6 +35,26 @@
     onToggleGig = () => {},
     practiceLabel = null,
     onStopPractice = () => {},
+    // Whether THIS instance's single-key shortcuts (#92) should respond to
+    // the keyboard at all. Defaults true, which is right everywhere this
+    // component is mounted on its own (Viewer.svelte's plain notation/tab
+    // path). ScoreCompare mounts a TabViewer and a PdfViewer at once and
+    // only hides the one not on screen with CSS, not by unmounting it - see
+    // ScoreCompare's own snippets - and PdfViewer already owns Space and the
+    // plain arrow keys for turning pages. Left both listening unconditionally,
+    // a single Space press in side-by-side or PDF-only layout would BOTH
+    // toggle playback here and turn the page there - exactly the "does the
+    // shortcut set stay sane" question #92 asks about gig mode, where a
+    // pedal sends nothing but arrow keys. ScoreCompare passes this only
+    // `true` while its staff pane is the one actually on screen - NOT in
+    // "side" layout (two panes visible at once), which is deliberately left
+    // to the PDF pane's own page-turn keys instead: those predate #92 (issue
+    // #106's own gig-mode-pedal reasoning) and "side" is the default the
+    // moment a score has a transcription at all, so ceding it here is what
+    // keeps arrow keys turning pages in side-by-side the way they always
+    // have on main - see the comment on PdfViewer's `active` prop in
+    // ScoreCompare for the other half of this.
+    active = true,
   } = $props();
 
   let host;
@@ -284,7 +304,164 @@
   function setLadderTarget(ev) {
     ladderTarget = clamp(Number(ev.target.value), 10, 200);
   }
+
+  // ---------------------------------------------------------- #92: shortcuts
+  //
+  // "S" changes playback speed by stepping through the same presets the
+  // select already offers, wrapping past either end - a single key standing
+  // in for opening Songsterr's speed panel, since this toolbar has no panel
+  // to open, only a picker. Deliberately over SPEEDS only, not the ladder's
+  // in-between values: a mid-ladder speed is something the ladder is
+  // actively managing, and a key nudging it to the nearest preset would
+  // fight the ladder rather than complement it.
+  function cycleSpeed() {
+    const at = SPEEDS.indexOf(speed);
+    speed = SPEEDS[(at + 1 + SPEEDS.length) % SPEEDS.length] ?? SPEEDS[0];
+    view?.setSpeed(speed);
+  }
+
+  // "T" cycles the staff theme - our own equivalent key (#92 asks for one;
+  // Songsterr has nothing to model it on). Same write chooseTheme() above
+  // makes by hand, just without an <select> change event to read from.
+  function cycleTheme() {
+    const at = STAFF_THEMES.indexOf(settings.staff_theme);
+    const next = STAFF_THEMES[(at + 1 + STAFF_THEMES.length) % STAFF_THEMES.length] ?? STAFF_THEMES[0];
+    setSetting("staff_theme", next).catch(() => {});
+  }
+
+  // Mirrors exactly what Metronome.svelte's own toggle() does when it is
+  // driving a supplied `control` rather than owning an engine of its own
+  // (ownsClick={false}, exactly how it is used below) - `enabled` bound back
+  // here, and the control told directly. There is no click to prime from a
+  // keyboard event the way toggle() primes one for a caller with no
+  // transport of its own (see that function's own comment): the score's own
+  // Play button is what gets audio going in this view, keyboard or not.
+  function toggleMetronome() {
+    metronome = !metronome;
+    view?.metronome?.setEnabled(metronome);
+  }
+
+  function isTypingTarget(el) {
+    const tag = el?.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable;
+  }
+
+  // Space is also how a focused BUTTON activates itself - a standard browser
+  // default action this file does not own, and Enter does the same, but
+  // nothing here binds Enter so only Space needs this exemption. A <button>
+  // is none of INPUT/TEXTAREA/SELECT/contenteditable, so isTypingTarget alone
+  // does not cover it: tabbing to the Loop button and pressing Space used to
+  // preventDefault() the browser's own click-on-Space before it could fire,
+  // starting playback instead of toggling Loop - and the same for every
+  // other button in this toolbar, the viewer header, and the session-detail
+  // panel, since this listener sits on the window and sees every keydown
+  // regardless of which button has focus.
+  function isButtonLikeTarget(el) {
+    const tag = el?.tagName;
+    return tag === "BUTTON" || el?.getAttribute?.("role") === "button";
+  }
+
+  /**
+   * The single-key transport (#92). Guarded on: whether this instance is
+   * even the one allowed to answer the keyboard right now (see `active`
+   * above); whether the keypress is really meant for this view and not a
+   * browser/OS shortcut (a held Ctrl/Meta - Alt is allowed through
+   * deliberately, see below); whether a text field has focus - the one the
+   * issue's own comment calls worse than no shortcut at all if it is wrong,
+   * checked HERE, before the per-key switch, precisely because nothing below
+   * it is safe to run while a field is focused, typing guard first; and,
+   * narrower still and case-by-case rather than a blanket exemption, whether
+   * the focused element already owns the specific key being pressed (Space
+   * on a button - see isButtonLikeTarget).
+   */
+  function onKey(e) {
+    if (!active) return;
+    if (isTypingTarget(e.target)) return;
+    // Never hijack a browser/OS shortcut. Alt is included even though #92's
+    // reference comment builds its own fine-tempo shortcut on Alt+A/D - see
+    // TabViewer's PR notes for why that one is not wired here: this view's
+    // playback speed is a plain multiplier with no bpm of its own to step by
+    // one, and inventing one is the preset-ladder rework the brief for this
+    // issue says is explicitly not in scope.
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.repeat && e.key !== "ArrowLeft" && e.key !== "ArrowRight" && e.key !== "ArrowUp" && e.key !== "ArrowDown") {
+      // held-key repeat is exactly what makes stepping the cursor or nudging
+      // a loop boundary usable without tapping an arrow key twenty times -
+      // every other shortcut here is a toggle or a one-shot action, where an
+      // OS auto-repeat firing it a dozen times a second is just noise (or,
+      // for L/N/C, a rapid double-toggle that looks like nothing happened).
+      return;
+    }
+    switch (e.key) {
+      case " ":
+        // A focused BUTTON owns Space already - see isButtonLikeTarget.
+        // Checked before preventDefault(), not after: calling
+        // preventDefault() on this keydown at all suppresses the browser's
+        // own default action for it regardless of who called it, which
+        // includes "activate the focused button" - so this has to be a
+        // return, not a fall-through that merely skips playPause().
+        if (isButtonLikeTarget(e.target)) return;
+        // preventDefault BEFORE the readiness check, always, for this one and
+        // every case below that has a native default worth blocking: Space
+        // scrolls the page and Backspace can navigate history when nothing
+        // else claims them, and both would otherwise still happen during the
+        // (brief, but real) window before playerReady - see PdfViewer's own
+        // onKey, which does the same for its page-turn keys unconditionally.
+        e.preventDefault();
+        if (playerReady) view?.playPause();
+        return;
+      case "Backspace":
+        e.preventDefault();
+        if (playerReady) view?.stop();
+        return;
+      case "ArrowLeft":
+      case "ArrowRight": {
+        e.preventDefault();
+        if (!playerReady) return;
+        const dir = e.key === "ArrowRight" ? 1 : -1;
+        if (e.shiftKey) view?.nudgeLoopBoundary(dir);
+        else view?.moveCursorBeat(dir);
+        return;
+      }
+      case "ArrowUp":
+      case "ArrowDown": {
+        e.preventDefault();
+        if (!playerReady) return;
+        view?.moveCursorBar(e.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+      case "l":
+      case "L":
+        toggleLoop();
+        return;
+      case "s":
+      case "S":
+        cycleSpeed();
+        return;
+      case "n":
+      case "N":
+        toggleMetronome();
+        return;
+      case "c":
+      case "C":
+        toggleCountIn();
+        return;
+      case "t":
+      case "T":
+        cycleTheme();
+        return;
+      case "1":
+      case "2":
+      case "3":
+        setProfile(["score", "tab", "scoretab"][Number(e.key) - 1]);
+        return;
+      default:
+        return;
+    }
+  }
 </script>
+
+<svelte:window onkeydown={onKey} />
 
 <div class="wrap">
   {#if gigMode}
@@ -292,9 +469,11 @@
     back out must stay reachable even with no keyboard (touch/tablet) -->
     <div class="gig-hud">
       <button class="primary" disabled={!playerReady} onclick={() => view?.playPause()}>
-        {playing ? "❚❚ Pause" : "▶ Play"}
+        {playing ? "❚❚ Pause ((Space))" : "▶ Play ((Space))"}
       </button>
-      <button disabled={!playerReady} onclick={() => view?.stop()}>■</button>
+      <button disabled={!playerReady} onclick={() => view?.stop()} aria-label="Stop — back to the start ((Backspace))">
+        ■
+      </button>
       {#if metronome && metronomeTempo != null}
         <!-- Read-only here on purpose - gig mode strips the toolbar down to
         large, glanceable touch targets, and choosing a mode or typing a
@@ -309,30 +488,48 @@
           ● {practiceLabel}
         </button>
       {/if}
-      <button onclick={onToggleGig} title="Exit gig mode (Esc)">⤢</button>
+      <button onclick={onToggleGig} aria-label="Exit gig mode ((Esc))" title="Exit gig mode (Esc)">⤢</button>
     </div>
   {:else}
     <div class="toolbar">
       {#if profileOptions?.length}
         <div class="seg">
-          {#each PROFILE_LABELS as [value, label]}
+          {#each PROFILE_LABELS as [value, label], i}
             {#if profileOptions.includes(value)}
-              <button class:on={profile === value} onclick={() => setProfile(value)}>{label}</button>
+              <!-- aria-label, not appended text: toolbar-responsive.spec.js
+                   matches this button by its exact text ("Tab", anchored) -
+                   see the note on the theme/speed selects above for the same
+                   reason applied to a <button> instead of a <select>. -->
+              <button
+                class:on={profile === value}
+                onclick={() => setProfile(value)}
+                aria-label={`${label} ((${i + 1}))`}
+              >
+                {label}
+              </button>
             {/if}
           {/each}
         </div>
       {/if}
-      <select class="theme-picker" value={settings.staff_theme} onchange={chooseTheme} title="Staff theme">
+      <select
+        class="theme-picker"
+        value={settings.staff_theme}
+        onchange={chooseTheme}
+        title="Staff theme"
+        aria-label="Staff theme ((T))"
+      >
         {#each STAFF_THEMES as t}
           <option value={t}>{STAFF_THEME_LABELS[t]}</option>
         {/each}
       </select>
       <div class="player">
         <button class="primary" disabled={!playerReady} onclick={() => view?.playPause()}>
-          {playing ? "❚❚ Pause" : "▶ Play"}
+          {playing ? "❚❚ Pause ((Space))" : "▶ Play ((Space))"}
         </button>
-        <button disabled={!playerReady} onclick={() => view?.stop()}>■</button>
-        <select value={speed} onchange={setSpeed} title="Playback speed">
+        <button disabled={!playerReady} onclick={() => view?.stop()} aria-label="Stop — back to the start ((Backspace))">
+          ■
+        </button>
+        <select value={speed} onchange={setSpeed} title="Playback speed" aria-label="Playback speed ((S))">
           {#if !SPEEDS.includes(speed)}
             <!-- the ladder steps to speeds between the presets -->
             <option value={speed}>{Math.round(speed * 100)}%</option>
@@ -345,9 +542,9 @@
           <button
             class:on={looping}
             onclick={toggleLoop}
-            title="Loop playback — drag across bars on the score to loop a section"
+            title="Loop playback ((L)) — drag across bars on the score to loop a section"
           >
-            Loop
+            Loop ((L))
           </button>
           <!-- The general metronome (issue #97), pre-filled from this score:
           its declared tempo as the base the percentages are of, and its own
@@ -378,9 +575,10 @@
             bind:proportion={metronomeProportion}
             bind:bpm={metronomeBpm}
             compact={true}
+            keyHint="N"
           />
-          <button class:on={countIn} onclick={toggleCountIn} title="Count-in before playback starts">
-            Count-in
+          <button class:on={countIn} onclick={toggleCountIn} title="Count-in before playback starts ((C))">
+            Count-in ((C))
           </button>
           <button
             class:on={ladder}

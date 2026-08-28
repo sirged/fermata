@@ -111,15 +111,55 @@
 
   function onKey(e) {
     const tag = e.target?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
     if (e.ctrlKey || e.metaKey || e.altKey) return; // don't hijack Ctrl+F / Cmd+F
     if (e.repeat) return; // OS key auto-repeat must not spam toggleGigMode
+    // #92: Esc closes whatever is open - checked BEFORE the typing guard
+    // below, deliberately, and the one shortcut in this file exempt from it.
+    // The guard exists to stop a stray CHARACTER landing in a field
+    // somebody is typing into (see TabViewer's own onKey for the shortcuts
+    // that actually risk that); Escape inserts nothing, and the most likely
+    // place a player presses it is FROM INSIDE the very field it should
+    // close - typing a tag, deciding against it, and hitting Esc without
+    // first clicking away. Checked in the order a player would actually be
+    // looking at it: gig mode is the most likely thing to be open (it is the
+    // one this handler already knew how to close), then the two overlays
+    // this header can have open at once, tag editing and the just-logged
+    // session's detail panel. Only ever one of these closes per press:
+    // dismissing the tag editor while the detail panel is ALSO open would
+    // take both away in one keystroke, which is not "close whatever is
+    // open" (singular) any more.
+    if (e.key === "Escape") {
+      if (gigMode) {
+        e.preventDefault();
+        exitGigMode();
+      } else if (editingTags) {
+        e.preventDefault();
+        // Discards whatever is typed into tagsDraft, not merely closes -
+        // there was no "cancel without saving" affordance here before this
+        // issue at all (the tag editor's only exit was saveTags(), which
+        // always saves), so this is genuinely new behaviour, not a
+        // pre-existing Cancel this just wired a key to. Deliberately a
+        // discard rather than a preserve-on-reopen: startTagEdit() already
+        // re-seeds tagsDraft from score.tags every time it is opened, so
+        // "preserve" would mean adding a second, separate persistence path
+        // just for this one abandoned-edit case, and the ordinary meaning of
+        // Cancel on a form - here or anywhere else on the web - is exactly
+        // this: what you typed is gone, what was saved before is not
+        // touched. See the browser test that types a draft, presses Esc,
+        // reopens, and asserts the field is back to score.tags rather than
+        // silently trusting "the editor closed" to also mean "as intended".
+        editingTags = false;
+      } else if (lastSession && detail) {
+        e.preventDefault();
+        dismissDetail();
+      }
+      return;
+    }
+    if (typing) return;
     if (e.key === "f" || e.key === "F") {
       e.preventDefault();
       toggleGigMode();
-    } else if (e.key === "Escape" && gigMode) {
-      e.preventDefault();
-      exitGigMode();
     }
   }
 
