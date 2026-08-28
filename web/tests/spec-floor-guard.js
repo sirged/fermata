@@ -31,7 +31,7 @@ export function checkSpecFloors(executedByFile, entries) {
   for (const [file, executed] of executedByFile) {
     if (!claimedByFile.has(file)) {
       problems.push(
-        `${file} ran ${executed} test(s) but has no entry in tests/spec-floors.js - add one for whatever added those tests.`,
+        `${file} ran ${executed} test(s) but has no entry under tests/spec-floors/ - add one for whatever added those tests.`,
       );
     }
   }
@@ -43,7 +43,7 @@ export function checkSpecFloors(executedByFile, entries) {
     const executed = executedByFile.get(file) ?? 0;
     if (executed < claimed) {
       problems.push(
-        `${file}: tests/spec-floors.js entries claim ${claimed}, only ${executed} ran - the file may be deleted, unwired from the runner, or missing tests it used to run.`,
+        `${file}: tests/spec-floors/ entries claim ${claimed}, only ${executed} ran - the file may be deleted, unwired from the runner, or missing tests it used to run.`,
       );
     }
   }
