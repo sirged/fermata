@@ -643,12 +643,15 @@ def test_an_instruction_with_no_target_is_written_as_words_with_no_sound():
 
     This docstring used to call a "D.S." on a score that draws no segno "the
     library's dominant case". It is the rarest one: 86 files print a "D.S."
-    and 83 of them draw the segno, the three exceptions being Hollow, Rebel
-    Army Theme and Rito Village - Night. The old claim rested on a glyph the
-    calibrated Maestro table had in the wrong category; Rule 16 in
-    docs/musicxml-tab-profile.md retracts it in full. The emitter's rule is
-    unchanged by any of that, which is why this test is: it is about what
-    `sound: None` writes, not about how often it happens."""
+    and 84 of them draw the segno, the two exceptions being Hollow and Rebel
+    Army Theme. (A third, Rito Village - Night, used to be here too - its
+    Maestro subset was rejected by its renamed PDF resource before the
+    fingerprint that would have recognised it ever ran; issue #154 fixed
+    that.) The old claim rested on a glyph the calibrated Maestro table had
+    in the wrong category; Rule 16 in docs/musicxml-tab-profile.md retracts
+    it in full. The emitter's rule is unchanged by any of that, which is why
+    this test is: it is about what `sound: None` writes, not about how often
+    it happens."""
     root = _nav_build({1: {"after": [{"words": "D.S. al Coda", "sound": None}]}})
     direction = root.find("./part/measure/direction")
     assert direction.findtext("direction-type/words") == "D.S. al Coda"

@@ -543,8 +543,9 @@ def fixture_navigation():
     sign itself, a "Fine" and a "D.C. al Fine" (issue #134 phase 2).
 
     Deliberately carries BOTH signs. This said the library drew "155 coda
-    signs across 142 files and not one segno"; it draws 87 segnos across 83
-    files, and the zero was a mislabelled row in the Maestro glyph table
+    signs across 142 files and not one segno"; it draws 156 coda signs
+    across 143 files and 88 segnos across 84 files, and the zero was a
+    mislabelled row in the Maestro glyph table
     (see Rule 16, which retracts the claim). What the fixture still supplies
     that the library cannot is the OTHER route to a segno: MuseScore draws it
     as a published SMuFL codepoint, where every library segno is a Finale

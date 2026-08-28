@@ -149,6 +149,15 @@ _FIXTURE_RELATIVE_PATHS = {
     # bar (issue #134 phase 2 adversarial review, blocker 4).
     "bygone_days": (
         "Patreon/John Oeth/Octopath Traveler/Bygone Days (Octopath Traveler II).pdf"),
+    # Issue #154: every embedded font in this PDF is renamed generically
+    # ("CIDFont+F1".."CIDFont+F9"), including its Maestro subset - none of
+    # them named "Maestro" at all. load_music_fonts used to reject the
+    # Maestro resource by that name before its fingerprint was ever
+    # consulted, so this fully engraved, 3-page score read zero glyph events:
+    # no noteheads, no rhythm, and its segno/coda signs invisible with it.
+    "rito_village": (
+        "Patreon/John Oeth/The Legend of Zelda/TLOZ Breath of the Wild/"
+        "Rito Village - Night (The Legend of Zelda Breath of the Wild).pdf"),
 }
 
 # Skips for want of a library are COUNTED HERE as they happen, rather than
@@ -439,6 +448,15 @@ def bygone_days_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing 'Bygone Days' fixture)")
+    return p
+
+
+@pytest.fixture
+def rito_village_pdf() -> Path:
+    p = _fixture_path("rito_village")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Rito Village - Night' fixture)")
     return p
 
 

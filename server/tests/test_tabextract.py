@@ -2772,7 +2772,7 @@ def test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws(
         victory_fanfare_pdf):
     """Blocker 1 of the adversarial review on this branch, on a real score.
 
-    The library DOES draw segnos - 87 of them across 83 files - and every one
+    The library DOES draw segnos - 88 of them across 84 files - and every one
     is Finale's Maestro glyph ID 4, which glyph_rhythm's calibrated table
     labelled "simile" until the outline was rendered and looked at. While it
     did, every "D.S." in the library was written as words with no
@@ -3317,16 +3317,19 @@ def test_a_d_s_with_no_segno_is_written_as_words_with_no_jump_and_disclosed():
     draws a segno for it to name - measured twice, once over every
     categorised music glyph and once over every UNcategorised one". That is
     false and the method named in it is the reason it went unnoticed: the
-    library draws 87 segnos across 83 files, all of them Finale's Maestro
+    library draws 88 segnos across 84 files, all of them Finale's Maestro
     glyph ID 4, which the calibrated table labelled "simile" - and a glyph in
     the WRONG category is in neither of those two sweeps. See Rule 16 in
     docs/musicxml-tab-profile.md, which retracts the claim in full.
 
-    Measured now: 86 files print a "D.S." and 83 of them draw the segno it
-    names. Three do not - Hollow (Final Fantasy VII Remake), Rebel Army Theme
-    (Final Fantasy II), and Rito Village - Night, the last because its
-    Maestro embed is filtered out before any glyph on it is read at all
-    (#154). Those three are what this branch exists for.
+    Measured now: 86 files print a "D.S." and 84 of them draw the segno it
+    names. Two do not - Hollow (Final Fantasy VII Remake) and Rebel Army
+    Theme (Final Fantasy II). A third, Rito Village - Night, used to be here
+    too: its Maestro embed was filtered out by resource name before any
+    glyph on it was read at all, which issue #154 fixed by fingerprinting a
+    TrueType resource regardless of its name - it now draws its segno like
+    every other Maestro file. Those two remaining files are what this branch
+    exists for.
 
     A `<sound dalsegno=>` naming a segno that is not in the file would make
     the transcription play a form nobody engraved, so the instruction is
@@ -3511,17 +3514,31 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # Castti, the Apothecary (Octopath Traveler II), where 4 notes come back
     # into a voice that had been padded around them (notes +4,
     # inferred_rest_quarters -2.0) with every conformance figure of its own
-    # unmoved. bars, bars_unread, bars_overfull and the form-mark figures do
-    # not move at all: nothing here reads a barline or a bracket.
+    # unmoved. bars, bars_unread and notes do not move at all: nothing here
+    # reads a barline or a bracket, and nothing here changes which fret
+    # numbers were assigned.
+    #
+    # bars_overfull/bars_short/bars_defective/bars_padded/inferred_rest_quarters
+    # moved a SECOND time, again by exactly one score, when issue #154 fixed
+    # load_music_fonts rejecting a music font by resource name before its
+    # fingerprint was ever consulted: "Rito Village - Night (The Legend of
+    # Zelda Breath of the Wild)" embeds its Maestro subset as a resource
+    # named "CIDFont+F1" (every embedded font in that PDF was renamed
+    # generically), so this decoder used to read zero glyphs from a fully
+    # engraved score and fall back to the spacing heuristic for its rhythm.
+    # Measured score by score, exactly this one file's own figures move -
+    # bars_overfull +4, bars_short -19, bars_defective -15, bars_padded +26,
+    # inferred_rest_quarters +22.0 - with bars (64), notes (411) and every
+    # other score's output byte-for-byte unchanged.
     assert extractable == 293
     assert totals["bars"] == 10632
     assert totals["bars_unread"] == 23
     assert totals["notes"] == 98704             # 98688 + 12 + 4 (issue #137)
-    assert totals["bars_overfull"] == 1569
-    assert totals["bars_short"] == 4207          # 4219 - 12 (issue #137)
-    assert totals["bars_defective"] == 5332      # 5344 - 12 (issue #137)
-    assert totals["bars_padded"] == 3577         # 3589 - 12 (issue #137)
-    assert totals["inferred_rest_quarters"] == 4877.0   # 4885.0 - 8.0 (issue #137)
+    assert totals["bars_overfull"] == 1573       # 1569 + 4 (issue #154)
+    assert totals["bars_short"] == 4188          # 4207 - 19 (issue #154)
+    assert totals["bars_defective"] == 5317      # 5332 - 15 (issue #154)
+    assert totals["bars_padded"] == 3603         # 3577 + 26 (issue #154)
+    assert totals["inferred_rest_quarters"] == 4899.0   # 4877.0 + 22.0 (issue #154)
     # The whole of #137's effect on this library, disclosed as data: 16 notes
     # given a fret number read for their coincident twin. It equals the note
     # delta above exactly (+12 +4), which is the check that no note came back
@@ -3550,44 +3567,63 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # carries no duration either, so every Rule 8 figure asserted above is
     # unmoved by reading them. Measured directly - the whole library was
     # extracted on this branch's parent and on this branch, score by score,
-    # and all of bars/bars_measured/bars_overfull/bars_short/bars_defective/
-    # bars_padded/inferred_rest_quarters/notes/beats came out identical on
-    # all 297, with 166 of them gaining navigation marks in their MusicXML.
+    # and all of bars/bars_measured/notes/beats came out identical on all
+    # 297, with 166 of them gaining navigation marks in their MusicXML. (The
+    # bars_overfull/short/defective/padded/inferred_rest_quarters figures
+    # above are NOT part of that invariant - they are rhythm figures, and
+    # issue #154, layered on the same branch, moved exactly one score's.)
     #
-    # 526 <direction> elements over the library, and the accounting for it
-    # is exact: a full-page census of every navigation mark on every page
-    # reads 580 (176 jumps, 150 codas, 147 "To Coda", 87 segnos, 20 "Fine"),
-    # of which 11 are on pages this extractor does not process at all - which
+    # 527 <direction> elements over the library, and the accounting for it is
+    # exact: a full-page census of every navigation mark on every page reads
+    # 581 (176 jumps, 150 codas, 147 "To Coda", 88 segnos, 20 "Fine"), of
+    # which 11 are on pages this extractor does not process at all - which
     # carry no bars either - and 43 are disclosed as unanchored below.
-    # 580 - 11 - 43 = 526.
-    assert totals["nav_directions"] == 526
+    # 581 - 11 - 43 = 527.
+    assert totals["nav_directions"] == 527
     assert scores_with_navigation == 166
-    # 109 coda signs written, of the 155 the library draws. The 46 not
-    # written: 40 sit entirely past their staff's right end, on the
+    # 109 coda signs written, of the 156 the library draws. The 47 not
+    # written: 41 sit entirely past their staff's right end, on the
     # coda-system layout whose right-hand system the staff detector loses
     # (see test_a_coda_drawn_on_a_lost_right_hand_system_is_disclosed_not_moved
     # and issue #152) and are disclosed as unanchored rather than clamped
-    # onto the jump's own bar; 6 are the reference glyph printed inside a
-    # "To Coda" and are that instruction's, not section heads. Two more
-    # coda MARKS reach the count from elsewhere: Imprisoned Town's sign has
-    # no bars on its system, and Rito Village draws its coda in a font this
-    # decoder reads no glyphs from and is read from the word beside it.
+    # onto the jump's own bar - Rito Village's own coda sign, now read as a
+    # glyph like the rest of its page (issue #154), is one of these 41: it
+    # sits outside its own staff's bar span the same way the other 40 do, so
+    # it is still read from the word beside it rather than the sign's own
+    # position; being outside the decoder's font vocabulary was never why
+    # this one mark placed by word - and 6 are the reference glyph printed
+    # inside a "To Coda" and are that instruction's, not section heads. One
+    # more coda MARK reaches the count from elsewhere: Imprisoned Town's
+    # sign has no bars on its system.
     #
-    # And 87 segnos, from 83 files - all of them Finale's Maestro GID 4,
+    # And 88 segnos, from 84 files - all of them Finale's Maestro GID 4,
     # which the calibrated glyph table labelled "simile" until the outline
     # was rendered and looked at. While it did, this assertion read 0 and
-    # every "D.S." in the library went out without its jump.
+    # every "D.S." in the library went out without its jump. The 84th file
+    # is Rito Village - Night: issue #154 fixed load_music_fonts rejecting
+    # its Maestro subset by resource name (embedded as "CIDFont+F1") before
+    # the fingerprint that would have recognised it regardless ever ran.
     assert totals["coda_signs"] == 109
-    assert totals["segno_signs"] == 87
+    assert totals["segno_signs"] == 88
     # The disclosure, pinned rather than assumed. 87 BARS (the counter counts
     # distinct bars, so two instructions closing one bar contribute one)
     # carry an instruction naming a jump this transcription holds no target
     # for. By reason, over 87 instructions on 87 distinct bars in 47 files:
-    # 45 a "To Coda" with no coda read, 39 an "al Coda" with none, and 3 a
-    # "D.S." on a score that genuinely draws no segno - Hollow, Rebel Army
-    # Theme, and Rito Village (whose Maestro embed this decoder reads no
-    # glyphs from at all). Most of the first two are the lost coda system
-    # above: the page draws the coda, this transcription could not place it.
+    # 45 a "To Coda" with no coda read, 40 an "al Coda" with none, and 2 a
+    # "D.S." on a score that genuinely draws no segno - Hollow (Final
+    # Fantasy VII Remake) and Rebel Army Theme (Final Fantasy II). Most of
+    # the first two are the lost coda system above: the page draws the coda,
+    # this transcription could not place it.
+    #
+    # Rito Village - Night moved OUT of the "D.S. genuinely no segno" bucket
+    # and INTO "al Coda with none" when issue #154 let its segno be read: its
+    # "D.S. al Coda" now writes <sound dalsegno="segno"/> (the segno half
+    # resolves), but its own coda sign is one of the ones outside its
+    # staff's bar span, so `codas` is still empty for this file and the
+    # "al Coda" half - and so the whole bar - stays unresolved. Same total,
+    # same file, a different reason: the count did not move (87 both before
+    # and after #154) because this one bar's problem changed shape rather
+    # than going away.
     #
     # 43 unanchored: 41 drawn entirely outside their staff's own x span (40
     # coda signs and one "D.S. 2"), and Imprisoned Town's two, whose last
