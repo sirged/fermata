@@ -1349,14 +1349,85 @@ export function createScoreView(host, opts = {}) {
   // start is forgiven too now, still far short of a beat's own span
   // (generally hundreds of ticks), so this costs nothing in correctness
   // either.
+  // That range check absorbs a lag of a few ticks, and a few ticks is all
+  // the tick/millisecond conversion above can produce. It is NOT all
+  // api.tickPosition can be behind by, which is the second half of this
+  // story and the one that actually needed fixing:
+  //
+  // In a browser the player is always alphaTab's own
+  // AlphaSynthWebWorkerApi (BrowserUiFacade.createWorkerPlayer builds one
+  // whichever audio output is available - core.useWorkers only governs
+  // RENDERING). That class does not hold the playback position at all. Its
+  // setter posts the seek to the synth WORKER and, so a read straight back
+  // is not simply wrong, writes the value optimistically into the same
+  // field its getter answers from - and that field is the last
+  // PositionChangedEventArgs the worker has sent BACK, replaced wholesale
+  // every time one arrives. So the worker's reply to an EARLIER seek can
+  // land after this thread has already written a later one, and
+  // api.tickPosition then reads, for a few milliseconds, a whole beat or
+  // more behind where the cursor actually is.
+  //
+  // Measured directly on the 6/8 metronome fixture, stepping as fast as the
+  // page can dispatch presses: `write(3360)` at t=1085.3ms, then replies for
+  // two much earlier seeks arriving at 1086.1 and 1086.6 reporting 481 and
+  // 961, and the reply for 3360 itself only after that. A read landing in
+  // that window sees 961 against a cached beat starting at 3360 - 2399 ticks
+  // out, nowhere near any tolerance a range check could sanely carry - so it
+  // re-derived to the beat at 961 and the next step went BACKWARDS. That is
+  // the CI failure this test caught: one press in forty lost, on a runner
+  // whose press-to-press interval (6.6ms measured in the failing run's own
+  // trace) is shorter than the worker's reply lag.
+  //
+  // The fix is to recognise those readings for what they are. Every tick
+  // this file writes is remembered (seekTick below), and a live tick outside
+  // the cached beat that MATCHES one of them is the worker answering late,
+  // not the position moving - so the cached position stands. Sixteen is
+  // simply more seeks than the worker was ever measured running behind (six
+  // was the deepest observed), not a tuned number.
   const CURSOR_LAG_TOLERANCE_TICKS = 4;
+  const OWN_SEEK_MEMORY = 16;
   let cursorPos = null;
+  const ownSeekTicks = [];
+
+  // The one place this file assigns api.tickPosition, so no write can escape
+  // being remembered. See the block comment above.
+  function seekTick(tick) {
+    api.tickPosition = tick;
+    rememberOwnSeek(tick);
+  }
+
+  function rememberOwnSeek(tick) {
+    ownSeekTicks.push(tick);
+    if (ownSeekTicks.length > OWN_SEEK_MEMORY) ownSeekTicks.shift();
+  }
+
+  // Matched with the same few ticks of slack the range check uses, not
+  // exactly: what comes back is the worker's own tick -> millisecond -> tick
+  // round trip of what went out, which nudgeLoopBoundary's comment below
+  // records measuring a deterministic +1 from.
+  function isOwnSeekEcho(tick) {
+    return ownSeekTicks.some((t) => Math.abs(tick - t) <= CURSOR_LAG_TOLERANCE_TICKS);
+  }
+
+  // Only consulted while the player is stopped - see ensureCursorPosition.
+  let playerIsPlaying = false;
+
   function ensureCursorPosition() {
     const tick = api.tickPosition ?? 0;
     if (cursorPos) {
       const start = positionTick(cursorPos);
       const end = start + cursorPos.beatLookup.duration;
       if (tick >= start - CURSOR_LAG_TOLERANCE_TICKS && tick < end) return cursorPos;
+      // Outside the cached beat, but reading back a tick this file itself
+      // asked for: the worker answering an earlier seek late. Deliberately
+      // NOT applied while the player is running - a playing position sweeps
+      // through every tick in the piece, including ones this file happens to
+      // have seeked to, and there a reading that has moved on really has
+      // moved on. Stopped, the only things that move the position are this
+      // file's own seeks (all of which set cursorPos for themselves) and
+      // alphaTab's own drag-selected loop range, whose start tick is
+      // remembered the same way where this file applies one.
+      if (!playerIsPlaying && isOwnSeekEcho(tick)) return cursorPos;
     }
     cursorPos = beatPositionAtTick(tick);
     return cursorPos;
@@ -1430,13 +1501,16 @@ export function createScoreView(host, opts = {}) {
     if (!beat) return;
     const tick = api.tickCache?.getBeatStart(beat) ?? beat.absolutePlaybackStart;
     metronome.control.prime();
-    api.tickPosition = tick;
-    // Forces the next cursor-stepping call to re-derive its position from
-    // this new tick via beatPositionAtTick, which is pass-aware - rather
-    // than trying to hand-build a matching {masterBar, beatLookup} pair
-    // here from a plain Beat, which is exactly the structural-vs-playback
-    // mismatch this whole section exists to avoid.
-    cursorPos = null;
+    seekTick(tick);
+    // Derived from this new tick through beatPositionAtTick, which is
+    // pass-aware - rather than trying to hand-build a matching
+    // {masterBar, beatLookup} pair here from a plain Beat, which is exactly
+    // the structural-vs-playback mismatch this whole section exists to
+    // avoid. Set here rather than left null for the next stepping call to
+    // work out, because "work it out later" means reading api.tickPosition
+    // back at some later moment, and ensureCursorPosition's own comment
+    // records what that read can be showing by then.
+    cursorPos = beatPositionAtTick(tick);
     publishCursor();
     // api.play() is its own guard - it declines (returns false) and does
     // nothing when the player is not ready yet, the same as every other
@@ -1623,6 +1697,11 @@ export function createScoreView(host, opts = {}) {
     // A freshly loaded score starts at bar one, not wherever the previous
     // score's cursor happened to be left - see the dataset.cursorTick reset
     // above for the same reasoning applied to the attribute this reflects.
+    // The stepping cache and the remembered seeks go with it: they are ticks
+    // in the PREVIOUS score's timeline, and a tick means something else in
+    // this one.
+    cursorPos = null;
+    ownSeekTicks.length = 0;
     publishCursor();
     publishLoopRange();
   });
@@ -1630,6 +1709,7 @@ export function createScoreView(host, opts = {}) {
   api.playerReady.on(() => onReady());
   api.playerStateChanged.on((e) => {
     const isPlaying = e.state === 1;
+    playerIsPlaying = isPlaying;
     metronome.setPlaying(isPlaying);
     onPlaying(isPlaying);
   });
@@ -1873,7 +1953,13 @@ export function createScoreView(host, opts = {}) {
       // both converge on the same tick either way. Caught by this file's own
       // browser test pressing Backspace and reading data-cursor-tick back on
       // the very next line, with no wait in between.
-      api.tickPosition = api.playbackRange?.startTick ?? 0;
+      const startTick = api.playbackRange?.startTick ?? 0;
+      seekTick(startTick);
+      // Stopping moves the cursor, so the cached stepping position has to
+      // move with it - and to a position derived from the tick just written
+      // rather than left for the next stepping call to read back, for the
+      // reason ensureCursorPosition's own comment gives.
+      cursorPos = beatPositionAtTick(startTick);
       publishCursor();
     },
 
@@ -1888,7 +1974,7 @@ export function createScoreView(host, opts = {}) {
       const target = stepBeatPosition(ensureCursorPosition(), direction);
       if (!target) return;
       cursorPos = target;
-      api.tickPosition = positionTick(target);
+      seekTick(positionTick(target));
       publishCursor();
     },
 
@@ -1902,10 +1988,18 @@ export function createScoreView(host, opts = {}) {
      * bar is the one coarser unit both layouts agree on.
      */
     moveCursorBar(direction) {
-      const mb = masterBarLookupAtTick(api.tickPosition ?? 0);
+      // Which bar to jump from comes through ensureCursorPosition, not from
+      // a bare masterBarLookupAtTick(api.tickPosition) - the same read, and
+      // the same stale-echo hazard, that comment describes. Pressing a bar
+      // key straight after a beat key would otherwise occasionally jump from
+      // the bar the cursor was in one press ago.
+      const mb = ensureCursorPosition()?.masterBar;
       const target = direction > 0 ? mb?.nextMasterBar : mb?.previousMasterBar;
       if (!target) return;
-      api.tickPosition = target.start;
+      seekTick(target.start);
+      cursorPos = target.firstBeat
+        ? { masterBar: target, beatLookup: target.firstBeat }
+        : beatPositionAtTick(target.start);
       publishCursor();
     },
 
@@ -1969,7 +2063,11 @@ export function createScoreView(host, opts = {}) {
       let range = api.playbackRange;
       let established = false;
       if (!range) {
-        const mb = masterBarLookupAtTick(api.tickPosition ?? 0);
+        // savedTick, not a fresh api.tickPosition read: the bar the region
+        // starts in must be the bar the CURSOR is in, and those are the same
+        // thing only if both come from the same reading - see
+        // ensureCursorPosition on what a second read can be showing.
+        const mb = masterBarLookupAtTick(savedTick);
         if (!mb) return;
         range = { startTick: mb.start, endTick: mb.end };
         established = true;
@@ -1991,8 +2089,13 @@ export function createScoreView(host, opts = {}) {
         return;
       }
       api.playbackRange = range;
+      // The setter's own relocation is a seek to the range's start made on
+      // this file's behalf, and the synth worker will echo it back like any
+      // other - so it is remembered alongside the ones this file makes
+      // itself, or that echo would read as the position having moved there.
+      rememberOwnSeek(range.startTick);
       // Undo the setter's own relocation - see the comment on savedTick.
-      api.tickPosition = savedTick;
+      seekTick(savedTick);
       // Kept in sync with the exact value just restored (rather than left
       // to ensureCursorPosition's own re-derivation on the next call),
       // since savedPos already IS the correct cached position for savedTick
