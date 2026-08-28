@@ -1592,6 +1592,13 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             "dots_unassigned_no_candidate": result.dots_unassigned_no_candidate,
             "dots_unassigned_eliminated": result.dots_unassigned_eliminated,
             "staves_dots_unassigned": result.staves_dots_unassigned,
+            # unison_digits_shared (issue #137, gap found in #146): reached
+            # ExtractionResult, to_dict() and _BAR_KEYS above with #137 itself,
+            # but never named here - the only dict this function actually
+            # writes into storage. to_dict() is never called in server/, so
+            # its presence there carried no production weight: the warning
+            # prose reached a reader, the structured count reached nobody.
+            "unison_digits_shared": result.unison_digits_shared,
             # coincident_unsplit_pairs / staves_coincident_unsplit (issue
             # #116, #143): _BAR_KEYS above only controls what a stored blob
             # is READ back as - this dict is what gets written into it in the

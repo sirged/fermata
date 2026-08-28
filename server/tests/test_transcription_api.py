@@ -10,7 +10,10 @@ The one thing an engraved fixture cannot stand in for is real Finale or
 Sibelius output, so the end-to-end test at the bottom of this module still
 runs against the library and still skips without it.
 """
+import ast
+import inspect
 import json
+import textwrap
 
 import pytest
 from fastapi import HTTPException
@@ -487,7 +490,7 @@ def test_which_bars_were_not_read_from_glyphs_survives_a_reload(
 
 
 def test_a_coincident_unsplit_pair_survives_a_reload(app_env, ronfaure_pdf, monkeypatch,
-                                                       insert_score):
+                                                     insert_score):
     """coincident_unsplit_pairs / staves_coincident_unsplit (issue #116) round
     trip against a score where they are non-zero, for the same reason the bar
     figures above are: all-zeros looks identical to a persistence bug that
@@ -509,6 +512,103 @@ def test_a_coincident_unsplit_pair_survives_a_reload(app_env, ronfaure_pdf, monk
     assert posted["staves_coincident_unsplit"] == 4
     assert fetched["coincident_unsplit_pairs"] == posted["coincident_unsplit_pairs"]
     assert fetched["staves_coincident_unsplit"] == posted["staves_coincident_unsplit"]
+
+
+def test_a_shared_unison_digit_survives_a_reload(app_env, engraved, monkeypatch, insert_score):
+    """unison_digits_shared (issue #137) never reached the stored blob at all
+    (issue #146): present on ExtractionResult, in to_dict() and in _BAR_KEYS
+    above, but absent from the confidence_json dict literal transcribe()
+    actually writes - the only path into storage. to_dict() is never called
+    in server/, so its presence there carried no production weight.
+
+    The BAR_KEYS loop in test_bar_conformance_survives_a_reload did not catch
+    this: both sides of `posted[key] == fetched[key]` come from the same
+    stored row, so an unwritten field compares None == None and passes. This
+    instead asserts the LITERAL value a fresh extraction independently
+    produces (see test_a_unison_inside_a_chord_sounds_in_both_voices in
+    test_engraved_fixtures.py) against the post-storage read, on both the
+    POST response and a later GET - the shape #145 used to catch the same
+    gap for #116's coincident_unsplit_pairs/staves_coincident_unsplit pair.
+
+    Ungated: `unison_in_chord.pdf` is a committed fixture, so this needs no
+    FERMATA_TEST_LIBRARY and fails rather than skips if the fixture goes
+    missing (see conftest.engraved_pdf)."""
+    pdf = engraved("unison_in_chord")
+    monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    fetched = api.get_transcription(score_id)
+
+    assert posted["unison_digits_shared"] == 32
+    assert fetched["unison_digits_shared"] == 32
+
+
+def _confidence_json_keys() -> set:
+    """The set of keys `transcribe()` actually writes into the stored blob -
+    found by parsing the function's own source rather than duplicating the
+    dict by hand, which would be exactly the kind of second copy that could
+    drift from the first the way _BAR_KEYS and this dict already have three
+    times (#134's fields, #116's pair via #143, #137's counter via #146).
+
+    Locates the `confidence_json = json.dumps({...})` assignment inside
+    transcribe() and returns the literal string keys of that dict."""
+    source = inspect.getsource(api.transcribe)
+    # inspect.getsource returns the function starting at its own indentation
+    # (possibly non-zero, e.g. if decorated or nested); dedent so ast.parse,
+    # which requires a module-level indent of zero, does not choke on it.
+    tree = ast.parse(textwrap.dedent(source))
+    func_def = tree.body[0]
+    assert isinstance(func_def, ast.FunctionDef), "expected transcribe() to parse as one function"
+
+    for node in ast.walk(func_def):
+        if not (isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "confidence_json"):
+            continue
+        call = node.value
+        assert isinstance(call, ast.Call) and call.args, (
+            "transcribe() no longer assigns confidence_json = json.dumps({...}) - "
+            "update _confidence_json_keys to match its new shape")
+        dict_node = call.args[0]
+        assert isinstance(dict_node, ast.Dict), (
+            "confidence_json's argument is no longer a dict literal - "
+            "update _confidence_json_keys to match its new shape")
+        keys = set()
+        for key_node in dict_node.keys:
+            assert isinstance(key_node, ast.Constant) and isinstance(key_node.value, str), (
+                "confidence_json has a non-literal-string key - "
+                "update _confidence_json_keys to match its new shape")
+            keys.add(key_node.value)
+        return keys
+
+    raise AssertionError(
+        "transcribe() no longer assigns a local named confidence_json - "
+        "update _confidence_json_keys to match its new shape")
+
+
+def test_every_bar_key_reaches_the_stored_blob():
+    """The structural guard issue #146 asked for, closing the bug class
+    rather than only this one instance of it. #146 was exactly this gap for
+    one field: `unison_digits_shared` sat in _BAR_KEYS - the set
+    _transcription_dict() reads back out of a stored blob - without a
+    matching write line in the confidence_json dict transcribe() writes INTO
+    that blob, so it round-tripped as None everywhere. This is the third
+    field to go missing that way (#134's fields, #116's pair via #143, now
+    #137's counter via #146), each caught only after it shipped.
+
+    Asserting the two sets match here means the NEXT field added to
+    _BAR_KEYS without a matching write line fails this test immediately,
+    naming the missing key, instead of silently reading back as None until
+    someone notices in production."""
+    written = _confidence_json_keys()
+    missing = set(api._BAR_KEYS) - written
+    assert not missing, (
+        f"_BAR_KEYS names a key transcribe() never writes into confidence_json: "
+        f"{sorted(missing)}"
+    )
 
 
 def test_a_row_stored_before_the_bar_figures_reports_them_unrecorded(app_env, insert_score):
