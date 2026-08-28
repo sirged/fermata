@@ -52,22 +52,23 @@ How this works (full validation detail):
   THE NAME IS A FAST PATH, NOT A GATE (issue #154). A PDF producer that
   renames every embedded font generically defeats a name-first filter
   outright: "Rito Village - Night (BotW)" embeds its Maestro subset as
-  resource "CIDFont+F1" - the CID-subsetting tool renamed all eight of its
-  embedded fonts to "CIDFont+F1".."CIDFont+F8" and left none of them named
-  "Maestro" - and used to yield zero glyph events on all three of that
-  score's pages because the resource was rejected by name before the
-  fingerprint that would have recognised it ever ran. So a TrueType resource
-  that fails the name check is not simply skipped: it is fingerprinted
-  anyway, on the same evidence and the same threshold as a resource that IS
-  named "Maestro" (see load_music_fonts / _load_one_font). A font that
-  passes is Maestro whatever it is called; one that fails is silently
-  ignored unless it left genuine partial evidence (at least one glyph outline
-  that matches a calibrated digest exactly), which - measured over every
-  embedded TrueType font in the library that is NOT named Maestro/Opus/
-  OpusSpecial (2,259 of them) - happens for zero fonts that are not actually
-  Rito's renamed Maestro. An ordinary unrelated font (body text, lyrics, tab
-  numerals) can and does fill some of the same GID slots the calibrated
-  subset uses, but never with byte-identical outlines by coincidence.
+  resource "CIDFont+F1" - the CID-subsetting tool renamed all nine of its
+  embedded fonts to "CIDFont+F1".."CIDFont+F9" (F9 only used on pages 2-3)
+  and left none of them named "Maestro" - and used to yield zero glyph
+  events on all three of that score's pages because the resource was
+  rejected by name before the fingerprint that would have recognised it
+  ever ran. So a TrueType resource that fails the name check is not simply
+  skipped: it is fingerprinted anyway, on the same evidence and the same
+  threshold as a resource that IS named "Maestro" (see load_music_fonts /
+  _load_one_font). A font that passes is Maestro whatever it is called;
+  one that fails is silently ignored unless it left genuine partial
+  evidence (at least one glyph outline that matches a calibrated digest
+  exactly), which - measured over every embedded TrueType font in the
+  library that is NOT named Maestro/Opus/OpusSpecial (2,260 of them) -
+  happens for zero fonts that are not actually Rito's renamed Maestro. An
+  ordinary unrelated font (body text, lyrics, tab numerals) can and does
+  fill some of the same GID slots the calibrated subset uses, but never
+  with byte-identical outlines by coincidence.
 
   Sibelius exports embed "Opus"/"OpusSpecial"/"OpusText" as TrueType
   subsets whose post table format DOES retain names, but as PUA codepoint
@@ -193,8 +194,8 @@ MAESTRO_GID_MAP = {
     # the other. Rendered from the page - not from the font in isolation - at
     # its drawn size for "1 AM (Animal Crossing New Leaf).pdf" p1 and "Ask Me
     # Why (The Boy and the Heron).pdf" p1: an unmistakable segno both times.
-    # Corroborated by what the pages say: this library draws GID 4 87 times
-    # across 83 files, and all 83 print a "D.S." somewhere; not one file
+    # Corroborated by what the pages say: this library draws GID 4 88 times
+    # across 84 files, and all 84 print a "D.S." somewhere; not one file
     # carries the glyph without one.
     #
     # WHY A DOUBLE-CHECK MISSED IT. The census behind this reader was run
@@ -909,9 +910,11 @@ class MusicFont:
 # are not that: two are "OpusPercussion" (a real, distinct Sibelius family,
 # correctly out of scope the same way OpusText is - it is honestly named, just
 # uncalibrated), and one is a Finale "EngraverTextT" (fingering/technique
-# annotation text) that happens to carry 3 of the 13 digit-style "uniF03X"
-# labels among its own glyphs. That is the actual hazard a name-overlap
-# fallback would face and there is no reason to expect it is rare: "uniF0XX"
+# annotation text) that happens to carry uniF030 and uniF039 - 2 of the 13
+# digit-style "uniF03X" labels - plus a third hit outside that set entirely,
+# uniF071 ("note_pictograph"), among its own glyphs. That is the actual
+# hazard a name-overlap fallback would face and there is no reason to
+# expect it is rare: "uniF0XX"
 # is fontTools' own generic post-table label for ANY glyph mapped from a PUA
 # codepoint, not a signature unique to Opus, so unlike Maestro's byte-exact
 # outline digest (measured, over the same sweep, to NEVER collide) a
@@ -1078,7 +1081,26 @@ def load_music_fonts(doc, page):
     degrade honestly instead of decoding with a font whose glyph IDs mean
     something else. An unnamed rejection is reported only when it left
     genuine partial evidence of being Maestro - see _load_one_font - so an
-    ordinary text font on the same page does not bury that warning in noise."""
+    ordinary text font on the same page does not bury that warning in noise.
+
+    A RESIDUAL THIS WIDENS RATHER THAN CREATES: this dict is keyed by name,
+    not by xref, so if two distinct xrefs on one page ever reported the
+    identical basefont with only one of them accepted, extract_glyph_events
+    would have no way to tell which resource actually drew a given span -
+    it matches spans to candidates by `fname` alone - and a span drawn with
+    the REJECTED xref would silently resolve its GIDs against the ACCEPTED
+    one's map instead. That has always been possible for two same-named
+    resources; before issue #154 only the three literal family names could
+    collide this way, and now any accepted resource's own (possibly
+    arbitrary) name can too. Two xrefs DO share one basefont often in this
+    library (274 distinct cases, 297 files) - one simple TrueType font and
+    one Type0/CID font wrapping the identically-embedded program, most
+    Maestro pages have both - but every one of them is a byte-identical
+    duplicate embed (measured via extract_font(), not assumed), which
+    cannot disagree on the fingerprint it would be checked against. Zero
+    actual mismatched-content collisions exist today; this paragraph
+    exists so the NEXT one is checked the same way rather than assumed
+    safe by extension."""
     cache = _font_cache(doc)
     by_family = collections.defaultdict(list)
     warnings = []
@@ -3328,8 +3350,8 @@ def navigation_glyph_events(page):
     letting the caller do the placing is the same division dot_like_glyph_events
     keeps.
 
-    Measured over this project's library (297 files): 155 coda signs across
-    142 files, and 87 segnos across 83 files - every one of them Finale's
+    Measured over this project's library (297 files): 156 coda signs across
+    143 files, and 88 segnos across 84 files - every one of them Finale's
     Maestro GID 4, which this table labelled "simile" until the outline was
     rendered and looked at (see MAESTRO_GID_MAP). An earlier version of this
     docstring said the library drew ZERO segnos and that a census had checked

@@ -1448,7 +1448,7 @@ def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first
 #     D.C. al Fine 14, bare D.S. 10, D.S. al Fine 4,
 #     bare D.C. 2, and 12 numbered or "x2" variants
 #   "To Coda"                                            143 / 297 (147 marks)
-#   a coda SIGN in the music font                        142 / 297 (155 signs)
+#   a coda SIGN in the music font                        143 / 297 (156 signs)
 #   a standalone "Fine"                                   16 / 297 (20 marks)
 #   a segno SIGN                                          84 / 297 (88 signs)
 #   the word "Segno" anywhere in the text layer            0
@@ -1476,8 +1476,9 @@ def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first
 # file read NO music glyphs at all: no noteheads, no rhythm, not just no
 # segno. Fixed by fingerprinting first (see load_music_fonts / _load_one_font
 # and the module docstring's "THE NAME IS A FAST PATH, NOT A GATE"); this
-# file's segno sign is counted in the 84/88 above, and its notes/bars/beats
-# figures moved from the spacing-fallback numbers to glyph-decoded ones.
+# file's segno sign is counted in the 84/88 above, its coda sign in the
+# 143/156, and its notes/bars/beats figures moved from the spacing-fallback
+# numbers to glyph-decoded ones.
 
 # How far above the staff it belongs to a navigation mark may sit, in that
 # staff's own spaces. Measured with the attribution rule _assign_nav_marks

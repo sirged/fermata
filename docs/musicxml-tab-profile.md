@@ -628,23 +628,27 @@ bar. Both feed the `structure` confidence key.
 
 This is not a rare branch. In the library this profile was developed against,
 **86 of 297 scores print "D.S.", and 43 marks over the library are read off
-the page and anchored to no bar.** Of those 86, three draw no segno for the
-D.S. to name and get their words and no `dalsegno`; the other 83 do draw one.
+the page and anchored to no bar.** Of those 86, two draw no segno for the
+D.S. to name and get their words and no `dalsegno`; the other 84 do draw one.
 
 **A correction, stated plainly, because an earlier version of this rule said
 the opposite.** This document previously claimed that *no score in the
 library draws a segno at all*, and that the claim had been "measured twice —
 once over every music glyph that resolved to a category and once over every
-glyph that resolved to none". The claim was false: the library draws **87
-segno signs across 83 files**. Every one of them is Finale's Maestro glyph ID
+glyph that resolved to none". The claim was false: the library draws **88
+segno signs across 84 files**. Every one of them is Finale's Maestro glyph ID
 4, which this project's calibrated glyph table labelled `"simile"`. That is
 precisely the error a two-sided census cannot see — a *wrongly categorised*
 glyph is in neither bucket, because it is not unmapped (so the "what are we
 missing" sweep skips it) and it is not a segno (so the "what did we find"
 sweep never counts it). Only rendering the outline and looking at it settles
 that class of question, which is the standard the glyph table claims for
-itself; GID 4 renders as an unmistakable segno, and every one of the 83 files
-carrying it also prints a "D.S.". What survives from the old claim is
+itself; GID 4 renders as an unmistakable segno, and every one of the 84 files
+carrying it also prints a "D.S.". (One of those 84, "Rito Village - Night",
+embeds its Maestro subset under a PDF resource name this decoder did not yet
+recognise at all — issue #154 — so its glyphs, segno included, were invisible
+regardless of the GID-mislabelling this correction is otherwise about.) What
+survives from the old claim is
 narrower and still true: **the word "Segno" appears in no file's text layer**,
 so the sign is the only evidence there ever was.
 

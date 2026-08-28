@@ -3580,19 +3580,20 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # 581 - 11 - 43 = 527.
     assert totals["nav_directions"] == 527
     assert scores_with_navigation == 166
-    # 109 coda signs written, of the 155 the library draws. The 46 not
-    # written: 40 sit entirely past their staff's right end, on the
+    # 109 coda signs written, of the 156 the library draws. The 47 not
+    # written: 41 sit entirely past their staff's right end, on the
     # coda-system layout whose right-hand system the staff detector loses
     # (see test_a_coda_drawn_on_a_lost_right_hand_system_is_disclosed_not_moved
     # and issue #152) and are disclosed as unanchored rather than clamped
-    # onto the jump's own bar; 6 are the reference glyph printed inside a
-    # "To Coda" and are that instruction's, not section heads. Two more coda
-    # MARKS reach the count from elsewhere: Imprisoned Town's sign has no
-    # bars on its system, and Rito Village's coda sign - now read as a glyph
-    # like the rest of its page (issue #154) - sits outside its own staff's
-    # bar span the same way the 40 above do, so it is still read from the
-    # word beside it rather than the sign's own position; being outside the
-    # decoder's font vocabulary was never why this one mark placed by word.
+    # onto the jump's own bar - Rito Village's own coda sign, now read as a
+    # glyph like the rest of its page (issue #154), is one of these 41: it
+    # sits outside its own staff's bar span the same way the other 40 do, so
+    # it is still read from the word beside it rather than the sign's own
+    # position; being outside the decoder's font vocabulary was never why
+    # this one mark placed by word - and 6 are the reference glyph printed
+    # inside a "To Coda" and are that instruction's, not section heads. One
+    # more coda MARK reaches the count from elsewhere: Imprisoned Town's
+    # sign has no bars on its system.
     #
     # And 88 segnos, from 84 files - all of them Finale's Maestro GID 4,
     # which the calibrated glyph table labelled "simile" until the outline
