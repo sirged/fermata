@@ -37,6 +37,24 @@
   let currentPage = $state(1);
   let halfPage = $state(false);
   let saveTimer;
+  // A page turn asked for before that page's canvas exists to scroll to.
+  //
+  // The document's page COUNT is known the moment its metadata parses, which
+  // is a few hundred milliseconds before renderAllPages() has appended a
+  // single canvas - so for that whole window the HUD already reads "1 / 2",
+  // the arrow keys are already live, and goto()'s `?.` silently swallowed
+  // every turn: onKey called preventDefault(), the key was consumed, and
+  // nothing happened, with nothing left to retry it. A pedal tap on a score
+  // that has just been opened is exactly that press, and it is what made
+  // issue #168's spec fail on CI (measured on an idle machine: the HUD read
+  // "1 / 2" at 293ms with zero canvases in the container; page 2's canvas
+  // arrived at 327ms - and CI load widens that gap, it does not close it).
+  // Remembered here instead, and honoured as soon as rendering reaches it.
+  let pendingPage = null;
+  // Whether a turn like that was actually honoured, so the score.last_page
+  // restore below does not immediately yank the reader back off the page
+  // they just asked for.
+  let turnedBeforeRestore = false;
 
   // half-page advance defaults on each time gig mode is entered, but the
   // performer can still turn it off without it snapping back mid-set
@@ -87,6 +105,16 @@
         canvas.dataset.page = n;
         container.appendChild(canvas);
         await renderPageInto(page, canvas, width, dpr);
+        // A turn pressed before this page existed. Clamped to the last page
+        // here rather than in goto(), because goto() may well have run before
+        // pageCount was known at all and so had nothing to clamp against.
+        // Pages are appended in order, so nothing rendered after this one can
+        // move it - no need to wait for the whole document to finish.
+        if (pendingPage !== null && Math.min(pendingPage, pdfDoc.numPages) === n) {
+          pendingPage = null;
+          turnedBeforeRestore = true;
+          canvas.scrollIntoView({ block: "start" });
+        }
       }
     }
 
@@ -157,7 +185,7 @@
       );
       container.querySelectorAll(".pdf-page").forEach((c) => observer.observe(c));
 
-      if (score.last_page > 1) {
+      if (score.last_page > 1 && !turnedBeforeRestore) {
         container
           .querySelector(`[data-page="${score.last_page}"]`)
           ?.scrollIntoView({ block: "start" });
@@ -179,6 +207,11 @@
 
     return () => {
       cancelled = true;
+      // both belong to the document this pass loaded; a re-run (a different
+      // score) must not inherit a turn pressed against the old one, nor its
+      // permission to skip the new one's last_page restore
+      pendingPage = null;
+      turnedBeforeRestore = false;
       observer?.disconnect();
       resizeObserver?.disconnect();
       clearTimeout(saveTimer);
@@ -187,20 +220,32 @@
   });
 
   function goto(page) {
-    const target = Math.max(1, Math.min(pageCount, page));
-    container
-      .querySelector(`[data-page="${target}"]`)
-      ?.scrollIntoView({ block: "start", behavior: "smooth" });
+    // pageCount is 0 until the document's metadata has parsed. Clamping
+    // against it then would fold every early turn onto page 1 - which is
+    // where the reader already is - so only clamp once there is a count to
+    // clamp to; renderAllPages() does the rest (see pendingPage above).
+    const target = pageCount ? Math.max(1, Math.min(pageCount, page)) : Math.max(1, page);
+    const canvas = container.querySelector(`[data-page="${target}"]`);
+    if (canvas) {
+      pendingPage = null;
+      canvas.scrollIntoView({ block: "start", behavior: "smooth" });
+    } else {
+      pendingPage = target;
+    }
   }
 
   function turn(dir) {
-    if (gigMode && halfPage) {
+    // The half-page step needs the current page's rendered height to measure
+    // against; before that canvas exists there is nothing to measure and
+    // nothing to scroll, so this falls through to goto() - which can at
+    // least remember the turn - instead of scrolling an empty container by a
+    // viewport height and losing the press (#168).
+    const current = container.querySelector(`[data-page="${currentPage}"]`);
+    if (gigMode && halfPage && current) {
       // step off the current page's actual rendered height (plus its share
       // of the gap) rather than the viewport, so repeated half-turns track
       // bar lines instead of drifting against page/container padding
-      const current = container.querySelector(`[data-page="${currentPage}"]`);
-      const step = current ? current.getBoundingClientRect().height + 18 : container.clientHeight;
-      container.scrollBy({ top: dir * step * 0.5, behavior: "smooth" });
+      container.scrollBy({ top: dir * (current.getBoundingClientRect().height + 18) * 0.5, behavior: "smooth" });
     } else {
       goto(currentPage + dir);
     }
