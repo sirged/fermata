@@ -17,6 +17,8 @@
 // against its own idea of the shape. These fixtures exist so that mistake
 // can't quietly happen again on either side of this file.
 
+import { DISCLOSURE_ROWS } from "../../../src/lib/disclosures.js";
+
 export const MIN_PDF = Buffer.from(
   "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n" +
     "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n" +
@@ -110,6 +112,24 @@ export const STANDING_LIMITS_ONLY_WARNINGS = [
 ];
 
 /**
+ * Every structural-disclosure counter TranscriptionOut carries, set to a
+ * real, measured zero (and every `*_bars`/`*_pages` list to `[]`) - the
+ * clean-extraction baseline. Spread this into `disclosures` and override the
+ * handful a scenario cares about, so a fixture that only means to say "this
+ * one counter is non-zero" doesn't accidentally leave its siblings `undefined`
+ * (which disclosures.js treats as "never measured", not as zero - see
+ * disclosureRows()'s own doc comment on that distinction).
+ */
+export function zeroDisclosures() {
+  const t = {};
+  for (const row of DISCLOSURE_ROWS) {
+    t[row.key] = 0;
+    if (row.barsKey) t[row.barsKey] = [];
+  }
+  return t;
+}
+
+/**
  * Builds a GET /transcription (or POST /transcribe) response body.
  *
  * `bars` is `{ defective, measured, overfull, short }` or omitted entirely -
@@ -134,6 +154,14 @@ export const STANDING_LIMITS_ONLY_WARNINGS = [
  * `content` and `format` override the rendered transcription itself, for the
  * cases that are about what the staff/metronome make of the document rather
  * than about the warning panel above it.
+ *
+ * `disclosures` is any subset of the structural-form/inference counters
+ * TranscriptionOut carries (repeats_unread, endings_unread, ...) and their
+ * `*_bars`/`*_pages` lists - see disclosures.js's DISCLOSURE_ROWS for the
+ * full field list. Passed straight through onto the top level, exactly like
+ * `bars` and `provenance` above: those fields are siblings of `confidence`
+ * on the real API response, not nested inside it (see api.py's
+ * _BLOB_TOP_LEVEL).
  */
 export function transcriptionResponse({
   warnings,
@@ -141,6 +169,7 @@ export function transcriptionResponse({
   bars,
   nestWarningsOnly = false,
   provenance = null,
+  disclosures = null,
   content = SAMPLE_TEX,
   format = "alphatex",
 }) {
@@ -152,6 +181,7 @@ export function transcriptionResponse({
     blob.bars_measured = bars.measured;
   }
   if (provenance) Object.assign(blob, provenance);
+  if (disclosures) Object.assign(blob, disclosures);
   const body = {
     id: 1,
     score_id: 1,
@@ -168,6 +198,7 @@ export function transcriptionResponse({
     body.bars_measured = blob.bars_measured;
   }
   if (provenance) Object.assign(body, provenance);
+  if (disclosures) Object.assign(body, disclosures);
   return body;
 }
 
@@ -214,18 +245,26 @@ export const INCOMPLETE_TUNING_PROVENANCE = {
 /**
  * A saved hand edit's response shape, mirroring server/fermata/api.py's
  * _transcription_dict exactly for a row whose `confidence` column is NULL
- * (every edited row): `warnings` is stated as `[]` and all four bar keys as
- * `null` - NEVER omitted - specifically because an earlier version of the
- * backend omitted them, and a client that spread such a response over the
- * transcription it already held kept the PRE-EDIT figures. A user opened a
- * score reading "4 of 50 bars don't add up", fixed exactly those bars,
- * saved, and the panel still said "4 of 50 bars don't add up" and still
- * listed warnings about notes that no longer existed - the confidently
- * wrong state this whole feature exists to prevent. `null` (not `0`) is the
- * deliberate way of saying "nothing has measured this content"; `0` would
- * claim every bar was measured and every one of them added up.
+ * (every edited row): `warnings` is stated as `[]` and every _BAR_KEYS /
+ * _BAR_LIST_KEYS field - including every structural disclosure counter
+ * disclosures.js reads - as `null`, NEVER omitted - specifically because an
+ * earlier version of the backend omitted them, and a client that spread such
+ * a response over the transcription it already held kept the PRE-EDIT
+ * figures. A user opened a score reading "4 of 50 bars don't add up", fixed
+ * exactly those bars, saved, and the panel still said "4 of 50 bars don't
+ * add up" and still listed warnings about notes that no longer existed - the
+ * confidently wrong state this whole feature exists to prevent. `null` (not
+ * `0`) is the deliberate way of saying "nothing has measured this content";
+ * `0` would claim every bar was measured and every one of them added up (and
+ * for the disclosure counters specifically, that every one of them found
+ * nothing).
  */
 export function editedTranscriptionResponse() {
+  const disclosureNulls = {};
+  for (const row of DISCLOSURE_ROWS) {
+    disclosureNulls[row.key] = null;
+    if (row.barsKey) disclosureNulls[row.barsKey] = null;
+  }
   return {
     id: 1,
     score_id: 1,
@@ -238,6 +277,7 @@ export function editedTranscriptionResponse() {
     bars_short: null,
     bars_defective: null,
     bars_measured: null,
+    ...disclosureNulls,
   };
 }
 

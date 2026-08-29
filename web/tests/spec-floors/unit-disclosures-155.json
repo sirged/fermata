@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/disclosures.spec.js",
+  "count": 8,
+  "reason": "issue #155: disclosureRows()'s selection rules - zero hidden, null distinct from 'not measured', bar/page lists ride along, and a fully-null row shows nothing."
+}
