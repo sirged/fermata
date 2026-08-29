@@ -389,9 +389,15 @@ def test_a_beam_offset_inside_tolerance_that_rounds_outside_is_still_counted():
     offset = 5.9711
     assert offset < tol.beam_y_tol
     assert round(offset, 1) > tol.beam_y_tol
-    beam_y = free_y - offset  # down-stem: inward runs toward smaller y
-    beam = G._beam_from_contour(_quad(100.0, beam_y, 113.0, beam_y, 1.9), tol)
+    thickness = 1.9
+    # _beam_from_contour's centreline average weights the closing point
+    # back to (x0, y0) alongside (x0, y0) and (x0, y0 + thickness), so the
+    # contour's y0 has to be offset by thickness/3, not thickness/2, to
+    # land the beam's centreline exactly `offset` points from the tip.
+    y0 = free_y - offset - thickness / 3  # down-stem: inward runs toward smaller y
+    beam = G._beam_from_contour(_quad(100.0, y0, 113.0, y0, thickness), tol)
     assert beam is not None
+    assert G.beam_y_at(beam, 100.0) == pytest.approx(free_y - offset, abs=1e-6)
     assert G._beam_count_near([beam], stem, notehead_yc=notehead_yc, tol=tol) == 1
 
 
