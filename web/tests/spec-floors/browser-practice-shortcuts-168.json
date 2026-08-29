@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/practice-shortcuts.spec.js",
+  "count": 1,
+  "reason": "issue #168: a page turn pressed while the PDF is still loading is remembered and honoured once its page renders, rather than consumed by the key handler and silently dropped."
+}

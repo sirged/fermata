@@ -675,6 +675,18 @@ test.describe("side-by-side layout: PDF page-turning keeps its keys", () => {
   });
 
   test("ArrowRight turns the PDF page", async ({ page }) => {
+    // The canvases, NOT the HUD, are what proves this pane can turn a page.
+    // PdfViewer publishes the page COUNT the moment the document's metadata
+    // parses - so ".hud span" reads "1 / 2" a few hundred milliseconds
+    // before renderAllPages has appended anything to scroll TO (measured on
+    // an idle machine: HUD at 293ms with zero canvases, page 2's canvas at
+    // 327ms; CI load widens that gap). Waiting only on the HUD is what made
+    // this test fail on CI twice - issue #168 - and it is not a slow-product
+    // flake to be waited out: the press inside that window was CONSUMED and
+    // dropped, so no retry of the assertion could ever have recovered it.
+    // PdfViewer no longer drops it (it remembers the turn), and this waits
+    // for the real barrier so the test is not resting on that recovery.
+    await expect(page.locator(".pdf-page")).toHaveCount(2);
     await expect(page.locator(".hud span")).toHaveText("1 / 2");
     await page.keyboard.press("ArrowRight");
     await expect(page.locator(".hud span")).toHaveText("2 / 2");
@@ -684,6 +696,44 @@ test.describe("side-by-side layout: PDF page-turning keeps its keys", () => {
     await page.keyboard.press(" ");
     await page.waitForTimeout(300);
     await expect(playButton(page)).toHaveText(/Play/);
+  });
+});
+
+// The other half of #168: the test above now waits for the pages, but the
+// PRODUCT still has to survive a reader who does not. A pedal sends nothing
+// but arrow keys and there is no mouse to fall back on (issue #106's own
+// reasoning), so a tap on a score that is still loading has to land - and it
+// used to be swallowed whole, because PdfViewer accepted the key
+// (preventDefault) and then scrolled to a `[data-page]` element that did not
+// exist yet, via an `?.` that made the miss invisible.
+//
+// Held open deliberately here rather than raced for: the PDF body is not
+// released until AFTER the key has been pressed, so the press provably lands
+// in the window this is about instead of landing there only when a loaded CI
+// runner happens to be slow. That makes the "1 / …" below - PdfViewer's own
+// wording for a page count it does not have yet - a fact of the test, not a
+// hope.
+test.describe("a page turn pressed before the PDF has rendered", () => {
+  test("is honoured once the pages arrive, not dropped", async ({ page }) => {
+    await stubScoreApi(page, transcriptionResponse({ warnings: [], confidence: CLEAN_CONFIDENCE }));
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    await page.route("**/api/scores/1/file", async (route) => {
+      await held;
+      await route.fulfill({ body: buildMultiPagePdf(2), contentType: "application/pdf" });
+    });
+    await page.goto("/#/score/1");
+    await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+    await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveClass(/on/);
+    // Nothing of the document has been read yet - no page count, no canvases.
+    await expect(page.locator(".hud span")).toHaveText("1 / …");
+    await expect(page.locator(".pdf-page")).toHaveCount(0);
+
+    await page.keyboard.press("ArrowRight");
+    release();
+
+    await expect(page.locator(".pdf-page")).toHaveCount(2);
+    await expect(page.locator(".hud span")).toHaveText("2 / 2");
   });
 });
 
@@ -714,6 +764,9 @@ test.describe("gig mode itself", () => {
     // the evidence gig mode is genuinely active, not merely that "f" was
     // pressed.
     await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
+    // Same barrier as the side-by-side test above, for the same reason
+    // (#168) - this test shares the hole and only wins the race more often.
+    await expect(page.locator(".pdf-page")).toHaveCount(2);
     await expect(page.locator(".hud span")).toHaveText("1 / 2");
     await page.keyboard.press("ArrowRight");
     await expect(page.locator(".hud span")).toHaveText("2 / 2");
