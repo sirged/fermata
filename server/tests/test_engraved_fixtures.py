@@ -842,6 +842,62 @@ def test_the_rest_fixture_matches_the_score_it_was_engraved_from(engraved):
     assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
 
 
+def test_a_thirty_second_under_a_beam_is_not_read_as_a_sixteenth(engraved):
+    """Issue #113. Three beam strokes are a 32nd; two are a 16th. The decoder
+    accepted a beam stroke only if it sat within beam_y_tol of the stem's TIP,
+    and a group's third stroke is two pitches in from there - outside it - so
+    every note under a three-stroke beam came out at exactly twice its written
+    length. Silent, internally consistent and the worst kind of duration
+    error, which is why the assertions here are the literal durations rather
+    than a bar total: a bar total can be right with two errors cancelling.
+
+    Before the fix, bars 1, 2, 3, 6, 7 and 8 read every 32nd as a 16th and the
+    fixture reported 6 overfull bars.
+    """
+    result = tabextract.extract(engraved("thirty_second_beams"))
+    bars = [[q for q, _n in voices[0]] for voices in emitted_bars(result.alphatex)]
+
+    # a dotted eighth and two 32nds filling one beat - the figure the sampled
+    # library actually prints, and the one nearly every corrected bar held
+    assert bars[0] == [0.75, 0.125, 0.125, 1.0, 2.0]
+    # two 32nds under a beam of their own
+    assert bars[1] == [0.125, 0.125, 0.25, 0.5, 1.0, 2.0]
+    # four of them, so the count cannot be a two-note accident
+    assert bars[2] == [0.125, 0.125, 0.125, 0.125, 0.5, 1.0, 2.0]
+
+    assert bars == source_beats("thirty_second_beams")
+    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
+
+
+def test_the_flagged_thirty_seconds_beside_them_were_never_wrong(engraved):
+    """The control that says where issue #113's defect lived.
+
+    Bar 4 holds two 32nds that are ADJACENT on the page - one closing the
+    first beat, one opening the second - but in different beam groups, so the
+    engraver draws each on a flag instead of joining them. Those read
+    correctly both before and after the fix, on the same page, in the same
+    font, at the same spacing as the beamed pairs that did not.
+
+    That is what rules the issue's own stated mechanism out. It reads
+    "the flags of the neighbouring stem fall close enough to be miscounted or
+    merged", and adjacency is not what does it: a 32nd's flag is a single
+    glyph worth three hooks (FLAG_HOOKS) and is found by ink overlap with the
+    stem's tip, which neighbouring stems do not disturb. The beam count was
+    the whole of it.
+    """
+    result = tabextract.extract(engraved("thirty_second_beams"))
+    bars = [[q for q, _n in voices[0]] for voices in emitted_bars(result.alphatex)]
+    assert bars[3] == [0.5, 0.25, 0.125, 0.125, 0.125, 0.125, 0.25, 0.5, 2.0]
+
+    # ...and the flags really are what carries them: no beam is drawn over
+    # either note, so the reading has nowhere else to have come from.
+    doc = fitz.open(engraved("thirty_second_beams"))
+    page = doc[0]
+    flags = [e for e in glyph_rhythm.extract_glyph_events(page).events
+             if e.category == "flag32"]
+    assert len(flags) == 4, "one per 32nd in bar 4, on both staves"
+
+
 def test_engraved_rests_are_never_reported_as_inferred_silence(engraved):
     """The negative control for Rule 14. This fixture is fourteen printed rests
     across every value the vocabulary spells, all read from the glyph that
@@ -2015,7 +2071,8 @@ def test_a_key_change_at_the_same_mid_system_barline_does_not_hide_the_meter(eng
 
 
 @pytest.mark.parametrize("name", ("notation_and_tab", "rests_and_flags", "two_voices",
-                                  "tuplet_and_tie", "volta", "defective_bars"))
+                                  "tuplet_and_tie", "volta", "defective_bars",
+                                  "thirty_second_beams"))
 def test_no_meter_change_is_invented_where_none_is_printed(name, engraved):
     """The other direction, and the reason the mid-system reader only looks
     just past a barline: the same digit glyphs spell tuplet numbers and
@@ -2050,6 +2107,9 @@ ENGRAVED_NAMES = (
     # covering it since.
     "stacked_dotted_chord", "double_dotted_note", "seconds_interval_dots",
     "double_dotted_in_chord",
+    # The first fixture in this repository to engrave a three-stroke beam
+    # (issue #113).
+    "thirty_second_beams",
 )
 SYNTHESISED_NAMES = ("raster_scan", "fake_music_font")
 

@@ -3783,6 +3783,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
         totals["bars"] += result.bars
         totals["bars_unread"] += result.bars_unread
         totals["notes"] += result.notes
+        totals["beats"] += result.beats
         totals["bars_overfull"] += result.bars_overfull
         totals["bars_short"] += result.bars_short
         totals["bars_defective"] += result.bars_defective
@@ -3885,15 +3886,44 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # quarter it now overshoots by. Correcting one half of a compensating
     # error makes the total look worse; the durations underneath it are more
     # right than they were.
+    #
+    # AND A FIFTH TIME, by issue #113's beam-stack count. A beam group's third
+    # stroke sat outside the window that accepted strokes at a stem's tip, so
+    # every note under a three-stroke beam - a 32nd - was emitted as a 16th,
+    # at twice its written length. 366 stems across 49 scores gain their third
+    # level; none loses one, which the rule guarantees by construction (it
+    # only ever adds to what the window already accepted) and the measurement
+    # confirms.
+    #
+    # NOTES, BEATS AND BARS DO NOT MOVE, and that is the check that this
+    # corrects durations and nothing else: `beats` counts ONSETS
+    # (musicxml.written_beats), and halving a note's length neither adds nor
+    # removes one. Every counter that is not a Rule 8 conformance figure -
+    # dots, repeats, endings, segno and coda, navigation, unison digits,
+    # systems unread - is identical before and after, measured score by score.
+    #
+    # The conformance figures move the way a real correction moves them: 59
+    # bars stop being overfull and 40 stop being defective. Two bars move from
+    # overfull to SHORT and one gains padding, which is the familiar shape of
+    # correcting one half of a compensating error - the bar is still wrong,
+    # and now wrong in the direction its remaining defect points. Eleven of
+    # the changed bars were read off the printed pages across four scores
+    # (Traverse Town, Troian Beauty, Stables, Where the Egg of Dreams
+    # Hatches); every one is engraved with three beam strokes and now sums to
+    # exactly its meter.
     assert extractable == 293
     assert totals["bars"] == 10762               # 10632 + 130 (issue #152)
     assert totals["bars_unread"] == 20           # 23 - 3 (issue #152)
     assert totals["notes"] == 99461              # 98704 + 757 (issue #152)
-    assert totals["bars_overfull"] == 1600       # 1590 + 10 (issues #111/#112)
-    assert totals["bars_short"] == 4188          # 4216 - 28 (issues #111/#112)
-    assert totals["bars_defective"] == 5340      # 5359 - 19 (issues #111/#112)
-    assert totals["bars_padded"] == 3602         # 3619 - 17 (issues #111/#112)
-    assert totals["inferred_rest_quarters"] == 4892.125  # 4923.0 - 30.875
+    # Pinned here for the first time by issue #113, which is the change that
+    # needs it: a duration fix that moved this would not be a duration fix.
+    assert totals["beats"] == 83365
+    #                                        before #113 -> after
+    assert totals["bars_overfull"] == 1541               # 1600
+    assert totals["bars_short"] == 4190                  # 4188
+    assert totals["bars_defective"] == 5300              # 5340
+    assert totals["bars_padded"] == 3603                 # 3602
+    assert totals["inferred_rest_quarters"] == 4897.875  # 4892.125
     # The systems still lost, named. Both are 7-line groups - a 6-line tab
     # staff ruled at 7.7pt with ONE extra full-width rule below its last
     # line, close enough to fall inside the 15.0pt cluster gap: Dynamis p1 at
@@ -4158,3 +4188,121 @@ def test_library_wide_note_ids_are_unique_and_valid_ncnames(library_root):
     # library extract cleanly can change, but the check must not have silently
     # stopped running against anything close to the whole library.
     assert scores_checked >= 250, f"only {scores_checked} scores were checked"
+
+
+def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
+    """Issue #109's own self-check, which needs no reference to a printed
+    page: a note whose written value exceeds its bar's meter is impossible
+    whatever the page says, so the arithmetic alone proves the reading wrong.
+
+    The issue counted 52 dotted whole notes, 35 of them legal in 12/8 (six
+    quarters is exactly one bar there) and SEVENTEEN in bars read as 4/4,
+    where six quarters cannot fit. It named two candidate causes and said
+    which fix each pointed at: a misread meter (#90) or a stray augmentation
+    dot (#89).
+
+    It was the meter. Re-measured against the same library at the commit the
+    issue was filed against, the seventeen are exactly reproducible - five on
+    A Better World, eight on Courage, four on Free from Fear - and all gone
+    at the commit that landed #90/#104's printed-meter reading, two days
+    later. Courage and A Better World are engraved in 12/8 and were being
+    barred as 4/4; Free from Fear prints 6/4 changes, which is also six
+    quarters. All three were read off their pages: every one of the seventeen
+    is a dotted whole that exactly fills the bar it is printed in.
+
+    A neighbouring impossibility the issue did not count went the same way. At
+    that commit fifteen DOUBLE-dotted wholes - seven quarters - sat in 12/8
+    bars, and #111/#112's dot binding took those to zero as well.
+
+    So this pins the self-check rather than a fix: nothing here needs
+    repairing, and the seventeen must not come back. It is written over every
+    written value rather than over dotted wholes alone, because the class is
+    what matters - a whole note in a 3/4 bar would be the same defect.
+
+    TWO SITES ARE KNOWN AND NAMED rather than assumed away by a looser rule,
+    because the whole value of this check is that it does not need a page.
+
+    Answers (Final Fantasy XIV Endwalker), bars 43 and 44: a whole note in a
+    bar read as 3/4. Read off the page, both bars are printed in 4/4 and hold
+    exactly what the decoder says - a whole-note bass pedal under running
+    eighths. What is wrong is the meter, and for a reason with an owner: the
+    score's only 3/4 is a COURTESY meter, printed as the last thing on that
+    system for the Coda that follows it, and it is being applied from bar 43
+    instead of at the Coda. That is the hazard conftest's `kaine_salvation`
+    fixture already names, failing here on a different score, and it belongs
+    to the mid-system meter reader (#90/#104), not to any duration. Fixing it
+    from this side would mean loosening an arithmetic check to accommodate a
+    meter defect, which is backwards.
+
+    And the RESTS, which the same issue calls out as an adjacent class and
+    which are counted separately here for exactly that reason. Two remain,
+    and they are different from each other:
+
+      Classical-Guitar-Method-Vol1-2020, bar 16 - a whole rest alone in a 3/4
+      bar. This is #109's own named survivor, and it is LEGITIMATE
+      ENGRAVING: a whole-measure rest is drawn as a whole rest in any meter,
+      so the glyph means "this bar is silent", not "four quarters". Reading
+      it as four is a real remaining defect, with a real fix - a lone whole
+      rest should take its bar's length - which belongs with #88's rest work
+      and is deliberately not made here, because it would move the library's
+      conformance figures a second time in one change and leave neither
+      movement separable from the other.
+
+      My Star (Final Fantasy XVI), bar 5 - a DOTTED whole rest, six quarters,
+      in a 4/4 bar. Not the whole-measure convention and not legitimate. It
+      predates #111/#112 (measured at #152's commit, where it is already
+      present).
+    """
+    type_quarters = {"breve": 8.0, "whole": 4.0, "half": 2.0, "quarter": 1.0,
+                     "eighth": 0.5, "16th": 0.25, "32nd": 0.125}
+    impossible = []
+    impossible_rests = []
+    scores_checked = 0
+    for pdf in _library_pdfs(library_root):
+        try:
+            result = tabextract.extract(pdf)
+        except Exception:
+            continue
+        if not result.extractable or not result.musicxml:
+            continue
+        scores_checked += 1
+        for part in ET.fromstring(result.musicxml).findall("part"):
+            meter = None
+            for measure in part.findall("measure"):
+                time = measure.find("attributes/time")
+                if time is not None:
+                    meter = (int(time.findtext("beats")),
+                             int(time.findtext("beat-type")))
+                bar_quarters = meter[0] * 4.0 / meter[1] if meter else 4.0
+                for note in measure.findall("note"):
+                    written = type_quarters.get(note.findtext("type"))
+                    if written is None:
+                        continue
+                    dots = len(note.findall("dot"))
+                    written *= 2 - 0.5 ** dots
+                    if written <= bar_quarters + 1e-9:
+                        continue
+                    where = (pdf.name, measure.get("number"), meter,
+                             note.findtext("type"), dots)
+                    if note.find("rest") is None:
+                        impossible.append(where)
+                    else:
+                        impossible_rests.append(where)
+
+    assert scores_checked >= 250, f"only {scores_checked} scores were checked"
+    # The seventeen, and everything else of their shape. Pinned as an exact
+    # list rather than a count so a new site names itself in the failure.
+    assert impossible == [
+        ("Answers (Final Fantasy XIV Endwalker).pdf", "43", (3, 4), "whole", 0),
+        ("Answers (Final Fantasy XIV Endwalker).pdf", "44", (3, 4), "whole", 0),
+    ], (
+        "note(s) written longer than the bar they sit in, beyond the two "
+        f"disclosed in this test's docstring (score, bar, meter, type, dots): "
+        f"{impossible[:10]}"
+        + (f" and {len(impossible) - 10} more" if len(impossible) > 10 else ""))
+    # The two disclosed rests, pinned so that they can neither multiply
+    # unnoticed nor be quietly fixed without these sentences going with them.
+    assert impossible_rests == [
+        ("Classical-Guitar-Method-Vol1-2020.pdf", "16", (3, 4), "whole", 0),
+        ("My Star (Final Fantasy XVI).pdf", "5", (4, 4), "whole", 1),
+    ], impossible_rests

@@ -611,6 +611,14 @@ _SP = {
     "beam_level_gap": 0.39,       # was 2.0pt
     "beam_x_tol": 0.59,           # was 3.0pt
     "beam_y_tol": 1.17,           # was 6.0pt
+    # How much further from the stem's tip each successive stroke of a beam
+    # GROUP may sit - see _beam_count_near, which uses it to follow a stack
+    # inward past the reach of beam_y_tol. Measured over the library's
+    # 77,047 (stem, covering beam) pairs, consecutive strokes sit 0.75
+    # spaces apart and every value from 0.8 to 2.0 counts the identical set,
+    # because nothing a stem could wrongly reach lies within 2 spaces of its
+    # own deepest stroke. This sits in that plateau.
+    "beam_stack_pitch": 1.10,
     # notehead <-> stem attachment
     "stem_x_tol": 0.68,           # was 3.5pt
     "stem_y_tol": 1.17,           # was 6.0pt
@@ -2162,26 +2170,73 @@ def _beam_count_near(beams, stem, notehead_yc, tol):
 
     The y is interpolated along the beam rather than taken from its bbox
     centre - see the Beam docstring.
+
+    THE WINDOW ALONE CANNOT REACH A THIRD STROKE. A beam group is not one
+    stroke at the tip, it is a STACK that starts there and grows toward the
+    notehead at a constant pitch, so the nth stroke sits (n-1) pitches in.
+    Measured over the whole library - 77,047 (stem, covering beam) pairs,
+    offsets taken inward from the stem's tip in staff spaces - the strokes
+    land in three tight bands: 55,391 at the tip (within +-0.35), 12,267 one
+    pitch in (0.35 to 1.1, peaking at 0.75), and 366 two pitches in (1.1 to
+    1.85, peaking at 1.5). beam_y_tol is 1.17 spaces, so it covers the first
+    two bands and stops just short of the third: EVERY three-stroke beam in
+    the library lost its third level and every note under one was emitted at
+    twice its written length - a 32nd read as a 16th (issue #113).
+
+    Widening the window is the wrong repair, because the window is what
+    keeps a neighbouring voice's beam out and 8,881 of those pairs sit
+    further in than 3.4 spaces. What identifies the third stroke is not its
+    distance from the tip but that it CONTINUES the run already accepted, so
+    that is what is asked: after the window has had its say, a stroke one
+    pitch beyond the deepest accepted level joins them, and so on inward for
+    as long as the run continues. Nothing the window accepts today can be
+    rejected by this, which is why the change can only add levels - measured
+    over the library as 366 stems gaining exactly one and none losing any.
+
+    beam_stack_pitch is what "one pitch" allows, and the library gives it a
+    wide plateau to sit on: every value from 0.8 to 2.0 spaces produces the
+    identical result, because the next stroke a stem could reach after its
+    own third is more than 2 spaces further in. Below 0.7 nothing is added at
+    all.
     """
     free_y = stem.y1 if abs(stem.y1 - notehead_yc) > abs(stem.y0 - notehead_yc) else stem.y0
-    levels = []
+    # Which way this stem's beams stack: from the free end toward the
+    # notehead. Page y grows downward, so an up-stem (notehead below its own
+    # tip) stacks toward larger y and a down-stem toward smaller.
+    inward = 1.0 if notehead_yc > free_y else -1.0
+    at_tip, further_in = [], []
     for b in beams:
         if b.x0 - tol.beam_x_tol > stem.x:
             break  # beams are x0-sorted: nothing further right can cover this stem
         if stem.x > b.x1 + tol.beam_x_tol:
             continue
-        y_here = beam_y_at(b, stem.x)
-        if abs(y_here - free_y) > tol.beam_y_tol:
-            continue
-        levels.append(round(y_here, 1))
-    if not levels:
+        offset = round((beam_y_at(b, stem.x) - free_y) * inward, 1)
+        if abs(offset) <= tol.beam_y_tol:
+            at_tip.append(offset)
+        elif offset > 0:
+            further_in.append(offset)
+    if not at_tip:
         return 0
-    levels.sort()
-    clusters = [levels[0]]
-    for y in levels[1:]:
-        if y - clusters[-1] > tol.beam_level_gap:
-            clusters.append(y)
-    return len(clusters)
+    levels = _beam_levels(at_tip, tol.beam_level_gap)
+    for offset in _beam_levels(further_in, tol.beam_level_gap):
+        if not tol.beam_level_gap < offset - levels[-1] <= tol.beam_stack_pitch:
+            break  # the run stops here; anything beyond belongs to something else
+        levels.append(offset)
+    return len(levels)
+
+
+def _beam_levels(offsets, gap):
+    """The distinct stacked levels a set of beam offsets represents, in
+    increasing order. Two strokes closer together than `gap` are the same
+    level seen twice - a beam drawn as several abutting segments."""
+    if not offsets:
+        return []
+    offsets = sorted(offsets)
+    levels = [offsets[0]]
+    for o in offsets[1:]:
+        if o - levels[-1] > gap:
+            levels.append(o)
+    return levels
 
 
 def _stem_key(stem):
