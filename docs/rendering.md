@@ -567,6 +567,40 @@ types a person can upload, and those reach this code with no extractor in
 between. Before this feature existed no MusicXML could reach a jump direction
 at all, so this is a hazard the injection introduces and the injection closes.
 
+That guard is not quite sufficient on its own, because it only covers the To
+Codas *this layer injects*. A `<sound tocoda>` written as a direct child of
+`<measure>` is read by the renderer's own importer, unguarded, and is left
+alone here on purpose — a second jump on one bar would be taken ahead of or
+behind the first according to nothing but enum order. Mix the two conventions
+in one document (a nested D.S. al Coda, a measure-level To Coda, a coda before
+it) and the wedge returns in full: measured at an 89.9 s pegged main thread. No
+real exporter mixes them, but the consequence does not care. So an "al Coda"
+jump is declined outright whenever the score holds **any** coda jump, from
+either source, with no coda after it to land on — with no jump that arms the
+coda-seeking state, an unguarded To Coda can never fire.
+
+### The instruction is drawn once
+
+The importer hands a `<direction>`'s `<words>` to the **next beat it creates**,
+as `beat.text`, from a single one-entry slot. Rule 16 writes an instruction
+after its measure's notes, so that echo lands a bar late — and it was the only
+trace of a jump the player had before any of this existed. With the direction
+now on the right bar the renderer draws the instruction itself, and the echo is
+a duplicate, so it goes.
+
+Which beat it is on is **counted off the document**, not assumed: one beat per
+`<note>` that is not a `<chord>` continuation, so a direction written part-way
+through a measure echoes onto an interior beat of that same bar, and one
+written before a `<backup>` echoes onto the first beat of the next voice. Both
+shapes are common in third-party MusicXML. Only that beat is looked at, only an
+exact text match is cleared, and only one beat ever is — an annotation written
+elsewhere in the bar with the same words stays.
+
+One case cannot be separated and is not tried: an annotation on the very beat
+the echo lands on. The importer's slot holds one string, so the second
+assignment overwrites the first before any beat is created and only one text
+ever reaches the model. There is nothing left to tell apart.
+
 ### What the attributes say
 
 | attribute | meaning |
@@ -601,6 +635,14 @@ are read like any other document's. Where even that fails, or where the
 document is MusicXML but not part-wise, the reason is published rather than
 swallowed — a score whose jumps went missing because this layer could not open
 it must not look like a score that carries none.
+
+A Guitar Pro 7 file is *also* a ZIP, holds no manifest and no `.xml` entry, and
+the renderer reads its jumps perfectly well on its own — so an archive with
+nothing MusicXML-shaped in it is not a failure to report, and says nothing. The
+"first `.xml` outside `META-INF`" fallback for a manifest-less container is
+kept as a second opinion rather than a live path: the renderer refuses such a
+container outright, so a file that needs the fallback is one it will not import
+either, and there would be no score to put directions on.
 
 ### What this changes elsewhere
 

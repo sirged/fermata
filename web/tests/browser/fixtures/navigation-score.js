@@ -224,6 +224,100 @@ export const NAVIGATION_LATE_SEGNO_MUSICXML = buildScore([
 ]);
 
 /**
+ * A `<sound>` written the OTHER way - as a direct child of `<measure>`, which
+ * is the only place alphaTab's own importer reads a jump attribute from. It
+ * turns this into an unguarded Direction.JumpDaCoda; this layer deliberately
+ * leaves it alone (a second jump on one bar would be taken ahead of or behind
+ * the first according to nothing but enum order).
+ */
+function measureLevelSound(attributes) {
+  return `
+      <sound ${attributes} />`;
+}
+
+// Eight 4/4 bars mixing the two conventions: a nested D.S. al Coda closing bar
+// 6, and a MEASURE-LEVEL To Coda on bar 4 that the renderer's own importer
+// reads and does not guard. `codaBar` is the 1-based bar the coda sign opens.
+//
+// With the coda AFTER the To Coda this is an ordinary, playable form. With it
+// BEFORE, the two conventions together reproduce the wedge in full: the
+// unguarded To Coda jumps backwards to the coda and resets the state machine,
+// which re-arms the D.S. al Coda, which arms the coda hunt again. Measured at
+// an 89.9s main-thread hang before the al-Coda flavour was made conditional on
+// there being no such unguarded jump anywhere in the score.
+function buildMixedConventionScore(codaBar) {
+  return buildScore([
+    { before: sign("segno") },
+    codaBar === 2 ? { before: sign("coda") } : {},
+    {},
+    { after: measureLevelSound('tocoda="coda"') },
+    {},
+    { after: instruction("D.S. al Coda", 'dalsegno="segno"') },
+    codaBar === 7 ? { before: sign("coda") } : {},
+    {},
+  ]);
+}
+
+/** The control: a measure-level To Coda on bar 4 with its coda on bar 7. */
+export const NAVIGATION_MIXED_FORWARD_MUSICXML = buildMixedConventionScore(7);
+
+/** The treatment: the same document with the coda on bar 2 instead. */
+export const NAVIGATION_MIXED_BACKWARD_MUSICXML = buildMixedConventionScore(2);
+
+/**
+ * E-reg1: an instruction written PART-WAY THROUGH its measure, after two of
+ * bar 2's four notes, rather than after all of them the way Rule 16 writes one.
+ * The importer's beat-text echo then lands on an interior beat of that same
+ * bar - not on the first beat of the next one - so a clearing pass that only
+ * ever looks at a bar's first beat leaves it there and the label is drawn
+ * twice. Nothing this project emits has this shape; third-party MusicXML
+ * writes mid-measure directions routinely.
+ */
+export const NAVIGATION_MIDBAR_MARK_MUSICXML = buildScore([
+  {},
+  { interior: instruction("Fine", 'fine="yes"') },
+  {},
+  {},
+]);
+
+/**
+ * E-reg2: an instruction written before a `<backup>`, so the next beat the
+ * importer creates is the first beat of the SECOND VOICE of the same bar. Same
+ * consequence as E-reg1 and a different route to it, which is why both are
+ * here: the echo is not "somewhere in the next bar", it is wherever the
+ * importer's own walk happens to be.
+ *
+ * Written out rather than built, because the builder above writes one voice.
+ */
+export const NAVIGATION_TWO_VOICE_MARK_MUSICXML = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <work><work-title>Navigation test fixture</work-title></work>
+  <part-list>
+    <score-part id="P1"><part-name>Piano</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">${OPENING_ATTRIBUTES}${notesForBar(0)}
+    </measure>
+    <measure number="2">${notesForBar(1)}${instruction("Fine", 'fine="yes"')}
+      <backup><duration>${DIVISIONS * 4}</duration></backup>
+      ${[0, 1]
+        .map(
+          (i) => `<note>
+        <pitch><step>${PITCHES[i]}</step><octave>3</octave></pitch>
+        <duration>${DIVISIONS * 2}</duration>
+        <voice>2</voice>
+        <type>half</type>
+      </note>`,
+        )
+        .join("\n      ")}
+    </measure>
+    <measure number="3">${notesForBar(2)}
+    </measure>
+  </part>
+</score-partwise>
+`;
+
+/**
  * Four 4/4 bars where a Fine mark on bar 2 is followed, in bar 3, by a
  * SEPARATE words-only `<direction><words>Fine</words></direction>` written
  * part-way through the bar - a real annotation an engraver might print, with
@@ -242,6 +336,13 @@ export const NAVIGATION_ANNOTATION_MUSICXML = buildScore([
   { interior: instruction("Fine", null) },
   {},
 ]);
+
+// An annotation on the very beat the echo lands on - the first beat of the bar
+// after a Rule 16 instruction - is deliberately NOT covered by a fixture,
+// because there is nothing there to test. The importer holds beat text in one
+// `_nextBeatText` slot, so the second assignment overwrites the first before
+// any beat is created and only ONE text ever reaches the model. The two do not
+// coexist to be told apart. See clearLateBeatText's own note.
 
 /**
  * The same four bars as a `score-timewise` document - MusicXML's other
@@ -403,6 +504,26 @@ export async function stubNavigationLateSegnoScore(page) {
 /** Score id 16: a words-only annotation sharing a mark's text. */
 export async function stubNavigationAnnotationScore(page) {
   await stubOneScore(page, 16, "Navigation annotation fixture", NAVIGATION_ANNOTATION_MUSICXML);
+}
+
+/** Score id 19: mixed conventions, coda after the measure-level To Coda. */
+export async function stubNavigationMixedForwardScore(page) {
+  await stubOneScore(page, 19, "Navigation mixed-convention fixture", NAVIGATION_MIXED_FORWARD_MUSICXML);
+}
+
+/** Score id 20: the same, with the coda before it - the residual wedge. */
+export async function stubNavigationMixedBackwardScore(page) {
+  await stubOneScore(page, 20, "Navigation backwards mixed fixture", NAVIGATION_MIXED_BACKWARD_MUSICXML);
+}
+
+/** Score id 21: an instruction written part-way through its measure. */
+export async function stubNavigationMidbarMarkScore(page) {
+  await stubOneScore(page, 21, "Navigation mid-bar mark fixture", NAVIGATION_MIDBAR_MARK_MUSICXML);
+}
+
+/** Score id 22: an instruction written before a `<backup>`. */
+export async function stubNavigationTwoVoiceMarkScore(page) {
+  await stubOneScore(page, 22, "Navigation two-voice mark fixture", NAVIGATION_TWO_VOICE_MARK_MUSICXML);
 }
 
 /** Score id 18: a part-wise document's other ordering, which is not read. */

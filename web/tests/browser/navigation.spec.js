@@ -24,34 +24,44 @@
 //
 //   - deleting the applyLoadedNavigation() call from the scoreLoaded handler
 //     put the navigation fixture back to the straight `1 2 3 4 5 6 7 8` and
-//     reddened 10 of the 12 tests here - including the live one, which read
-//     `1 2 3 4 5 6 7` off the audio timeline. The two that stay green are the
-//     two drawn-text tests, and honestly so: with no direction added, nothing
-//     is drawn twice and nothing is cleared, so a count of drawn labels cannot
-//     tell that case from a correct one.
-//   - mapping "al Coda" to the plain Direction.JumpDalSegno reddened 7, and
+//     reddened ALL 16 - including the live one, which read `1 2 3 4 5 6 7` off
+//     the audio timeline. The four drawn-text tests catch it only because each
+//     also names the direction that was added: a count of drawn labels alone
+//     cannot tell "cleared the right beat" from "added nothing to clear".
+//   - mapping "al Coda" to the plain Direction.JumpDalSegno reddened 8, and
 //     gave `1 2 3 4 1 2 3 4 5 6 7 8`. That is the plausible wrong answer, not
 //     an arbitrary one: it is exactly the order this issue measured from
 //     hoisting the `<sound>` elements to measure level and letting alphaTab's
 //     own importer read them, so these tests are pinned against the losing
-//     route as well as against no route at all. It reddens the drawn-text test
-//     too, because a plain D.S. draws "D.S." where "D.S. al Coda" belongs.
+//     route as well as against no route at all.
 //   - replacing jumpDirectionFor's ORDERING checks with the "is there one
 //     anywhere" test they replaced reddened 2: the late-segno test by order
 //     (`1 2 5 6`), and the backwards-coda test by TIMEOUT - data-score-render-ok
 //     never appears, because the midi generator never returns. That is the
 //     failure it is built to catch and the reason it carries its own 45s
 //     ceiling; the passing path takes under half a second.
-//   - making clearLateBeatText a no-op reddened both drawn-text tests;
-//     widening it back to every beat of two bars reddened the annotation test
-//     alone, at one drawn "Fine" where two belong.
+//   - dropping the `codaRouteIsSafe` term from the al-Coda flavour reddened 1,
+//     also by timeout: the mixed-convention treatment, where a measure-level
+//     To Coda the renderer imports unguarded meets a backwards coda. Its
+//     CONTROL stayed green, which is the half that matters - the guard has to
+//     disarm the wedge without declining the same document's playable form.
+//   - making clearLateBeatText a no-op reddened all 4 drawn-text tests;
+//     widening it back to every beat of two bars reddened 1, the annotation
+//     test, at one drawn "Fine" where two belong; and narrowing it back to a
+//     bar's FIRST beat only reddened the two mid-measure tests, at two drawn
+//     "Fine"s where one belongs, with the annotation test still green. Those
+//     last two bracket the rule from both sides.
 import { expect, test } from "@playwright/test";
 import {
   stubNavigationAnnotationScore,
   stubNavigationBackwardsCodaScore,
   stubNavigationContainerScore,
   stubNavigationLateSegnoScore,
+  stubNavigationMidbarMarkScore,
+  stubNavigationMixedBackwardScore,
+  stubNavigationMixedForwardScore,
   stubNavigationRepeatScore,
+  stubNavigationTwoVoiceMarkScore,
   stubNavigationScore,
   stubNavigationTimewiseScore,
   stubNavigationUnresolvedScore,
@@ -150,6 +160,11 @@ test.describe("navigation marks reach playback", () => {
     );
     expect(drawn.filter((t) => t === "To Coda")).toHaveLength(1);
     expect(drawn.filter((t) => t === "D.S. al Coda")).toHaveLength(1);
+    // One of each is also what a score with NO direction injected draws - the
+    // uncleared echoes, and no glyphs - so the count alone cannot tell
+    // "cleared the right beat" from "did nothing at all". Naming the
+    // directions that were added closes that.
+    await expect(host(page)).toHaveAttribute("data-score-jumps", "4:JumpDaCoda 6:JumpDalSegnoAlCoda");
   });
 
   // The hang. Bounded deliberately: with the ordering check removed,
@@ -185,6 +200,67 @@ test.describe("navigation marks reach playback", () => {
     await expect(host(page)).toHaveAttribute("data-score-jumps-skipped", "1");
   });
 
+  // The control half of the pair below. Both documents mix the two <sound>
+  // conventions - a nested D.S. al Coda this layer reads, and a MEASURE-LEVEL
+  // To Coda only alphaTab's own importer reads, which it leaves unguarded.
+  // With the coda after the To Coda that is an ordinary playable form, and
+  // declining the D.S. here would be a regression rather than a fix.
+  test("a measure-level To Coda with its coda ahead of it still plays the form", async ({ page }) => {
+    await stubNavigationMixedForwardScore(page);
+    await openScore(page, 19);
+    await expect.poll(() => playbackBars(page), { timeout: 30_000 }).toBe("1 2 3 4 5 6 1 2 3 4 7 8");
+    await expect(host(page)).toHaveAttribute("data-score-jumps", "6:JumpDalSegnoAlCoda");
+  });
+
+  // The residual wedge, and bounded for the same reason as the backwards-coda
+  // test above: with the al-Coda flavour armed, the unguarded measure-level To
+  // Coda jumps backwards, resets the state machine, re-arms the D.S., and
+  // MidiFileGenerator never returns - measured at 89.9s of pegged main thread.
+  test("an unguarded measure-level To Coda with a backwards coda disarms the al-Coda jump", async ({ page }) => {
+    test.setTimeout(45_000);
+    await stubNavigationMixedBackwardScore(page);
+    await page.goto("/#/score/20");
+    await expect(host(page)).toHaveAttribute("data-score-render-ok", "true", { timeout: 20_000 });
+    await expect(playButton(page)).toBeEnabled({ timeout: 20_000 });
+    // The D.S. is declined outright rather than downgraded: with no jump that
+    // enters the coda-seeking state, the unguarded To Coda can never fire, and
+    // the score plays straight through. This layer cannot guard a direction it
+    // did not add, so it removes the only thing that can arm it.
+    await expect.poll(() => playbackBars(page), { timeout: 20_000 }).toBe("1 2 3 4 5 6 7 8");
+    await expect(host(page)).toHaveAttribute("data-score-jumps", "");
+    await expect(host(page)).toHaveAttribute("data-score-jumps-skipped", "1");
+  });
+
+  test("an instruction written part-way through its bar is drawn once", async ({ page }) => {
+    await stubNavigationMidbarMarkScore(page);
+    await openScore(page, 21);
+    // The echo lands on an INTERIOR beat of the mark's own bar, because the
+    // importer hands its one-slot beat text to whatever beat it creates next -
+    // and after a mid-measure direction that is the third note, not the next
+    // bar's first. A clearing pass that only ever looks at a bar's first beat
+    // leaves it, and "Fine" is drawn twice.
+    const drawn = await page.evaluate(() =>
+      [...document.querySelectorAll(".at-host svg text")].map((t) => t.textContent),
+    );
+    expect(drawn.filter((t) => t === "Fine")).toHaveLength(1);
+    await expect(host(page)).toHaveAttribute("data-score-jumps", "2:TargetFine");
+  });
+
+  test("an instruction written before a backup is drawn once", async ({ page }) => {
+    await stubNavigationTwoVoiceMarkScore(page);
+    await openScore(page, 22);
+    // Same consequence, different route: the next beat the importer creates
+    // after this direction is the first beat of the bar's SECOND VOICE. The
+    // echo is not "somewhere in the next bar" - it is wherever the importer's
+    // own walk happens to be, which is why the slot is counted off the
+    // document rather than assumed.
+    const drawn = await page.evaluate(() =>
+      [...document.querySelectorAll(".at-host svg text")].map((t) => t.textContent),
+    );
+    expect(drawn.filter((t) => t === "Fine")).toHaveLength(1);
+    await expect(host(page)).toHaveAttribute("data-score-jumps", "2:TargetFine");
+  });
+
   test("a words-only annotation sharing a mark's text survives the echo being cleared", async ({ page }) => {
     await stubNavigationAnnotationScore(page);
     await openScore(page, 16);
@@ -198,6 +274,12 @@ test.describe("navigation marks reach playback", () => {
       [...document.querySelectorAll(".at-host svg text")].map((t) => t.textContent),
     );
     expect(drawn.filter((t) => t === "Fine")).toHaveLength(2);
+    // A count of two is also what a score with NO direction injected draws -
+    // the uncleared echo plus the annotation - so the count alone cannot tell
+    // "cleared the right one" from "did nothing at all". Naming the direction
+    // that was added closes that: two "Fine"s and a Fine on bar 2 can only be
+    // the glyph and the annotation.
+    await expect(host(page)).toHaveAttribute("data-score-jumps", "2:TargetFine");
   });
 
   test("a compressed .mxl container's jumps are read, not silently skipped", async ({ page }) => {
