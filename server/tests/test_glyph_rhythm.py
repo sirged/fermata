@@ -369,6 +369,32 @@ def test_a_beam_group_is_counted_to_its_full_depth():
         assert G._beam_count_near(beams, stem, notehead_yc=230.0, tol=tol) == levels
 
 
+def test_a_beam_offset_inside_tolerance_that_rounds_outside_is_still_counted():
+    """Adversarial review of #166 (B1). _beam_count_near used to round the
+    tip offset to 0.1pt BEFORE comparing it against beam_y_tol rather than
+    after, and rounding units are points (not staff spaces), so a genuine
+    offset could sit inside the tolerance while its rounded form sat
+    outside it and got rejected.
+
+    At this library's most common staff spacing (REF, 5.125pt) beam_y_tol
+    is 1.17 * 5.125 == 5.99625pt. 5.9711pt - the measured offset on "Our
+    Terms" (Final Fantasy XVI) - is inside that window unrounded, but
+    round(5.9711, 1) == 6.0, which is outside it. Comparing the rounded
+    value cost that stem its ONLY level: a note that should read as an
+    eighth would silently read as a quarter."""
+    tol = _tol()
+    free_y = 260.0
+    notehead_yc = 230.0
+    stem = G.Stem(100.0, notehead_yc, free_y)
+    offset = 5.9711
+    assert offset < tol.beam_y_tol
+    assert round(offset, 1) > tol.beam_y_tol
+    beam_y = free_y - offset  # down-stem: inward runs toward smaller y
+    beam = G._beam_from_contour(_quad(100.0, beam_y, 113.0, beam_y, 1.9), tol)
+    assert beam is not None
+    assert G._beam_count_near([beam], stem, notehead_yc=notehead_yc, tol=tol) == 1
+
+
 def test_a_beam_that_starts_nowhere_near_the_tip_is_still_not_this_stem_s():
     """Following a stack inward must not become "any beam over this stem".
     Two voices' beams cross each other's stems constantly, and 8,881 of the

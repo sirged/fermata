@@ -2179,9 +2179,13 @@ def _beam_count_near(beams, stem, notehead_yc, tol):
     land in three tight bands: 55,391 at the tip (within +-0.35), 12,267 one
     pitch in (0.35 to 1.1, peaking at 0.75), and 366 two pitches in (1.1 to
     1.85, peaking at 1.5). beam_y_tol is 1.17 spaces, so it covers the first
-    two bands and stops just short of the third: EVERY three-stroke beam in
-    the library lost its third level and every note under one was emitted at
-    twice its written length - a 32nd read as a 16th (issue #113).
+    two bands and stops just short of the third: a three-stroke beam in the
+    library lost its third level and the note under it was emitted at twice
+    its written length - a 32nd read as a 16th (issue #113). Not literally
+    EVERY three-stroke beam, though an earlier version of this comment said
+    so: 42 stems already read 3+ levels via a different, pre-existing
+    over-count (a neighbouring voice's beam passing beyond this stem's own
+    tip), so the true miss is smaller than the library-wide "every" claimed.
 
     Widening the window is the wrong repair, because the window is what
     keeps a neighbouring voice's beam out and 8,881 of those pairs sit
@@ -2190,14 +2194,32 @@ def _beam_count_near(beams, stem, notehead_yc, tol):
     that is what is asked: after the window has had its say, a stroke one
     pitch beyond the deepest accepted level joins them, and so on inward for
     as long as the run continues. Nothing the window accepts today can be
-    rejected by this, which is why the change can only add levels - measured
-    over the library as 366 stems gaining exactly one and none losing any.
+    rejected by this stack-following step, which is why IT can only add
+    levels - measured over the library as 366 stems gaining exactly one and
+    none losing any.
+
+    THAT ADDITIVE CLAIM IS ABOUT THE STACK-FOLLOWING STEP ONLY, AND DOES NOT
+    COVER THE WINDOW CHECK ITSELF (issue: adversarial review of #166). A
+    version of this function once rounded the tip offset to 0.1pt BEFORE
+    comparing it against beam_y_tol, rather than after. Rounding units are
+    points (see _Tol), and a genuine offset can sit inside the tolerance
+    while its rounded form sits outside it: "Our Terms" (Final Fantasy XVI),
+    at this library's most common staff spacing of 5.125pt, has a stroke at
+    offset -5.9711pt against a tolerance of 5.99625pt - inside the window
+    unrounded, but rounds to -6.0pt and would be rejected. That is a level
+    lost outright (the stem's only level), which the "none loses any" claim
+    above never accounted for because it was never about the window check.
+    The fix is to compare the UNROUNDED offset against beam_y_tol and only
+    round the value once it is being kept, which is what the code below
+    does; do not move the round() back in front of the comparison.
 
     beam_stack_pitch is what "one pitch" allows, and the library gives it a
-    wide plateau to sit on: every value from 0.8 to 2.0 spaces produces the
-    identical result, because the next stroke a stem could reach after its
-    own third is more than 2 spaces further in. Below 0.7 nothing is added at
-    all.
+    wide plateau to sit on: measured [0.8, 2.0] staff spaces produces the
+    identical result on this library (documented more precisely as
+    [0.76, 3.5] with a caveat - see beam_stack_pitch's own comment for the
+    4.0 failure mode), because the next stroke a stem could reach after its
+    own third is more than 2 spaces further in. Below 0.7 nothing is added
+    at all.
     """
     free_y = stem.y1 if abs(stem.y1 - notehead_yc) > abs(stem.y0 - notehead_yc) else stem.y0
     # Which way this stem's beams stack: from the free end toward the
@@ -2210,11 +2232,11 @@ def _beam_count_near(beams, stem, notehead_yc, tol):
             break  # beams are x0-sorted: nothing further right can cover this stem
         if stem.x > b.x1 + tol.beam_x_tol:
             continue
-        offset = round((beam_y_at(b, stem.x) - free_y) * inward, 1)
-        if abs(offset) <= tol.beam_y_tol:
-            at_tip.append(offset)
-        elif offset > 0:
-            further_in.append(offset)
+        raw_offset = (beam_y_at(b, stem.x) - free_y) * inward
+        if abs(raw_offset) <= tol.beam_y_tol:
+            at_tip.append(round(raw_offset, 1))
+        elif raw_offset > 0:
+            further_in.append(round(raw_offset, 1))
     if not at_tip:
         return 0
     levels = _beam_levels(at_tip, tol.beam_level_gap)
