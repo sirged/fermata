@@ -498,11 +498,12 @@ distinction. A consumer that needs it has to get it from the producer.
   assigned to the notehead at its expected offset rather than whichever one
   was nearest (#89) — a chord of three or more close notes could otherwise
   give one notehead two dots and another none, corrupting that measure's
-  arithmetic in both directions at once. Re-measured at **5,340** after
-  #152 recovered systems that were not being read at all and #111/#112 bound
-  the dots a seconds interval displaces; the figure is quoted here only to
-  date the round trip, and each of those changes states its own before and
-  after. The round trip has not been
+  arithmetic in both directions at once. Re-measured at **5,300** after
+  #152 recovered systems that were not being read at all, #111/#112 bound
+  the dots a seconds interval displaces, and #113 counted the third stroke of
+  a beam group so that a 32nd stopped being emitted at a 16th's length; the
+  figure is quoted here only to date the round trip, and each of those
+  changes states its own before and after. The round trip has not been
   re-measured since any of them, so the before-and-after pair above is
   left as it was taken rather than half updated. What the paragraph is
   about — that the marking does not survive the save — is unaffected either
