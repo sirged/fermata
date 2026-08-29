@@ -1026,6 +1026,19 @@ const { Direction } = alphaTab.model;
 // the three jumps.
 const NAVIGATION_ATTRIBUTES = ["segno", "coda", "fine", "tocoda", "dacapo", "dalsegno"];
 
+// `dacapo` and `fine` are MusicXML yes-no attributes; the other four carry the
+// NAME of the sign they point at ("segno", "coda2"), so any value at all means
+// the mark is there. Only the first two can be present and mean "no", and a
+// `<sound dacapo="no"/>` read as a D.C. would invent a jump out of a document
+// explicitly saying there is not one.
+const YES_NO_ATTRIBUTES = new Set(["dacapo", "fine"]);
+
+function soundHasMark(sound, kind) {
+  if (!sound.hasAttribute(kind)) return false;
+  if (!YES_NO_ATTRIBUTES.has(kind)) return true;
+  return sound.getAttribute(kind).trim().toLowerCase() !== "no";
+}
+
 const TARGET_DIRECTION = {
   segno: Direction.TargetSegno,
   coda: Direction.TargetCoda,
@@ -1139,7 +1152,7 @@ function navigationMarks(xmlText) {
       }
       if (!sound) continue;
       for (const kind of NAVIGATION_ATTRIBUTES) {
-        if (sound.hasAttribute(kind)) marks.push({ bar, kind, words: words.trim() });
+        if (soundHasMark(sound, kind)) marks.push({ bar, kind, words: words.trim() });
       }
     }
   });
@@ -1186,6 +1199,40 @@ function jumpDirectionFor(kind, words, targets) {
 }
 
 /**
+ * Drop the stray copy of an instruction's own words that the importer left a
+ * bar downstream, now that the direction itself is on the right bar.
+ *
+ * The renderer attaches a `<direction>`'s `<words>` to the NEXT beat it
+ * creates, as `beat.text`. Rule 16 writes an instruction AFTER its measure's
+ * notes, so the words land on the first beat of the FOLLOWING bar - one bar
+ * late, and lost altogether for the last bar of a score. That misplaced echo
+ * was the only trace of a jump the player had before this file existed, and
+ * leaving it in place now would print the instruction twice: once where the
+ * renderer draws the direction (correctly, at the end of the bar it belongs
+ * to) and once a bar later in the wrong place. Measured on the repeat fixture
+ * before this was written: "To Coda" drawn on bars 4 and 5, "D.S. al Coda" on
+ * bars 6 and 7.
+ *
+ * Only a beat whose text is EXACTLY the mark's own words is cleared, and only
+ * in the mark's bar or the one after it - a beat annotation this file did not
+ * put there, or did not account for, is left alone.
+ */
+function clearLateBeatText(score, mark) {
+  if (!mark.words) return;
+  for (const track of score.tracks ?? []) {
+    for (const staff of track.staves ?? []) {
+      for (const barIndex of [mark.bar, mark.bar + 1]) {
+        for (const voice of staff.bars?.[barIndex]?.voices ?? []) {
+          for (const beat of voice.beats ?? []) {
+            if (beat.text === mark.words) beat.text = null;
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
  * Apply the document's navigation marks to the score the renderer imported
  * from it. Mutates `score`; returns `{applied, skipped}` where `applied` is
  * one `"<1-based bar>:<DirectionName>"` string per direction added, in the
@@ -1214,6 +1261,11 @@ function applyNavigation(score, xmlText) {
     // model that disagree on how many bars there are.
     if (!bar || bar.directions?.has(target)) continue;
     bar.addDirection(target);
+    // Only the Fine of the three carries words at all - a segno or a coda is
+    // written as its own element, not as text - but this is asked of the mark
+    // rather than of its kind, so a document that labels one still gets the
+    // same treatment.
+    clearLateBeatText(score, mark);
     applied.push(`${mark.bar + 1}:${directionName(target)}`);
   }
 
@@ -1243,6 +1295,13 @@ function applyNavigation(score, xmlText) {
       continue;
     }
     bar.addDirection(direction);
+    // The renderer now draws this instruction itself, at the end of the bar it
+    // belongs to - so the misplaced echo of the same words a bar later goes.
+    // Deliberately NOT done for a jump that was declined above: with no
+    // direction drawn, that echo is the only thing on the page saying the
+    // instruction is there at all, and removing it would take a fact off the
+    // score rather than tidy a duplicate.
+    clearLateBeatText(score, mark);
     applied.push(`${mark.bar + 1}:${directionName(direction)}`);
   }
   return { applied, skipped };
@@ -1784,8 +1843,9 @@ export function createScoreView(host, opts = {}) {
     host.dataset.playbackBars = bars.map((mb) => mb.masterBar.index + 1).join(" ");
   }
 
-  // The bar SOUNDING right now, 1-based, published from the player's own
-  // position reports while it runs. Deliberately not folded into
+  // The bar the PLAYER last reported being in, 1-based - the bar sounding
+  // right now while it runs, and the bar it stopped in once it does not.
+  // Deliberately not folded into
   // publishCursor(): data-cursor-tick/-bar is where the *cursor* is - a
   // rehearsal mark a player put there with the keyboard or a double click,
   // which must not be dragged along by playback (see moveCursorBeat and the

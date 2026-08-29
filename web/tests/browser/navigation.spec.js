@@ -19,15 +19,18 @@
 // generated midi, that test would sit on bar 5 until it timed out.
 //
 // MUTATION RECORD (issue #151, and the reason these numbers are written out
-// literally rather than derived):
+// literally rather than derived from the fixture):
 //   - deleting the applyLoadedNavigation() call from score-render.js's
-//     scoreLoaded handler turned the navigation fixture's order back to the
-//     straight `1 2 3 4 5 6 7 8` and reddened five tests here;
-//   - mapping "al Coda" to the plain Direction.JumpDalSegno instead (the
-//     reading alphaTab's own importer produces from a hoisted measure-level
-//     <sound>, i.e. the plausible wrong answer) gave `1 2 3 4 1 2 3 4 5 6 7 8`
-//     and reddened three.
-// See PR for #151 for the recorded output of both.
+//     scoreLoaded handler put the navigation fixture back to the straight
+//     `1 2 3 4 5 6 7 8` and reddened ALL SIX tests here - including the live
+//     one, which read `1 2 3 4 5 6 7` off the audio timeline;
+//   - mapping "al Coda" to the plain Direction.JumpDalSegno instead reddened
+//     five (the unresolved-target test is the one it cannot touch) and gave
+//     `1 2 3 4 1 2 3 4 5 6 7 8`. That is the plausible wrong answer, not an
+//     arbitrary one: it is exactly the order this issue measured from
+//     hoisting the `<sound>` elements to measure level and letting alphaTab's
+//     own importer read them, so these tests are pinned against the losing
+//     route as well as against no route at all.
 import { expect, test } from "@playwright/test";
 import {
   stubNavigationRepeatScore,
@@ -112,6 +115,22 @@ test.describe("navigation marks reach playback", () => {
     await expect(host(page)).toHaveAttribute("data-score-jumps", "");
     await expect(host(page)).toHaveAttribute("data-score-jumps-skipped", "1");
     expect(consoleErrors).toEqual([]);
+  });
+
+  test("an instruction the renderer now draws itself is not also printed a bar late", async ({ page }) => {
+    await stubNavigationRepeatScore(page);
+    await openScore(page, 12);
+    // alphaTab attaches a <direction>'s <words> to the next beat it creates,
+    // and Rule 16 writes an instruction after its measure's notes - so the
+    // words used to land a bar downstream, which was the only trace of a jump
+    // the player had. Now that the direction itself is on the right bar, the
+    // renderer draws the instruction where it belongs and the stray copy is
+    // cleared. Measured before that was written: each of these appeared twice.
+    const drawn = await page.evaluate(() =>
+      [...document.querySelectorAll(".at-host svg text")].map((t) => t.textContent),
+    );
+    expect(drawn.filter((t) => t === "To Coda")).toHaveLength(1);
+    expect(drawn.filter((t) => t === "D.S. al Coda")).toHaveLength(1);
   });
 
   test("stepping the cursor by bar follows the played order across a jump", async ({ page }) => {

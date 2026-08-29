@@ -490,6 +490,74 @@ main-thread task across the whole run is **102 ms**, with none over 250 ms —
 because the renderer chunks the work into partials and only draws the ones on
 screen. That is the trade this one constant represents, if it ever bites.
 
+### The form the page carries
+
+A transcription writes its `D.C.`, `D.S.`, `To Coda` and `Fine` the way
+[Rule 16](musicxml-tab-profile.md#navigation-marks-rule-16) says to — the
+`<sound>` nested inside its `<direction>`, which is where the MusicXML
+specification's own examples put it. The renderer's importer reads a jump
+attribute (`dacapo`, `dalsegno`, `tocoda`, `fine`) **only** off a `<sound>`
+that is a direct child of `<measure>`; inside a `<direction>` it takes the
+`tempo` attribute and ignores the rest. So every navigation mark the project
+emits was invisible to the player, and a score whose form the transcription
+knows and prints played straight through (issue #151).
+
+The *targets* were never missing: `<direction-type><segno/>` and `<coda/>`
+already import as `TargetSegno` and `TargetCoda`. So the layer reads the jumps
+back out of the document the score was imported from and adds them to the
+master bars with the renderer's own `addDirection`, from inside the
+`scoreLoaded` handler. **The timing is the whole thing**: the api triggers
+`scoreLoaded` and only then calls `loadMidiForScore()`, synchronously, once
+every listener has returned — so the directions are in the model before the
+midi is generated, and the midi, its tick lookup, the drawn cursor, the loop
+range and the metronome's bar counting are all built from a score that knows
+its form. Adding them later would mean a played timeline and a drawn one that
+disagree.
+
+Measured on the committed `navigation.pdf` transcription (segno@1, To Coda@2,
+D.S. al Coda@4, coda@6, Fine@7, D.C. al Fine@8), through the same loader the
+web player uses:
+
+| | played bar order |
+| --- | --- |
+| as imported | `1 2 3 4 5 6 7 8` |
+| `<sound>` hoisted to measure level, importer left to read it | `1 2 3 4 1 2 3 4 5 6 7 8` |
+| directions added here | `1 2 3 4 1 2 6 7 8 1 2 3 4 5 6 7` |
+
+The middle row is why hoisting lost: it gets the jumps read, and read wrong.
+The importer maps `dalsegno` to the plain `JumpDalSegno` and `dacapo` to
+`JumpDaCapo` — "al Coda" and "al Fine" exist only in the `<words>` beside the
+`<sound>`, which `_parseSound` never sees — so the D.S. is taken and both the
+To Coda and the Fine are ignored. Writing the measure-level form *as well* is
+worse still: two `<sound>` elements naming one jump are two instructions to any
+reader that honours both.
+
+Almost none of the form is implemented here. The renderer's own
+`MidiPlaybackController` already gets it right once the directions exist,
+including the part that is easy to get wrong by hand: a To Coda fires only on
+the pass that is *looking* for a coda. Its state machine takes a jump only in
+its neutral state, enters an "al Coda" state that alone honours a `JumpDaCoda`,
+and an "al Fine" state that stops at the first `TargetFine`. It also clears its
+repeat stack when it takes a jump, so a repeat is not replayed on the return —
+the usual performance convention, and measured rather than assumed.
+
+**A jump naming a target the score does not draw is not injected at all**,
+rather than degraded to something simpler. The extraction side already refuses
+to write a `<sound>` whose target it did not read off the same page, so on our
+own transcriptions this is mostly a second opinion — except for the one case
+that needs one. A `D.C.`'s target is the start of the score, which is always
+there, so `dacapo` is written unconditionally; a "D.C. al Fine" on a score
+whose Fine could not be read therefore arrives with a live jump attribute and
+no target, and taken at face value plays the whole piece twice and stops
+nowhere near where the page says to stop.
+
+Two dataset attributes carry the result, for the browser suite and for
+devtools: `data-playback-bars`, the played bar order read off the renderer's
+own tick lookup, and `data-playing-bar`, the bar sounding right now, published
+from the player's own position reports. The second is deliberately not folded
+into `data-cursor-bar`: the cursor is a rehearsal mark a player put somewhere,
+and playback must not drag it along.
+
 ### Sounding one pitch, and the one number it must never report
 
 `playPitch` makes a single note audible with no score in play. The synthesiser
