@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-compare-disclosures.spec.js",
+  "count": 12,
+  "reason": "issue #155: the structural-form/inference disclosures TranscriptionOut carries now render beside the conformance figures, with their bar/page lists, hidden when zero, and distinct as 'not measured' when null - plus a flag counter (endings_incomplete) rendering as presence not a bare count, the 'near bars' fallback label on form_marks_unanchored, and a11y (heading element, list role)."
+}

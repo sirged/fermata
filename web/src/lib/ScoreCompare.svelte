@@ -5,6 +5,7 @@
   import TabViewer from "./TabViewer.svelte";
   import { transcriptionProvenance, tuningStatement } from "./provenance.js";
   import { STANDING_LIMITS, BAR_RE } from "./warning-patterns.js";
+  import Disclosures from "./Disclosures.svelte";
 
   let {
     score,
@@ -591,6 +592,15 @@
             </p>
           {/if}
         </div>
+      {/if}
+      {#if !gigMode}
+        <!-- Beside the conformance figures above, not folded into the
+             warnings box: these are counts the decoder already computed and
+             stored, not prose to summarise (issue #155). Disclosures.svelte
+             hides zero counters on its own and shows nothing when this
+             transcription (an edited row, or a legacy row) never measured
+             any of them, so no extra guard is needed here. -->
+        <Disclosures {transcription} />
       {/if}
       {#if editorOpen}
         <div class="editor">
