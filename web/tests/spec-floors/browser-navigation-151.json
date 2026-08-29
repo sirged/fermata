@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/navigation.spec.js",
+  "count": 16,
+  "reason": "issue #151: the D.C./D.S./To Coda/Fine a transcription carries reaching playback - the committed navigation.pdf transcription's bar order and injected directions, a jump composed with a repeat, a jump whose target the score does not draw, a coda placed before the To Coda that names it (which hangs the midi generator if injected), a segno placed after its own D.S., a words-only annotation surviving the beat-text echo being cleared, a compressed .mxl container's jumps being read rather than silently skipped, a document whose marks were not read saying so, cursor stepping across a jump, the jump being sounded live, and the instruction not also being printed a bar late."
+}

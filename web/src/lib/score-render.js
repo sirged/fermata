@@ -958,6 +958,691 @@ function createScoreMetronome(api, onTempo, onClick) {
   };
 }
 
+// ------------------------------------------- the form the page carries (#151)
+//
+// A transcription carries its D.C., D.S., To Coda and Fine (issue #134), and
+// the renderer plays straight past every one of them. This section is why,
+// and what is done about it.
+//
+// The renderer's MusicXML importer reads a jump attribute - `dacapo`,
+// `dalsegno`, `tocoda`, `fine` - only off a `<sound>` that is a DIRECT CHILD
+// of `<measure>`. Its `_parseDirection` walks the children of a `<direction>`
+// and, on reaching `sound`, takes the `tempo` attribute and nothing else.
+// docs/musicxml-tab-profile.md Rule 16 writes the `<sound>` nested inside its
+// `<direction>`, where the MusicXML specification's own examples put it and
+// where notation programs write it - so every jump this project emits is
+// invisible to the importer. Writing the measure-level form as well is not
+// the answer: two `<sound>` elements naming one jump are two instructions to
+// any reader that honours both.
+//
+// What the importer DOES build is the TARGETS. `<direction-type><segno/>` and
+// `<coda/>` become Direction.TargetSegno / Direction.TargetCoda on the master
+// bar. So an imported score already knows where to jump TO and only lacks the
+// instruction to jump. That is what this section adds, reading the jumps back
+// out of the document the score was imported from and calling the renderer's
+// own MasterBar.addDirection with them, before the midi is generated.
+//
+// WHY THAT AND NOT THE ALTERNATIVES, each of which was measured or read out
+// of the renderer's own source rather than guessed at:
+//
+//   - Hoisting the `<sound>` elements to measure level before handing the
+//     bytes over gets the importer to read them, and reads them WRONG: the
+//     importer maps `dalsegno` to the plain Direction.JumpDalSegno and
+//     `dacapo` to Direction.JumpDaCapo with no notion of "al Coda" or "al
+//     Fine" (that distinction only exists in the `<words>` beside it, which
+//     `_parseSound` never sees), and it never resolves a target at all. On
+//     the navigation fixture that produces `1 2 3 4 1 2 3 4 5 6 7 8` - the
+//     D.S. taken, the To Coda and the Fine both ignored. Losing, and losing
+//     by producing a plausible wrong answer rather than no answer.
+//   - Driving the jumps by hand from api.tickPosition would put playback on a
+//     timeline the renderer's own tickCache does not know about, and the
+//     tickCache is what the cursor, the loop range and the metronome's bar
+//     counting are all built on (see the repeat-safe cursor section below).
+//     Every one of those would then be reading a different piece from the one
+//     being played. Losing, and losing hardest.
+//   - Adding the nested-`<sound>` read to the renderer upstream is the right
+//     fix and somebody else's schedule. Nothing here forecloses it: a future
+//     version that imports these itself finds the directions already present
+//     and addDirection's Set simply dedupes them.
+//
+// The reason this can be a small piece of code at all is that the renderer's
+// own MidiPlaybackController already implements the whole form correctly once
+// the directions are there - including the part that is easy to get wrong by
+// hand, which is that a To Coda fires only on the pass that is LOOKING for a
+// coda. Its state machine takes a jump only in state 0, enters state 2 on an
+// "al Coda", and only then honours a JumpDaCoda; an "al Fine" enters state 4
+// and stops at the first TargetFine. Measured end to end on the committed
+// navigation fixture (segno@1, To Coda@2, D.S. al Coda@4, coda@6, Fine@7,
+// D.C. al Fine@8), through the same ScoreLoader the web player uses:
+// `1 2 3 4 1 2 6 7 8 1 2 3 4 5 6 7`.
+
+const { Direction } = alphaTab.model;
+
+// The `<sound>` attributes Rule 16 writes, in the order they are read. Both
+// halves are here: the two SIGNS (which the importer already reads from
+// `<direction-type>`, so adding them again is a no-op on our own files but
+// covers a document that writes only the `<sound>`), the Fine - which is a
+// target, not a jump, and which nothing else in the pipeline produces - and
+// the three jumps.
+const NAVIGATION_ATTRIBUTES = ["segno", "coda", "fine", "tocoda", "dacapo", "dalsegno"];
+
+// `dacapo` and `fine` are MusicXML yes-no attributes; the other four carry the
+// NAME of the sign they point at ("segno", "coda2"), so any value at all means
+// the mark is there. Only the first two can be present and mean "no", and a
+// `<sound dacapo="no"/>` read as a D.C. would invent a jump out of a document
+// explicitly saying there is not one.
+const YES_NO_ATTRIBUTES = new Set(["dacapo", "fine"]);
+
+function soundHasMark(sound, kind) {
+  if (!sound.hasAttribute(kind)) return false;
+  if (!YES_NO_ATTRIBUTES.has(kind)) return true;
+  return sound.getAttribute(kind).trim().toLowerCase() !== "no";
+}
+
+const TARGET_DIRECTION = {
+  segno: Direction.TargetSegno,
+  coda: Direction.TargetCoda,
+  fine: Direction.TargetFine,
+};
+
+// "al Coda" and "al Fine" are the only thing that tells a D.C. or a D.S.
+// apart from its compound reading, and they exist ONLY in the `<words>` the
+// page prints - the `<sound>` attribute is the same either way. These mirror
+// the tail of the extractor's own _NAV_JUMP_RE (server/fermata/tabextract.py),
+// which is what put those words in the file: an optional coda number and a
+// repeat count may follow, so neither is anchored at the end.
+const AL_CODA = /\bal\s*coda\b/i;
+const AL_FINE = /\bal\s*fine\b/i;
+
+const JUMP_DIRECTIONS = {
+  dacapo: {
+    plain: Direction.JumpDaCapo,
+    coda: Direction.JumpDaCapoAlCoda,
+    fine: Direction.JumpDaCapoAlFine,
+  },
+  dalsegno: {
+    plain: Direction.JumpDalSegno,
+    coda: Direction.JumpDalSegnoAlCoda,
+    fine: Direction.JumpDalSegnoAlFine,
+  },
+};
+
+// Every Direction that MOVES the playhead, as opposed to marking a place it
+// can be moved to. Derived from the enum's own names rather than listed, so a
+// future release that adds a jump is covered without this file being edited -
+// the alternative is a hand-kept list that silently stops being complete.
+const JUMP_DIRECTION_VALUES = new Set(
+  Object.keys(Direction)
+    .filter((k) => k.startsWith("Jump"))
+    .map((k) => Direction[k]),
+);
+
+function directionName(direction) {
+  return Direction[direction] ?? String(direction);
+}
+
+/**
+ * The `<measure>` elements of the document's first `<part>`, or null if this
+ * is not a MusicXML part-wise document we can read.
+ *
+ * The first part's measures are exactly the renderer's master bars, in order:
+ * its importer creates one master bar per measure element as it walks the
+ * first part, and every later part is fitted onto the bars already there. So
+ * the position of a measure in this list IS the master bar index, and no
+ * measure `number` attribute has to be trusted (they are engraver-facing
+ * labels - they restart, repeat, and carry letters).
+ *
+ * A `score-timewise` document is deliberately refused rather than read: its
+ * measures are the outer element and its parts the inner ones, so this
+ * indexing would be wrong in a way that produces jumps on the wrong bars, and
+ * nothing in this project emits one.
+ */
+function musicXmlMeasures(xmlText) {
+  if (typeof xmlText !== "string" || typeof DOMParser === "undefined") return null;
+  // A cheap content test before the parser is handed a whole file: the byte
+  // loader below also takes Guitar Pro files and compressed .mxl containers,
+  // neither of which is XML this can read.
+  if (!xmlText.includes("<score-partwise")) return null;
+  let doc = null;
+  try {
+    doc = new DOMParser().parseFromString(xmlText, "application/xml");
+  } catch {
+    return null;
+  }
+  // DOMParser never throws on malformed XML - it hands back a document whose
+  // content is a <parsererror> report instead, which would otherwise read
+  // here as "a document with no measures in it" rather than as a failure.
+  if (!doc || doc.getElementsByTagName("parsererror").length > 0) return null;
+  const root = doc.documentElement;
+  if (!root || root.localName !== "score-partwise") return null;
+  const part = [...root.children].find((el) => el.localName === "part");
+  if (!part) return null;
+  return [...part.children].filter((el) => el.localName === "measure");
+}
+
+/**
+ * Every navigation mark the document carries, as
+ * `{bar, kind, words, onsetsBefore}` - `bar` a ZERO-BASED master bar index,
+ * `kind` one of NAVIGATION_ATTRIBUTES, `words` the text the page prints beside
+ * it (empty for a sign), and `onsetsBefore` how many beats the importer will
+ * have created in this measure before reaching the `<direction>`, which is
+ * what says where its beat-text echo lands (see clearLateBeatText).
+ *
+ * Only a `<sound>` NESTED IN A `<direction>` is read. A `<sound>` written as
+ * a direct child of `<measure>` is left alone on purpose: the renderer's own
+ * importer already reads that one, and reading it here too would put a second
+ * jump on the same bar - where the plain JumpDalSegno the importer built
+ * would be found and taken first, ahead of the compound reading this file
+ * worked out. Nothing this project emits writes one; a third-party file that
+ * does keeps the behaviour it already had.
+ */
+function navigationMarks(xmlText) {
+  const measures = musicXmlMeasures(xmlText);
+  if (!measures) return [];
+  const marks = [];
+  measures.forEach((measure, bar) => {
+    // How many beats the importer will have created in this measure so far -
+    // the same walk it makes, and the only thing that decides which beat its
+    // one-slot beat-text echo lands on. One beat per `<note>`, EXCEPT a note
+    // carrying `<chord/>`, which is another note on the beat already open
+    // rather than a new one. `<backup>` and `<forward>` create no beats, so
+    // this count runs straight through them - which is what makes it the
+    // index into the measure's whole creation order across voices, not into
+    // one voice's own run.
+    let onsets = 0;
+    for (const direction of measure.children) {
+      if (direction.localName === "note") {
+        if (![...direction.children].some((c) => c.localName === "chord")) onsets += 1;
+        continue;
+      }
+      if (direction.localName !== "direction") continue;
+      let sound = null;
+      let words = "";
+      for (const child of direction.children) {
+        if (child.localName === "sound") sound = child;
+        else if (child.localName === "direction-type") {
+          for (const type of child.children) {
+            if (type.localName === "words") words += type.textContent ?? "";
+          }
+        }
+      }
+      if (!sound) continue;
+      for (const kind of NAVIGATION_ATTRIBUTES) {
+        if (soundHasMark(sound, kind)) {
+          marks.push({ bar, kind, words: words.trim(), onsetsBefore: onsets });
+        }
+      }
+    }
+  });
+  return marks;
+}
+
+/**
+ * Which Direction a jump mark should become, or **null for "inject nothing"**.
+ *
+ * THE NULL IS THE POINT OF THIS FUNCTION. A jump whose target the score does
+ * not hold must leave playback exactly as it was - straight through - rather
+ * than being injected in some degraded form, and the degraded forms are all
+ * worse than doing nothing:
+ *
+ *   - a "D.S. al Coda" downgraded to a plain D.S. plays a repeat of the piece
+ *     that the page does not print;
+ *   - a "D.C. al Fine" downgraded to a plain D.C. plays the whole piece twice
+ *     and stops nowhere near where the page says to stop.
+ *
+ * The extraction side already refuses to write a `<sound>` whose target it did
+ * not read off the same page (Rule 16, and `nav_marks_unresolved` counts the
+ * bars), so on our own transcriptions most of this is a second opinion. The
+ * exception is exactly the case that needs one: a D.C. is written with its
+ * `dacapo` unconditionally, because the start of a score is always there - so
+ * "D.C. al Fine" on a score whose Fine could not be read arrives here with a
+ * live jump attribute and a target that does not exist, and this is the only
+ * thing standing between it and playing the piece twice.
+ *
+ * `targets` is `{segno, coda, fine}`, each the sorted list of master bar
+ * INDEXES holding that target - positions, not "is there one somewhere",
+ * because where it is decides whether the jump is playable at all.
+ *
+ * WHY POSITIONS. The renderer's _findJumpTarget does not fail when the target
+ * is on the wrong side of the jump; it searches the OTHER direction and
+ * returns whatever it finds there. Both fallbacks are traps:
+ *
+ *   - A To Coda whose only coda lies EARLIER hangs the renderer. Its
+ *     _handleDaCoda searches forwards first, falls back to backwards, jumps to
+ *     that earlier coda AND resets the state machine to neutral - which re-arms
+ *     the al-Coda jump that sent it there, which enters the coda-seeking state
+ *     again, which finds the same backwards coda. MidiFileGenerator never
+ *     terminates: the player never becomes ready, a core pegs and the tab dies
+ *     with no error to show for it. Before this file existed no MusicXML
+ *     document could reach a jump direction at all, so this is a hazard the
+ *     injection introduces and the injection has to close.
+ *   - A D.S. whose only segno lies LATER jumps FORWARD instead, silently
+ *     truncating the piece (measured: a four-bar score playing `1 2 5 6`).
+ *
+ * So the search each jump will actually get is mirrored here, and a jump whose
+ * target is not on the side it will be looked for is declined:
+ *
+ *   - `tocoda` needs a TargetCoda strictly AFTER it (forwards-first, and
+ *     "after" rather than "at or after" because a coda on the To Coda's own bar
+ *     makes the two marks the same instant);
+ *   - `dalsegno` needs a TargetSegno at or BEFORE it (backwards-first, and
+ *     inclusive because _findJumpTargetBackwards starts at the jump's own bar).
+ *
+ * The "al Coda" and "al Fine" flavours are NOT position-checked against the
+ * jump's OWN bar, deliberately. Those words only choose which state the jump
+ * enters; the jumping is done later by a separate To Coda mark. Requiring the
+ * coda to be after the D.S. as well would decline a real and playable
+ * engraving - a coda printed between the segno and the D.S., reached by a To
+ * Coda that is itself before it - for a hazard that mark does not have.
+ *
+ * What an "al Coda" flavour IS checked against is `codaRouteIsSafe`, and that
+ * check exists because the sentence "the To Coda carries its own guard" is
+ * only true of the To Codas THIS FILE injects. A `<sound tocoda>` written as
+ * a direct child of `<measure>` is read by the renderer's own importer, which
+ * applies no guard at all, and which this file deliberately leaves alone (see
+ * navigationMarks). Mix the two conventions in one document - a nested D.S. al
+ * Coda, a measure-level To Coda, and a coda before it - and the wedge is back
+ * in full: measured at an 89.9 s main-thread hang before this check existed.
+ * No real exporter mixes them, but the consequence does not care. So an
+ * al-Coda flavour is declined outright whenever the score holds ANY coda jump,
+ * from either source, with no coda after it to land on: with no state-2 jump
+ * to arm, that unguarded To Coda can never fire.
+ *
+ * The library was measured before this was written: all 143 `tocoda`
+ * attributes across it resolve strictly forwards, so nothing there changes.
+ * `.musicxml` and `.mxl` are library file types a person can upload directly
+ * though, and those take this same path with no extractor in between.
+ */
+function jumpDirectionFor(kind, words, bar, targets, codaRouteIsSafe) {
+  const codaAfter = targets.coda.some((i) => i > bar);
+  if (kind === "tocoda") return codaAfter ? Direction.JumpDaCoda : null;
+  const flavours = JUMP_DIRECTIONS[kind];
+  if (!flavours) return null;
+  // A D.S. names a segno, and can only name one behind it. A D.C. names the
+  // start of the score, which is always there and always behind - hence no
+  // equivalent guard for it.
+  if (kind === "dalsegno" && !targets.segno.some((i) => i <= bar)) return null;
+  if (AL_CODA.test(words)) return targets.coda.length > 0 && codaRouteIsSafe ? flavours.coda : null;
+  if (AL_FINE.test(words)) return targets.fine.length > 0 ? flavours.fine : null;
+  return flavours.plain;
+}
+
+/**
+ * Drop the stray copy of an instruction's own words that the importer left a
+ * bar downstream, now that the direction itself is on the right bar.
+ *
+ * The renderer attaches a `<direction>`'s `<words>` to the NEXT beat it
+ * creates, as `beat.text`. Rule 16 writes an instruction AFTER its measure's
+ * notes, so the words land on the first beat of the FOLLOWING bar - one bar
+ * late, and lost altogether for the last bar of a score. That misplaced echo
+ * was the only trace of a jump the player had before this file existed, and
+ * leaving it in place now would print the instruction twice: once where the
+ * renderer draws the direction (correctly, at the end of the bar it belongs
+ * to) and once a bar later in the wrong place. Measured on the repeat fixture
+ * before this was written: "To Coda" drawn on bars 4 and 5, "D.S. al Coda" on
+ * bars 6 and 7.
+ *
+ * THE ECHO'S SLOT IS DERIVED FROM THE DOCUMENT, not assumed. The importer
+ * holds the words in a single `_nextBeatText` field and hands them to THE VERY
+ * NEXT BEAT IT CREATES, whatever that is, then clears the field. It creates
+ * one beat per `<note>` that is not a `<chord>` continuation, in document
+ * order. So the echo lands on the beat whose position in the measure's own
+ * creation order equals the number of note onsets written BEFORE the
+ * `<direction>` - which navigationMarks counts on the same walk that it reads
+ * the marks - and on the first beat of the next bar when the direction is the
+ * last thing in its measure, as Rule 16 writes an instruction.
+ *
+ * Two earlier versions got this wrong in opposite directions, and both are
+ * worth naming because the correct rule is narrower than one and wider than
+ * the other:
+ *
+ *   - Clearing every beat of both bars, in every voice of every staff, is a
+ *     far bigger net than the echo can be in, and it destroyed a real
+ *     annotation - a words-only `<direction><words>Fine</words></direction>`
+ *     written part-way through the following bar, which has its own beat text
+ *     on an INTERIOR beat and nothing else on the page to say it was there.
+ *   - Clearing only the FIRST beat of that bar is too narrow: a direction
+ *     written part-way through its own measure puts the echo on an interior
+ *     beat of the SAME bar, and a direction written before a `<backup>` puts
+ *     it on the first beat of the NEXT VOICE. Both then print the instruction
+ *     twice. Neither shape occurs in this project's own output - the extractor
+ *     writes an instruction after every voice - but third-party MusicXML
+ *     writes mid-measure directions routinely.
+ *
+ * The measure's creation order is reconstructed by flattening the bar's beats
+ * across the first track's staves and their voices, which is the order the
+ * importer builds them in for a `<part>` that writes each voice's run
+ * contiguously (staff 1's notes, `<backup>`, staff 2's) - the shape MusicXML
+ * itself imposes with `<backup>`.
+ *
+ * The text must still match the mark's words exactly, and the first match AT
+ * OR AFTER the slot is the one cleared - so an annotation earlier in the bar
+ * is out of reach even if the slot is off, and only one beat is ever cleared.
+ *
+ * ONE CASE IS UNFIXABLE BY DESIGN: an annotation whose own text equals the
+ * mark's and which sits on the very beat the echo lands on - the first beat of
+ * the next bar, for an instruction written Rule 16's way - is indistinguishable
+ * from the echo. The importer has one `_nextBeatText` slot, so the two never
+ * coexist in the model at all: the second assignment overwrites the first
+ * before any beat is created, and only one text ever reaches the score. There
+ * is nothing left to tell apart.
+ */
+function beatsInBarCreationOrder(score, barIndex) {
+  const out = [];
+  // The first track only. A `<part>` becomes a track, and the importer parses
+  // each part's measures to the end before starting the next - so the words
+  // held from a direction in the first part's measure are always consumed by a
+  // beat in the first part. Marks are indexed against the first part's
+  // measures (see musicXmlMeasures), so that is the track to look in.
+  for (const staff of score.tracks?.[0]?.staves ?? []) {
+    for (const voice of staff.bars?.[barIndex]?.voices ?? []) {
+      for (const beat of voice.beats ?? []) out.push(beat);
+    }
+  }
+  return out;
+}
+
+function clearLateBeatText(score, mark) {
+  if (!mark.words) return;
+  const inMarkBar = beatsInBarCreationOrder(score, mark.bar);
+  // The slot itself, and everything after it in the SAME bar - or, when the
+  // slot fell past that bar's last beat, the next bar. One bar, never both:
+  // searching on into the next bar as well would put an annotation there back
+  // within reach of a mark whose echo is in this one.
+  //
+  // Searching FORWARD from the slot rather than at it exactly is deliberate
+  // slack in the one safe direction. The flattening above reconstructs the
+  // importer's creation order rather than observing it, and a score whose
+  // voices the importer padded out with filler rests has more beats in the
+  // model than the document wrote; forward slack absorbs that, while an
+  // annotation written EARLIER in the bar than the mark stays out of reach
+  // either way.
+  const candidates =
+    mark.onsetsBefore < inMarkBar.length
+      ? inMarkBar.slice(mark.onsetsBefore)
+      : beatsInBarCreationOrder(score, mark.bar + 1);
+  const echo = candidates.find((beat) => beat.text === mark.words);
+  if (echo) echo.text = null;
+}
+
+/**
+ * Apply the document's navigation marks to the score the renderer imported
+ * from it. Mutates `score`; returns `{applied, skipped}` where `applied` is
+ * one `"<1-based bar>:<DirectionName>"` string per direction added, in the
+ * order they were added.
+ *
+ * WHAT `skipped` COUNTS, AND WHAT IT DOES NOT. It is the number of jump marks
+ * this function saw, understood, and deliberately did not inject, from either
+ * of two causes:
+ *
+ *   1. the jump names a target the score does not hold, or holds only on the
+ *      side the renderer will not look (see jumpDirectionFor);
+ *   2. the bar already carries a jump direction, so a second one would be
+ *      taken ahead of it or behind it according to nothing but enum order.
+ *
+ * It is NOT the transcription's `nav_marks_unresolved`, and the two routinely
+ * disagree. That counter is about BARS whose instruction went out without a
+ * `<sound>`; this one is about MARKS that arrived with one and were declined.
+ * A words-only instruction - the shape the extractor writes when it could not
+ * read the target off the page - carries no `<sound>` at all, is therefore
+ * never seen by this function, and is counted by neither branch above.
+ * Measured on Phantom Train: `nav_marks_unresolved` 1 (its words-only To
+ * Coda), `skipped` 0.
+ *
+ * Targets go on first, all of them, before any jump is decided: a Fine only
+ * exists on the model because this function puts it there, and a "D.C. al
+ * Fine" three bars later has to be able to see it.
+ */
+function applyNavigation(score, xmlText) {
+  const applied = [];
+  let skipped = 0;
+  const bars = score?.masterBars ?? [];
+  if (bars.length === 0) return { applied, skipped };
+  const marks = navigationMarks(xmlText);
+  if (marks.length === 0) return { applied, skipped };
+
+  for (const mark of marks) {
+    const target = TARGET_DIRECTION[mark.kind];
+    if (target === undefined) continue;
+    const bar = bars[mark.bar];
+    // A mark naming a measure the renderer did not turn into a master bar is
+    // nothing this file can place. Not counted as skipped: `skipped` is about
+    // jumps that were understood and declined, not about a document and a
+    // model that disagree on how many bars there are.
+    if (!bar || bar.directions?.has(target)) continue;
+    bar.addDirection(target);
+    // Only the Fine of the three carries words at all - a segno or a coda is
+    // written as its own element, not as text - but this is asked of the mark
+    // rather than of its kind, so a document that labels one still gets the
+    // same treatment.
+    clearLateBeatText(score, mark);
+    applied.push(`${mark.bar + 1}:${directionName(target)}`);
+  }
+
+  // Positions, not counts - see jumpDirectionFor for why where a target sits
+  // decides whether the jump naming it is playable at all. Built once, after
+  // every target is on the model, and in ascending bar order because that is
+  // the order masterBars is walked in.
+  const indexesOf = (direction) =>
+    bars.reduce((out, b, i) => (b.directions?.has(direction) ? [...out, i] : out), []);
+  const targets = {
+    segno: indexesOf(Direction.TargetSegno),
+    coda: indexesOf(Direction.TargetCoda),
+    fine: indexesOf(Direction.TargetFine),
+  };
+
+  // Whether an "al Coda" jump is safe to arm at all - see jumpDirectionFor.
+  // Read BEFORE any jump is injected, because the only coda jumps that can be
+  // present at this point are the renderer's own, from a measure-level
+  // `<sound tocoda>` that carries no guard; every one this file goes on to add
+  // is required to have a coda after it, so it can never turn a safe score
+  // into an unsafe one and re-checking afterwards would find nothing new.
+  const codaRouteIsSafe = !bars.some(
+    (b, i) => b.directions?.has(Direction.JumpDaCoda) && !targets.coda.some((c) => c > i),
+  );
+
+  for (const mark of marks) {
+    if (TARGET_DIRECTION[mark.kind] !== undefined) continue;
+    const bar = bars[mark.bar];
+    if (!bar) continue;
+    const direction = jumpDirectionFor(mark.kind, mark.words, mark.bar, targets, codaRouteIsSafe);
+    if (direction === null) {
+      skipped += 1;
+      continue;
+    }
+    // One jump to a bar. A bar that already carries one - because the
+    // importer read a measure-level `<sound>`, or because the page prints two
+    // instructions on the same bar - keeps the one it has: a second would be
+    // reached first or second depending on nothing but enum order, which is
+    // not a decision this file is entitled to make silently.
+    if ([...(bar.directions ?? [])].some((d) => JUMP_DIRECTION_VALUES.has(d))) {
+      skipped += 1;
+      continue;
+    }
+    bar.addDirection(direction);
+    // The renderer now draws this instruction itself, at the end of the bar it
+    // belongs to - so the misplaced echo of the same words a bar later goes.
+    // Deliberately NOT done for a jump that was declined above: with no
+    // direction drawn, that echo is the only thing on the page saying the
+    // instruction is there at all, and removing it would take a fact off the
+    // score rather than tidy a duplicate.
+    clearLateBeatText(score, mark);
+    applied.push(`${mark.bar + 1}:${directionName(direction)}`);
+  }
+  return { applied, skipped };
+}
+
+// ---------------------------------------------- getting at the document
+//
+// The bytes a library file arrives as are not always the document. `.mxl` -
+// a MusicXML score inside a ZIP - is a file type this library accepts and a
+// person can upload (see the Library upload control's own accept list), and
+// the renderer imports one perfectly well with its own reader. Left alone,
+// this file would find no `<score-partwise` in a ZIP's compressed bytes,
+// answer "not MusicXML", and quietly play such a score's D.S. as though it
+// had none - indistinguishable, from the outside, from a score that carries
+// no jumps at all. So a container is opened rather than skipped, and where
+// even that fails the reason is published (see NAVIGATION_UNREAD_*) instead
+// of being swallowed.
+
+const ZIP_SIGNATURE = [0x50, 0x4b, 0x03, 0x04]; // "PK\x03\x04"
+const ZIP_EOCD_SIGNATURE = 0x06054b50;
+const ZIP_CENTRAL_SIGNATURE = 0x02014b50;
+// The end-of-central-directory record is 22 bytes plus a comment of up to
+// 65535, and it is the only fixed point a ZIP can be read from - the entry
+// headers at the front carry zeroed sizes whenever the writer streamed the
+// file, which is common enough that walking them instead is not safe.
+const ZIP_EOCD_MIN_SIZE = 22;
+const ZIP_MAX_COMMENT = 0xffff;
+
+/** Whether these bytes open like a ZIP - the only cheap test there is. */
+function looksLikeZip(bytes) {
+  return bytes.length >= 4 && ZIP_SIGNATURE.every((b, i) => bytes[i] === b);
+}
+
+/**
+ * The entries of a ZIP, as `{name, method, start, compressedSize}`, read from
+ * its central directory. Null if the bytes are not a readable ZIP.
+ */
+function zipEntries(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let eocd = -1;
+  const earliest = Math.max(0, bytes.length - ZIP_EOCD_MIN_SIZE - ZIP_MAX_COMMENT);
+  for (let i = bytes.length - ZIP_EOCD_MIN_SIZE; i >= earliest; i--) {
+    if (view.getUint32(i, true) === ZIP_EOCD_SIGNATURE) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) return null;
+  const count = view.getUint16(eocd + 10, true);
+  let offset = view.getUint32(eocd + 16, true);
+  const entries = [];
+  for (let i = 0; i < count; i++) {
+    if (offset + 46 > bytes.length) return null;
+    if (view.getUint32(offset, true) !== ZIP_CENTRAL_SIGNATURE) return null;
+    const method = view.getUint16(offset + 10, true);
+    const compressedSize = view.getUint32(offset + 20, true);
+    const nameLength = view.getUint16(offset + 28, true);
+    const extraLength = view.getUint16(offset + 30, true);
+    const commentLength = view.getUint16(offset + 32, true);
+    const localOffset = view.getUint32(offset + 42, true);
+    const name = new TextDecoder("utf-8").decode(bytes.subarray(offset + 46, offset + 46 + nameLength));
+    // The local header repeats the name and extra field, at its own lengths -
+    // which are NOT always the central directory's, so both are re-read here
+    // rather than reused.
+    if (localOffset + 30 > bytes.length) return null;
+    const localNameLength = view.getUint16(localOffset + 26, true);
+    const localExtraLength = view.getUint16(localOffset + 28, true);
+    entries.push({
+      name,
+      method,
+      start: localOffset + 30 + localNameLength + localExtraLength,
+      compressedSize,
+    });
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+/** One entry's bytes, inflated if it was deflated. Null if unreadable. */
+async function readZipEntry(bytes, entry) {
+  const raw = bytes.subarray(entry.start, entry.start + entry.compressedSize);
+  if (entry.method === 0) return raw; // stored
+  if (entry.method !== 8) return null; // anything but deflate is not worth guessing at
+  if (typeof DecompressionStream === "undefined") return null;
+  const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/**
+ * What a ZIP holds, as `{isMusicXmlContainer, text}`.
+ *
+ * `isMusicXmlContainer` is the question that has to be answered separately
+ * from "did this work": a Guitar Pro 7 file is ALSO a ZIP, holds no manifest
+ * and no `.xml` entry, and the renderer imports it perfectly well with its own
+ * reader. Reporting that as a container we failed to open would put a false
+ * complaint on every `.gp` file in the library. So an archive with nothing
+ * MusicXML-shaped in it is not a failure at all - it is simply a different
+ * format, and this returns false and says nothing.
+ *
+ * The container names its own root file in `META-INF/container.xml`, which is
+ * the only correct way to pick between the several a container may hold (a
+ * score, its parts, its media). The "first .xml outside META-INF" fallback is
+ * kept as a second opinion rather than a real path: the renderer's own reader
+ * REFUSES a manifest-less container outright, so a file that needs the
+ * fallback is one it will not import either - there would be no score to put
+ * directions on.
+ */
+async function musicXmlFromContainer(bytes) {
+  const entries = zipEntries(bytes);
+  if (!entries) return { isMusicXmlContainer: false, text: null };
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  const manifest = entries.find((e) => e.name === "META-INF/container.xml");
+  const scoreLike = entries.filter(
+    (e) => !e.name.startsWith("META-INF/") && /\.(musicxml|xml)$/i.test(e.name),
+  );
+  if (!manifest && scoreLike.length === 0) return { isMusicXmlContainer: false, text: null };
+  let rootName = null;
+  if (manifest) {
+    const manifestBytes = await readZipEntry(bytes, manifest);
+    if (manifestBytes) {
+      const doc = new DOMParser().parseFromString(decoder.decode(manifestBytes), "application/xml");
+      rootName = doc.querySelector("rootfile")?.getAttribute("full-path") ?? null;
+    }
+  }
+  const entry = (rootName && entries.find((e) => e.name === rootName)) || scoreLike[0];
+  if (!entry) return { isMusicXmlContainer: true, text: null };
+  const scoreBytes = await readZipEntry(bytes, entry);
+  return { isMusicXmlContainer: true, text: scoreBytes ? decoder.decode(scoreBytes) : null };
+}
+
+// Published on the host when the document could not be read at all, so a
+// score whose jumps are missing because this layer could not open it is
+// distinguishable from one that genuinely carries none.
+const NAVIGATION_UNREAD_CONTAINER = "compressed-container";
+const NAVIGATION_UNREAD_NOT_MUSICXML = "not-musicxml";
+
+/**
+ * The MusicXML text inside a loaded file's bytes, as `{text, unread}` -
+ * exactly one of the two is set. `unread` is a reason string when these bytes
+ * hold a document this file could not get at; both are null for bytes that
+ * are simply not MusicXML at all (a Guitar Pro file), which is not a failure
+ * and has nothing to report.
+ *
+ * Read from the content rather than a filename, because the renderer's own
+ * byte loader detects the format from the content too and there is no
+ * filename left to consult by the time this is reached.
+ */
+async function readMusicXml(bytes) {
+  try {
+    if (looksLikeZip(bytes)) {
+      const container = await musicXmlFromContainer(bytes);
+      // A Guitar Pro file is a ZIP too, and one this has no business having an
+      // opinion about - the renderer reads its jumps itself. Only an archive
+      // that actually holds a MusicXML document can be a container this failed
+      // to open.
+      if (!container.isMusicXmlContainer) return { text: null, unread: null };
+      const text = container.text;
+      if (text && text.includes("<score-partwise")) return { text, unread: null };
+      // A MusicXML container the renderer will happily import and this could
+      // not open. Not silent: without this a container's jumps would go
+      // missing exactly as if the score had none.
+      return { text: null, unread: NAVIGATION_UNREAD_CONTAINER };
+    }
+    const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    if (text.includes("<score-partwise")) return { text, unread: null };
+    // Part-wise is the only shape this reads (see musicXmlMeasures on why a
+    // time-wise document is refused rather than mis-indexed), so a document
+    // that IS MusicXML and is not part-wise is reported rather than dropped.
+    if (text.includes("<score-timewise")) return { text: null, unread: NAVIGATION_UNREAD_NOT_MUSICXML };
+    return { text: null, unread: null };
+  } catch (e) {
+    console.warn("score-render: could not read the loaded file as a MusicXML document.", e);
+    return { text: null, unread: NAVIGATION_UNREAD_NOT_MUSICXML };
+  }
+}
+
 // ---------------------------------------------------------------- the view
 
 /**
@@ -1152,6 +1837,15 @@ export function createScoreView(host, opts = {}) {
     delete host.dataset.cursorBar;
     delete host.dataset.loopStartTick;
     delete host.dataset.loopEndTick;
+    // Same reasoning again, for the form: absent means "no score has loaded
+    // yet", "" means "one has, and it carries no jump" - a distinction that
+    // only survives if the previous score's answer is cleared here rather
+    // than left to be overwritten whenever the next one arrives.
+    delete host.dataset.scoreJumps;
+    delete host.dataset.scoreJumpsSkipped;
+    delete host.dataset.scoreJumpsUnread;
+    delete host.dataset.playbackBars;
+    delete host.dataset.playingBar;
   }
 
   // Reflects each scheduled click onto the host, the same way publish() below
@@ -1450,6 +2144,43 @@ export function createScoreView(host, opts = {}) {
     else delete host.dataset.cursorBar;
   }
 
+  // The bar order the generated midi actually runs in, 1-based, one entry per
+  // PLAYED bar - `1 2 3 4 1 2 6 7 8 1 2 3 4 5 6 7` for a score whose D.S. and
+  // D.C. are followed. Read off api.tickCache.masterBars, which is
+  // MidiFileGenerator's own lookup built from the midi it just generated, and
+  // therefore the only thing here that describes what will be HEARD rather
+  // than what is drawn: repeats, alternate endings and the jumps injected
+  // above are all already in it, and the notated bar list has none of them.
+  // It is the same lookup the metronome's bar counting and the repeat-safe
+  // cursor below read, so a test asserting on this is asserting on the
+  // timeline the rest of the practice layer is actually running on.
+  function publishPlaybackBars() {
+    if (!host) return;
+    const bars = api.tickCache?.masterBars;
+    if (!bars || bars.length === 0) {
+      delete host.dataset.playbackBars;
+      return;
+    }
+    host.dataset.playbackBars = bars.map((mb) => mb.masterBar.index + 1).join(" ");
+  }
+
+  // The bar the PLAYER last reported being in, 1-based - the bar sounding
+  // right now while it runs, and the bar it stopped in once it does not.
+  // Deliberately not folded into
+  // publishCursor(): data-cursor-tick/-bar is where the *cursor* is - a
+  // rehearsal mark a player put there with the keyboard or a double click,
+  // which must not be dragged along by playback (see moveCursorBeat and the
+  // #92 shortcuts that read it back after a keypress). This is the other
+  // question, and the only one that can show a jump being TAKEN rather than
+  // merely scheduled: after the last bar before a D.S. this reads the bar the
+  // segno is on, live, off the audio timeline.
+  function publishPlayingBar(tick) {
+    if (!host) return;
+    const mb = masterBarLookupAtTick(tick);
+    if (mb) host.dataset.playingBar = String(mb.masterBar.index + 1);
+    else delete host.dataset.playingBar;
+  }
+
   function publishLoopRange() {
     if (!host) return;
     const range = api.playbackRange;
@@ -1671,6 +2402,10 @@ export function createScoreView(host, opts = {}) {
     // Republishing once a render has actually finished is what makes the
     // attribute reliably present rather than reliably absent-but-coincident.
     publishCursor();
+    // And for the same reason: api.tickCache is built when the midi is
+    // generated, which is after every scoreLoaded listener has returned, so
+    // the played bar order cannot be published from there.
+    publishPlaybackBars();
   });
 
   // A profile carried over from a previous score, or the "scoretab" default,
@@ -1682,7 +2417,80 @@ export function createScoreView(host, opts = {}) {
   // before the load's own first render: AlphaTabApi triggers scoreLoaded
   // synchronously and only calls render() once every listener has returned,
   // so this is not a race against it.
+  // The MusicXML text the score about to arrive was imported from, and the
+  // reason there is none where a document was there but could not be opened.
+  // Both are set by load() below and consumed exactly once by the scoreLoaded
+  // handler. Held rather than re-derived because that handler has to run
+  // BEFORE the midi is generated (see applyLoadedNavigation) and has no room
+  // to await anything - so every asynchronous part of getting at the document
+  // (fetching it, and inflating a container) happens in load(), before the
+  // bytes are handed over at all.
+  let pendingSourceText = null;
+  let pendingUnreadReason = null;
+
+  /**
+   * Put the document's own D.C./D.S./To Coda/Fine onto the imported score -
+   * see "the form the page carries" above for why the importer does not.
+   *
+   * THE TIMING IS THE WHOLE THING. AlphaTabApiBase._onScoreLoaded triggers
+   * scoreLoaded and only then calls loadMidiForScore(), synchronously, once
+   * every listener has returned - so a direction added from inside this
+   * handler is in the model before MidiFileGenerator ever looks at it, and
+   * the generated midi, its tickCache, the drawn cursor and the metronome's
+   * bar counting are all built from a score that already knows its form.
+   * Adding one later would mean a played timeline and a drawn one that
+   * disagree, which is the exact class of bug the repeat-safe cursor section
+   * below exists to document. (This is the same synchronous-listener
+   * guarantee the profile correction above already relies on for render();
+   * the browser suite pins the consequence rather than the mechanism.)
+   *
+   * Failure here is warned about and swallowed. A document this cannot read
+   * leaves playback exactly as it was - straight through, which is what the
+   * player did before any of this existed - and that is a far better outcome
+   * than an exception escaping a scoreLoaded listener, which would skip
+   * every remaining line of the handler below and leave the view with no
+   * profiles, no tempo and no cursor.
+   */
+  function applyLoadedNavigation(loadedScore) {
+    const text = pendingSourceText;
+    let unread = pendingUnreadReason;
+    pendingSourceText = null;
+    pendingUnreadReason = null;
+    let result = { applied: [], skipped: 0 };
+    try {
+      if (text) result = applyNavigation(loadedScore, text);
+    } catch (e) {
+      console.warn(
+        "score-render: could not read this score's navigation marks - playback will " +
+          "not follow its D.C./D.S./To Coda/Fine.",
+        e,
+      );
+      result = { applied: [], skipped: 0 };
+      unread = NAVIGATION_UNREAD_NOT_MUSICXML;
+    }
+    if (host) {
+      host.dataset.scoreJumps = result.applied.join(" ");
+      host.dataset.scoreJumpsSkipped = String(result.skipped);
+      // Present only when a document was there and could not be opened. An
+      // empty data-score-jumps then means "not read", not "none printed" -
+      // which is precisely the distinction a silent return would destroy.
+      if (unread) {
+        host.dataset.scoreJumpsUnread = unread;
+        console.info(
+          `score-render: this score's navigation marks were not read (${unread}), so playback ` +
+            "will not follow any D.C./D.S./To Coda/Fine it carries.",
+        );
+      } else {
+        delete host.dataset.scoreJumpsUnread;
+      }
+    }
+  }
+
   api.scoreLoaded.on((loadedScore) => {
+    // First, and before anything else in this handler: everything below reads
+    // the loaded score, and the midi generated after it returns has to see
+    // the finished model rather than the imported one.
+    applyLoadedNavigation(loadedScore);
     scoreProfiles = supportedProfiles(api.tracks?.length ? api.tracks : loadedScore.tracks);
     unrenderable = scoreProfiles.length === 0;
     if (!unrenderable && !scoreProfiles.includes(profile)) {
@@ -1716,7 +2524,14 @@ export function createScoreView(host, opts = {}) {
   // originalTempo is the score's own tempo at the playhead, unaffected by
   // playback speed - see createScoreMetronome's positionChanged for why
   // this is what a proportion has to track rather than resolve once.
-  api.playerPositionChanged.on((e) => metronome.positionChanged(e.originalTempo));
+  api.playerPositionChanged.on((e) => {
+    metronome.positionChanged(e.originalTempo);
+    // e.currentTick, not a fresh api.tickPosition read: this event IS the
+    // player reporting where it is, and reading the property back instead
+    // would go through the same worker round trip ensureCursorPosition's own
+    // comment records lagging by whole beats under load.
+    publishPlayingBar(e.currentTick);
+  });
   api.error.on((e) => {
     if (renderInFlight) {
       renderInFlight = false;
@@ -1843,16 +2658,36 @@ export function createScoreView(host, opts = {}) {
 
   function load(next) {
     if (!next) return;
+    // Cleared on every path, including the one that sets it again below: a
+    // second load must never read the first document's marks, and alphaTex
+    // needs none at all - it has its own jump vocabulary, which the renderer
+    // reads directly (that is how the acceptance order for this was confirmed
+    // to be reachable at all before any of this was written).
+    pendingSourceText = null;
+    pendingUnreadReason = null;
     if (next.kind === "alphatex") {
       api.tex(next.text);
     } else if (next.kind === "musicxml") {
       // Goes through the same byte loader a library file uses: the format is
       // detected from the content, so there is no separate entry point.
+      pendingSourceText = next.text;
       api.load(new TextEncoder().encode(next.text));
     } else if (next.kind === "file") {
       fetch(next.url)
         .then((r) => r.arrayBuffer())
-        .then((buf) => api.load(new Uint8Array(buf)))
+        .then(async (buf) => {
+          const bytes = new Uint8Array(buf);
+          // Awaited BEFORE api.load(), never alongside it: opening a
+          // container is asynchronous, and the loader hands the parsed score
+          // to scoreLoaded synchronously from inside api.load(), which leaves
+          // that handler no moment to wait in. So all of the waiting is done
+          // here and the two lines below are one operation as far as it is
+          // concerned.
+          const document = await readMusicXml(bytes);
+          pendingSourceText = document.text;
+          pendingUnreadReason = document.unread;
+          api.load(bytes);
+        })
         .catch((e) => onError(String(e)));
     }
   }
