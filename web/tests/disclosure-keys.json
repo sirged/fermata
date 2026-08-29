@@ -1,0 +1,19 @@
+[
+  "coincident_unsplit_pairs",
+  "dots_unassigned",
+  "dots_unassigned_eliminated",
+  "dots_unassigned_no_candidate",
+  "endings_incomplete",
+  "endings_truncated",
+  "endings_unread",
+  "form_marks_unanchored",
+  "nav_marks_unanchored",
+  "nav_marks_unresolved",
+  "notes_no_stem",
+  "repeats_unread",
+  "staves_coincident_unsplit",
+  "staves_dots_unassigned",
+  "staves_no_stem",
+  "systems_unread",
+  "unison_digits_shared"
+]

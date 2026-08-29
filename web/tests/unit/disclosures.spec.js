@@ -6,9 +6,26 @@
 // tests/browser/score-compare-disclosures.spec.js's job, and a suite that
 // only checked this selection logic would prove nothing about issue #155,
 // which was seventeen fields computed and never displayed.
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { expect, test } from "@playwright/test";
 
 import { DISCLOSURE_ROWS, disclosureRows } from "../../src/lib/disclosures.js";
+
+// The vendored copy of the API's disclosure-counter key list
+// (../disclosure-keys.json) - see that file's own comment, and
+// server/tests/test_disclosure_keys.py, for the other two links in this
+// chain. Read the same way spec-floors.js reads tests/spec-floors/: plain
+// fs.readFileSync + JSON.parse, not an import assertion, so this has no
+// dependency on the test runner's module loader understanding `type: "json"`.
+const VENDORED_KEYS = JSON.parse(
+  fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "disclosure-keys.json"),
+    "utf8",
+  ),
+);
 
 // A transcription with every counter present and real (the shape a current
 // extraction produces): all zero except one real defect in each family, so
@@ -106,4 +123,34 @@ test("undefined is treated the same as null for both the per-row and whole-row g
   delete t.nav_marks_unresolved;
   const navRow = disclosureRows(t).find((r) => r.key === "nav_marks_unresolved");
   expect(navRow.measured).toBe(false);
+});
+
+// THE FOURTH MIRROR, GUARDED. server/fermata/tabextract.py's ExtractionResult
+// fields, server/fermata/api.py's _BAR_KEYS tuple and api_models.py's
+// TranscriptionOut fields are three hand-kept copies of "which fields are
+// structural disclosures", and test_transcription_model_stays_in_sync_with_
+// api_pys_bar_key_tuples (server/tests/test_api_docs.py) already keeps the
+// third honest against the second. DISCLOSURE_ROWS here was a FOURTH copy
+// with nothing checking it at all: neither a counter silently dropped from
+// it, nor a fake one added on the API side that this file never picked up,
+// failed any test that existed before this one - the test above
+// ("every counter the issue lists...") iterates DISCLOSURE_ROWS itself, so
+// it is tautological against exactly this kind of drift.
+//
+// disclosure-keys.json is the fix: a small vendored file, kept honest against
+// api._BAR_KEYS by server/tests/test_disclosure_keys.py (the only side that
+// can make that check, since a browser test cannot import api.py), and
+// checked against DISCLOSURE_ROWS here, in BOTH directions, so a config row
+// that goes missing OR a vendored key nothing renders each fail by name.
+test("DISCLOSURE_ROWS carries exactly the vendored disclosure-keys.json key set - no more, no fewer", () => {
+  const configKeys = DISCLOSURE_ROWS.map((row) => row.key).sort();
+  const vendoredKeys = [...VENDORED_KEYS].sort();
+  const missing = vendoredKeys.filter((k) => !configKeys.includes(k));
+  const stale = configKeys.filter((k) => !vendoredKeys.includes(k));
+  expect(missing, `disclosure-keys.json lists key(s) DISCLOSURE_ROWS has no row for: ${missing}`).toEqual([]);
+  expect(stale, `DISCLOSURE_ROWS has row(s) no longer in disclosure-keys.json: ${stale}`).toEqual([]);
+  // Belt-and-suspenders against a duplicate key silently masking a missing
+  // one in the two filters above (two identical arrays with a duplicate in
+  // one would pass both filters and still be wrong).
+  expect(configKeys).toEqual(vendoredKeys);
 });

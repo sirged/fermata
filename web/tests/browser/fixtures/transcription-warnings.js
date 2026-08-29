@@ -17,7 +17,26 @@
 // against its own idea of the shape. These fixtures exist so that mistake
 // can't quietly happen again on either side of this file.
 
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { DISCLOSURE_ROWS } from "../../../src/lib/disclosures.js";
+
+// The same vendored key list web/tests/unit/disclosures.spec.js checks
+// DISCLOSURE_ROWS against (see that file's comment, and
+// server/tests/test_disclosure_keys.py, for the rest of the guard chain).
+// editedTranscriptionResponse() below reads THIS, not DISCLOSURE_ROWS - a
+// fixture meant to catch DISCLOSURE_ROWS drifting from the real API contract
+// cannot itself be generated from DISCLOSURE_ROWS, or a row silently dropped
+// from the config would silently stop being nulled here too, and nothing
+// would notice either change.
+const DISCLOSURE_KEYS = JSON.parse(
+  fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "disclosure-keys.json"),
+    "utf8",
+  ),
+);
 
 export const MIN_PDF = Buffer.from(
   "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n" +
@@ -245,26 +264,31 @@ export const INCOMPLETE_TUNING_PROVENANCE = {
 /**
  * A saved hand edit's response shape, mirroring server/fermata/api.py's
  * _transcription_dict exactly for a row whose `confidence` column is NULL
- * (every edited row): `warnings` is stated as `[]` and every _BAR_KEYS /
- * _BAR_LIST_KEYS field - including every structural disclosure counter
- * disclosures.js reads - as `null`, NEVER omitted - specifically because an
- * earlier version of the backend omitted them, and a client that spread such
- * a response over the transcription it already held kept the PRE-EDIT
- * figures. A user opened a score reading "4 of 50 bars don't add up", fixed
- * exactly those bars, saved, and the panel still said "4 of 50 bars don't
- * add up" and still listed warnings about notes that no longer existed - the
+ * (every edited row): `warnings` is stated as `[]`, and EVERY field
+ * _BAR_KEYS, _BAR_LIST_KEYS, _BAR_AMOUNT_KEYS and _PROVENANCE_KEYS name -
+ * the full set test_transcription_model_stays_in_sync_with_api_pys_bar_key_
+ * tuples (server/tests/test_api_docs.py) checks TranscriptionOut against -
+ * as `null`, NEVER omitted. That is specifically because an earlier version
+ * of the backend omitted them, and a client that spread such a response
+ * over the transcription it already held kept the PRE-EDIT figures. A user
+ * opened a score reading "4 of 50 bars don't add up", fixed exactly those
+ * bars, saved, and the panel still said "4 of 50 bars don't add up" and
+ * still listed warnings about notes that no longer existed - the
  * confidently wrong state this whole feature exists to prevent. `null` (not
  * `0`) is the deliberate way of saying "nothing has measured this content";
- * `0` would claim every bar was measured and every one of them added up (and
- * for the disclosure counters specifically, that every one of them found
- * nothing).
+ * `0` would claim every bar was measured and every one of them added up
+ * (and for the disclosure counters, that every one of them found nothing);
+ * an omitted provenance key would claim its meter/key/tuning was never even
+ * asked about, when the true state after an edit is "not recorded, either".
+ *
+ * The disclosure counters (repeats_unread, nav_marks_unresolved, ...) are
+ * nulled from DISCLOSURE_KEYS - the vendored list, not DISCLOSURE_ROWS - so
+ * this fixture cannot go stale in lockstep with a bug in DISCLOSURE_ROWS
+ * itself; see this file's own top-of-file comment on DISCLOSURE_KEYS.
  */
 export function editedTranscriptionResponse() {
-  const disclosureNulls = {};
-  for (const row of DISCLOSURE_ROWS) {
-    disclosureNulls[row.key] = null;
-    if (row.barsKey) disclosureNulls[row.barsKey] = null;
-  }
+  const nulls = {};
+  for (const key of DISCLOSURE_KEYS) nulls[key] = null;
   return {
     id: 1,
     score_id: 1,
@@ -273,11 +297,41 @@ export function editedTranscriptionResponse() {
     source: "edited",
     confidence: null,
     warnings: [],
+    // _BAR_KEYS' six Rule 8 conformance figures (api.py) - the disclosure
+    // counters among _BAR_KEYS are in `nulls` above via DISCLOSURE_KEYS.
     bars_overfull: null,
     bars_short: null,
     bars_defective: null,
     bars_measured: null,
-    ...disclosureNulls,
+    bars_padded: null,
+    bars_unread: null,
+    // _BAR_LIST_KEYS (api.py) - every *_bars/*_pages list, including the
+    // ones that ride along with a disclosure counter above.
+    padded_bars: null,
+    unread_bars: null,
+    spacing_bars: null,
+    degraded_bars: null,
+    repeats_unread_bars: null,
+    endings_unread_bars: null,
+    endings_truncated_bars: null,
+    form_marks_unanchored_bars: null,
+    nav_marks_unresolved_bars: null,
+    systems_unread_pages: null,
+    // _BAR_AMOUNT_KEYS (api.py).
+    inferred_rest_quarters: null,
+    // _PROVENANCE_KEYS (api.py) - what the meter/key/tuning were obtained
+    // from. Omitting these (rather than nulling them) is exactly the
+    // provenance-staleness regression this fixture is meant to catch: a
+    // saved edit that silently kept showing the pre-edit "assumed 4/4"
+    // line, the same class of bug the bar-figure docstring above names.
+    time_signature: null,
+    time_signature_source: null,
+    key_fifths: null,
+    key_signature_source: null,
+    tuning: null,
+    tuning_label: null,
+    tuning_unread: null,
+    ...nulls,
   };
 }
 

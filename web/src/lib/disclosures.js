@@ -17,6 +17,18 @@
 // lands here as one line in DISCLOSURE_ROWS, not a new branch of rendering
 // logic.
 //
+// THE KEY LIST ITSELF IS GUARDED, not just hand-checked once: this file is
+// one of FOUR hand-kept copies of "which fields are structural disclosures"
+// (server/fermata/tabextract.py's ExtractionResult fields, server/fermata/
+// api.py's _BAR_KEYS tuple, api_models.py's TranscriptionOut fields, and this
+// one), and it was the only one nothing checked - a fake counter added to
+// api.py, or a row silently dropped from here, passed every existing test.
+// web/tests/disclosure-keys.json vendors the same key list from the API side
+// (kept honest against api._BAR_KEYS by
+// server/tests/test_disclosure_keys.py), and web/tests/unit/disclosures.spec.js
+// asserts DISCLOSURE_ROWS's keys equal that vendored file's, in both
+// directions, by name.
+//
 // Pure logic, no runes, no imports - same reason provenance.js is - so the
 // row-selection rules (what's hidden, what's "not measured") can be tested
 // without a browser. What actually renders is Disclosures.svelte.
@@ -24,37 +36,76 @@ export const DISCLOSURE_ROWS = [
   { key: "repeats_unread", label: "Repeat marks not read", barsKey: "repeats_unread_bars" },
   { key: "endings_unread", label: "Volta (ending) brackets not read", barsKey: "endings_unread_bars" },
   { key: "endings_truncated", label: "Volta endings truncated", barsKey: "endings_truncated_bars" },
-  { key: "endings_incomplete", label: "Volta numbering doesn't start at 1" },
+  // A FLAG, not a count - tabextract.py:5172 trips it on ANY gap in the
+  // volta numbers actually read, not only a missing "1" (seen_ints !=
+  // range(1, seen_ints[-1] + 1) catches [1, 3] just as it catches [2, 3]),
+  // and the field itself is only ever 0 or 1 (tabextract.py:5166-5173). A
+  // bare "1" in a column of counts reads as "one thing", which is the wrong
+  // claim for a yes/no fact - kind: "flag" renders it as presence, not a
+  // number.
+  { key: "endings_incomplete", label: "Volta numbering has gaps", kind: "flag" },
+  // OVERSTATES if read as "repeat/volta marks": tabextract.py:1156 folds a
+  // plain bar-style group (a final or double barline, carrying no <repeat>
+  // and no <ending> at all - see docs/musicxml-tab-profile.md's "bar-style
+  // alone") into the same unanchored-count path as an actual repeat/volta
+  // mark whenever it fails to anchor (tabextract.py:1159-1161). And the bar
+  // list is a NEAREST-bar fallback, not the bar the mark was drawn over -
+  // the mark had no bar to anchor to at all, so tabextract.py:5131-5133's
+  // own warning prose calls the list "Nearest bars:", not "bars:".
   {
     key: "form_marks_unanchored",
-    label: "Repeat/volta marks with no bar to anchor to",
+    label: "Repeat/volta/bar-style marks with no bar to anchor to",
     barsKey: "form_marks_unanchored_bars",
+    barsLabel: "near bar",
   },
+  // Counted per BAR, not per mark: tabextract.py:2163-2164 counts one bar
+  // once even when two navigation instructions close on it together.
   {
     key: "nav_marks_unresolved",
-    label: "Navigation marks written with no jump target",
+    label: "Bars whose navigation marks name no target this transcription holds",
     barsKey: "nav_marks_unresolved_bars",
   },
   // No barsKey: a navigation mark with no bar to name has no bar number to
   // report (docs/musicxml-tab-profile.md, Rule 16 / issue #134 phase 2).
   { key: "nav_marks_unanchored", label: "Navigation marks with no bar to anchor to" },
-  // The list beside this one is PAGES, not bars, for the same reason -
-  // see api_models.py's comment on systems_unread_pages.
-  { key: "systems_unread", label: "Systems not read at all", barsKey: "systems_unread_pages", barUnit: "page" },
-  { key: "coincident_unsplit_pairs", label: "Coincident notehead pairs not split" },
-  { key: "staves_coincident_unsplit", label: "Staves with an unsplit coincident pair" },
+  // "System" here means a staff-sized GROUP OF LINES the page-scan found and
+  // could not read as a staff (neither 5 nor 6 lines) - tabextract.py:
+  // 344-346. Whether that group was actually a musical system is inferred
+  // from its size, not confirmed - a stray staff-sized rule or decoration
+  // would count the same way. The list beside this one is PAGES, not bars,
+  // for the reason api_models.py's comment on systems_unread_pages gives.
+  { key: "systems_unread", label: "Staff-sized line groups not read as a system", barsKey: "systems_unread_pages", barUnit: "page" },
+  // Counted once per coincident GROUP (glyph_rhythm.py:3103-3113,
+  // specifically the `coincident_unsplit_pairs += 1` at line 3111, inside
+  // the loop over `_dup_groups` - one increment per group regardless of how
+  // many duplicate copies it holds), not once per notehead.
+  { key: "coincident_unsplit_pairs", label: "Coincident notehead groups not split across voices" },
+  { key: "staves_coincident_unsplit", label: "Staves with an unsplit coincident group" },
   { key: "unison_digits_shared", label: "Notes given another note's fret number" },
   { key: "dots_unassigned", label: "Augmentation dots not assigned to a note" },
   {
     key: "dots_unassigned_no_candidate",
     label: "Unassigned dots with no notehead or rest nearby",
   },
+  // glyph_rhythm.py:2957-2959: this dot DID reach a candidate notehead/rest,
+  // but every one it reached already carried a dot at a conflicting tier
+  // (a different, already-bound position) or was a same-x duplicate of a
+  // candidate already given one - not "nothing nearby" (that's the sibling
+  // counter above).
   {
     key: "dots_unassigned_eliminated",
-    label: "Unassigned dots that reached a candidate but lost it to a shared owner",
+    label: "Unassigned dots whose only candidates already had a conflicting or duplicate dot",
   },
   { key: "staves_dots_unassigned", label: "Staves with an unassigned dot" },
-  { key: "notes_no_stem", label: "Noteheads read with no stem" },
+  // Quarter-note heads or shorter ONLY - glyph_rhythm.py:2934-2950 counts a
+  // stemless filled (or x/diamond) notehead here specifically because a
+  // missing stem costs its DURATION (the flag/beam that would say which
+  // note value hangs off the stem it can't find); a half or whole notehead
+  // is deliberately excluded (glyph_rhythm.py:2946-2950) because neither
+  // shape can carry a flag or beam in any notation, so a missing stem on one
+  // of those costs only the voice signal, not the duration, and is not
+  // counted here.
+  { key: "notes_no_stem", label: "Noteheads read with no stem (quarter or shorter)" },
   { key: "staves_no_stem", label: "Staves with a stemless notehead" },
 ];
 
@@ -99,9 +150,11 @@ export function disclosureRows(t) {
     rows.push({
       key: row.key,
       label: row.label,
+      kind: row.kind ?? "count",
       measured,
       value: measured ? value : null,
       barUnit: row.barUnit ?? "bar",
+      barsLabel: row.barsLabel ?? null,
       bars: measured && Array.isArray(barsRaw) ? barsRaw : [],
     });
   }

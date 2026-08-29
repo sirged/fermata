@@ -208,6 +208,97 @@ test.describe("ScoreCompare structural disclosures", () => {
     await expect(page.locator('[data-disclosure="repeats_unread"] .disclosure-value')).toHaveText("3");
   });
 
+  test("endings_incomplete renders as a flag - present, never a bare count", async ({ page }) => {
+    // tabextract.py:5172 makes this a 0/1 fact ("do the volta numbers read
+    // form a run starting at 1"), not a count - a bare "1" in the value
+    // column reads as "one thing", which is the wrong claim for a yes/no
+    // condition. See disclosures.js's own comment on this row.
+    await stubScoreApi(
+      page,
+      transcriptionResponse({
+        warnings: [],
+        confidence: CLEAN_CONFIDENCE,
+        disclosures: { ...zeroDisclosures(), endings_incomplete: 1 },
+      }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+
+    const row = page.locator('[data-disclosure="endings_incomplete"]');
+    await expect(row).toBeVisible();
+    await expect(row).toContainText("Volta numbering has gaps");
+    // no numeric value at all - the row's mere presence (it's already
+    // filtered to non-zero before this ever renders) IS the yes
+    await expect(row.locator(".disclosure-value")).toHaveCount(0);
+    await expect(row).not.toContainText("1");
+  });
+
+  test("an unmeasured flag still says 'not measured', the same as any other unmeasured counter", async ({
+    page,
+  }) => {
+    const disclosures = { ...zeroDisclosures(), repeats_unread: 4 };
+    delete disclosures.endings_incomplete;
+    await stubScoreApi(
+      page,
+      transcriptionResponse({ warnings: [], confidence: CLEAN_CONFIDENCE, disclosures }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+
+    const row = page.locator('[data-disclosure="endings_incomplete"]');
+    await expect(row.locator(".disclosure-value")).toHaveText("not measured");
+  });
+
+  test("form_marks_unanchored's bar list is prefixed 'near bars' - a nearest-bar fallback, not the mark's real bar", async ({
+    page,
+  }) => {
+    // tabextract.py:1156-1161 folds a plain bar-style group (no repeat, no
+    // ending at all) into this count whenever it fails to anchor, and its
+    // own warning prose (tabextract.py:5131-5133) calls the list "Nearest
+    // bars:" for the same reason: the mark had NO bar to anchor to, so the
+    // number given is the nearest one, not the one it was drawn over.
+    await stubScoreApi(
+      page,
+      transcriptionResponse({
+        warnings: [],
+        confidence: CLEAN_CONFIDENCE,
+        disclosures: {
+          ...zeroDisclosures(),
+          form_marks_unanchored: 2,
+          form_marks_unanchored_bars: [8, 14],
+        },
+      }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+
+    const row = page.locator('[data-disclosure="form_marks_unanchored"]');
+    await expect(row).toContainText("Repeat/volta/bar-style marks with no bar to anchor to");
+    await expect(row.locator(".disclosure-bars")).toHaveText("near bars 8, 14");
+  });
+
+  test("the panel uses a real heading element and keeps list semantics under list-style:none", async ({
+    page,
+  }) => {
+    await stubScoreApi(
+      page,
+      transcriptionResponse({
+        warnings: [],
+        confidence: CLEAN_CONFIDENCE,
+        disclosures: { ...zeroDisclosures(), repeats_unread: 2 },
+      }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+
+    // a heading, not a styled <p>, so the panel is real document structure
+    const heading = page.locator(".disclosures h3.disclosures-title");
+    await expect(heading).toHaveText("Structural disclosures");
+    // list-style:none strips list semantics from Safari/VoiceOver's
+    // accessibility tree along with the bullets - role="list" restores it
+    await expect(page.locator(".disclosures ul")).toHaveAttribute("role", "list");
+  });
+
   test("gig mode drops the disclosures panel along with the rest of the review chrome", async ({
     page,
   }) => {
