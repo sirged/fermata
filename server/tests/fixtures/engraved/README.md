@@ -35,6 +35,7 @@ gap this directory exists to close was created.
 | --- | --- |
 | `notation_and_tab` | notation over tablature, two pages, D major, a dotted note, beamed sixteenths, a whole-note chord; every bar adds up |
 | `rests_and_flags` | every rest value and every flag hook the SMuFL map calibrates, including 32nds |
+| `thirty_second_beams` | three-stroke beams — 32nds written under a beam, beside 32nds written on a flag, so which of the two was misread is decidable (#113) |
 | `tab_only` | tablature with no notation staff — the honest fall back to spacing-inferred rhythm |
 | `tab_only_short_last_system` | eight bars of which six are read: an unstretched final system falls under the length floor and is lost silently |
 | `two_voices` | a melody stems-up over an accompaniment stems-down in one bar |
@@ -85,6 +86,13 @@ looks like coverage and is not is worse than none:
   deliberately absent from the SMuFL map, because which one means which was
   not established. `harmonics_dense` covers the *reporting* of that gap, not
   its closure — a score with harmonics still loses their durations.
+- **A note shorter than a 32nd.** `_beam_count_near` follows a beam stack to
+  any depth and counts a four-stroke group correctly - there is a unit test
+  on constructed geometry for it - but nothing downstream can carry the
+  answer, because the emitter's whole duration vocabulary stops at a 32nd
+  (`musicxml.TYPE_NAMES`). A 64th is engraved, read as four levels, and
+  emitted as a 32nd. `thirty_second_beams` deliberately does not contain one:
+  a bar asserting that would be pinning a different limit.
 - **A repeat bracket welded into a phantom staff line.** The engraver used
   here leaves a visible gap in an ending bracket, whereas Finale's abut
   exactly; that geometry is covered by a synthetic page built inside

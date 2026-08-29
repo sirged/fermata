@@ -3904,13 +3904,25 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     #
     # The conformance figures move the way a real correction moves them: 59
     # bars stop being overfull and 40 stop being defective. Two bars move from
-    # overfull to SHORT and one gains padding, which is the familiar shape of
-    # correcting one half of a compensating error - the bar is still wrong,
-    # and now wrong in the direction its remaining defect points. Eleven of
-    # the changed bars were read off the printed pages across four scores
-    # (Traverse Town, Troian Beauty, Stables, Where the Egg of Dreams
-    # Hatches); every one is engraved with three beam strokes and now sums to
-    # exactly its meter.
+    # overfull to SHORT and one gains padding, and those are the interesting
+    # ones, because reading the pages says what they are.
+    #
+    # THIRTEEN CHANGED BARS WERE READ OFF THE PRINTED PAGES, across six
+    # scores (Traverse Town, Troian Beauty, Stables, Where the Egg of Dreams
+    # Hatches, Serenade of Respite - Night, Singing of the Gentle Wind), and
+    # counted stroke by stroke against the vector geometry rather than by
+    # eye. All thirteen are engraved with three beam strokes, so all thirteen
+    # are 32nds and the new reading of them is right in every case. Eleven of
+    # the thirteen now sum to exactly their meter.
+    #
+    # The other two do not, and they are worth naming because they are what
+    # the +2 short is: Serenade of Respite bar 9 and Singing of the Gentle
+    # Wind bar 2 each also DROP a note (a second beam group collapsing into
+    # one), and in Serenade bar 9 the dropped note cost exactly what the
+    # over-valued 32nds added, so the bar used to add up by coincidence. That
+    # is a compensating error, not a regression: the durations underneath it
+    # are right now and were wrong before, and the note-drop it was hiding is
+    # a separate defect that this change only stops masking.
     assert extractable == 293
     assert totals["bars"] == 10762               # 10632 + 130 (issue #152)
     assert totals["bars_unread"] == 20           # 23 - 3 (issue #152)
@@ -4232,7 +4244,8 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
     fixture already names, failing here on a different score, and it belongs
     to the mid-system meter reader (#90/#104), not to any duration. Fixing it
     from this side would mean loosening an arithmetic check to accommodate a
-    meter defect, which is backwards.
+    meter defect, which is backwards. Filed as #162; closing that one means
+    deleting these two entries from the list below.
 
     And the RESTS, which the same issue calls out as an adjacent class and
     which are counted separately here for exactly that reason. Two remain,
@@ -4243,15 +4256,16 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
       ENGRAVING: a whole-measure rest is drawn as a whole rest in any meter,
       so the glyph means "this bar is silent", not "four quarters". Reading
       it as four is a real remaining defect, with a real fix - a lone whole
-      rest should take its bar's length - which belongs with #88's rest work
-      and is deliberately not made here, because it would move the library's
+      rest should take its bar's length - which is filed as #163 and
+      deliberately not made here, because it would move the library's
       conformance figures a second time in one change and leave neither
       movement separable from the other.
 
       My Star (Final Fantasy XVI), bar 5 - a DOTTED whole rest, six quarters,
       in a 4/4 bar. Not the whole-measure convention and not legitimate. It
       predates #111/#112 (measured at #152's commit, where it is already
-      present).
+      present), and is carried on #163 beside the one above so that deciding
+      whether they share a fix is somebody's job rather than nobody's.
     """
     type_quarters = {"breve": 8.0, "whole": 4.0, "half": 2.0, "quarter": 1.0,
                      "eighth": 0.5, "16th": 0.25, "32nd": 0.125}
