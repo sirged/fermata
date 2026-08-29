@@ -3911,20 +3911,39 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # (Traverse Town 7/8/10, Troian Beauty 13, Stables 9/27, Where the Egg of
     # Dreams Hatches 1, Serenade of Respite - Night 9/27, Singing of the
     # Gentle Wind 2/11/18), counted stroke by stroke against the vector
-    # geometry rather than by eye. Every one of them is engraved with three
-    # beam strokes, so the notes this change re-read really are 32nds in all
-    # twelve.
+    # geometry rather than by eye. ALL TWELVE are engraved with three beam
+    # strokes - the ink is unambiguous - so the notes this change re-read
+    # really are 32nds in every one of them.
     #
-    # TEN of the twelve now match the print exactly and sum to their meter.
-    # The other two are worth naming, because they are what the +2 short is:
-    # Serenade of Respite bar 9 and Singing of the Gentle Wind bar 2 each also
-    # DROP a note (a second beam group collapsing into one), so the emitted
-    # bar still does not match the page. In Serenade bar 9 the dropped note
-    # cost exactly what the over-valued 32nds added, so that bar used to add
-    # up BY COINCIDENCE. That is a compensating error, not a regression: the
-    # durations underneath it are right now and were wrong before, and the
+    # By the stricter reading of whether the bar then SUMS TO ITS METER,
+    # though, it is 8 of the 12, not 10 as an earlier version of this comment
+    # said (adversarial review of #166). Four still do not add up, each for
+    # its own reason, and NONE of the four is what moves bars_short by +2
+    # below - see that pin's own note. Where the Egg of Dreams Hatches bar 1
+    # and Singing of the Gentle Wind bar 18 each keep a short voice 2 this
+    # change does not touch. Serenade of Respite bar 9 and Singing of the
+    # Gentle Wind bar 2 each also DROP a note (a second beam group collapsing
+    # into one), so the emitted bar still does not match the page. In
+    # Serenade bar 9 the dropped note cost exactly what the over-valued
+    # 32nds added - two notes moving from a 16th to a 32nd is -0.25, against
+    # a 0.25 shortfall elsewhere in the bar - so that bar used to add up BY
+    # COINCIDENCE. That is a compensating error, not a regression: the
+    # durations underneath it are more right now than they were, and the
     # note-drop it was hiding is a separate defect this change only stops
     # masking rather than causes.
+    #
+    # THE +2 IN bars_short IS NOT SERENADE BAR 9 OR SINGING BAR 2 (adversarial
+    # review of #166 corrects an earlier version of this comment that named
+    # them). Both bars were ALREADY short before this change - short in a
+    # DIFFERENT voice than the one this fixes (Serenade voice 2 sits at 2.5
+    # of 3.0; Singing voice 1 at 2.75 of 4.0) - so reading their 32nds
+    # correctly does not flip either bar's already-short verdict, and their
+    # net contribution to bars_short is zero. The two sites that actually
+    # flip a bar to short are Midnight Harmony (New World) bar 13 (voice 1:
+    # 4.125 -> 3.75, now short where it used to overfill) and Singing of the
+    # Gentle Wind bars 8 and 26 together (net +1 across the two). Midnight
+    # Harmony is not named anywhere else in this change - it is named here
+    # because this pin is the only place its own fix shows up.
     assert extractable == 293
     assert totals["bars"] == 10762               # 10632 + 130 (issue #152)
     assert totals["bars_unread"] == 20           # 23 - 3 (issue #152)

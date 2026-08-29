@@ -90,9 +90,14 @@ looks like coverage and is not is worse than none:
   any depth and counts a four-stroke group correctly - there is a unit test
   on constructed geometry for it - but nothing downstream can carry the
   answer, because the emitter's whole duration vocabulary stops at a 32nd
-  (`musicxml.TYPE_NAMES`). A 64th is engraved, read as four levels, and
-  emitted as a 32nd. `thirty_second_beams` deliberately does not contain one:
-  a bar asserting that would be pinning a different limit.
+  (`musicxml.TYPE_NAMES`). IF a genuine 64th were engraved, it would be read
+  as four levels and emitted as a 32nd - but the library holds no genuine
+  64th to confirm that against: the only stems this decoder reads at four
+  levels are Troian Beauty p2's grace notes, which are a pre-existing,
+  unrelated over-count (a grace beam read past its own group), not a real
+  64th. `thirty_second_beams` deliberately does not contain a 64th either: a
+  bar asserting one would be pinning a different limit than the one measured
+  here.
 - **A repeat bracket welded into a phantom staff line.** The engraver used
   here leaves a visible gap in an ending bracket, whereas Finale's abut
   exactly; that geometry is covered by a synthetic page built inside

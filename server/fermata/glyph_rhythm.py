@@ -615,9 +615,15 @@ _SP = {
     # GROUP may sit - see _beam_count_near, which uses it to follow a stack
     # inward past the reach of beam_y_tol. Measured over the library's
     # 77,047 (stem, covering beam) pairs, consecutive strokes sit 0.75
-    # spaces apart and every value from 0.8 to 2.0 counts the identical set,
-    # because nothing a stem could wrongly reach lies within 2 spaces of its
-    # own deepest stroke. This sits in that plateau.
+    # spaces apart and every value in [0.76, 3.5] counts the identical set
+    # on this library (an earlier version of this comment said [0.8, 2.0],
+    # which is inside the true plateau but understates it - adversarial
+    # review of #166). Above 3.5, a different failure mode appears before
+    # the library's own false positives would: a genuine TWO-level stem can
+    # chain twice, because the stack-follower does not distinguish "one more
+    # real stroke" from "the same gap applied a second time" - at pitch 4.0
+    # a 2-level beam is read as 4. 1.10 sits inside the true plateau with
+    # margin on both sides.
     "beam_stack_pitch": 1.10,
     # notehead <-> stem attachment
     "stem_x_tol": 0.68,           # was 3.5pt
@@ -2214,12 +2220,15 @@ def _beam_count_near(beams, stem, notehead_yc, tol):
     does; do not move the round() back in front of the comparison.
 
     beam_stack_pitch is what "one pitch" allows, and the library gives it a
-    wide plateau to sit on: measured [0.8, 2.0] staff spaces produces the
-    identical result on this library (documented more precisely as
-    [0.76, 3.5] with a caveat - see beam_stack_pitch's own comment for the
-    4.0 failure mode), because the next stroke a stem could reach after its
-    own third is more than 2 spaces further in. Below 0.7 nothing is added
-    at all.
+    wide plateau to sit on: measured [0.76, 3.5] staff spaces counts the
+    identical set on this library - wider than an earlier version of this
+    comment claimed ([0.8, 2.0], adversarial review of #166) - because
+    nothing a stem could wrongly reach after its own third lies within 3.5
+    spaces of its own deepest stroke. Below 0.76 nothing is added at all,
+    and above 3.5 a different failure mode appears before the library's own
+    false positives would - see beam_stack_pitch's own comment for the
+    4.0 case, where a genuine two-level beam chains twice into a spurious
+    four.
     """
     free_y = stem.y1 if abs(stem.y1 - notehead_yc) > abs(stem.y0 - notehead_yc) else stem.y0
     # Which way this stem's beams stack: from the free end toward the
