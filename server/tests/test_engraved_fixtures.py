@@ -152,8 +152,12 @@ def source_beats(name):
             if note.find("chord") is not None:
                 continue
             quarters = TYPE_QUARTERS[note.findtext("type")]
-            for _dot in note.findall("dot"):
-                quarters *= 1.5
+            # Each dot adds half of what the one before it added: 1.5, 1.75,
+            # 1.875. Multiplying by 1.5 per dot is right for one and wrong for
+            # every number above it - it makes a double-dotted half 4.5
+            # quarters instead of 3.5 - and no fixture carried a second dot
+            # until #111 got one.
+            quarters *= 2 - 0.5 ** len(note.findall("dot"))
             mod = note.find("time-modification")
             if mod is not None:
                 quarters = quarters * int(mod.findtext("normal-notes")) / int(
@@ -247,53 +251,146 @@ def test_a_dotted_note_and_a_beam_survive_into_the_transcription(engraved):
     assert [q for q, _n in bars[2][0][:4]] == [0.25] * 4
 
 
-def test_a_stacked_chords_dot_does_not_bind_to_the_nearest_notehead(engraved):
-    """A three-note chord, dotted half E4/G4/A4 (#89): G4 sits a second below
-    A4, close enough that this engraver shifts G4's own notehead left of the
-    shared stem to keep the two noteheads from touching - the offset #112
-    describes - and that shift carries G4's own dot glyph out of this
-    decoder's x-reach entirely. That is a genuine, orphaned dot on its own,
-    not this issue's defect.
-
-    The defect is what nearest-distance did to A4's OWN dot with G4's out of
-    the running: nothing else was near enough to rank it against, so A4 took
-    it, and separately took the next dot along too - two dots from two
-    different relative positions, which is not a real double dot (that is
-    two ink marks at the SAME position) - so this chord decoded as
-    double-dotted (3.5 quarters) instead of the 3 every member is actually
-    written as.
-
-    Read directly off decode_note_events, before the beat model recombines
-    the chord's members - see glyph_rhythm._assign_dots. Refusing to let an
-    owner already given a dot at one tier take a second, different tier
-    leaves A4 with its own one dot; G4's orphaned dot is reported
-    (dots_unassigned) rather than invented onto A4 a second time."""
-    doc = fitz.open(engraved("stacked_dotted_chord"))
-    page = doc[0]
+def _chord_of_first_bar(pdf):
+    """The first bar's noteheads, smallest y first, straight off
+    decode_note_events - before the beat model recombines a chord's members,
+    which is where a per-notehead dot count stops being visible."""
+    page = fitz.open(pdf)[0]
     staff = next(s for s in tabextract._detect_staves(page)[0] if s.kind == "standard")
     notes, stats = glyph_rhythm.decode_note_events(
         page, staff.top, staff.bottom, staff.x0, staff.x1, staff.line_ys, staff.spacing)
     first_bar_end = min(n.x for n in notes if n.base_units == 1.0)  # the filler quarter
-    chord = sorted((n for n in notes if not n.is_rest and n.x < first_bar_end),
-                   key=lambda n: n.y)
+    return sorted((n for n in notes if not n.is_rest and n.x < first_bar_end),
+                  key=lambda n: n.y), stats
+
+
+def test_a_stacked_chords_dot_does_not_bind_to_the_nearest_notehead(engraved):
+    """A three-note chord, dotted half E4/G4/A4 (#89, #112): G4 sits a second
+    below A4, close enough that this engraver shifts G4's own notehead left of
+    the shared stem to keep the two noteheads from touching. The chord's three
+    dots do NOT shift with it - they stay in one column to the right of the
+    whole chord - so G4's own dot ends up a full notehead width beyond a reach
+    window anchored on G4's own right edge.
+
+    On `main` two things went wrong at once. G4 lost its dot (#112), and A4
+    then took a SECOND dot - G4's - because with G4 out of the running nothing
+    else was near enough to rank it against, so the chord decoded as
+    double-dotted, 3.5 quarters instead of the 3 every member is written as.
+    #130 stopped the second half by refusing an owner two different relative
+    positions; G4's dot was reported as unassigned instead.
+
+    Now the whole chord reads: measuring G4's reach from the column its dot
+    actually belongs to gives every member exactly one dot, nothing is
+    orphaned, and the bar adds up to its 4/4 for the first time."""
+    chord, stats = _chord_of_first_bar(engraved("stacked_dotted_chord"))
     assert len(chord) == 3, "the chord's three noteheads, first bar only"
     top, middle, bottom = chord  # smallest y first: A4, G4, E4
-    assert top.dotted == 1, "A4 no longer collects a second, borrowed dot"
-    assert middle.dotted == 0, "G4's own dot glyph is out of this decoder's reach"
+    assert top.dotted == 1, "A4 takes its own dot and no borrowed one"
+    assert middle.dotted == 1, "G4's dot, reached from the column it is set in"
     assert bottom.dotted == 1, "E4's dot was never in question"
-    # Eight bars, all identical (see engrave_fixtures.py on why every fixture
-    # is at least that many), but the detected staff extent falls a hair
-    # short of the eighth bar's own barline, so only seven of its repetitions
-    # of the same chord are in this decode's band - one reported anomaly per
-    # bar counted, not just the first.
-    assert stats["dots_unassigned"] == 7, "G4's dot is reported per bar, not dropped silently"
-    # G4's own notehead is out of this decoder's x-reach (the #112 shift),
-    # but its DOT glyph still falls inside A4's x-window - A4 is simply
-    # already committed to its own dot by the time G4's is considered, so
-    # this is the eliminated half of the split, not the no-candidate half
-    # (see glyph._assign_dots): a candidate WAS reached, and lost.
+    assert stats["dots_unassigned"] == 0, "nothing left over once the column is right"
     assert stats["dots_unassigned_no_candidate"] == 0
-    assert stats["dots_unassigned_eliminated"] == 7
+    assert stats["dots_unassigned_eliminated"] == 0
+
+    result = tabextract.extract(engraved("stacked_dotted_chord"))
+    assert emitted_bars(result.alphatex)[0][0] == [
+        (3.0, [(2, 3), (5, 4), (7, 5)]), (1.0, [(2, 4)])
+    ], "a dotted half chord and the quarter that fills the bar"
+    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
+
+
+def test_a_double_dotted_note_keeps_both_of_its_dots(engraved):
+    """Issue #111. A double dot is two ink marks side by side after ONE
+    notehead, and the second sits one dot-advance beyond the first - measured
+    on this fixture, 0.648 staff spaces past it, which puts it 1.345 spaces
+    from the notehead's right edge against a reach window of 1.17.
+
+    So the second dot could never be reached from the notehead at all, and the
+    window cannot simply be widened to fetch it: at 1.35 spaces it would be
+    reaching further than the gap to the next notehead along. What makes the
+    two marks one note's is that they are beside EACH OTHER, and that is what
+    is read here (see glyph_rhythm._dot_runs).
+
+    A double-dotted half is 3.5 quarters; reading it as single-dotted loses
+    half a quarter and starts everything after it early. The fixture's odd
+    bars carry the double dot and its filling eighth; its even bars carry a
+    plain dotted half and a quarter, as the control - a fix that had merely
+    widened the window would give that note a second dot too."""
+    result = tabextract.extract(engraved("double_dotted_note"))
+    bars = emitted_bars(result.alphatex)
+    assert [q for q, _n in bars[0][0]] == [3.5, 0.5], "double-dotted half, then an eighth"
+    assert [q for q, _n in bars[1][0]] == [3.0, 1.0], "the control: still ONE dot"
+    assert [[q for q, _n in b[0]] for b in bars] == [[3.5, 0.5], [3.0, 1.0]] * 4
+    assert source_beats("double_dotted_note")[:2] == [[3.5, 0.5], [3.0, 1.0]], \
+        "...which is what was engraved"
+    assert "{dd}" in result.alphatex
+    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
+    assert result.dots_unassigned == 0
+
+
+def test_both_members_of_a_dotted_seconds_interval_keep_their_dots(engraved):
+    """Issue #112. Two chord members a second apart cannot share a notehead
+    column, so the engraver moves one of them a full notehead width off it -
+    and leaves both their dots in the chord's single dot column. That puts the
+    column a notehead width beyond what a window anchored on one of the two
+    heads' own right edge can reach, and that member silently lost its dot,
+    making a chord whose members share one duration read as two different
+    ones.
+
+    Both stem directions are here: the low bar is engraved stem-up and the
+    high bar stem-down, which is what decides which of the two heads is moved.
+    Measured on this fixture, the head that loses reach is 1.893 spaces from
+    the dot in both - against a 1.17-space window - while its partner's right
+    edge, the edge the shared column is actually set from, is 0.697 away."""
+    chord, stats = _chord_of_first_bar(engraved("seconds_interval_dots"))
+    assert len(chord) == 2
+    assert [n.dotted for n in chord] == [1, 1], "one dot each, not one and none"
+    assert stats["dots_unassigned"] == 0
+
+    result = tabextract.extract(engraved("seconds_interval_dots"))
+    bars = emitted_bars(result.alphatex)
+    assert [q for q, _n in bars[0][0]] == [3.0, 1.0], "a dotted half chord, then a quarter"
+    assert [q for q, _n in bars[1][0]] == [3.0, 1.0], "the same the other way up"
+    assert bars[0][0][0][1] == [(0, 5), (3, 6)], "both members, as one chord"
+    assert (result.bars_overfull, result.bars_short, result.bars_defective) == (0, 0, 0)
+    assert result.dots_unassigned == 0
+
+
+def test_a_double_dot_is_not_taken_by_the_note_stacked_over_it(engraved):
+    """Issue #131 asks what happens to a double dot inside a stack of notes,
+    where the pair of marks sits as close to a neighbouring notehead as to its
+    own. Here the lower voice's double-dotted half is on a staff line, its two
+    dots in the space above it, and the upper voice's quarter notes are a
+    SECOND above - which puts their noteheads in that same space, level with
+    the dots to 0.003 of a staff space.
+
+    Vertical distance therefore says nothing at all about which note the pair
+    belongs to. What does is that a note's dots are drawn to ITS OWN right:
+    the pair is 0.697 spaces past the half note's edge and 2.293 spaces to the
+    LEFT of the quarter's, out of its reach entirely. Both marks count for the
+    half note - 3.5 quarters, not 3 - and the voice above stays undotted.
+
+    NOT the geometry #131 itself describes. That issue supposes the dots land
+    in the space BELOW the double-dotted note, shared with a note a third
+    under it; this engraver does not produce that placement even when the
+    space above is occupied, as it is here. See the issue for what was and was
+    not reproduced.
+
+    The bar arithmetic is left alone on purpose: these two voices are a second
+    apart and the voice model reads them as one, which makes every bar
+    overfull before and after this change alike. That is a separate defect,
+    and asserting the note-level dot counts is what keeps this test about
+    dots."""
+    page = fitz.open(engraved("double_dotted_in_chord"))[0]
+    staff = next(s for s in tabextract._detect_staves(page)[0] if s.kind == "standard")
+    notes, stats = glyph_rhythm.decode_note_events(
+        page, staff.top, staff.bottom, staff.x0, staff.x1, staff.line_ys, staff.spacing)
+    halves = [n for n in notes if n.category == "notehead_half"]
+    assert halves, "the double-dotted note of each bar"
+    assert {n.dotted for n in halves} == {2}, "both marks, on the note that owns them"
+    quarters = [n for n in notes if n.category == "notehead_filled"]
+    assert {n.dotted for n in quarters} == {0}, "and none on the voice stacked over it"
+    assert stats["dots_unassigned"] == 0
 
 
 def test_the_bars_of_a_correct_score_all_add_up(engraved):
@@ -1948,6 +2045,11 @@ ENGRAVED_NAMES = (
     # this tuple drives - committed, regenerable, engraved by the version
     # the assertions were measured against - have not been covering them.
     "repeat_structure", "adjacent_endings", "navigation",
+    # The augmentation-dot fixtures. stacked_dotted_chord landed with #89 and
+    # was never added here either, so the same three tests have not been
+    # covering it since.
+    "stacked_dotted_chord", "double_dotted_note", "seconds_interval_dots",
+    "double_dotted_in_chord",
 )
 SYNTHESISED_NAMES = ("raster_scan", "fake_music_font")
 

@@ -1639,6 +1639,248 @@ def test_a_three_note_chord_gives_one_dot_to_each_notehead():
 
 
 # ---------------------------------------------------------------------------
+# A second dot is reached from the FIRST dot, not from the notehead (#111)
+# ---------------------------------------------------------------------------
+
+
+def test_a_second_dot_out_of_the_noteheads_reach_is_still_that_notes():
+    """Coordinates from issue #111's own measurement, in spaces: the notehead
+    edge at 0, its first dot 0.695 past it, its second 1.342 - against a reach
+    window of 1.17. The second dot can never be reached from the notehead, and
+    widening the window to 1.35 would be reaching further than the distance to
+    the next notehead along. What makes the two marks one note's is that they
+    are side by side, which is what is read instead."""
+    tol = _tol(REF)
+    head = _dotted(200.0)                       # right edge at x=103
+    first = _dot_at(200.0, x0=105.56)           # xc 106.56: 0.695 spaces past
+    second = _dot_at(200.0, x0=108.88)          # xc 109.88: 1.345 spaces past
+    counts, no_cand, eliminated = G._assign_dots([head], [first, second], tol)
+    assert counts[id(head)] == 2, "a double dot, not a dot and an anomaly"
+    assert no_cand == 0 and eliminated == 0
+
+
+def test_two_dots_too_far_apart_are_not_one_notes_double_dot():
+    """The other side of the same rule. Two dots at the same height that are
+    NOT one dot-advance apart are two notes' dots, and grouping them would
+    give one note a length it is not written with. Measured over the library,
+    real second dots sit 0.5 to 0.917 spaces past the first and the nearest
+    same-height dot that is another note's is 2.5 away; this pair is at 2.5."""
+    tol = _tol(REF)
+    head = _dotted(200.0)
+    first = _dot_at(200.0, x0=105.56)
+    far = _dot_at(200.0, x0=118.37)             # 2.5 spaces past the first
+    counts, no_cand, eliminated = G._assign_dots([head], [first, far], tol)
+    assert counts[id(head)] == 1, "only the dot this note is written with"
+    assert (no_cand, eliminated) == (1, 0), "the far one reaches no notehead at all"
+
+
+def test_a_repeat_barlines_dot_pair_is_not_taken_by_the_note_after_it():
+    """Maestro and Opus draw a repeat barline's two dots with the very same
+    glyph an augmentation dot uses (see REPEAT_DOT_CATS), so a repeat's dots
+    arrive here indistinguishable from a note's except by geometry - and
+    issue #138 reads them off this same stream. What keeps them apart is
+    reach, and reach alone: these coordinates are the opening repeat of
+    "Kaine Salvation", where the lower of the two dots sits at the exact
+    height of the first chord's lowest notehead (0.003 spaces off its centre,
+    a perfect tier-0 fit) and is saved from it only by sitting 2.92 spaces to
+    its LEFT.
+
+    So this is the test that says the reach window was not widened. #111 and
+    #112 are both fixed by changing what reach is measured FROM; widen
+    dot_x_back instead and this note swallows a repeat dot."""
+    tol = _tol(5.125)
+    head = _ev("notehead_half", 160.583, 145.427, 167.307, 151.427)  # yc 148.427
+    upper = _ev("dot", 151.348, 142.288, 153.348, 144.288)           # yc 143.288
+    lower = _ev("dot", 151.348, 147.413, 153.348, 149.413)           # yc 148.413
+    counts, no_cand, eliminated = G._assign_dots([head], [upper, lower], tol)
+    assert sum(counts.values()) == 0, "a repeat's dots belong to no note"
+    assert (no_cand, eliminated) == (2, 0), "...and are reported, both of them"
+
+
+def test_a_long_row_of_dots_is_not_one_notes_run():
+    """Chaining is transitive, so without a cap a row of dots each one
+    dot-advance from the last would read as one note's quintuple dot - a
+    length no notation writes and no note can be given. The cap is structural
+    rather than measured: no such row exists in the library, and the point is
+    that if one ever appears it must not be swallowed whole. See
+    _DOT_RUN_MAX."""
+    tol = _tol(REF)
+    head = _dotted(200.0)
+    row = [_dot_at(200.0, x0=105.56 + 3.32 * k) for k in range(5)]
+    counts, no_cand, eliminated = G._assign_dots([head], row, tol)
+    assert counts[id(head)] <= 3, "a note takes at most a triple dot's worth"
+    assert no_cand + eliminated == len(row) - counts[id(head)], \
+        "and every mark not taken is reported, not dropped"
+
+
+def test_two_dots_at_the_same_x_are_a_duplicate_pair_not_a_double_dot():
+    """A run needs the marks to be BESIDE each other. The library also draws
+    the same notehead-and-dot pair twice at identical coordinates, and reading
+    those two dots as one note's double dot would double a length that is
+    written once - so a gap of nothing is not a run (see _DOT_X_DUP_TOL)."""
+    tol = _tol(REF)
+    left = _dotted(200.0)
+    right = _dotted(200.0)                      # the duplicate, same place
+    dot = _dot_at(200.0, x0=105.56)
+    same = _dot_at(200.0, x0=105.56)
+    counts, no_cand, eliminated = G._assign_dots([left, right], [dot, same], tol)
+    assert sorted(counts.values()) == [1, 1], "one dot each, not two on one"
+    assert no_cand == 0 and eliminated == 0
+
+
+# ---------------------------------------------------------------------------
+# A displaced chord member reaches its dot from the column (#112)
+# ---------------------------------------------------------------------------
+
+
+# The seconds pair of the engraved seconds_interval_dots fixture, coordinates
+# as measured off its second bar: staff spacing 4.975, two half-note heads
+# 1.297 spaces wide whose boxes touch (the lower head's right edge is 0.101
+# spaces from the upper head's left edge), the lower one 0.4985 spaces below
+# the upper - a second - and the chord's two dots in one column 0.697 spaces
+# past the RIGHT head's edge, which is 1.892 past the left head's own.
+_SECONDS_SPACING = 4.975
+_LOWER_HEAD = (172.260, 178.712, 109.489)   # x0, x1, yc
+_UPPER_HEAD = (178.209, 184.661, 107.009)
+_DOT_COLUMN_X = 188.127
+
+
+def _head(box, y_shift=0.0):
+    x0, x1, yc = box
+    return _ev("notehead_half", x0, yc + y_shift - 3.0, x1, yc + y_shift + 3.0)
+
+
+def _column_dot(yc):
+    return _ev("dot", _DOT_COLUMN_X - 1.0, yc - 1.0, _DOT_COLUMN_X + 1.0, yc + 1.0)
+
+
+# The stem the pair shares, which is the whole reason one of the two heads had
+# to move off the column: it runs between the lower head's right edge and the
+# upper head's left edge, and past both of them.
+_SECONDS_STEM = [G.Stem(178.46, 107.0, 130.0)]
+
+
+def test_a_seconds_interval_member_reaches_the_column_its_dot_sits_in():
+    """Two heads a second apart cannot share a column, so the engraver moves
+    one of them a whole notehead width off it - while both their dots stay in
+    the chord's single dot column. The left, lower head's own dot is then 1.892
+    spaces past its own right edge, against a 1.17-space window, and 0.697 past
+    its partner's, which is the edge the column is actually set from.
+
+    Only ONE dot is in the contested position here, with nothing a space below
+    it, so nothing was pushed anywhere and the ordinary rules apply - see
+    test_a_pushed_down_pair_gives_each_member_its_own_dot for the other
+    arrangement."""
+    tol = _tol(_SECONDS_SPACING)
+    lower, upper = _head(_LOWER_HEAD), _head(_UPPER_HEAD)
+    dots = [_column_dot(109.480), _column_dot(104.520)]
+    counts, no_cand, eliminated = G._assign_dots(
+        [lower, upper], dots, tol, _SECONDS_STEM)
+    assert counts[id(lower)] == 1, "the head off the column still reaches its own dot"
+    assert counts[id(upper)] == 1
+    assert no_cand == 0 and eliminated == 0
+
+
+def test_a_head_a_third_away_is_not_a_displaced_partner():
+    """The extra anchor is what a SECOND forces and nothing else: two heads a
+    third apart sit on one column untouched, so neither may borrow the other's
+    edge to reach a dot a notehead width too far from it. Without that limit
+    any tightly engraved neighbour would lend its edge to a note whose dot is
+    genuinely out of reach - and be believed."""
+    tol = _tol(_SECONDS_SPACING)
+    # the same pair, pushed to a third apart (one whole space)
+    lower = _head(_LOWER_HEAD, y_shift=+_SECONDS_SPACING / 2)
+    upper = _head(_UPPER_HEAD)
+    counts, no_cand, eliminated = G._assign_dots(
+        [lower, upper], [_column_dot(109.480 + _SECONDS_SPACING / 2)], tol,
+        _SECONDS_STEM)
+    assert counts.get(id(lower), 0) == 0, "a third apart is not a displacement"
+    assert (no_cand, eliminated) == (1, 0)
+
+
+def test_two_notes_one_after_the_other_do_not_lend_each_other_an_anchor():
+    """The same geometry a displaced pair has - boxes touching, a second
+    apart, lower on the left - is also what two CONSECUTIVE notes look like
+    when the engraving is tight enough. They must not exchange anchors: the
+    earlier note would reach a dot belonging to the later one and take it at a
+    tier of its own, which is the theft the column anchor exists to avoid
+    rather than to enable.
+
+    What separates them is the stem. A displaced pair shares one - that is why
+    a head had to move at all - and here the two heads have their own stems,
+    neither of which runs between them."""
+    tol = _tol(_SECONDS_SPACING)
+    earlier, later = _head(_LOWER_HEAD), _head(_UPPER_HEAD)
+    own_stems = [G.Stem(172.10, 109.0, 130.0), G.Stem(184.80, 107.0, 130.0)]
+    counts, no_cand, eliminated = G._assign_dots(
+        [earlier, later], [_column_dot(109.480)], tol, own_stems)
+    assert counts.get(id(earlier), 0) == 0, "the later note's dot is not this one's"
+    assert counts[id(later)] == 1, "it is in the space below the note it is drawn for"
+    assert (no_cand, eliminated) == (0, 0)
+
+
+def test_a_pushed_down_pair_gives_each_member_its_own_dot():
+    """Coordinates from "Storm's Past" (New World), rescaled to this fixture's
+    column: a displaced seconds pair where BOTH members are dotted.
+
+    Their dots cannot both be printed at the default offsets - the two heads
+    are half a space apart, and there is only one space between them to put a
+    dot in - so the engraver pushes the pair down a step together. The upper
+    member's dot lands in the space below it, which is the space its partner
+    occupies, and the lower member's own dot lands a full space below its own
+    centre, out of every tier's reach.
+
+    Read either dot alone and the answer is wrong twice over: the contested
+    dot goes to the lower member (it is a perfect tier-0 fit for it) and the
+    upper member - which is printed with a dot - reads bare, while the dot a
+    space below is left unexplained. Read as a pair and both members get the
+    one dot each that is printed for them."""
+    tol = _tol(_SECONDS_SPACING)
+    lower, upper = _head(_LOWER_HEAD), _head(_UPPER_HEAD)
+    contested = _column_dot(109.480)                       # level with `lower`
+    beneath = _column_dot(109.480 + _SECONDS_SPACING)      # a full space below
+    counts, no_cand, eliminated = G._assign_dots(
+        [lower, upper], [contested, beneath], tol, _SECONDS_STEM)
+    assert counts[id(upper)] == 1, "the contested dot is the UPPER member's"
+    assert counts[id(lower)] == 1, "and the lower member's own is the one below"
+    assert (no_cand, eliminated) == (0, 0), "nothing is left over"
+
+
+def test_a_dot_a_space_below_a_note_that_owns_it_is_not_a_pushed_pair():
+    """The joint reading needs the whole signature. Where a notehead of the
+    chord's own column sits at that lower height, the dot down there is that
+    head's own at its own tier and nothing was pushed anywhere - so the pair
+    is left to the ordinary rules rather than given a reading the engraving
+    does not support."""
+    tol = _tol(_SECONDS_SPACING)
+    lower, upper = _head(_LOWER_HEAD), _head(_UPPER_HEAD)
+    third = _ev("notehead_half", _UPPER_HEAD[0], 109.480 + _SECONDS_SPACING - 3.0,
+                _UPPER_HEAD[1], 109.480 + _SECONDS_SPACING + 3.0)
+    contested = _column_dot(109.480)
+    beneath = _column_dot(109.480 + _SECONDS_SPACING)
+    counts, no_cand, eliminated = G._assign_dots(
+        [lower, upper, third], [contested, beneath], tol, _SECONDS_STEM)
+    assert counts[id(third)] == 1, "the lower dot is that head's own"
+    assert counts[id(lower)] == 1, "and the contested one the ordinary rules'"
+    assert counts.get(id(upper), 0) == 0
+
+
+def test_the_column_anchor_never_takes_a_dot_out_of_reach():
+    """The partner's edge is ADDED to an owner's anchors, not substituted for
+    its own, so a head that could already reach its dot still can whatever is
+    engraved beside it. Here the lower head's dot sits at its OWN edge - 0.697
+    past 178.712 - and reaching only from the partner's edge, a notehead width
+    further right, would put it behind the window."""
+    tol = _tol(_SECONDS_SPACING)
+    lower, upper = _head(_LOWER_HEAD), _head(_UPPER_HEAD)
+    own_x = _LOWER_HEAD[1] + 0.697 * _SECONDS_SPACING
+    own_dot = _ev("dot", own_x - 1.0, 109.480 - 1.0, own_x + 1.0, 109.480 + 1.0)
+    counts, no_cand, eliminated = G._assign_dots([lower, upper], [own_dot], tol)
+    assert counts[id(lower)] == 1
+    assert no_cand == 0 and eliminated == 0
+
+
+# ---------------------------------------------------------------------------
 # A glyph's position is its ink, not its metrics box (finding 88)
 # ---------------------------------------------------------------------------
 

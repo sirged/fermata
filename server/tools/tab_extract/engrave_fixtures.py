@@ -56,8 +56,18 @@ DROP_D_TUNING = [("D", 3), ("A", 3), ("D", 4), ("G", 4), ("B", 4), ("E", 5)]
 # MusicXML emission
 # ---------------------------------------------------------------------------
 
+def _dotted_quarters(typ, dots):
+    """What `dots` augmentation dots make of `typ`.
+
+    Each dot adds HALF of what the previous one added, so the multiplier is
+    1.5, 1.75, 1.875 - not 1.5 ** dots, which is right for one dot and wrong
+    for every number above it (it makes a double-dotted half 4.5 quarters
+    instead of 3.5). No fixture asked for a second dot until #111."""
+    return TYPE_QUARTERS[typ] * (2 - 0.5 ** dots)
+
+
 def rest(typ, dots=0, staff=1, voice=1):
-    quarters = TYPE_QUARTERS[typ] * (1.5 ** dots if dots else 1)
+    quarters = _dotted_quarters(typ, dots)
     return (f"<note><rest/><duration>{int(round(quarters * DIVISIONS))}</duration>"
             f"<voice>{voice}</voice><type>{typ}</type>{'<dot/>' * dots}"
             f"<staff>{staff}</staff></note>")
@@ -71,7 +81,7 @@ def note(pitch, typ, dots=0, staff=1, voice=1, chord=False, tie=None,
     # <alter> is an F natural, and the engraver dutifully prints the natural
     # sign that says so.
     alter = f"<alter>{pitch[2]}</alter>" if len(pitch) > 2 else ""
-    quarters = TYPE_QUARTERS[typ] * (1.5 ** dots if dots else 1)
+    quarters = _dotted_quarters(typ, dots)
     if tuplet:
         quarters = quarters * tuplet[1] / tuplet[0]
     out = ["<note>"]
@@ -847,9 +857,85 @@ def fixture_stacked_dotted_chord():
     return score("Guitar", [attributes() + bar] + [bar] * 7)
 
 
+def fixture_double_dotted_note():
+    """A genuine DOUBLE dot: two ink marks side by side after one notehead
+    (issue #111). A double-dotted half is 3.5 quarters, so an eighth fills the
+    4/4 bar behind it.
+
+    The second dot is the point. It sits one dot-advance beyond the first,
+    which is always further from the notehead than a reach window anchored on
+    the notehead can be - the window would have to be wider than the gap
+    between two adjacent noteheads to cover it. Reading this note as
+    single-dotted loses half a quarter and starts everything after it early.
+
+    Every other bar is a SINGLE-dotted half instead, as the control: a fix
+    that merely widened the reach window would give that note a second dot
+    too, and only a fix that reads the two marks as one note's own leaves it
+    alone."""
+    two = _bar([note(("G", 4), "half", dots=2),
+                note(("E", 4), "eighth")], 4.0)
+    one = _bar([note(("G", 4), "half", dots=1),
+                note(("E", 4), "quarter")], 4.0)
+    return score("Guitar", [attributes() + two, one] + [two, one] * 3)
+
+
+def fixture_seconds_interval_dots():
+    """Two dotted notes a SECOND apart, both ways round (issue #112).
+
+    Two noteheads a second apart cannot share a column, so one of the two is
+    moved a full notehead width off it - the upper one, right of the stem, in
+    the stem-up chord of the first bar; the lower one, left of the stem, in
+    the stem-down chord of the second. Their two dots do not move with it:
+    both stay in the chord's single dot column. So in each bar one of the two
+    heads is a whole notehead width further from its own dot than from the
+    other member's, and that member silently lost its dot - making a chord
+    whose members must share one duration read as two different ones.
+
+    The two bars sit at opposite ends of the staff so the engraver picks a
+    different stem direction for each, which is what decides WHICH of the two
+    heads is moved off the column. G3 and A3 are the low pair because they
+    fall on two different strings - a second whose members share one string
+    cannot be played as a chord, and its tablature would be nonsense."""
+    low = _bar([note(("G", 3), "half", dots=1),
+                note(("A", 3), "half", dots=1, chord=True),
+                note(("E", 4), "quarter")], 4.0)
+    high = _bar([note(("F", 5), "half", dots=1),
+                 note(("G", 5), "half", dots=1, chord=True),
+                 note(("E", 4), "quarter")], 4.0)
+    return score("Guitar", [attributes() + low, high] + [low, high] * 3)
+
+
+def fixture_double_dotted_in_chord():
+    """A double-dotted note stacked under a second voice, whose noteheads sit
+    at exactly the height its two dots are drawn at (issue #131, #111).
+
+    The lower voice carries a double-dotted half (3.5 quarters, plus an
+    eighth) on a staff line, so its dots go where an engraver's default puts
+    them - the space above the note. The upper voice's quarter notes are a
+    SECOND above it, which puts their noteheads in that very space, level with
+    the dots to within a hundredth of a staff space.
+
+    So the two dots are as close vertically to a note that has none as to the
+    note that owns them, and the only thing separating the two readings is
+    that a note's dots are drawn to ITS OWN right, in reach of it and out of
+    reach of the note above. Both dots must count for the half note - 3.5
+    quarters, not 3 - and neither may attach to the voice above."""
+    bar = _bar([note(("G", 4), "quarter", voice=1),
+                note(("G", 4), "quarter", voice=1),
+                note(("G", 4), "quarter", voice=1),
+                note(("G", 4), "quarter", voice=1),
+                backup(4.0),
+                note(("F", 4), "half", dots=2, voice=2),
+                note(("F", 4), "eighth", voice=2)], 4.0)
+    return score("Guitar", [attributes() + bar] + [bar] * 7)
+
+
 FIXTURES = {
     "notation_and_tab": fixture_notation_and_tab,
     "stacked_dotted_chord": fixture_stacked_dotted_chord,
+    "double_dotted_note": fixture_double_dotted_note,
+    "seconds_interval_dots": fixture_seconds_interval_dots,
+    "double_dotted_in_chord": fixture_double_dotted_in_chord,
     "four_sharps_in_three_four": fixture_four_sharps_in_three_four,
     "hidden_opening_meter": fixture_hidden_opening_meter,
     "hidden_opening_meter_matches_the_default": fixture_hidden_opening_meter_matches_the_default,

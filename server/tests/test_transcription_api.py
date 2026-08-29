@@ -790,16 +790,23 @@ def test_unassigned_dots_survive_the_api_round_trip(
     Nothing engraved in this repository reaches a genuinely non-zero count
     (see test_engraved_fixtures.py's stacked-chord fixture, which measures
     the split directly but at the extractor level, not through the API), so
-    this runs against a real library score - all sixteen of its unassigned
-    dots are the no-candidate kind, none eliminated."""
+    this runs against a real library score - all eight of its unassigned dots
+    are the no-candidate kind, none eliminated.
+
+    Eight, not the sixteen this asserted before #111/#112: half of them were
+    the two halves of two displaced seconds pairs whose dots the engraver
+    pushed down a step, and both members of both pairs now own the dot printed
+    for them (see glyph_rhythm._pushed_down_pairs). The eight that remain are
+    this score's repeat-barline dots and the like, which belong to no note and
+    are meant to be counted."""
     pdf = kaine_salvation_pdf
     monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
     conn = db.connect()
     score_id = insert_score(conn, pdf.name)
 
     posted = api.transcribe(score_id, body=None)
-    assert posted["dots_unassigned"] == 16
-    assert posted["dots_unassigned_no_candidate"] == 16
+    assert posted["dots_unassigned"] == 8
+    assert posted["dots_unassigned_no_candidate"] == 8
     assert posted["dots_unassigned_eliminated"] == 0
     assert posted["staves_dots_unassigned"] == 4
 
