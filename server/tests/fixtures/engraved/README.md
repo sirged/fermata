@@ -35,6 +35,7 @@ gap this directory exists to close was created.
 | --- | --- |
 | `notation_and_tab` | notation over tablature, two pages, D major, a dotted note, beamed sixteenths, a whole-note chord; every bar adds up |
 | `rests_and_flags` | every rest value and every flag hook the SMuFL map calibrates, including 32nds |
+| `thirty_second_beams` | three-stroke beams — 32nds written under a beam, beside 32nds written on a flag, so which of the two was misread is decidable (#113) |
 | `tab_only` | tablature with no notation staff — the honest fall back to spacing-inferred rhythm |
 | `tab_only_short_last_system` | eight bars of which six are read: an unstretched final system falls under the length floor and is lost silently |
 | `two_voices` | a melody stems-up over an accompaniment stems-down in one bar |
@@ -85,6 +86,18 @@ looks like coverage and is not is worse than none:
   deliberately absent from the SMuFL map, because which one means which was
   not established. `harmonics_dense` covers the *reporting* of that gap, not
   its closure — a score with harmonics still loses their durations.
+- **A note shorter than a 32nd.** `_beam_count_near` follows a beam stack to
+  any depth and counts a four-stroke group correctly - there is a unit test
+  on constructed geometry for it - but nothing downstream can carry the
+  answer, because the emitter's whole duration vocabulary stops at a 32nd
+  (`musicxml.TYPE_NAMES`). IF a genuine 64th were engraved, it would be read
+  as four levels and emitted as a 32nd - but the library holds no genuine
+  64th to confirm that against: the only stems this decoder reads at four
+  levels are Troian Beauty p2's grace notes, which are a pre-existing,
+  unrelated over-count (a grace beam read past its own group), not a real
+  64th. `thirty_second_beams` deliberately does not contain a 64th either: a
+  bar asserting one would be pinning a different limit than the one measured
+  here.
 - **A repeat bracket welded into a phantom staff line.** The engraver used
   here leaves a visible gap in an ending bracket, whereas Finale's abut
   exactly; that geometry is covered by a synthetic page built inside

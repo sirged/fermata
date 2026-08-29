@@ -328,6 +328,98 @@ def test_slanted_beam_is_counted_at_both_ends_of_the_group():
     assert G._beam_count_near([beam], last, notehead_yc=246.0, tol=tol) == 1
 
 
+def _stack(stem_x, tip_y, levels, pitch, width=40.0, thickness=1.9):
+    """A beam GROUP: `levels` parallel strokes starting at the stem's tip and
+    stacking inward at `pitch`, drawn the way an engraver draws them. `pitch`
+    is signed, so a positive one stacks toward larger y (an up-stem's group)
+    and a negative one toward smaller (a down-stem's)."""
+    tol = _tol()
+    out = []
+    for i in range(levels):
+        y = tip_y + i * pitch
+        beam = G._beam_from_contour(
+            _quad(stem_x, y, stem_x + width, y, thickness), tol)
+        assert beam is not None
+        out.append(beam)
+    return sorted(out, key=lambda b: b.x0)
+
+
+def test_a_beam_group_is_counted_to_its_full_depth():
+    """Issue #113. A beam group is a stack that starts at the stem's tip and
+    grows toward the notehead, so its nth stroke is (n-1) pitches in.
+    beam_y_tol is 1.17 staff spaces and the library's measured stack pitch is
+    0.75, which puts the THIRD stroke at 1.5 - just outside it. Counting only
+    what the window reached emitted every note under a three-stroke beam as a
+    16th, at twice its written length.
+
+    Measured on the library's own geometry: strokes at the tip, +0.75 and
+    +1.5 staff spaces.
+    """
+    tol = _tol()
+    pitch = 0.75 * REF
+    # down-stem: notehead above, free end below, group stacking back up
+    for levels in (1, 2, 3, 4):
+        beams = _stack(100.0, 260.0, levels, -pitch)
+        stem = G.Stem(100.0, 230.0, 260.0)
+        assert G._beam_count_near(beams, stem, notehead_yc=230.0, tol=tol) == levels
+    # and the same group under an up-stem, stacking the other way
+    for levels in (1, 2, 3, 4):
+        beams = _stack(100.0, 200.0, levels, pitch)
+        stem = G.Stem(100.0, 200.0, 230.0)
+        assert G._beam_count_near(beams, stem, notehead_yc=230.0, tol=tol) == levels
+
+
+def test_a_beam_offset_inside_tolerance_that_rounds_outside_is_still_counted():
+    """Adversarial review of #166 (B1). _beam_count_near used to round the
+    tip offset to 0.1pt BEFORE comparing it against beam_y_tol rather than
+    after, and rounding units are points (not staff spaces), so a genuine
+    offset could sit inside the tolerance while its rounded form sat
+    outside it and got rejected.
+
+    At this library's most common staff spacing (REF, 5.125pt) beam_y_tol
+    is 1.17 * 5.125 == 5.99625pt. 5.9711pt - the measured offset on "Our
+    Terms" (Final Fantasy XVI) - is inside that window unrounded, but
+    round(5.9711, 1) == 6.0, which is outside it. Comparing the rounded
+    value cost that stem its ONLY level: a note that should read as an
+    eighth would silently read as a quarter."""
+    tol = _tol()
+    free_y = 260.0
+    notehead_yc = 230.0
+    stem = G.Stem(100.0, notehead_yc, free_y)
+    offset = 5.9711
+    assert offset < tol.beam_y_tol
+    assert round(offset, 1) > tol.beam_y_tol
+    thickness = 1.9
+    # _beam_from_contour's centreline average weights the closing point
+    # back to (x0, y0) alongside (x0, y0) and (x0, y0 + thickness), so the
+    # contour's y0 has to be offset by thickness/3, not thickness/2, to
+    # land the beam's centreline exactly `offset` points from the tip.
+    y0 = free_y - offset - thickness / 3  # down-stem: inward runs toward smaller y
+    beam = G._beam_from_contour(_quad(100.0, y0, 113.0, y0, thickness), tol)
+    assert beam is not None
+    assert G.beam_y_at(beam, 100.0) == pytest.approx(free_y - offset, abs=1e-6)
+    assert G._beam_count_near([beam], stem, notehead_yc=notehead_yc, tol=tol) == 1
+
+
+def test_a_beam_that_starts_nowhere_near_the_tip_is_still_not_this_stem_s():
+    """Following a stack inward must not become "any beam over this stem".
+    Two voices' beams cross each other's stems constantly, and 8,881 of the
+    library's 77,047 (stem, covering beam) pairs sit more than 3.4 staff
+    spaces in from the tip - a quarter note would become a 16th if any of
+    them counted. The run has to be anchored at the tip to be followed at
+    all."""
+    tol = _tol()
+    stem = G.Stem(100.0, 230.0, 260.0)
+    # a lone stroke well inside the stem, with nothing at the tip
+    stray = _stack(100.0, 260.0 - 3.5 * REF, 1, -0.75 * REF)
+    assert G._beam_count_near(stray, stem, notehead_yc=230.0, tol=tol) == 0
+    # and one that neither continues this stem's group nor sits at its tip is
+    # not added to a group that IS anchored there
+    anchored = _stack(100.0, 260.0, 2, -0.75 * REF)
+    assert G._beam_count_near(anchored + stray, stem,
+                              notehead_yc=230.0, tol=tol) == 2
+
+
 def test_staff_line_shaped_rect_is_not_a_beam():
     """Real exporters draw staff lines as thin filled rectangles (see
     tabextract._long_horizontal_segments). One of those passing the beam test

@@ -29,6 +29,7 @@ the fixtures' README, and re-engraving with another one will move
 coordinates and can change what the tests measure.
 """
 import argparse
+import contextlib
 import os
 import shutil
 import subprocess
@@ -37,10 +38,32 @@ from pathlib import Path
 
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "engraved"
 
-DIVISIONS = 4  # per quarter note: 16ths are the shortest value used here
+DIVISIONS = 4  # per quarter note: enough for the 16ths most fixtures stop at
 
 TYPE_QUARTERS = {"whole": 4.0, "half": 2.0, "quarter": 1.0, "eighth": 0.5,
-                 "16th": 0.25, "32nd": 0.125}
+                 "16th": 0.25, "32nd": 0.125, "64th": 0.0625}
+
+# The divisions the fixture being written right now is using. Four per quarter
+# cannot express a 32nd - it rounds to zero, which is what `rests_and_flags`
+# writes for each of its - so a fixture whose whole point is a value shorter
+# than a 16th asks for more, and declares the number it asked for in its own
+# <attributes>. Scoped rather than raised for everybody because every
+# committed fixture's MusicXML is compared byte for byte against what this
+# script writes (--check), and changing the divisions changes every duration
+# in every one of them.
+_divisions = DIVISIONS
+
+
+@contextlib.contextmanager
+def divisions(per_quarter):
+    """Write the fixture inside this block with finer divisions."""
+    global _divisions
+    was, _divisions = _divisions, per_quarter
+    try:
+        yield
+    finally:
+        _divisions = was
+
 
 STANDARD_TUNING = [("E", 3), ("A", 3), ("D", 4), ("G", 4), ("B", 4), ("E", 5)]
 DROP_D_TUNING = [("D", 3), ("A", 3), ("D", 4), ("G", 4), ("B", 4), ("E", 5)]
@@ -68,7 +91,7 @@ def _dotted_quarters(typ, dots):
 
 def rest(typ, dots=0, staff=1, voice=1):
     quarters = _dotted_quarters(typ, dots)
-    return (f"<note><rest/><duration>{int(round(quarters * DIVISIONS))}</duration>"
+    return (f"<note><rest/><duration>{int(round(quarters * _divisions))}</duration>"
             f"<voice>{voice}</voice><type>{typ}</type>{'<dot/>' * dots}"
             f"<staff>{staff}</staff></note>")
 
@@ -88,7 +111,7 @@ def note(pitch, typ, dots=0, staff=1, voice=1, chord=False, tie=None,
     if chord:
         out.append("<chord/>")
     out.append(f"<pitch><step>{step}</step>{alter}<octave>{octave}</octave></pitch>")
-    out.append(f"<duration>{int(round(quarters * DIVISIONS))}</duration>")
+    out.append(f"<duration>{int(round(quarters * _divisions))}</duration>")
     if tie:
         out.append(f'<tie type="{tie}"/>')
     out.append(f"<voice>{voice}</voice><type>{typ}</type>")
@@ -109,7 +132,7 @@ def note(pitch, typ, dots=0, staff=1, voice=1, chord=False, tie=None,
 
 
 def backup(quarters):
-    return f"<backup><duration>{int(round(quarters * DIVISIONS))}</duration></backup>"
+    return f"<backup><duration>{int(round(quarters * _divisions))}</duration></backup>"
 
 
 def mirror_to_tab(body):
@@ -150,7 +173,7 @@ def time_signature(time, printed=True):
 
 def attributes(fifths=0, time=(4, 4), staves=2, tuning=STANDARD_TUNING,
                octave_clef=True, tab=True, time_printed=True):
-    out = [f"<attributes><divisions>{DIVISIONS}</divisions>",
+    out = [f"<attributes><divisions>{_divisions}</divisions>",
            f"<key><fifths>{fifths}</fifths></key>",
            time_signature(time, printed=time_printed)]
     if staves > 1:
@@ -686,6 +709,75 @@ def fixture_rests_and_flags():
     return score("Guitar", [attributes() + b1, b2, b3, b4, b5, b6, b1, b2])
 
 
+def fixture_thirty_second_beams():
+    """Values shorter than a 16th, written both ways an engraver writes them:
+    under a beam, and on a flag.
+
+    A beam GROUP is a stack of strokes - three of them for a 32nd - that
+    starts at the stem's tip and grows toward the notehead. `rests_and_flags`
+    already covers the flag side of that vocabulary, but it separates every
+    32nd from the next with a rest, so no beam is ever drawn over one and
+    nothing in this repository engraved a three-stroke beam at all. That is
+    the shape issue #113 is about: the decoder read only the two strokes
+    nearest the tip and emitted every note under one at twice its written
+    length, which is silent, internally consistent, and the most damaging
+    kind of duration error there is.
+
+    Both halves are here on purpose, because it is the PAIR that says where
+    the defect lives. Bars 1-3 and 5 are beamed and were wrong; bar 4 writes
+    two 32nds that are adjacent on the page but land in different beam
+    groups, so the engraver flags them instead, and those were already right.
+    A fixture with only the beamed half would leave "adjacent 32nds are
+    misread" as the diagnosis, and that diagnosis is wrong.
+
+    Bar 1 is the figure the library actually prints - a dotted eighth and two
+    32nds filling one beat - which is what nearly every one of the bars this
+    fixed on real pages turned out to be.
+
+    A four-stroke beam is deliberately NOT here. The rule follows a stack to
+    any depth and counts one, but nothing downstream can carry the answer:
+    the emitter's whole duration vocabulary stops at a 32nd (musicxml
+    TYPE_NAMES), so a 64th comes out as a 32nd however well it was read. A
+    fixture bar asserting that would be documenting a different limit. The
+    four-deep case is covered on constructed geometry in test_glyph_rhythm.py
+    instead, where the beam count can be read directly.
+
+    Written with 16 divisions per quarter, the first fixture to need more
+    than 4: at 4 a 32nd's duration rounds to zero, which is what
+    `rests_and_flags` writes for each of its (see `divisions`).
+
+    ONE bar to a system, which no other fixture asks for and this one needs.
+    Left to fill the page MuseScore puts four bars on a system, and with 32nds
+    that close together the decoder reads a beamed pair as a single chord and
+    drops the note after it - a coincident-onset defect landing on top of the
+    one under test. Given a system each, the bars space out like the
+    library's own pages do and every bar reads back exactly as written. This
+    was chosen by engraving the alternatives and reading them back, not by
+    eye."""
+    with divisions(16):
+        system = '<print new-system="yes"/>'
+        b1 = _bar([note(("E", 4), "eighth", dots=1), note(("F", 4), "32nd"),
+                   note(("G", 4), "32nd"), note(("A", 4), "quarter"),
+                   note(("B", 4), "half")], 4.0)
+        b2 = _bar([note(("E", 4), "32nd"), note(("F", 4), "32nd"),
+                   rest("16th"), rest("eighth"), note(("A", 4), "quarter"),
+                   note(("B", 4), "half")], 4.0)
+        b3 = _bar([note(("E", 4), "32nd"), note(("F", 4), "32nd"),
+                   note(("G", 4), "32nd"), note(("A", 4), "32nd"),
+                   rest("eighth"), rest("quarter"), note(("B", 4), "half")], 4.0)
+        # One 32nd closing the first beat and one opening the second. They
+        # touch, but a beam never crosses a beat here, so each is drawn with
+        # a flag of its own.
+        b4 = _bar([rest("eighth"), rest("16th"), rest("32nd"),
+                   note(("E", 4), "32nd"), note(("F", 4), "32nd"),
+                   rest("32nd"), rest("16th"), rest("eighth"),
+                   note(("B", 4), "half")], 4.0)
+        b5 = _bar([note(("E", 4), "quarter")] * 4, 4.0)
+        bars = [b1, b2, b3, b4, b5, b1, b2, b3]
+        return score("Guitar", [attributes() + bars[0]]
+                     + [system + b for b in bars[1:]])
+
+
 def fixture_multidigit_meter():
     """A meter whose numerator needs TWO digit glyphs stacked at the same x
     column - 12/8 - which is exactly the shape a single missing digit in a
@@ -943,6 +1035,7 @@ FIXTURES = {
     "mid_system_key_and_meter_change": fixture_mid_system_key_and_meter_change,
     "multidigit_meter": fixture_multidigit_meter,
     "rests_and_flags": fixture_rests_and_flags,
+    "thirty_second_beams": fixture_thirty_second_beams,
     "tab_only": fixture_tab_only,
     "tab_only_short_last_system": fixture_tab_only_short_last_system,
     "two_voices": fixture_two_voices,
