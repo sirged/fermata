@@ -3907,22 +3907,24 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # overfull to SHORT and one gains padding, and those are the interesting
     # ones, because reading the pages says what they are.
     #
-    # THIRTEEN CHANGED BARS WERE READ OFF THE PRINTED PAGES, across six
-    # scores (Traverse Town, Troian Beauty, Stables, Where the Egg of Dreams
-    # Hatches, Serenade of Respite - Night, Singing of the Gentle Wind), and
-    # counted stroke by stroke against the vector geometry rather than by
-    # eye. All thirteen are engraved with three beam strokes, so all thirteen
-    # are 32nds and the new reading of them is right in every case. Eleven of
-    # the thirteen now sum to exactly their meter.
+    # TWELVE CHANGED BARS WERE READ OFF THE PRINTED PAGES, across six scores
+    # (Traverse Town 7/8/10, Troian Beauty 13, Stables 9/27, Where the Egg of
+    # Dreams Hatches 1, Serenade of Respite - Night 9/27, Singing of the
+    # Gentle Wind 2/11/18), counted stroke by stroke against the vector
+    # geometry rather than by eye. Every one of them is engraved with three
+    # beam strokes, so the notes this change re-read really are 32nds in all
+    # twelve.
     #
-    # The other two do not, and they are worth naming because they are what
-    # the +2 short is: Serenade of Respite bar 9 and Singing of the Gentle
-    # Wind bar 2 each also DROP a note (a second beam group collapsing into
-    # one), and in Serenade bar 9 the dropped note cost exactly what the
-    # over-valued 32nds added, so the bar used to add up by coincidence. That
-    # is a compensating error, not a regression: the durations underneath it
-    # are right now and were wrong before, and the note-drop it was hiding is
-    # a separate defect that this change only stops masking.
+    # TEN of the twelve now match the print exactly and sum to their meter.
+    # The other two are worth naming, because they are what the +2 short is:
+    # Serenade of Respite bar 9 and Singing of the Gentle Wind bar 2 each also
+    # DROP a note (a second beam group collapsing into one), so the emitted
+    # bar still does not match the page. In Serenade bar 9 the dropped note
+    # cost exactly what the over-valued 32nds added, so that bar used to add
+    # up BY COINCIDENCE. That is a compensating error, not a regression: the
+    # durations underneath it are right now and were wrong before, and the
+    # note-drop it was hiding is a separate defect this change only stops
+    # masking rather than causes.
     assert extractable == 293
     assert totals["bars"] == 10762               # 10632 + 130 (issue #152)
     assert totals["bars_unread"] == 20           # 23 - 3 (issue #152)
