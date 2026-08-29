@@ -494,12 +494,16 @@ distinction. A consumer that needs it has to get it from the producer.
   measured before the printed meter could be read behind a key signature and
   before each measure was budgeted against the meter in force at its own
   position. On the same library the producer's own defective count moved to
-  5,477, from 5,863, and then to **5,332** once an augmentation dot was
+  5,477, from 5,863, and then to 5,332 once an augmentation dot was
   assigned to the notehead at its expected offset rather than whichever one
   was nearest (#89) — a chord of three or more close notes could otherwise
   give one notehead two dots and another none, corrupting that measure's
-  arithmetic in both directions at once. The round trip has not been
-  re-measured since either change, so the before-and-after pair above is
+  arithmetic in both directions at once. Re-measured at **5,340** after
+  #152 recovered systems that were not being read at all and #111/#112 bound
+  the dots a seconds interval displaces; the figure is quoted here only to
+  date the round trip, and each of those changes states its own before and
+  after. The round trip has not been
+  re-measured since any of them, so the before-and-after pair above is
   left as it was taken rather than half updated. What the paragraph is
   about — that the marking does not survive the save — is unaffected either
   way.)

@@ -63,6 +63,13 @@ _FIXTURE_RELATIVE_PATHS = {
     # would start the change a system early - see
     # test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early.
     "kaine_salvation": "Patreon/John Oeth/NieR/Kaine Salvation (NieR).pdf",
+    # A five-note chord whose dots the engraver pushed down a step, over a
+    # notehead that already carries a dot of its own further up the same
+    # column (issues #111/#112). Nothing engraved in this repository produces
+    # a chord that deep, and the exemption that keeps such a head from
+    # refuting the pushed-down reading has no other real score to be
+    # exercised on - see glyph_rhythm._pushed_down_pairs.
+    "storms_past": "Patreon/John Oeth/New World/Storm_s Past (New World).pdf",
     # Two of the four scores the #116 research had a guitarist check against
     # the printed page. Born a Stranger's flagged spot is a genuine unison
     # shared by two voices - two notes drawn adjacent on the same row, the
@@ -364,6 +371,15 @@ def kaine_salvation_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing 'Kaine Salvation' fixture)")
+    return p
+
+
+@pytest.fixture
+def storms_past_pdf() -> Path:
+    p = _fixture_path("storms_past")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Storm's Past' fixture)")
     return p
 
 

@@ -2313,22 +2313,24 @@ _DOT_Y_SLACK = 0.25
 # How close two dots bound to the SAME owner may sit in x before the second
 # one is refused rather than counted as a real side-by-side double dot.
 #
-# NOT the rare-artifact guard its original justification claimed. Measured
-# over the library, this clause discards 567 candidate (dot, owner) pairs
-# across 136 scores - and of those, exactly 2 are the duplicated-glyph-pair
-# case it was written for (the same notehead and dot recorded twice at
-# IDENTICAL coordinates, a content-stream artifact unrelated to dot ranking).
-# The other 565 are two genuinely DISTINCT dots a chord member apart in the
-# same x column - two stacked noteheads, each carrying its own raised dot -
-# that this clause also refuses to give the same owner twice. What it
-# actually enforces, then, is "one owner takes at most one dot per x column",
-# which is stronger than deduplication and still correct: the real
-# second-dot gaps in the library's double-dot fixtures measure about 0.5
-# staff spaces, a factor of ten above this 0.05 tolerance, so no genuine
-# double dot is caught by it. A future cleanup that reads the old comment,
-# concludes this is dead artifact-guarding left over from a one-off, and
-# deletes it would silently restore most of the 919 double-dotted notes this
-# rule (together with the tier-exclusivity check above) fixes - see #116.
+# WHAT THIS NOW DOES, re-measured. #130's comment here reported 567 candidate
+# (dot, owner) pairs discarded across 136 scores, of which 565 were two
+# genuinely distinct dots a chord member apart in one x column - i.e. the
+# clause was carrying "one owner takes at most one dot per x column" and doing
+# most of the work of holding the double-dot count down.
+#
+# That measurement was taken against a DIFFERENT candidate set and no longer
+# describes this clause. Dots are now grouped into runs before anything is
+# ranked (see _dot_runs), which is what says two marks are one note's, and
+# tier exclusivity settles the rest. Re-measured by ablation on the current
+# code - the whole library extracted with the clause disabled - its entire
+# remaining effect is TWO emitted dots. It is kept for the case it was
+# originally written for, the same notehead and dot recorded twice at
+# IDENTICAL coordinates (a content-stream artifact, nothing to do with
+# ranking), which run grouping deliberately does not absorb: a gap of nothing
+# is not a run. It is no longer what holds double dots down, and a cleanup
+# that removes it should expect those two dots to move, not the 919 the old
+# comment implied - see #116.
 #
 # One consequence of DROPPING a candidate here rather than never having
 # offered it: if the dropped dot also reaches some other, unrelated owner
@@ -2338,6 +2340,288 @@ _DOT_Y_SLACK = 0.25
 # ever withdrew a candidate already on offer. Measured on the library: about
 # 2 possible instances, not traced further - see dots_unassigned_eliminated.
 _DOT_X_DUP_TOL = 0.05
+
+# A note's SECOND and third dots are drawn side by side with the first, at the
+# same height, one dot-advance apart - which is the only thing that makes them
+# the same note's dots rather than two notes'. Everything below binds a RUN of
+# such dots as one unit, so the reach test is applied once, from the run's
+# leftmost dot, instead of separately to a second dot the window anchored on
+# the notehead could never have covered (issue #111).
+#
+# The ceiling is measured, not chosen. Over the library, the gap between two
+# dots at the same height that are one note's own is one of exactly two
+# values - 0.500 spaces (10 of them) and 0.917 spaces (29, standard deviation
+# below a thousandth) - and MuseScore 4.6.3 engraves it at 0.649 on the
+# committed double-dot fixture. The nearest gap between same-height dots that
+# are NOT one note's is 2.5 spaces. So anything in (0.92, 2.5) separates the
+# two populations; 1.10 sits about 20% above the widest real double-dot gap
+# and a factor of 2.3 below the closest thing it must never swallow.
+_DOT_RUN_X_TOL = 1.10
+# ...and at the SAME height: two dots one dot-advance apart but half a space
+# apart vertically are two chord members' dots, not one note's. Measured, the
+# dots within a run sit within 0.01 spaces of each other in y; this is loose
+# enough to absorb ink-centre jitter and far tighter than the half space that
+# separates two tiers.
+_DOT_RUN_Y_TOL = 0.15
+# ...and at most this many marks in one run. Chaining is transitive, so without
+# a cap five dots evenly spaced 0.9 apart would read as one note's quintuple
+# dot - a length no notation writes. Three is the most any notation puts on a
+# note, and the structural point of the cap is that a longer row of dots is
+# something else entirely and must not be swallowed whole. (The beat model
+# downstream carries 0, 1 or 2, so even a triple dot is reported as a double;
+# that truncation predates this and is not what the cap is for.) No row of
+# more than two same-height dots one dot-advance apart exists in the library.
+_DOT_RUN_MAX = 3
+
+# Two chord members a SECOND apart cannot share a notehead column - the two
+# heads would overlap - so the engraver moves one of them a full notehead
+# width off the column: left of the stem in a stem-down chord (where it is the
+# LOWER of the pair that moves) and right of it in a stem-up one (where it is
+# the UPPER). Either way the two heads end up side by side with the LOWER one
+# on the LEFT, their boxes touching along the stem.
+#
+# The chord's dots do NOT follow the displacement. They stay in one column to
+# the right of the chord's widest extent, one per member, each at its own
+# member's height. So for exactly one head of such a pair - the left, lower one
+# in both arrangements - that column sits a whole notehead width further away
+# than a window anchored on its own right edge can reach, and its dot was
+# dropped (issue #112).
+#
+# The fix gives that head a SECOND reach anchor: its partner's right edge, the
+# edge the shared dot column is actually set from. Nothing about dot_x_tol
+# changes - the window is exactly as wide as it was - and the anchor is added
+# rather than substituted, so no dot that was reachable before can stop being
+# reachable now.
+#
+# ABUT: measured on the library and on the engraved fixture, a displaced head's
+# right edge and its partner's left edge sit within 0.10 spaces of each other
+# (they share the stem). A quarter space allows for ink-centre jitter and is
+# still a fifth of the 1.3-space notehead width that separates two genuinely
+# distinct head columns.
+_DOT_COLUMN_ABUT_TOL = 0.25
+# STEP: displacement is what a SECOND forces and nothing else - a third apart
+# and the two heads sit on one column untouched. Half a space is a second; the
+# window is asymmetric BELOW the partner only, because the borrower is always
+# the lower head, and it must exclude a unison (0.0, which is the coincident
+# duplicate pair of #116, not a displacement) and a third (1.0).
+_DOT_COLUMN_STEP_LO = 0.25
+_DOT_COLUMN_STEP_HI = 0.75
+
+# A displaced pair shares one stem - that is WHY one of its heads had to move -
+# and a shared stem is what says the two heads sound TOGETHER. Two consecutive
+# notes a second apart, engraved tightly enough that their boxes touch, look
+# the same to every other test here, and treating them as a pair would let the
+# earlier note reach a dot belonging to the later one. In both arrangements the
+# shared stem lands on the boundary between the two heads' boxes: stem-down
+# puts it at the column's left edge with the lower head displaced left across
+# it, stem-up at the column's right edge with the upper head displaced right.
+_DOT_COLUMN_STEM_SLACK = 0.60
+
+# What a displaced seconds pair does to the pair's DOTS.
+#
+# The two heads are half a space apart, so their dots at the default offsets
+# would be half a space apart too - and two dots cannot be printed half a space
+# apart in one column, because a dot sits in the middle of a SPACE and there is
+# only one space between two heads a second apart. The engraver's answer is to
+# push the pair's dots down a step together: the upper head's dot goes into the
+# space below it (which is the space its partner sits in), and the lower head's
+# own dot goes a further space down, a full space below its own centre.
+#
+# That last position is not one of _DOT_TIERS and deliberately does not become
+# one: a general +1.0 tier would widen EVERY head's vertical reach to a whole
+# space and put two notes back in range of one dot. It is legal only inside the
+# joint resolution below, where the pair's geometry and BOTH its dots are
+# identified together - see _pushed_down_pairs.
+#
+# Measured over the library: of the 34 sites where the column anchor (#112)
+# moves a dot between the two members of such a pair, 31 carry a dot exactly
+# one space below the lower head, in the pair's own dot column, with no
+# notehead there to own it - the lower member's own dot, orphaned. 1 has a
+# notehead of its own at that height and 2 have no dot there at all; neither
+# shape is resolved jointly.
+_DOT_PUSHED_STEP = 1.0
+# The tier a jointly-resolved lower member is locked at. Outside the range
+# _dot_fit can return, so such an owner can never also supply a real tier to
+# some other dot - it is fully spoken for.
+_TIER_PUSHED_DOWN = len(_DOT_TIERS)
+
+
+def _dot_runs(dot_events, spacing):
+    """Group dot glyphs into RUNS - the one, two or three ink marks a single
+    note's augmentation dots are drawn as, side by side at the same height.
+
+    Returns a list of (indices, anchor_x, yc) with indices in x order; the
+    anchor is the run's LEFTMOST dot, which is the only one whose distance
+    from a notehead an engraver ever sets. See _DOT_RUN_X_TOL, and
+    _DOT_RUN_MAX for why a run stops at three marks.
+
+    Two dots at essentially the SAME x are not a run: that is the duplicated
+    notehead-and-dot pair the library contains (see _DOT_X_DUP_TOL), two
+    separate marks of two separate - if identical - notes, and grouping them
+    would hand one note both.
+    """
+    runs = []
+    used = [False] * len(dot_events)
+    order = sorted(range(len(dot_events)), key=lambda i: dot_events[i].xc)
+    for i in order:
+        if used[i]:
+            continue
+        used[i] = True
+        members = [i]
+        last = dot_events[i]
+        while len(members) < _DOT_RUN_MAX:
+            nxt = None
+            for j in order:
+                if used[j]:
+                    continue
+                gap = dot_events[j].xc - last.xc
+                if (_DOT_X_DUP_TOL * spacing < gap <= _DOT_RUN_X_TOL * spacing
+                        and abs(dot_events[j].yc - last.yc) <= _DOT_RUN_Y_TOL * spacing):
+                    if nxt is None or gap < dot_events[nxt].xc - last.xc:
+                        nxt = j
+            if nxt is None:
+                break
+            used[nxt] = True
+            members.append(nxt)
+            last = dot_events[nxt]
+        anchor = dot_events[members[0]]
+        runs.append((members, anchor.xc, anchor.yc))
+    runs.sort(key=lambda r: r[1])
+    return runs
+
+
+def _displaced_pairs(owners, stems, spacing):
+    """Every displaced seconds pair among `owners`, as (lower_i, upper_i).
+
+    Two chord members a second apart cannot share a notehead column, so one of
+    them is moved a full notehead width off it - and either arrangement leaves
+    the two side by side with the LOWER one on the LEFT, their boxes touching
+    along the stem they share.
+
+    The shared stem is what says they sound together rather than one after the
+    other; see _DOT_COLUMN_STEM_SLACK for why that matters and where the stem
+    sits. Stem detection misses plenty of real stems (no_stem_noteheads), so a
+    missing stem only refutes a pair when the vector pass DID read a stem in
+    this pair's own x span - one that belongs to one of the two heads alone.
+    Where it read none at all it has nothing to say, and the geometry stands.
+    """
+    heads = [i for i, e in enumerate(owners) if e.category in NOTEHEAD_CATS]
+    abut = _DOT_COLUMN_ABUT_TOL * spacing
+    lo = _DOT_COLUMN_STEP_LO * spacing
+    hi = _DOT_COLUMN_STEP_HI * spacing
+    slack = _DOT_COLUMN_STEM_SLACK * spacing
+    pairs = []
+    for a in heads:
+        ea = owners[a]
+        for b in heads:
+            if a == b:
+                continue
+            eb = owners[b]
+            # `a` is the LEFT, LOWER head; `b` its partner, up and to the
+            # right, their boxes touching. Page y grows downward.
+            if not (lo <= ea.yc - eb.yc <= hi):
+                continue
+            if not (abs(ea.x1 - eb.x0) <= abut and eb.x1 > ea.x1):
+                continue
+            shared = any(ea.x1 - abut <= s.x <= eb.x0 + abut
+                         and min(s.y0, s.y1) - slack <= eb.yc
+                         and max(s.y0, s.y1) + slack >= ea.yc
+                         for s in stems)
+            if not shared and any(ea.x0 - abut <= s.x <= eb.x1 + abut
+                                  for s in stems):
+                continue
+            pairs.append((a, b))
+    return pairs
+
+
+def _reach_anchors(owners, pairs):
+    """The x positions a dot's reach may be measured from, per owner.
+
+    Every owner offers its own right edge, as it always did. The lower half of
+    a displaced seconds pair offers its partner's right edge as well - the edge
+    that pair's shared dot column is actually set from (see _displaced_pairs,
+    #112).
+
+    Returned as a list of (anchor_x, owner_index) sorted by anchor_x, ready to
+    bisect. Anchors are ADDED, never substituted, so this cannot take a dot out
+    of any owner's reach.
+    """
+    anchors = [(e.x1, i) for i, e in enumerate(owners)]
+    for lower, upper in pairs:
+        anchors.append((owners[upper].x1, lower))
+    anchors.sort()
+    return anchors
+
+
+def _pushed_down_pairs(owners, pairs, runs, tol):
+    """Which dot runs a displaced seconds pair resolves JOINTLY, and to whom.
+
+    Returns (contested_run, upper_i, beneath_run, lower_i) for every pair whose
+    two dots were pushed down a step together, which is the only arrangement
+    that fits two dots into one space's worth of room - see _DOT_PUSHED_STEP.
+
+    The signature has to be the whole thing, not either half of it. A single
+    dot level with the lower head, with nothing a space beneath it, is that
+    head's own ordinary dot and is left to the ordinary rules: there was no
+    collision to avoid, so nothing was pushed anywhere. It is the SECOND dot,
+    a full space below, in the pair's own column, with no notehead of that
+    column down there to own it, that says the pair was pushed - and the first
+    dot is only ever read as the UPPER member's by being read together with it.
+    """
+    sp = tol.spacing
+    slack = _DOT_Y_SLACK * sp
+    out = []
+    taken = set()
+    for lower, upper in pairs:
+        lo_e, up_e = owners[lower], owners[upper]
+        col = up_e.x1
+        in_col = [j for j, r in enumerate(runs)
+                  if -tol.dot_x_back <= r[1] - col <= tol.dot_x_tol]
+        contested = [j for j in in_col if abs(runs[j][2] - lo_e.yc) <= slack]
+        beneath = [j for j in in_col
+                   if abs(runs[j][2] - (lo_e.yc + _DOT_PUSHED_STEP * sp)) <= slack]
+        if not contested or not beneath:
+            continue
+        # ...and only where nothing ELSE in the chord explains that second dot.
+        # A dot a full space below the lower member is also "the space above"
+        # a head a third below it, which is an ordinary tier and an ordinary
+        # reading; a chord that dots every member that way was never pushed
+        # anywhere. So another notehead of this column that the dot fits at a
+        # real tier refutes the joint reading.
+        #
+        # Unless that notehead has a dot of its own already, elsewhere in the
+        # same column and at a tier of its own. Then it is not a rival for
+        # this one: a note carries ONE dot per column (that is what
+        # _DOT_X_DUP_TOL enforces later), so a head that is already spoken for
+        # explains nothing, and letting it refute leaves the pair's second dot
+        # orphaned with the pair unread. Measured across the library, this
+        # exemption recovers two sites - both in "Storm's Past", where the
+        # refuting head's own dot sits half a space above the one it was being
+        # allowed to claim - and touches none of the four chords the guard is
+        # there for (Vamo alla Flamenco twice, A Pendant Darkly, Courage).
+        c0, b0 = contested[0], beneath[0]
+        b_yc = runs[b0][2]
+        rival = False
+        for e in owners:
+            if e is lo_e or e is up_e or e.category not in NOTEHEAD_CATS:
+                continue
+            if abs(e.x1 - col) > (1.0 + _DOT_COLUMN_ABUT_TOL) * sp:
+                continue
+            if _dot_fit(b_yc - e.yc, sp) is None:
+                continue
+            if any(j not in (c0, b0) and _dot_fit(runs[j][2] - e.yc, sp) is not None
+                   for j in in_col):
+                continue                      # already has its own dot here
+            rival = True
+            break
+        if rival:
+            continue
+        if c0 == b0 or c0 in taken or b0 in taken:
+            continue
+        taken.add(c0)
+        taken.add(b0)
+        out.append((c0, upper, b0, lower))
+    return out
 
 
 def _dot_fit(offset, spacing):
@@ -2351,7 +2635,7 @@ def _dot_fit(offset, spacing):
     return None
 
 
-def _assign_dots(owners, dot_events, tol):
+def _assign_dots(owners, dot_events, tol, stems=()):
     """Assign each augmentation-dot glyph to exactly ONE owner (notehead or
     rest) and return ({id(owner): dot_count}, unassigned_no_candidate,
     unassigned_eliminated).
@@ -2411,6 +2695,29 @@ def _assign_dots(owners, dot_events, tol):
     _DOT_X_DUP_TOL). A notehead WAS present for the second kind; it had
     simply already been given its own dot. Callers that only want the total
     still get it by adding the two together.
+
+    What is bound is a RUN of dots, not a single glyph: a note's second and
+    third dots are drawn beside its first, at the same height, and it is that
+    side-by-side arrangement - not proximity to the notehead, which the second
+    dot never has - that makes them the same note's (see _dot_runs, #111).
+    The reach test is applied once per run, from its leftmost dot, and the
+    whole run's ink count goes to whichever owner wins it.
+
+    Reach is measured from a notehead's own right edge and, where it is the
+    left, lower half of a seconds pair, from its partner's right edge as well.
+    A seconds interval forces the engraver to move one of the two heads a
+    notehead width off the column while leaving both their dots in the chord's
+    single dot column, which puts that column outside one head's own reach for
+    purely typographic reasons (see _reach_anchors, #112). The window itself is
+    unchanged, and the second anchor is added, never substituted.
+
+    Such a pair also has its two DOTS pushed down a step together, because two
+    dots cannot be printed half a space apart in one column, and that pair of
+    dots is resolved JOINTLY before anything else is ranked - see
+    _pushed_down_pairs. Reading either of those two dots alone gets the owner
+    wrong: the upper member's pushed-down dot sits exactly in the lower
+    member's own space, and every distance test here prefers the lower member
+    for it.
     """
     counts = collections.Counter()
     if not owners or not dot_events:
@@ -2421,22 +2728,40 @@ def _assign_dots(owners, dot_events, tol):
     # which owner a dot is given, the same way the flag8_or_rest_quarter
     # window beside it was.
     owners = sorted(owners, key=lambda e: e.x1)
-    owner_x1s = [e.x1 for e in owners]
+    pairs = _displaced_pairs(owners, stems, tol.spacing)
+    anchors = _reach_anchors(owners, pairs)
+    anchor_xs = [a for a, _i in anchors]
+    runs = _dot_runs(dot_events, tol.spacing)
+    joint = _pushed_down_pairs(owners, pairs, runs, tol)
 
     # live[i]: the still-possible (owner_index, tier, deviation, xdist)
-    # candidates for dot_events[i]. Page y grows downward, so a dot ABOVE its
-    # notehead is a negative offset.
+    # candidates for runs[i]. Page y grows downward, so a dot ABOVE its
+    # notehead is a negative offset. An owner reachable from two anchors is
+    # one candidate, ranked on the nearer of them.
     live = []
-    for dot in dot_events:
-        lo, hi = _bounds(owner_x1s, dot.xc - tol.dot_x_tol, dot.xc + tol.dot_x_back)
-        cands = []
-        for i in range(lo, hi):
-            fit = _dot_fit(dot.yc - owners[i].yc, tol.spacing)
-            if fit is not None:
-                cands.append((i, fit[0], round(fit[1], 3), round(abs(dot.xc - owners[i].x1), 3)))
-        live.append(cands)
+    for _members, run_x, run_yc in runs:
+        lo, hi = _bounds(anchor_xs, run_x - tol.dot_x_tol, run_x + tol.dot_x_back)
+        best = {}
+        for k in range(lo, hi):
+            i = anchors[k][1]
+            fit = _dot_fit(run_yc - owners[i].yc, tol.spacing)
+            if fit is None:
+                continue
+            xdist = round(abs(run_x - anchors[k][0]), 3)
+            cand = (i, fit[0], round(fit[1], 3), xdist)
+            if i not in best or cand[1:] < best[i][1:]:
+                best[i] = cand
+        live.append(sorted(best.values()))
 
-    n = len(dot_events)
+    n = len(runs)
+    # The lower member of a pushed-down pair is out of every tier's reach by
+    # construction - its dot is a full space below it, which is exactly what
+    # _DOT_TIERS refuses - so the joint resolution supplies that candidate
+    # here, for the one run it identified and no other. Recorded before
+    # had_candidate is taken, so a jointly-resolved run is never reported as
+    # having reached nothing.
+    for _c_run, _upper, b_run, lower in joint:
+        live[b_run] = [(lower, _TIER_PUSHED_DOWN, 0.0, 0.0)]
     # Whether dot i EVER had a reachable candidate, fixed here before
     # elimination gets a chance to remove any of them - the only way to tell
     # unassigned_no_candidate apart from unassigned_eliminated below.
@@ -2466,7 +2791,7 @@ def _assign_dots(owners, dot_events, tol):
         for i in range(n):
             if resolved[i]:
                 continue
-            dot_x = dot_events[i].xc
+            dot_x = runs[i][1]
             kept = [
                 c for c in live[i]
                 if owner_tier.get(c[0], c[1]) == c[1]
@@ -2479,13 +2804,22 @@ def _assign_dots(owners, dot_events, tol):
         return changed
 
     def _commit(dot_idx, owner_i, tier):
-        counts[id(owners[owner_i])] += 1
+        counts[id(owners[owner_i])] += len(runs[dot_idx][0])
         owner_tier.setdefault(owner_i, tier)
-        owner_dot_xs[owner_i].append(dot_events[dot_idx].xc)
+        owner_dot_xs[owner_i].append(runs[dot_idx][1])
         resolved[dot_idx] = True
 
-    # Commit ONE dot at a time, and re-run the conflict filter before looking
-    # for the next one to commit. Committing every currently-forced dot in a
+    # The jointly-resolved pairs go in FIRST, before anything is ranked. Both
+    # their dots are reachable by the lower member and neither is the lower
+    # member's on its own, so any ordering that let ranking see them first
+    # would hand it the upper member's dot and leave the upper member bare -
+    # which is precisely the reading this replaces.
+    for c_run, upper, b_run, lower in joint:
+        _commit(c_run, upper, len(_DOT_TIERS) - 1)   # the space below it
+        _commit(b_run, lower, _TIER_PUSHED_DOWN)     # a full space below it
+
+    # Then commit ONE dot at a time, re-running the conflict filter before
+    # looking for the next one. Committing every currently-forced dot in a
     # single sweep is not safe: two dots can each be the sole candidate for
     # the SAME owner at two DIFFERENT tiers before either commit happens, and
     # a same-pass sweep would hand that owner both, right back to the
@@ -2508,10 +2842,13 @@ def _assign_dots(owners, dot_events, tol):
         empty = next((i for i in range(n) if not resolved[i] and not live[i]), None)
         if empty is not None:
             resolved[empty] = True
+            # Counted in DOT GLYPHS, not runs: a double dot nobody takes is
+            # two marks on the page left unexplained, and every consumer of
+            # dots_unassigned reads it as a count of ink.
             if had_candidate[empty]:
-                unassigned_eliminated += 1
+                unassigned_eliminated += len(runs[empty][0])
             else:
-                unassigned_no_candidate += 1
+                unassigned_no_candidate += len(runs[empty][0])
             continue
         remaining = [i for i in range(n) if not resolved[i]]
         if not remaining:
@@ -2670,7 +3007,7 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
     # Dots first: one dot glyph belongs to exactly one note (see _assign_dots).
     dot_owners = [e for e in staff_events if e.category in NOTEHEAD_CATS or e.category in REST_CATS]
     dot_counts, dots_unassigned_no_candidate, dots_unassigned_eliminated = _assign_dots(
-        dot_owners, dot_events, tol)
+        dot_owners, dot_events, tol, stems)
     dots_unassigned = dots_unassigned_no_candidate + dots_unassigned_eliminated
 
     # Coincident duplicate noteheads (issue #116): the SAME glyph - same

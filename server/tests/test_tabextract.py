@@ -439,20 +439,64 @@ def test_the_cosmic_wheel_chord_unison_stops_costing_it_twelve_bars(cosmic_wheel
     One of them, bar 13, is the whole note issue #137 named in its text
     (`:16 3.1 :1 5.1`, 4.25 quarters in 4/4): a harmonic's hollow notehead
     read as a whole note. It predates #116 entirely - the same string is
-    emitted at d07387d - and is tracked as issue #140."""
+    emitted at d07387d - and is tracked as issue #140.
+
+    One further bar left short-and-defective here until #111/#112: a seconds
+    interval whose lower member's dot sat a whole notehead width outside its
+    own reach, so 18/22 rather than 19/23 now. The note count does NOT move
+    with it - a dot changes a duration, not how many notes there are - which
+    is what keeps this test about #137."""
     result = tabextract.extract(cosmic_wheel_pdf)
     assert result.extractable
     assert result.bars == 78
     assert result.notes == 914
     assert result.bars_overfull == 8
-    assert result.bars_short == 19
-    assert result.bars_defective == 23
+    assert result.bars_short == 18               # 19 - 1 (issue #112)
+    assert result.bars_defective == 22           # 23 - 1 (issue #112)
     # The twelve recovered notes are an INFERENCE about which string they are
     # on - the tablature printed no number for those noteheads - so they are
     # disclosed rather than folded into the note count silently, and the
     # count has to be exactly the twelve.
     assert result.unison_digits_shared == 12
     assert any("coincident notehead at the same position" in w for w in result.warnings)
+
+
+def test_a_deep_chords_pushed_down_dots_all_find_their_own_note(storms_past_pdf):
+    """Issues #111/#112, on the score that isolates the last piece of it.
+
+    Page 2 of this score prints a five-note chord with five dots in one
+    column. Its lowest two members are a second apart, so one notehead is
+    displaced left and the pair's two dots are pushed down a step - the upper
+    member's into the space below it, the lower member's a full space below
+    its own centre (see glyph_rhythm._pushed_down_pairs).
+
+    The rule that reads that pair refuses to fire when another notehead of the
+    same column fits the lower dot at a tier of its own, because a chord that
+    dots every member the ordinary way was never pushed anywhere. Here that
+    test is met and is still wrong: the head a third below DOES fit the lower
+    dot, at 0.507 spaces above it - but it already owns a dot of its own,
+    half a space further down the same column. A note carries one dot per
+    column, so a head already spoken for is no rival, and letting it refute
+    left the displaced member's dot orphaned on a chord where every single
+    mark is accounted for.
+
+    All five heads, one dot each, nothing unassigned - read off
+    decode_note_events, since the beat model collapses a chord's members to
+    one duration and would hide which notehead the dots landed on."""
+    page = fitz.open(storms_past_pdf)[1]
+    staff = next(s for s in tabextract._detect_staves(page)[0]
+                 if s.kind == "standard" and abs(s.top - 66.6) < 1.0)
+    notes, stats = glyph_rhythm.decode_note_events(
+        page, staff.top, staff.bottom, staff.x0, staff.x1, staff.line_ys, staff.spacing)
+    # The window reaches left of the column on purpose: one of the five heads
+    # is the displaced one, a notehead width off it.
+    chord = sorted((n for n in notes if not n.is_rest and 455 <= n.x <= 470),
+                   key=lambda n: n.y)
+    assert len(chord) == 5, "the five noteheads of the chord, one frame"
+    assert [n.dotted for n in chord] == [1, 1, 1, 1, 1], \
+        "five printed dots, one to each member"
+    assert stats["dots_unassigned_eliminated"] <= 1, \
+        "and this staff's only remaining orphan is the three-in-a-row cascade"
 
 
 def test_a_unison_on_a_chords_top_member_is_left_exactly_as_it_was(spanish_romance_pdf):
@@ -3747,6 +3791,12 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
         totals["form_marks_unanchored"] += result.form_marks_unanchored
         totals["endings_truncated"] += result.endings_truncated
         totals["unison_digits_shared"] += result.unison_digits_shared
+        totals["dots_unassigned"] += result.dots_unassigned
+        totals["dots_unassigned_no_candidate"] += result.dots_unassigned_no_candidate
+        totals["dots_unassigned_eliminated"] += result.dots_unassigned_eliminated
+        totals["dots"] += result.musicxml.count("<dot />")
+        totals["repeats"] += result.musicxml.count("<repeat ")
+        totals["endings"] += result.musicxml.count("<ending ")
         totals["nav_marks_unanchored"] += result.nav_marks_unanchored
         totals["nav_marks_unresolved"] += result.nav_marks_unresolved
         totals["systems_unread"] += result.systems_unread
@@ -3813,15 +3863,37 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # between the systems produced a bar boundary the page does not draw. Our
     # Terms prints 28 bars, Bygone Days 24, and The Crestlands 37 plus a
     # pickup measure.
+    #
+    # And a FOURTH time, by the augmentation-dot binding of #111/#112, which
+    # attaches dot glyphs that were printed on these pages and previously bound
+    # to nothing. It reads the music #152 recovered as well as the music that
+    # was already being read - one of its sites is in a recovered system - so
+    # every figure below is re-measured against #152's own, never adjusted from
+    # the pre-#152 ones. Site by site: 98 notes gain a first dot, 29 gain a
+    # second, and 1 hands one back to the chord member a second BELOW it -
+    # paired with a gain in the same dot column, so no score's emitted dot
+    # count falls anywhere. 98 + 29 - 1 = 126, exactly the fall in
+    # dots_unassigned below, which is the check that no dot went anywhere
+    # unaccounted for. NOTES, BEATS AND BARS DO NOT MOVE: a dot changes a
+    # duration, never a note.
+    #
+    # bars_overfull rises by 10 while bars_short falls by 28. A dot that is on
+    # the page and was not being read is right whichever way the bar's
+    # arithmetic then lands, and the scores with a new overfull bar were
+    # checked one by one against the print: in each, the new dot is genuinely
+    # engraved and the bar was already wrong somewhere else by the same
+    # quarter it now overshoots by. Correcting one half of a compensating
+    # error makes the total look worse; the durations underneath it are more
+    # right than they were.
     assert extractable == 293
     assert totals["bars"] == 10762               # 10632 + 130 (issue #152)
     assert totals["bars_unread"] == 20           # 23 - 3 (issue #152)
     assert totals["notes"] == 99461              # 98704 + 757 (issue #152)
-    assert totals["bars_overfull"] == 1590       # 1573 + 17 (issue #152)
-    assert totals["bars_short"] == 4216          # 4188 + 28 (issue #152)
-    assert totals["bars_defective"] == 5359      # 5317 + 42 (issue #152)
-    assert totals["bars_padded"] == 3619         # 3603 + 16 (issue #152)
-    assert totals["inferred_rest_quarters"] == 4923.0   # 4899.0 + 24.0 (issue #152)
+    assert totals["bars_overfull"] == 1600       # 1590 + 10 (issues #111/#112)
+    assert totals["bars_short"] == 4188          # 4216 - 28 (issues #111/#112)
+    assert totals["bars_defective"] == 5340      # 5359 - 19 (issues #111/#112)
+    assert totals["bars_padded"] == 3602         # 3619 - 17 (issues #111/#112)
+    assert totals["inferred_rest_quarters"] == 4892.125  # 4923.0 - 30.875
     # The systems still lost, named. Both are 7-line groups - a 6-line tab
     # staff ruled at 7.7pt with ONE extra full-width rule below its last
     # line, close enough to fall inside the 15.0pt cluster gap: Dynamis p1 at
@@ -3838,6 +3910,24 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # by any other route - a shared digit is the ONLY way this change can add
     # a note, so any drift between these two numbers is a different defect.
     assert totals["unison_digits_shared"] == 16
+    # The dot figures the same change moves, pinned here for the same reason
+    # the note count is: this is the only place they are measured over the
+    # whole library rather than on one fixture. `dots` counts the <dot />
+    # elements actually emitted (both staves), so the two move in opposite
+    # directions and the pair is what says a dot was BOUND rather than merely
+    # stopped being reported.
+    #                                        before #111/#112 -> after
+    assert totals["dots"] == 9182                          # 8884
+    assert totals["dots_unassigned"] == 1154                # 1280
+    assert totals["dots_unassigned_no_candidate"] == 1144   # 1226
+    assert totals["dots_unassigned_eliminated"] == 10       # 54
+    # ...and the repeat furniture the same glyph stream carries, unmoved by
+    # any of it. Maestro and Opus draw a repeat's dots with the augmentation
+    # dot's own glyph, and issue #138 reads them off this stream, so a change
+    # to how a dot finds its notehead has to be shown not to have eaten any -
+    # both were measured identical before and after #111/#112.
+    assert totals["repeats"] == 533
+    assert totals["endings"] == 492
     # Not a judgement call - issue #134 S3.2 measured 0 of 513 repeat marks
     # in the library landing inside a bar with no boundary to anchor to, and
     # this stays 0 for volta brackets too once the adversarial review's
