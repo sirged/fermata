@@ -551,12 +551,77 @@ whose Fine could not be read therefore arrives with a live jump attribute and
 no target, and taken at face value plays the whole piece twice and stops
 nowhere near where the page says to stop.
 
-Two dataset attributes carry the result, for the browser suite and for
-devtools: `data-playback-bars`, the played bar order read off the renderer's
-own tick lookup, and `data-playing-bar`, the bar sounding right now, published
-from the player's own position reports. The second is deliberately not folded
-into `data-cursor-bar`: the cursor is a rehearsal mark a player put somewhere,
-and playback must not drag it along.
+**Nor is a jump injected when its target is on the side the renderer will not
+look.** `_findJumpTarget` does not fail when the target is behind it; it
+searches the other way and returns whatever it finds there, and both fallbacks
+are traps. A To Coda whose only coda lies *earlier* makes `_handleDaCoda` jump
+backwards **and** reset the state machine, which re-arms the al-Coda jump that
+sent it there — `MidiFileGenerator.generate()` never returns, the player never
+becomes ready, and the tab dies of heap exhaustion with nothing on screen to
+say why. A D.S. whose only segno lies *later* jumps forward instead and
+silently truncates the piece. So a `tocoda` needs a coda strictly after it and
+a `dalsegno` needs a segno at or before it, mirroring the search each will
+actually get. The library was measured first — all 143 `tocoda` attributes in
+it resolve strictly forwards — but `.musicxml` and `.mxl` are library file
+types a person can upload, and those reach this code with no extractor in
+between. Before this feature existed no MusicXML could reach a jump direction
+at all, so this is a hazard the injection introduces and the injection closes.
+
+### What the attributes say
+
+| attribute | meaning |
+| --- | --- |
+| `data-playback-bars` | the played bar order, 1-based, off the renderer's own tick lookup |
+| `data-playing-bar` | the bar the player last reported being in |
+| `data-score-jumps` | the directions this layer added, `"<bar>:<DirectionName>"` each |
+| `data-score-jumps-skipped` | how many jump marks were understood and declined |
+| `data-score-jumps-unread` | present only when a document was there and could not be opened |
+
+`data-playing-bar` is deliberately not folded into `data-cursor-bar`: the
+cursor is a rehearsal mark a player put somewhere, and playback must not drag
+it along.
+
+`data-score-jumps-skipped` has **two** causes — a jump whose target the score
+does not hold, or holds only on the unsearched side; and a bar that already
+carries a jump direction, where a second would be taken ahead of or behind it
+according to nothing but enum order. It is **not** the transcription's
+`nav_marks_unresolved`, and the two routinely disagree: that counter is about
+bars whose instruction went out *without* a `<sound>`, this one about marks
+that arrived *with* one and were declined. A words-only instruction — the shape
+the extractor writes when it could not read the target off the page — is never
+seen here at all and is counted by neither cause. Measured on *Phantom Train*:
+`nav_marks_unresolved` 1, `skipped` 0.
+
+`data-score-jumps-unread` exists because an empty `data-score-jumps` would
+otherwise mean two different things. `.mxl` — a MusicXML score inside a ZIP —
+is a library file type a person can upload, and the renderer imports one with
+its own reader; this layer opens the container itself (manifest first, then the
+named root file, inflated through `DecompressionStream`) so a container's jumps
+are read like any other document's. Where even that fails, or where the
+document is MusicXML but not part-wise, the reason is published rather than
+swallowed — a score whose jumps went missing because this layer could not open
+it must not look like a score that carries none.
+
+### What this changes elsewhere
+
+**Double-clicking a bar seeks its first played occurrence.** That was already
+true of a repeated bar (see `playFromBeat` — a repeat is a notation symbol, not
+a second copy of the bars, so a click has only one drawn beat to mean), and
+jumps make multi-pass bars the common case rather than the exception: the bars
+between a segno and its D.S. are now played two or three times over. Clicking
+one lands on its first pass, which is the natural reading of clicking the one
+drawing of it there is.
+
+**Repeats inside a jump are not replayed, unconditionally.** alphaTab clears
+its repeat stack when it takes a jump and bypasses repeat handling entirely
+while a jump is in progress, so a D.S. or D.C. plays its return *senza
+repetizione*. That matches the usual engraving convention and is what the
+library's own scores expect — but it is a fixed behaviour, not a choice: there
+is no *con repetizione* vocabulary anywhere in this pipeline. MusicXML has no
+attribute for it, the extractor reads none off the page, and the renderer
+offers no direction that means it. A score that prints "with repeats" on its
+D.S. will play without them, and nothing in the chain can currently say
+otherwise.
 
 ### Sounding one pitch, and the one number it must never report
 

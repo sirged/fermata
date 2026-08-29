@@ -19,22 +19,41 @@
 // generated midi, that test would sit on bar 5 until it timed out.
 //
 // MUTATION RECORD (issue #151, and the reason these numbers are written out
-// literally rather than derived from the fixture):
-//   - deleting the applyLoadedNavigation() call from score-render.js's
-//     scoreLoaded handler put the navigation fixture back to the straight
-//     `1 2 3 4 5 6 7 8` and reddened ALL SIX tests here - including the live
-//     one, which read `1 2 3 4 5 6 7` off the audio timeline;
-//   - mapping "al Coda" to the plain Direction.JumpDalSegno instead reddened
-//     five (the unresolved-target test is the one it cannot touch) and gave
-//     `1 2 3 4 1 2 3 4 5 6 7 8`. That is the plausible wrong answer, not an
-//     arbitrary one: it is exactly the order this issue measured from
+// literally rather than derived from the fixture). Each was applied to
+// score-render.js, rebuilt, run, and reverted:
+//
+//   - deleting the applyLoadedNavigation() call from the scoreLoaded handler
+//     put the navigation fixture back to the straight `1 2 3 4 5 6 7 8` and
+//     reddened 10 of the 12 tests here - including the live one, which read
+//     `1 2 3 4 5 6 7` off the audio timeline. The two that stay green are the
+//     two drawn-text tests, and honestly so: with no direction added, nothing
+//     is drawn twice and nothing is cleared, so a count of drawn labels cannot
+//     tell that case from a correct one.
+//   - mapping "al Coda" to the plain Direction.JumpDalSegno reddened 7, and
+//     gave `1 2 3 4 1 2 3 4 5 6 7 8`. That is the plausible wrong answer, not
+//     an arbitrary one: it is exactly the order this issue measured from
 //     hoisting the `<sound>` elements to measure level and letting alphaTab's
 //     own importer read them, so these tests are pinned against the losing
-//     route as well as against no route at all.
+//     route as well as against no route at all. It reddens the drawn-text test
+//     too, because a plain D.S. draws "D.S." where "D.S. al Coda" belongs.
+//   - replacing jumpDirectionFor's ORDERING checks with the "is there one
+//     anywhere" test they replaced reddened 2: the late-segno test by order
+//     (`1 2 5 6`), and the backwards-coda test by TIMEOUT - data-score-render-ok
+//     never appears, because the midi generator never returns. That is the
+//     failure it is built to catch and the reason it carries its own 45s
+//     ceiling; the passing path takes under half a second.
+//   - making clearLateBeatText a no-op reddened both drawn-text tests;
+//     widening it back to every beat of two bars reddened the annotation test
+//     alone, at one drawn "Fine" where two belong.
 import { expect, test } from "@playwright/test";
 import {
+  stubNavigationAnnotationScore,
+  stubNavigationBackwardsCodaScore,
+  stubNavigationContainerScore,
+  stubNavigationLateSegnoScore,
   stubNavigationRepeatScore,
   stubNavigationScore,
+  stubNavigationTimewiseScore,
   stubNavigationUnresolvedScore,
 } from "./fixtures/navigation-score.js";
 
@@ -131,6 +150,83 @@ test.describe("navigation marks reach playback", () => {
     );
     expect(drawn.filter((t) => t === "To Coda")).toHaveLength(1);
     expect(drawn.filter((t) => t === "D.S. al Coda")).toHaveLength(1);
+  });
+
+  // The hang. Bounded deliberately: with the ordering check removed,
+  // MidiFileGenerator.generate() never returns, and it runs on the main
+  // thread - so the page stops answering, every locator poll below stalls,
+  // and without a ceiling this test would hold a CI runner for the whole
+  // 180s file timeout (or until the tab died of heap exhaustion) instead of
+  // failing. 45s is far more than the ~1s the passing path takes and far less
+  // than that.
+  test("a coda before the To Coda that names it is declined, not hung on", async ({ page }) => {
+    test.setTimeout(45_000);
+    await stubNavigationBackwardsCodaScore(page);
+    await page.goto("/#/score/14");
+    // A render finishing at all is the assertion: the player cannot become
+    // ready while the midi generator is still looping.
+    await expect(host(page)).toHaveAttribute("data-score-render-ok", "true", { timeout: 20_000 });
+    await expect(playButton(page)).toBeEnabled({ timeout: 20_000 });
+    // Straight through, and the To Coda counted as declined. The D.S. al Coda
+    // is still injected - its own target is behind it, where the renderer will
+    // look - but with no coda jump to take, it never re-arms anything.
+    await expect.poll(() => playbackBars(page), { timeout: 20_000 }).toBe("1 2 3 4 5 6 1 2 3 4 5 6");
+    await expect(host(page)).toHaveAttribute("data-score-jumps-skipped", "1");
+  });
+
+  test("a segno after the D.S. that names it is declined, not jumped forward to", async ({ page }) => {
+    await stubNavigationLateSegnoScore(page);
+    await openScore(page, 15);
+    // alphaTab's own target search falls forward when it finds nothing behind,
+    // so injecting this would jump the wrong way and play `1 2 5 6` - four
+    // bars of a six-bar score, with nothing saying two went missing.
+    await expect.poll(() => playbackBars(page), { timeout: 30_000 }).toBe("1 2 3 4 5 6");
+    await expect(host(page)).toHaveAttribute("data-score-jumps", "");
+    await expect(host(page)).toHaveAttribute("data-score-jumps-skipped", "1");
+  });
+
+  test("a words-only annotation sharing a mark's text survives the echo being cleared", async ({ page }) => {
+    await stubNavigationAnnotationScore(page);
+    await openScore(page, 16);
+    // Two "Fine"s belong on this page: the one the renderer now draws for the
+    // mark at the end of bar 2, and the separate words-only annotation printed
+    // part-way through bar 3. The third - the mark's own echo, on bar 3's
+    // first beat - is the duplicate, and is the only one that goes. Clearing
+    // any wider takes the annotation with it, and nothing else on the page
+    // records that it was ever there.
+    const drawn = await page.evaluate(() =>
+      [...document.querySelectorAll(".at-host svg text")].map((t) => t.textContent),
+    );
+    expect(drawn.filter((t) => t === "Fine")).toHaveLength(2);
+  });
+
+  test("a compressed .mxl container's jumps are read, not silently skipped", async ({ page }) => {
+    await stubNavigationContainerScore(page);
+    await openScore(page, 17);
+    // The same document as the plain-XML fixture, inside a real ZIP with the
+    // manifest that names it. `.mxl` is a file type the library accepts and a
+    // person can upload; before the container was opened this played its D.S.
+    // as though the score carried none, indistinguishably from one that does.
+    await expect
+      .poll(() => playbackBars(page), { timeout: 30_000 })
+      .toBe("1 2 3 4 1 2 6 7 8 1 2 3 4 5 6 7");
+    // And nothing claims the document was unreadable.
+    expect(await host(page).getAttribute("data-score-jumps-unread")).toBeNull();
+  });
+
+  test("a document whose marks were not read says so rather than looking like one with none", async ({ page }) => {
+    await stubNavigationTimewiseScore(page);
+    await openScore(page, 18);
+    // A score-timewise document: the renderer imports it, this layer refuses to
+    // index it (a measure's position there is not a master bar index), and it
+    // carries a live D.S. that therefore does not play. An empty
+    // data-score-jumps alone would be indistinguishable from a score that
+    // prints no jumps at all, which is the failure this attribute exists to
+    // prevent - the same distinction that made a compressed container's marks
+    // vanish without trace.
+    await expect(host(page)).toHaveAttribute("data-score-jumps-unread", "not-musicxml");
+    await expect(host(page)).toHaveAttribute("data-score-jumps", "");
+    await expect.poll(() => playbackBars(page), { timeout: 30_000 }).toBe("1 2 3 4");
   });
 
   test("stepping the cursor by bar follows the played order across a jump", async ({ page }) => {

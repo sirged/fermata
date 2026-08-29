@@ -16,6 +16,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -41,16 +42,21 @@ const PITCHES = ["C", "D", "E", "F", "G", "A", "B", "C"];
 // need a bar to render and to hold its declared duration; which pitches it
 // holds is what makes a played bar audible, not what makes it identifiable -
 // the bar ORDER is read from the renderer's own tick lookup, not by ear.
-function notesForBar(bar) {
+// `interior`, where given, is markup spliced in after the bar's SECOND note -
+// the only way to build a direction whose beat-text lands on an interior beat
+// rather than on a bar's first one, which is the distinction the echo-clearing
+// test below turns on.
+function notesForBar(bar, interior = "") {
   return Array.from({ length: 4 }, (_, i) => {
     const step = PITCHES[(bar + i) % PITCHES.length];
-    return `
+    const note = `
       <note>
         <pitch><step>${step}</step><octave>4</octave></pitch>
         <duration>${DIVISIONS}</duration>
         <voice>1</voice>
         <type>quarter</type>
       </note>`;
+    return i === 1 ? note + interior : note;
   }).join("");
 }
 
@@ -101,7 +107,7 @@ function instruction(words, sound) {
 function buildScore(bars) {
   const measures = bars.map((bar, i) => {
     const attrs = i === 0 ? OPENING_ATTRIBUTES : "";
-    return `    <measure number="${i + 1}">${attrs}${bar.before ?? ""}${notesForBar(i)}${bar.after ?? ""}${bar.barline ?? ""}
+    return `    <measure number="${i + 1}">${attrs}${bar.before ?? ""}${notesForBar(i, bar.interior ?? "")}${bar.after ?? ""}${bar.barline ?? ""}
     </measure>`;
   });
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -173,6 +179,175 @@ export const NAVIGATION_UNRESOLVED_MUSICXML = buildScore([
   {},
 ]);
 
+/**
+ * The hang. Six 4/4 bars whose coda sits BEFORE the To Coda that names it,
+ * on a score that also carries a resolvable D.S. al Coda:
+ *
+ *   1 segno · 2 coda · 3 · 4 To Coda · 5 · 6 D.S. al Coda
+ *
+ * Taken at face value this does not terminate. alphaTab's `_handleDaCoda`
+ * searches forwards for the coda, finds none, falls back to a BACKWARDS
+ * search, jumps to the coda on bar 2 and resets its state machine to neutral -
+ * which re-arms the D.S. al Coda on bar 6, which enters the coda-seeking state
+ * again, which finds the same backwards coda. `MidiFileGenerator.generate()`
+ * never returns: the player never becomes ready, a core pegs, and the tab dies
+ * of heap exhaustion with nothing on screen to say why.
+ *
+ * Nothing in the library does this - all 143 `tocoda` attributes across it were
+ * measured resolving strictly forwards - but `.musicxml` and `.mxl` are file
+ * types a person can upload, and a mis-anchored coda is exactly what the
+ * extractor's own `nav_marks_unanchored` counter exists to report.
+ */
+export const NAVIGATION_BACKWARDS_CODA_MUSICXML = buildScore([
+  { before: sign("segno") },
+  { before: sign("coda") },
+  {},
+  { after: instruction("To Coda", 'tocoda="coda"') },
+  {},
+  { after: instruction("D.S. al Coda", 'dalsegno="segno"') },
+]);
+
+/**
+ * Six 4/4 bars whose only segno sits AFTER the D.S. that names it (segno on
+ * bar 5, D.S. closing bar 2). alphaTab's `_findJumpTarget` searches backwards
+ * first and then FORWARDS, so this does not fail - it jumps forward, and the
+ * score plays `1 2 5 6`, silently losing bars 3 and 4. Not a hang, and worse
+ * for it: nothing at all says the piece was truncated.
+ */
+export const NAVIGATION_LATE_SEGNO_MUSICXML = buildScore([
+  {},
+  { after: instruction("D.S.", 'dalsegno="segno"') },
+  {},
+  {},
+  { before: sign("segno") },
+  {},
+]);
+
+/**
+ * Four 4/4 bars where a Fine mark on bar 2 is followed, in bar 3, by a
+ * SEPARATE words-only `<direction><words>Fine</words></direction>` written
+ * part-way through the bar - a real annotation an engraver might print, with
+ * no `<sound>` and therefore no direction of its own.
+ *
+ * Both produce a `beat.text` reading "Fine": the mark's echo on bar 3's FIRST
+ * beat (which the renderer now draws properly as a Fine at the end of bar 2,
+ * so the echo is a duplicate and goes), and the annotation's own on bar 3's
+ * THIRD beat (which is the only thing on the page saying it is there, and must
+ * survive). An echo-clearing pass wide enough to take both destroys a fact
+ * about the score to tidy a duplicate.
+ */
+export const NAVIGATION_ANNOTATION_MUSICXML = buildScore([
+  {},
+  { after: instruction("Fine", 'fine="yes"') },
+  { interior: instruction("Fine", null) },
+  {},
+]);
+
+/**
+ * The same four bars as a `score-timewise` document - MusicXML's other
+ * ordering, where `<measure>` is the outer element and `<part>` the inner one.
+ * The renderer imports it (its own importer branches on the root element); this
+ * layer refuses to read marks out of it, because a measure's position here is
+ * not what it is in a part-wise file and indexing it the same way would put
+ * jumps on the wrong bars.
+ *
+ * It carries a D.S. with a live `<sound>`, so there is genuinely something to
+ * miss - which is the point: it must SAY it did not read it.
+ */
+export const NAVIGATION_TIMEWISE_MUSICXML = `<?xml version="1.0" encoding="UTF-8"?>
+<score-timewise version="4.0">
+  <part-list>
+    <score-part id="P1"><part-name>Piano</part-name></score-part>
+  </part-list>
+${[0, 1, 2, 3]
+  .map(
+    (i) => `  <measure number="${i + 1}">
+    <part id="P1">${i === 0 ? OPENING_ATTRIBUTES : ""}${i === 0 ? sign("segno") : ""}${notesForBar(i)}${
+      i === 3 ? instruction("D.S.", 'dalsegno="segno"') : ""
+    }
+    </part>
+  </measure>`,
+  )
+  .join("\n")}
+</score-timewise>
+`;
+
+const CONTAINER_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<container><rootfiles><rootfile full-path="score.musicxml"
+    media-type="application/vnd.recordare.musicxml+xml"/></rootfiles></container>
+`;
+
+/**
+ * A real compressed MusicXML container (`.mxl`): a ZIP holding
+ * `META-INF/container.xml` and the score itself, written with node's own
+ * deflate and a proper central directory.
+ *
+ * Built rather than committed as a binary blob for two reasons: it stays the
+ * same document as whatever is passed in, and a checked-in ZIP is a fixture
+ * nobody can read in a diff. Deliberately DEFLATED rather than stored, since
+ * a stored entry would not exercise the inflate path at all - and deliberately
+ * given a manifest, since that is the only correct way to pick the score out
+ * of a container that holds several files.
+ */
+function buildMxl(scoreXml) {
+  const files = [
+    { name: "META-INF/container.xml", data: Buffer.from(CONTAINER_XML, "utf-8") },
+    { name: "score.musicxml", data: Buffer.from(scoreXml, "utf-8") },
+  ];
+  const locals = [];
+  const central = [];
+  let offset = 0;
+  for (const file of files) {
+    const name = Buffer.from(file.name, "utf-8");
+    const deflated = zlib.deflateRawSync(file.data);
+    const crc = zlib.crc32 ? zlib.crc32(file.data) : crc32(file.data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4); // version needed
+    local.writeUInt16LE(0, 6); // flags - no data descriptor, so sizes are real
+    local.writeUInt16LE(8, 8); // deflate
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(deflated.length, 18);
+    local.writeUInt32LE(file.data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    locals.push(local, name, deflated);
+
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt16LE(20, 4); // version made by
+    entry.writeUInt16LE(20, 6); // version needed
+    entry.writeUInt16LE(0, 8);
+    entry.writeUInt16LE(8, 10);
+    entry.writeUInt32LE(crc, 16);
+    entry.writeUInt32LE(deflated.length, 20);
+    entry.writeUInt32LE(file.data.length, 24);
+    entry.writeUInt16LE(name.length, 28);
+    entry.writeUInt32LE(offset, 42);
+    central.push(entry, name);
+    offset += local.length + name.length + deflated.length;
+  }
+  const centralBuffer = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(files.length, 8);
+  eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(centralBuffer.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, centralBuffer, eocd]);
+}
+
+// node's zlib.crc32 only arrived in 22.2; this is the same polynomial, for
+// older runners. A ZIP reader that checks the crc would reject a wrong one,
+// so it is computed rather than zeroed.
+function crc32(buffer) {
+  let crc = ~0;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (~crc) >>> 0;
+}
+
 function scoreMeta(id, title) {
   // file_type not "pdf" is what routes Viewer.svelte to TabViewer directly
   // rather than through ScoreCompare/PdfViewer - see metronome-score.js's own
@@ -213,4 +388,41 @@ export async function stubNavigationRepeatScore(page) {
 /** Score id 13: two instructions naming targets the score does not draw. */
 export async function stubNavigationUnresolvedScore(page) {
   await stubOneScore(page, 13, "Navigation unresolved fixture", NAVIGATION_UNRESOLVED_MUSICXML);
+}
+
+/** Score id 14: a coda before the To Coda that names it - the hang. */
+export async function stubNavigationBackwardsCodaScore(page) {
+  await stubOneScore(page, 14, "Navigation backwards-coda fixture", NAVIGATION_BACKWARDS_CODA_MUSICXML);
+}
+
+/** Score id 15: a segno after the D.S. that names it. */
+export async function stubNavigationLateSegnoScore(page) {
+  await stubOneScore(page, 15, "Navigation late-segno fixture", NAVIGATION_LATE_SEGNO_MUSICXML);
+}
+
+/** Score id 16: a words-only annotation sharing a mark's text. */
+export async function stubNavigationAnnotationScore(page) {
+  await stubOneScore(page, 16, "Navigation annotation fixture", NAVIGATION_ANNOTATION_MUSICXML);
+}
+
+/** Score id 18: a part-wise document's other ordering, which is not read. */
+export async function stubNavigationTimewiseScore(page) {
+  await stubOneScore(page, 18, "Navigation timewise fixture", NAVIGATION_TIMEWISE_MUSICXML);
+}
+
+/**
+ * Score id 17: the committed navigation transcription inside a real compressed
+ * `.mxl` container - a ZIP with the `META-INF/container.xml` manifest that
+ * names its root file, exactly as an exporter writes one. Built here with
+ * node's own deflate rather than committed as a binary, so it stays the same
+ * document as NAVIGATION_MUSICXML by construction.
+ */
+export async function stubNavigationContainerScore(page) {
+  await page.route(`**/api/scores/17`, (route) => route.fulfill({ json: scoreMeta(17, "Navigation .mxl fixture") }));
+  await page.route(`**/api/scores/17/file`, (route) =>
+    route.fulfill({ body: buildMxl(NAVIGATION_MUSICXML), contentType: "application/vnd.recordare.musicxml" }),
+  );
+  await page.route(`**/api/scores/17/practice`, (route) =>
+    route.fulfill({ json: { total_seconds: 0, sessions: [] } }),
+  );
 }
