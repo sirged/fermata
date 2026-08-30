@@ -113,6 +113,27 @@ transcriptions live only in the database in that folder. Losing `config/`
 without a backup means losing that work, even though every PDF is still
 sitting untouched in `library/`.
 
+### The one folder in `library/` that is Fermata's
+
+Deleting a score in Fermata does not delete the file. It moves it to
+`library/.fermata-trash/`, and the score — with its practice history, tags,
+goals and transcription — stays in the database, listed under **Trash**, until
+you either put it back or destroy it deliberately. Three things follow:
+
+- **Scans ignore that folder entirely**, so nothing in it is ever taken for a
+  score in your library, and nothing you deleted quietly comes back.
+- **It counts toward your disk usage** until you empty it. Nothing empties it
+  on a timer; a deleted score stays deleted-not-destroyed for as long as you
+  leave it.
+- **If you back up `library/` too, back up that folder with it** — or, if you
+  would rather not carry deleted files around, empty the Trash view first.
+  Deleting the folder by hand is safe for your database: nothing is lost from
+  it, and the scores can still be put back. What comes back in that case is the
+  score — its practice history, tags, goals and transcription — flagged as
+  **file missing**, which is the same state any score whose file has gone shows.
+  Put the file back in your library, scan, and it recovers by itself. The bytes
+  you deleted by hand are gone, though; Fermata cannot get those back.
+
 ### Taking a backup
 
 Stop the container first, so the database isn't being written to mid-copy:

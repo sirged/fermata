@@ -137,6 +137,53 @@ export const api = {
       body: fd,
     }).then(j);
   },
+  // --- Managing the library (issue #56) ------------------------------------
+  // The one part of this API that writes to the user's own files. Two habits
+  // are baked in here rather than left to each caller: a bulk operation is
+  // asked for as a dry run first and applied as a second, separate call, and
+  // nothing here has a "force" of any kind - a refusal comes back as an
+  // ApiError with the server's own sentence in it, which is what the UI shows.
+  //
+  // `folder` may be "" (the library root), which is not the same as omitting
+  // it, so it is passed through as given rather than filtered.
+  moveScore: (id, { folder, filename, dryRun = false } = {}) =>
+    fetch(`/api/scores/${id}/move`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...(folder === undefined ? {} : { folder }),
+        ...(filename === undefined ? {} : { filename }),
+        dry_run: dryRun,
+      }),
+    }).then(j),
+  moveScores: (ids, folder, dryRun = true) =>
+    fetch("/api/library/move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ score_ids: ids, folder, dry_run: dryRun }),
+    }).then(j),
+  folders: () => fetch("/api/library/folders").then(j),
+  createFolder: (path) =>
+    fetch("/api/library/folders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }).then(j),
+  renameFolder: (from, to, dryRun = true) =>
+    fetch("/api/library/folders/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from_path: from, to_path: to, dry_run: dryRun }),
+    }).then(j),
+  // Soft: the file goes to the library's trash folder and the score row - with
+  // its practice history, goals, tags and transcription - stays. The response
+  // counts each of those, which is what the confirmation shows.
+  deleteScore: (id) => fetch(`/api/scores/${id}`, { method: "DELETE" }).then(j),
+  trash: () => fetch("/api/trash").then(j),
+  restoreScore: (id) => fetch(`/api/trash/${id}/restore`, { method: "POST" }).then(j),
+  // The destructive one, and the only one. Deliberately named for what it does
+  // rather than "delete", so no caller reaches for it by accident.
+  destroyScore: (id) => fetch(`/api/trash/${id}`, { method: "DELETE" }).then(j),
   fileUrl: (id) => `/api/scores/${id}/file`,
   thumbUrl: (id) => `/api/scores/${id}/thumb`,
   transcription: (id) => fetch(`/api/scores/${id}/transcription`).then(j),

@@ -290,7 +290,10 @@ def test_every_route_has_exactly_the_expected_operation_count(openapi_schema):
     hand. Update this number, deliberately, the same commit that adds or
     removes a route."""
     count = sum(1 for _ in _operations(openapi_schema))
-    assert count == 41
+    # 41 before issue #56, plus its nine: move one score, list/create folders,
+    # rename a folder, move several scores, delete a score, list the trash,
+    # restore from it, and destroy from it.
+    assert count == 50
 
 
 def test_binary_routes_do_not_advertise_a_json_content_type(openapi_schema):
@@ -374,6 +377,62 @@ def test_library_responses_match_their_models(client, insert_score):
         api_models.TagOut.model_validate(item)
     for group in client.get("/api/duplicates").json():
         api_models.DuplicateGroupOut.model_validate(group)
+
+
+def test_library_management_responses_match_their_models(client, app_env, monkeypatch, tmp_path):
+    """Issue #56's nine routes, through the same drift-guarded client.
+
+    A real file in a real throwaway library, because every one of these
+    endpoints reads or writes the filesystem - a stub row with a made-up hash
+    would be refused by the move's own content check, which is the point of
+    that check. api.py bound LIBRARY_DIR by value at import, so it is
+    repointed the way test_scanner.py's fixtures do it.
+    """
+    from fermata import config, db, scanner
+
+    root = config.LIBRARY_DIR
+    monkeypatch.setattr(api, "LIBRARY_DIR", root)
+    monkeypatch.setattr(scanner, "LIBRARY_DIR", root)
+    (root / "Inbox").mkdir(parents=True, exist_ok=True)
+    score_file = root / "Inbox" / "Study.pdf"
+    score_file.write_bytes(b"a score file")
+    stat = score_file.stat()
+
+    conn = db.connect()
+    score_id = conn.execute(
+        """INSERT INTO scores(title, collection, path, file_type, hash, size, mtime)
+           VALUES ('Study', 'Inbox', 'Inbox/Study.pdf', 'pdf', ?, ?, ?)""",
+        (scanner.hash_file(score_file), stat.st_size, stat.st_mtime),
+    ).lastrowid
+    conn.commit()
+
+    for item in client.get("/api/library/folders").json():
+        api_models.FolderOut.model_validate(item)
+    api_models.FolderCreateOut.model_validate(
+        client.post("/api/library/folders", json={"path": "Classical"}).json()
+    )
+    api_models.ScoreMoveOut.model_validate(
+        client.post(f"/api/scores/{score_id}/move", json={"folder": "Classical"}).json()
+    )
+    api_models.LibraryMoveOut.model_validate(
+        client.post(
+            "/api/library/move", json={"score_ids": [score_id], "folder": "Classical/Sor"}
+        ).json()
+    )
+    api_models.FolderRenameOut.model_validate(
+        client.post(
+            "/api/library/folders/rename",
+            json={"from_path": "Classical", "to_path": "Romantic", "dry_run": False},
+        ).json()
+    )
+    api_models.ScoreDeleteOut.model_validate(client.delete(f"/api/scores/{score_id}").json())
+    for item in client.get("/api/trash").json():
+        api_models.ScoreOut.model_validate(item)
+    api_models.ScoreRestoreOut.model_validate(
+        client.post(f"/api/trash/{score_id}/restore").json()
+    )
+    client.delete(f"/api/scores/{score_id}")
+    api_models.ScorePurgeOut.model_validate(client.delete(f"/api/trash/{score_id}").json())
 
 
 def test_practice_responses_match_their_models(client, insert_score):

@@ -47,8 +47,17 @@ def ensure_dirs() -> None:
     The config folder IS created, and the difference is not arbitrary. That
     folder is Fermata's own storage - nobody mounts anything into it that
     Fermata did not put there, an empty one is a genuine first run, and there
-    is no data it could be shadowing. The library folder is the user's, and
-    Fermata only ever reads it.
+    is no data it could be shadowing. The library folder is the user's.
+
+    THAT DISTINCTION SURVIVED FERMATA LEARNING TO WRITE TO THE LIBRARY (#56),
+    and this paragraph exists because the sentence it replaces - "Fermata only
+    ever reads it" - stopped being true. Fermata now moves, renames and deletes
+    files in there when a person asks it to, which makes the reasoning above
+    stronger rather than weaker: an invented empty library is now somewhere a
+    reorganisation could be applied, not merely somewhere an index could be
+    reconciled away. What is still true, and is the rule those operations are
+    written to, is that Fermata never CREATES the library folder and never
+    writes outside it.
     """
     if not LIBRARY_DIR.is_dir():
         what = "is a file, not a folder" if LIBRARY_DIR.exists() else "is not there"

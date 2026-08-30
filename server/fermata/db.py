@@ -192,6 +192,24 @@ _PRACTICE_SCHEMA = (
 # bug this column exists to prevent, reintroduced by a future migration nobody
 # would suspect. Anything added to scores from now on belongs HERE.
 #
+# deleted_at / deleted_from: what a person deleting a score through Fermata
+# leaves behind (#56). A deletion here is a MARK and a move, never a DELETE: the
+# file goes to a trash folder inside the library, `deleted_from` remembers the
+# library-relative path it came from so restoring puts it back where it was, and
+# `deleted_at` says when - which is the question actually asked of a trash
+# ("what did I throw away this afternoon?"), and one a boolean could not answer.
+# The row, and the practice history, tags, goals and transcription hanging off
+# it, stay exactly where they were, which is the whole reason this is not a
+# DELETE. `path` moves to the file's location inside the trash folder, because
+# that column has to keep naming where the bytes actually are and is UNIQUE -
+# leaving the old path on a deleted row would block a new file arriving at it.
+#
+# These two are deliberately NOT the same fact as missing_since, and the two are
+# never confused for one another. missing_since is a fact about the filesystem
+# that Fermata observed; deleted_at is a decision a person made. A missing score
+# is still in the library and says so on its card; a deleted one is in the trash
+# until it is restored or destroyed.
+#
 # missing_since: NULL means the file was there the last time a scan looked; a
 # timestamp means it was not, and says since when - which is the question
 # somebody actually asks about a row like this ("has that been gone since the
@@ -223,6 +241,8 @@ _SCORES_COLUMNS = """(
     mtime REAL NOT NULL,
     last_page INTEGER NOT NULL DEFAULT 1,
     missing_since TEXT,
+    deleted_at TEXT,
+    deleted_from TEXT,
     added_at TEXT NOT NULL DEFAULT (datetime('now'))
 )"""
 
@@ -418,7 +438,31 @@ CREATE INDEX IF NOT EXISTS idx_instruments_owner ON instruments(owner);
 # when the new schema cannot be expressed the old way. A version therefore need
 # not have a MIGRATIONS entry - SCHEMA_VERSION is stamped by init_db at the end
 # of startup regardless of which mechanism did the work.
-SCHEMA_VERSION = 4
+#
+# VERSION 5 HAS NO MIGRATIONS STEP EITHER, and is the rule above applied a
+# second time. `deleted_at` and `deleted_from` (#56) are nullable, carry no
+# foreign key and need no backfill, so as an upgrade they are only ADD COLUMNs
+# and COLUMN_ADDITIONS carries them. The stamp moves because of what the
+# PREVIOUS release does when pointed at a database this one has written.
+#
+# It does not know the columns, so it does not know a deleted score is deleted.
+# Two consequences, and the second is the one that decided this:
+#
+#   IT HANDS SOMEBODY THEIR DELETED SCORES BACK. Its scan walks the trash folder
+#   like any other, finds each deleted file at the path its row already names,
+#   and lists it in the library as an ordinary score. Somebody who deleted a
+#   score sees it return, with no statement that anything was undone.
+#
+#   AND ITS SCAN CAN ADOPT A DELETED ROW FOR A LIVE FILE. The content-hash
+#   relink picks candidates without filtering on `deleted_at`, which this
+#   release's does - so a fresh copy of a deleted score's content, arriving
+#   anywhere in the library, re-links onto the DELETED row and moves its path
+#   out of the trash. Upgrade again and that row is still marked deleted, so the
+#   file the person just added is hidden from their library and sitting in the
+#   trash view. That is this release hiding a file somebody has on disk, on the
+#   strength of a decision the older release could not see, and it is the kind
+#   of harm the stamp exists to make impossible.
+SCHEMA_VERSION = 5
 
 # Columns added to a table that had already shipped. CREATE TABLE IF NOT EXISTS
 # does nothing at all to a table that exists, so SCHEMA alone reaches only fresh
@@ -472,6 +516,12 @@ COLUMN_ADDITIONS = {
     "scores": {
         "instrument_id": "INTEGER REFERENCES instruments(id) ON DELETE SET NULL",
         "missing_since": "TEXT",
+        # #56's two, arriving the same way and for the same reasons: nullable,
+        # no foreign key, and needing no backfill, because NULL is already true
+        # of every row that exists - nothing could have been deleted through
+        # Fermata before there was a way to delete anything.
+        "deleted_at": "TEXT",
+        "deleted_from": "TEXT",
     },
 }
 
@@ -743,7 +793,8 @@ def connect() -> sqlite3.Connection:
                 "it. In Docker that is the volume mapped to /config; see "
                 "docs/deployment.md.\n"
                 "\n"
-                "Your sheet music is not affected: the library folder is only ever read."
+                "Your sheet music is not affected: Fermata has not started, so nothing has "
+                "touched your library folder."
             ) from None
         conn.execute("PRAGMA foreign_keys=ON")
         _local.conn = conn

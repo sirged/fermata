@@ -160,6 +160,13 @@ class ScoreOut(BaseModel):
     mtime: float
     last_page: int
     missing_since: str | None
+    # Set only on a score somebody deleted (#56). `deleted_at` says when, and
+    # `deleted_from` is the library-relative path the file was at before it was
+    # moved into the trash - which is where restoring puts it back. Both null
+    # for every score in the library proper, which is the great majority of
+    # them; `path` on a deleted row names the file's location inside the trash.
+    deleted_at: str | None
+    deleted_from: str | None
     added_at: str
     instrument_id: int | None
     tags: list[str]
@@ -219,9 +226,19 @@ class PracticeSessionOut(BaseModel):
 class PracticeSessionListOut(PracticeSessionOut):
     """A session as GET /api/practice/sessions lists it - the same fields,
     plus the piece's title joined in so a reader is not left with a bare
-    score_id (or, for a session with none, `null`)."""
+    score_id (or, for a session with none, `null`).
+
+    `score_deleted` is the same fact `top_scores` and `by_score` carry, on the
+    list that names individual sessions: the piece is in the trash. It is NOT
+    `score_missing`, which means the row itself has gone and there is no piece
+    left to name at all - a deleted score still has its title, its history and
+    a way back, and a client that conflates the two would offer to restore
+    something that cannot be restored. Both are false for a session logged
+    against no piece.
+    """
 
     score_title: str | None
+    score_deleted: bool
 
 
 class ScorePracticeOut(BaseModel):
@@ -251,6 +268,11 @@ class TopScoreOut(BaseModel):
     id: int
     title: str
     practice_seconds: int
+    # True when this score has been deleted (#56). It is still counted - the
+    # hours were spent, and dropping it would stop these figures adding up to
+    # the week beside them - but it is no longer in the library, so a client
+    # must not offer it as somewhere to go. See api.practice_summary.
+    deleted: bool
 
 
 class PracticeSummaryOut(BaseModel):
@@ -285,6 +307,8 @@ class ByScoreOut(BaseModel):
     seconds: int
     sessions: int
     last_practised: str | None
+    # Same fact, same reason as TopScoreOut.deleted - see practice.time_spent.
+    deleted: bool
 
 
 class ByActivityOut(BaseModel):
@@ -597,3 +621,168 @@ class ScanTriggerOut(ScanStatusOut):
 
 class UploadOut(BaseModel):
     saved: str
+
+
+# ---------------------------------------------------------------------------
+# Managing the library: moving, renaming, deleting and reorganising (#56)
+#
+# This is the one part of the API that WRITES to a person's own files, so the
+# shapes here are built around saying what happened rather than around saying
+# it worked. Every operation answers with the exact paths involved; every
+# destructive one answers with what it kept and what it destroyed, counted
+# from the database rather than assumed.
+# ---------------------------------------------------------------------------
+
+
+class MovePlanItemOut(BaseModel):
+    """One line of a move, whether or not it has happened yet.
+
+    The same shape is used for a dry run and for a move that was applied,
+    deliberately: a preview that is a different shape from the thing it
+    previews is a preview of something else. `status` is 'move' (this file
+    goes, or went, from `from_path` to `to_path`), 'unchanged' (it is already
+    where it was asked to be, and nothing will be touched) or 'blocked'
+    (something is in the way - `reason` says what, in words meant for a
+    person). A plan containing any 'blocked' line is refused as a whole rather
+    than applied in part.
+    """
+
+    score_id: int
+    title: str
+    from_path: str
+    to_path: str
+    status: str
+    reason: str | None = None
+
+
+class ScoreMoveOut(BaseModel):
+    """POST /api/scores/{id}/move: where one score's file went.
+
+    `score` is the score as it now stands - unchanged when this was a dry run,
+    which is what makes a dry run's response readable as "this is what you have
+    at the moment, and this is what would change".
+    """
+
+    dry_run: bool
+    applied: bool
+    moves: list[MovePlanItemOut]
+    score: ScoreOut
+
+
+class LibraryMoveOut(BaseModel):
+    """POST /api/library/move: a batch move, and its per-score plan.
+
+    `moved`, `unchanged` and `blocked` count the lines in `moves` by status, so
+    a caller has the headline without walking the list. On a dry run they
+    describe what WOULD happen; nothing on disk has been touched.
+    """
+
+    dry_run: bool
+    applied: bool
+    folder: str
+    moves: list[MovePlanItemOut]
+    moved: int
+    unchanged: int
+    blocked: int
+
+
+class FolderOut(BaseModel):
+    """One folder in the library tree, as the move dialog offers it.
+
+    `score_count` counts the scores whose file is directly in this folder, not
+    the ones under it - a total including subfolders would make the top-level
+    entry read as though everything were in it.
+    """
+
+    path: str
+    name: str
+    depth: int
+    score_count: int
+
+
+class FolderCreateOut(BaseModel):
+    """POST /api/library/folders. `existed` is true when the folder was
+    already there - which is not an error (asking for a folder that exists
+    leaves you with the folder you asked for) but is worth saying, so an
+    interface can tell "created" from "was already yours"."""
+
+    created: str
+    existed: bool
+
+
+class FolderRenameOut(BaseModel):
+    """POST /api/library/folders/rename: a folder moved, and every score that
+    went with it."""
+
+    dry_run: bool
+    applied: bool
+    from_path: str
+    to_path: str
+    moves: list[MovePlanItemOut]
+    moved: int
+
+
+class ScoreDeleteOut(BaseModel):
+    """DELETE /api/scores/{id}: a score moved to the trash.
+
+    The four `_kept` counts are the point of this shape. This deletion destroys
+    nothing, and the way to make that credible is to state, from the database
+    and after the fact, exactly how much is still attached to the row: the
+    practice sessions, the goals, the tags and the transcriptions. An interface
+    can then say "still holding 14 sessions" rather than "deleted (trust us)".
+    """
+
+    deleted: int
+    title: str
+    deleted_from: str
+    # Null when there was no file to move - a score whose file had already gone
+    # can still be deleted, and saying it was "trashed to" somewhere would be a
+    # path with nothing at it. `file_moved` is the same fact as a flag, stated
+    # so a client branches on a boolean rather than on a null.
+    trashed_to: str | None
+    file_moved: bool
+    practice_sessions_kept: int
+    goals_kept: int
+    tags_kept: int
+    transcriptions_kept: int
+
+
+class ScoreRestoreOut(BaseModel):
+    """POST /api/trash/{id}/restore: a score taken back out of the trash.
+
+    `restored_to` is where the file actually ended up, which is usually where
+    it came from and is not always: something else may have taken that path
+    while the score was in the trash, in which case the file lands beside it
+    under a distinct name rather than overwriting it. Reported rather than
+    assumed, because "it is back" and "it is back where it was" are different
+    claims.
+    """
+
+    restored: int
+    restored_from: str
+    restored_to: str
+    # False when there was no file in the trash to bring back - the score
+    # returns to the library flagged as missing rather than being stranded in
+    # the trash for ever. See api.restore_score.
+    file_restored: bool
+    score: ScoreOut
+
+
+class ScorePurgeOut(BaseModel):
+    """DELETE /api/trash/{id}: the destructive one.
+
+    Everything this shape reports is a thing that is now gone or a thing that
+    survived, counted before the delete ran so the numbers describe what was
+    actually there. `tags_destroyed` and `transcriptions_destroyed` cascade
+    with the row; `practice_sessions_kept` and `goals_kept` do not, because
+    the hours were still spent (see db.py's schema notes on why those two
+    references are ON DELETE SET NULL and these two are ON DELETE CASCADE).
+    """
+
+    deleted: int
+    title: str
+    file_deleted: str | None
+    tags_destroyed: int
+    transcriptions_destroyed: int
+    practice_sessions_kept: int
+    goals_kept: int

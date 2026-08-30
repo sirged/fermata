@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/zzz-library-organise.spec.js",
+  "count": 1,
+  "reason": "issue #56 adversarial review F6: practice logged against a score that is later deleted still counts and still shows, but stops being a link into a library that no longer holds it."
+}

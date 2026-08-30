@@ -105,6 +105,16 @@ them.
 - **Organize** — collections (from your folder layout), free-form tags,
   favorites, content-type labels (notation / tab / both), full-text search,
   and duplicate detection by file contents.
+- **Reorganize, from the app** — move and rename scores, make and rename
+  folders, move a batch in one go. The change is applied to the real file on
+  disk and the score follows it, so its practice history, tags, goals and any
+  transcription stay attached. Every bulk move shows you exactly what it will
+  do before it does it, and nothing is ever overwritten.
+- **Delete that isn't destruction** — deleting a score moves its file to a
+  trash folder inside your library and keeps everything hanging off it; Trash
+  puts it back exactly as it was. Destroying it for good is a separate,
+  deliberate second step that tells you what it will destroy — and even then,
+  the practice you logged against it stays in your history.
 - **Upload** — drag files in through the browser; they land in your library
   folder and are indexed immediately.
 - **Single container** — SQLite inside, two volume mounts, no external

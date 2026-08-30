@@ -1,8 +1,11 @@
+import errno
 import json
+import logging
+import os
 import re
 import shutil
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 from fastapi import (
@@ -24,6 +27,9 @@ from .api_models import (
     CollectionOut,
     CurrentGoalOut,
     DuplicateGroupOut,
+    FolderCreateOut,
+    FolderOut,
+    FolderRenameOut,
     GoalDeleteOut,
     GoalListOut,
     GoalOut,
@@ -31,6 +37,7 @@ from .api_models import (
     InstrumentDeleteOut,
     InstrumentOut,
     InstrumentPresetOut,
+    LibraryMoveOut,
     LogPracticeOut,
     PracticeHistoryOut,
     PracticeReviewOut,
@@ -38,8 +45,12 @@ from .api_models import (
     PracticeSummaryOut,
     ScanStatusOut,
     ScanTriggerOut,
+    ScoreDeleteOut,
+    ScoreMoveOut,
     ScoreOut,
     ScorePracticeOut,
+    ScorePurgeOut,
+    ScoreRestoreOut,
     SessionDeleteOut,
     SessionListOut,
     SettingsOut,
@@ -53,10 +64,17 @@ from .api_models import (
 from .config import FILE_TYPES, LIBRARY_DIR
 from .db import DEFAULT_OWNER, connect, tx, write_tx
 from .glyph_rhythm import VALID_TS_DENOMINATORS
+from .metadata import parse_path
 from .tabextract import analyze as analyze_pdf, extract as extract_pdf
 from .thumbs import thumb_path
 
 router = APIRouter(prefix="/api")
+
+# Used by the library-management routes at the bottom of this file, for the one
+# case where a filesystem operation fails in a way a person cannot see: a file
+# that could not be put back after a failed move. Everything else these routes
+# have to say, they say in the response.
+log = logging.getLogger("fermata.api")
 
 # Every route below carries a `tags=[...]` entry grouping it in /docs, and a
 # `response_model=` pinning its shape - see api_models.py for what each model
@@ -126,6 +144,49 @@ def _score_row(conn, score_id: int):
     row = conn.execute("SELECT * FROM scores WHERE id = ?", (score_id,)).fetchone()
     if not row:
         raise HTTPException(404, "score not found")
+    return row
+
+
+# WHAT A DELETED SCORE MAY STILL BE ASKED FOR (#56).
+#
+# A deleted score's row is still there, deliberately: that is the whole of what
+# makes deleting recoverable. So every endpoint that takes a score id can still
+# reach one, and each of them has to have decided what to do about it. This is
+# that decision, stated once, and _live_score_row is how the routes that refuse
+# do it.
+#
+# READS ARE ALLOWED, and that is deliberate rather than an oversight. GET
+# /scores/{id}, its file, its thumbnail, its transcription and its practice
+# totals all answer for a deleted score, because the trash view is built out of
+# exactly those responses and because being able to LOOK at a score - to open
+# it, to read the transcription you spent an evening correcting - is the point
+# of a trash you can change your mind from. A trash that will not let you check
+# what is in it before you destroy it is a worse trash.
+#
+# WRITES ARE REFUSED, with 409. Every one of them means "work on this piece":
+# logging practice against it, setting a goal about it, editing its title,
+# extracting or saving a transcription. Nothing in the interface offers any of
+# them for a deleted score, so reaching one is a client's mistake or an
+# automation's, and the useful answer names the fix rather than silently
+# accepting work that will look, afterwards, like practice on a score that is
+# not in the library.
+#
+# PRACTICE ALREADY LOGGED IS UNTOUCHED BY ALL OF THIS. The history is the one
+# thing here that cannot be regenerated; it stays, it still names its piece, and
+# it still counts. What changes is only that a figure naming a deleted score now
+# SAYS the score is deleted - see practice_summary's top_scores and
+# practice.time_spent's by_score - so a dashboard can stop offering a way into
+# something that is not in the library, instead of quietly linking to it.
+def _live_score_row(conn, score_id: int, doing: str):
+    """The score row, refusing if it is in the trash. `doing` completes the
+    sentence "Fermata will not <doing> a score that is in the trash"."""
+    row = _score_row(conn, score_id)
+    if row["deleted_at"] is not None:
+        raise HTTPException(
+            409,
+            f"{row['title']} is in the trash, so Fermata will not {doing}. Put it back "
+            "from the trash first - everything already on it is still there.",
+        )
     return row
 
 
@@ -434,12 +495,24 @@ def list_scores(
     source or series; `practiced` is 'recent' (practised in the last 14 days)
     or 'neglected' (present on disk, and either never practised or not
     practised in 30 days) - see the query's own comments for why those two
-    views disagree about a score whose file has gone missing."""
+    views disagree about a score whose file has gone missing.
+
+    A DELETED SCORE IS NEVER HERE, under any filter - it is in GET /api/trash
+    until it is restored or destroyed. A score whose FILE has gone missing is a
+    different thing and is still here, carrying `missing_since`: Fermata not
+    being able to find a file is not the same statement as somebody having
+    thrown it away."""
     if practiced and practiced not in VALID_PRACTICED:
         raise HTTPException(422, f"practiced must be one of {sorted(VALID_PRACTICED)}")
     conn = connect()
     sql = "SELECT DISTINCT s.* FROM scores s"
-    where, params = [], []
+    # A deleted score is not in the library, and no filter brings it back here -
+    # it is in the trash, which has its own endpoint (#56). This is deliberately
+    # unconditional rather than a `deleted` parameter: every view built on this
+    # one (the grid, the collection counts, "needs attention") would otherwise
+    # have to remember to pass it, and forgetting once puts a score somebody
+    # deleted back in front of them.
+    where, params = ["s.deleted_at IS NULL"], []
     if tag:
         sql += " JOIN score_tags st ON st.score_id = s.id JOIN tags t ON t.id = st.tag_id"
         where.append("t.name = ?")
@@ -525,14 +598,15 @@ def list_duplicates():
     conn = connect()
     dupes = conn.execute(
         """SELECT hash, COUNT(*) AS count FROM scores
-           WHERE missing_since IS NULL
+           WHERE missing_since IS NULL AND deleted_at IS NULL
            GROUP BY hash HAVING COUNT(*) > 1
            ORDER BY count DESC, hash"""
     ).fetchall()
     groups = []
     for d in dupes:
         rows = conn.execute(
-            "SELECT * FROM scores WHERE hash = ? AND missing_since IS NULL ORDER BY path",
+            "SELECT * FROM scores WHERE hash = ? AND missing_since IS NULL"
+            " AND deleted_at IS NULL ORDER BY path",
             (d["hash"],),
         ).fetchall()
         groups.append({"hash": d["hash"], "count": d["count"], "scores": _with_tags(conn, rows)})
@@ -562,7 +636,7 @@ def list_collections():
                   SUM(CASE WHEN missing_since IS NULL THEN 1 ELSE 0 END) AS count,
                   SUM(CASE WHEN missing_since IS NULL THEN 0 ELSE 1 END) AS missing
              FROM scores
-            WHERE collection IS NOT NULL
+            WHERE collection IS NOT NULL AND deleted_at IS NULL
          GROUP BY collection ORDER BY collection"""
     ).fetchall()
     return [dict(r) for r in rows]
@@ -573,8 +647,9 @@ def list_tags():
     """Every tag in use, and how many scores carry it."""
     conn = connect()
     rows = conn.execute(
-        """SELECT t.name, COUNT(st.score_id) AS count FROM tags t
+        """SELECT t.name, COUNT(s.id) AS count FROM tags t
            LEFT JOIN score_tags st ON st.tag_id = t.id
+           LEFT JOIN scores s ON s.id = st.score_id AND s.deleted_at IS NULL
            GROUP BY t.id ORDER BY t.name"""
     ).fetchall()
     return [dict(r) for r in rows]
@@ -608,7 +683,7 @@ def patch_score(score_id: RowId, patch: ScorePatch):
     if patch.content_kind is not None and patch.content_kind not in VALID_KINDS:
         raise HTTPException(422, f"content_kind must be one of {sorted(VALID_KINDS)}")
     with write_tx() as conn:
-        _score_row(conn, score_id)
+        _live_score_row(conn, score_id, "change what it says")
         if patch.instrument_id is not None:
             _instrument_row(conn, patch.instrument_id)
         fields = {
@@ -786,7 +861,7 @@ def _normalise_session(
     conn, fields: dict, allow_missing_score: bool = False, check_day_window: bool = True
 ) -> dict:
     if fields.get("score_id") is not None:
-        _score_row(conn, fields["score_id"])
+        _live_score_row(conn, fields["score_id"], "log practice against it")
     try:
         return practice.normalise_session(
             recorded_on=_server_today(),
@@ -833,7 +908,7 @@ def log_practice(score_id: RowId, body: PracticeIn):
     """Log a practice session against this score, and return it alongside
     the score's recent sessions and totals."""
     with write_tx() as conn:
-        _score_row(conn, score_id)
+        _live_score_row(conn, score_id, "log practice against it")
         fields = body.model_dump()
         fields["score_id"] = score_id
         values = _normalise_session(conn, fields)
@@ -983,7 +1058,8 @@ def list_sessions(
     conn = connect()
     filters = " AND ".join(where)
     rows = conn.execute(
-        f"""SELECT p.*, s.title AS score_title
+        f"""SELECT p.*, s.title AS score_title,
+                   s.deleted_at IS NOT NULL AS score_deleted
               FROM practice_sessions p LEFT JOIN scores s ON s.id = p.score_id
              WHERE {filters}
           ORDER BY {practice.LOCAL_DATE_SQL} DESC, p.started_at DESC, p.id DESC
@@ -1027,8 +1103,16 @@ def practice_summary():
             WHERE p.owner = ? AND {practice.LOCAL_DATE_SQL} >= date('now', '-6 days')""",
         (DEFAULT_OWNER,),
     ).fetchone()
+    # A DELETED SCORE IS STILL COUNTED HERE, AND NOW SAYS THAT IT IS (#56).
+    # Dropping it would be the wrong fix twice over: the hours were spent, and
+    # this figure's own totals would then stop adding up to the week_seconds
+    # beside it, with nothing saying why. What was actually wrong was that a
+    # dashboard named a piece and gave a client every reason to link to it,
+    # while the library it links into no longer holds it. So the fact travels
+    # with the row instead - the same shape as `score_missing` on a session.
     top = conn.execute(
-        f"""SELECT s.id, s.title, SUM(p.seconds) AS practice_seconds
+        f"""SELECT s.id, s.title, SUM(p.seconds) AS practice_seconds,
+                   s.deleted_at IS NOT NULL AS deleted
             FROM practice_sessions p JOIN scores s ON s.id = p.score_id
             WHERE p.owner = ? AND {practice.LOCAL_DATE_SQL} >= date('now', '-6 days')
             GROUP BY p.score_id ORDER BY practice_seconds DESC LIMIT 5""",
@@ -1037,7 +1121,7 @@ def practice_summary():
     return {
         "week_seconds": week["total_seconds"],
         "week_sessions": week["session_count"],
-        "top_scores": [dict(r) for r in top],
+        "top_scores": [{**dict(r), "deleted": bool(r["deleted"])} for r in top],
     }
 
 
@@ -1132,7 +1216,7 @@ def _goal_row(conn, goal_id: int):
 
 def _normalise_goal(conn, fields: dict, allow_missing_score: bool = False) -> dict:
     if fields.get("score_id") is not None:
-        _score_row(conn, fields["score_id"])
+        _live_score_row(conn, fields["score_id"], "set a goal about it")
     try:
         return practice.normalise_goal(allow_missing_score=allow_missing_score, **fields)
     except ValueError as e:
@@ -1715,7 +1799,7 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
     comments). Only valid for pdf scores with a tab staff; an unreadable
     time signature or a non-extractable pdf is a 422."""
     conn = connect()
-    row = _score_row(conn, score_id)
+    row = _live_score_row(conn, score_id, "extract a transcription from it")
     if row["file_type"] != "pdf":
         raise HTTPException(422, "transcription is only supported for pdf scores")
     path = LIBRARY_DIR / row["path"]
@@ -1896,7 +1980,7 @@ def save_transcription(score_id: RowId, body: TranscriptionEditIn):
         raise HTTPException(
             422, f"format must be one of {sorted(VALID_TRANSCRIPTION_FORMATS)}")
     with tx() as conn:
-        _score_row(conn, score_id)
+        _live_score_row(conn, score_id, "save a transcription for it")
         conn.execute(
             """INSERT INTO transcriptions(score_id, format, content, source, updated_at)
                VALUES (?, ?, ?, 'edited', datetime('now'))
@@ -1925,7 +2009,7 @@ def delete_transcription(score_id: RowId):
     no-op, not an error - only "no transcription at all" is a 404.
     """
     with tx() as conn:
-        _score_row(conn, score_id)
+        _live_score_row(conn, score_id, "throw away its hand-corrected transcription")
         conn.execute(
             "DELETE FROM transcriptions WHERE score_id = ? AND source = 'edited'", (score_id,)
         )
@@ -1991,7 +2075,14 @@ _SAFE_SEGMENT = re.compile(r"^[^/\\]+$")
 async def upload(file: UploadFile, folder: str = "Uploads"):
     """Save a file into the library under `folder` (created if needed) and
     trigger a scan to pick it up. `folder` may not contain `..` or an
-    absolute path segment."""
+    absolute path segment.
+
+    DELIBERATELY NOT HELD against a running scan or a move, unlike the
+    library-management routes below. This only ever creates a file at a path
+    nothing claims - it never moves or removes one - so it cannot invalidate a
+    scan's listing, and holding it would refuse the second of two uploads in a
+    row for the scan the first one started. See scanner.hold_library_still for
+    the full argument and for what catches the one overlap that matters."""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in FILE_TYPES:
         raise HTTPException(422, f"unsupported file type {suffix!r}")
@@ -2023,3 +2114,1176 @@ async def upload(file: UploadFile, folder: str = "Uploads"):
         shutil.copyfileobj(file.file, out)
     scanner.start_scan()
     return {"saved": str(dest.relative_to(LIBRARY_DIR))}
+
+
+# ---------------------------------------------------------------------------
+# MANAGING THE LIBRARY: moving, renaming, deleting and reorganising (#56).
+#
+# THIS IS THE ONE PART OF FERMATA THAT WRITES TO SOMEBODY'S OWN FILES. Every
+# other endpoint reads the library and writes only to Fermata's own database.
+# These move, rename and delete a person's sheet music, and getting one wrong
+# loses something that is not ours to lose. Five rules follow from that, and
+# every route below obeys all five:
+#
+#   1. NOTHING IS WRITTEN OUTSIDE THE LIBRARY FOLDER. Every destination goes
+#      through _safe_parts and then _resolve_in_library, which is a check on the
+#      RESOLVED path rather than on the text of it - so a symlink pointing out
+#      of the library is refused as well as a `..`.
+#
+#   2. DELETING IS A MOVE, NOT A DELETE. A deleted score's file goes to a trash
+#      folder inside the library and its row is marked, keeping the practice
+#      history, goals, tags and transcription attached (see db.py's notes on
+#      deleted_at). Destroying anything takes a second, separate request to a
+#      different route that says what it destroys.
+#
+#   3. NOTHING IS DESTROYED AS A SIDE EFFECT OF AN ORGANISATIONAL CHANGE. A
+#      move that would land on an existing file is refused; it never overwrites.
+#      A batch whose plan contains one blocked line applies none of it.
+#
+#   4. A BULK OPERATION IS A DRY RUN UNTIL SOMEBODY SAYS OTHERWISE. `dry_run`
+#      defaults to true on both routes that touch more than one score, so the
+#      obvious call - and any client that forgets the flag exists - shows the
+#      plan rather than performing it.
+#
+#   5. THE SCORE ROW FOLLOWS THE FILE BY CONTENT HASH, which is the identity
+#      test the scanner already uses, applied to a file whose row we already
+#      know (see _relink_moved_file). There is no second notion of what makes a
+#      file "the same score".
+# ---------------------------------------------------------------------------
+
+# What a single path segment may be.
+#
+# No separators (those are what splits the string in the first place), no empty
+# segment, and nothing that is only dots - "." and ".." are the two that escape
+# a directory, and a segment of "..." is not a name anybody meant to type
+# either. Control characters are excluded because a newline in a filename is a
+# filename that cannot be read back out of a log or a listing.
+#
+# AND THE CHARACTERS WINDOWS ITSELF WILL NOT TAKE, which is not tidiness and is
+# not a portability nicety - each one is a way for the text of a path to say one
+# thing and the filesystem to do another, and this whole section's guarantee is
+# that where a file goes is where the caller asked for it to go:
+#
+#   `:` IS AN NTFS ALTERNATE DATA STREAM. `evil:stream.pdf` is not a file called
+#   "evil:stream.pdf"; it is a hidden stream attached to a file called "evil".
+#   The move succeeded, the bytes went into the stream, and the content hash
+#   read back THROUGH the stream matched - so every check this code makes passed
+#   - while the library got a 0-byte "evil" the scanner cannot read, and any
+#   copy or backup that does not preserve streams drops the music silently.
+#
+#   `< > " | ? *` are refused by Win32 outright, so on Windows they are a 500
+#   from deep inside a rename, and on Linux they are a filename that cannot be
+#   copied to a Windows machine or a common network share. Refused here so the
+#   answer is the same sentence on both.
+#
+# The trailing-dot and trailing-space rule is separate and lives in
+# _reject_trailing - see there for why a regex is the wrong place for it.
+_VALID_SEGMENT = re.compile(r'^(?!\.+$)[^/\\:<>"|?*\x00-\x1f]+$')
+
+# Windows silently STRIPS a trailing dot or space from every path component -
+# `"Music."` and `"Music"` are the same directory, and `"Study .pdf"` is
+# `"Study.pdf"`. That is a divergence between what the database records and what
+# is on disk, and in one case it is a way straight through this section's
+# guarantees: `.fermata-trash.` passes the trash-folder check on its text and
+# then lands, on disk, INSIDE the trash folder. A live score would sit in the
+# folder scans skip - so it is marked missing on the next pass - and in the
+# folder docs/deployment.md tells people they may empty by hand.
+_TRAILING = " ."
+
+
+def _reject_trailing(part: str, field: str) -> None:
+    """Refuse a segment that a filesystem would quietly rename.
+
+    Not folded into _VALID_SEGMENT because the two say different things and one
+    of them needs its own sentence: the regex is about characters a name may not
+    CONTAIN, and this is about a name the filesystem will not STORE AS WRITTEN.
+    A caller who typed a trailing dot deserves to be told that rather than to
+    find their score somewhere else.
+    """
+    if part and part[-1] in _TRAILING:
+        raise HTTPException(
+            422,
+            f"{field} segment {part!r} ends in a space or a dot. Windows silently drops "
+            "those, so the folder Fermata recorded and the folder on disk would be two "
+            "different places - and one of them could be inside Fermata's own trash.",
+        )
+
+# The move dialog offers folders to move into, and a library with a deep tree
+# would otherwise hand a tablet a list thousands long. Deep enough for the
+# Collection/Composer/Series/... layout parse_path describes, and then some.
+MAX_FOLDER_DEPTH = 8
+
+
+def _library_dir():
+    """The library root, read through the module global rather than captured.
+
+    api.py binds LIBRARY_DIR by value at import (`from .config import ...`), and
+    the tests repoint that binding - so every function here has to read it at
+    call time or it will happily reorganise the developer's real library from
+    inside a test run.
+    """
+    return LIBRARY_DIR
+
+
+def _require_library():
+    """Refuse to touch anything if the library folder is not there.
+
+    Same reasoning as upload()'s check: a missing library folder is a mount that
+    did not appear, and this is the last moment at which a move can decline
+    rather than write into an empty directory that will vanish with the
+    container.
+    """
+    root = _library_dir()
+    if not root.is_dir():
+        raise HTTPException(
+            503,
+            f"the library folder {root} is not there, so there is nothing to reorganise. "
+            "This is usually a drive or volume that did not mount - see "
+            "docs/deployment.md. Nothing has been changed.",
+        )
+    return root
+
+
+def _safe_parts(folder: str, field: str = "folder") -> tuple[str, ...]:
+    """Split a client-supplied folder into segments, or refuse it.
+
+    REFUSES rather than sanitises, which is the opposite of what upload() does
+    with the same shape of input (it silently drops `..`). The difference is
+    what happens next: an upload lands a new file somewhere slightly unexpected,
+    while a move takes a file somebody already has and puts it there. Silently
+    moving a score to a folder other than the one that was asked for is not a
+    smaller failure than refusing.
+    """
+    # NOT .strip()ped, and that is the same rule as everything else here rather
+    # than an omission. Stripping is sanitising: "Classical " came in, a folder
+    # called "Classical" came out, and the caller was never told the two are not
+    # the same request. It is also precisely the trailing character
+    # _reject_trailing exists to refuse, so stripping first would have quietly
+    # disarmed that check for every space. An empty string is still the library
+    # root; a string that is only a space is now a refusal, which is right.
+    raw = (folder or "").replace("\\", "/")
+    if raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
+        raise HTTPException(422, f"{field} must be inside the library, not an absolute path")
+    parts = tuple(p for p in raw.split("/") if p)
+    for part in parts:
+        if not _VALID_SEGMENT.match(part):
+            raise HTTPException(
+                422,
+                f"{field} segment {part!r} is not a usable folder name - no separators, no "
+                "'..', no control characters, and none of : < > \" | ? *",
+            )
+        _reject_trailing(part, field)
+    # AFTER the trailing-dot rule, and that order is the whole point of the
+    # rule existing: ".fermata-trash." is not equal to ".fermata-trash", so it
+    # passes this check on its text, and Windows then drops the dot and puts the
+    # score inside the trash folder anyway.
+    if parts and parts[0] == scanner.TRASH_DIR_NAME:
+        raise HTTPException(
+            422,
+            f"{scanner.TRASH_DIR_NAME} is Fermata's trash folder, not a place to put scores. "
+            "Delete a score to send it there, and restore it to bring it back.",
+        )
+    return parts
+
+
+def _safe_filename(name: str) -> str:
+    """A file name, with its extension checked against FILE_TYPES.
+
+    The extension has to stay something the scanner recognises: renaming a PDF
+    to `.txt` would leave a file the library can no longer see, which is a
+    deletion wearing a rename's clothes.
+    """
+    # Not stripped, for the reason _safe_parts gives: "Study.pdf " and
+    # "Study.pdf" are two different requests, and only one of them is a name
+    # Windows will actually store.
+    cleaned = name or ""
+    if not cleaned or not _VALID_SEGMENT.match(cleaned):
+        raise HTTPException(
+            422,
+            "filename is not a usable file name - no folders, no '..', no control "
+            "characters, and none of : < > \" | ? * (a ':' is not part of a name on "
+            "Windows at all; it opens a hidden data stream on the file before it)",
+        )
+    _reject_trailing(cleaned, "filename")
+    suffix = Path(cleaned).suffix.lower()
+    if suffix not in FILE_TYPES:
+        raise HTTPException(
+            422,
+            f"filename must keep a score file extension ({', '.join(sorted(FILE_TYPES))}); "
+            f"{suffix or 'no extension'} is not one Fermata can read",
+        )
+    return cleaned
+
+
+def _resolve_in_library(rel: str) -> Path:
+    """The absolute path for a library-relative one, checked to be inside it.
+
+    The check is on the RESOLVED path, so it also refuses a destination that
+    only reaches outside the library through a symlink - which no amount of
+    inspecting the text of the path can catch. This is the check issue #56 asks
+    for by name ("refuse to write outside the configured library directory, and
+    test that"), and it is deliberately the last word rather than the first: the
+    segment rules above are what produce a good error message, and this is what
+    makes the guarantee true.
+    """
+    root = _library_dir()
+    candidate = root.joinpath(*PurePosixPath(rel).parts)
+    try:
+        resolved = Path(os.path.realpath(candidate))
+        root_resolved = Path(os.path.realpath(root))
+    except OSError as exc:  # pragma: no cover - realpath on a sane path
+        raise HTTPException(422, f"that path cannot be used: {exc}") from None
+    if resolved != root_resolved and not resolved.is_relative_to(root_resolved):
+        raise HTTPException(
+            422,
+            "that would put the file outside your library folder, which Fermata will not "
+            "do. Nothing has been changed.",
+        )
+    return candidate
+
+
+def _destination_for(row, folder: str | None, filename: str | None) -> str:
+    """Where this score's file would end up, as a library-relative path."""
+    current = PurePosixPath(row["path"])
+    parts = _safe_parts(folder) if folder is not None else current.parent.parts
+    name = _safe_filename(filename) if filename is not None else current.name
+    if parts and parts[0] == "":  # PurePosixPath('a.pdf').parent is '.', not ''
+        parts = ()
+    parts = tuple(p for p in parts if p not in ("", "."))
+    return "/".join([*parts, name])
+
+
+def _location_fields(rel: str) -> tuple[str | None, str | None]:
+    """The two fields that describe WHERE a score is, re-derived from its path.
+
+    A move changes where a score lives, so `collection` and `series` - which are
+    read straight off the folders, and which the sidebar presents as the folder
+    tree - have to follow it or the sidebar starts describing a layout that is
+    no longer there.
+
+    `title`, `composer` and `source` deliberately do NOT follow. Those are
+    statements about the music rather than about the filesystem, they can have
+    been corrected by hand through PATCH /api/scores/{id}, and re-deriving them
+    from a path would silently undo that correction every time somebody tidied a
+    folder. That is why moving and renaming metadata are two different
+    operations in this API: this one moves the file, PATCH edits the facts.
+    """
+    meta = parse_path(rel)
+    return meta.collection, meta.series
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    """Are these two paths the same file on disk?
+
+    Asked, rather than assumed from the text of the paths, because on a
+    case-insensitive filesystem two different strings routinely name one file -
+    which is the whole of the case-only rename problem below. False when either
+    path is not there, which is the answer every caller here wants.
+    """
+    try:
+        return a.exists() and b.exists() and os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _fs_refused(exc: OSError) -> HTTPException:
+    """The filesystem would not take this path, said as a refusal not a crash.
+
+    The segment rules cannot know what a particular filesystem will accept: a
+    name Windows reserves outright (NUL, CON), a path over its length limit, a
+    disk that is full, a mount that went read-only. Every one of those is
+    something a person can rename or free their way around, and none of them is
+    a bug in Fermata - so they come back as a 422 carrying what the filesystem
+    actually said, the same way create_folder already answers.
+    """
+    return HTTPException(422, f"your filesystem would not accept that path: {exc}")
+
+
+def _move_file_on_disk(src: Path, dest: Path) -> None:
+    """Move one file, creating the folders above it, never overwriting.
+
+    os.replace would be atomic and is exactly wrong here: it replaces the
+    destination silently, which is the one thing rule 3 above forbids. The
+    existence check is racy against something outside Fermata writing the same
+    path in the same millisecond, and that race is accepted - the alternative is
+    an exclusive create plus a copy plus a delete, which turns a rename into a
+    read and write of the whole file for a case that needs a second process
+    writing into the library at the exact moment of a move.
+
+    A DESTINATION THAT IS THE SOURCE IS NOT IN THE WAY. On NTFS - which is the
+    platform this is deployed on - "Toccata.pdf" and "toccata.pdf" are one file,
+    so correcting a score's capitalisation asks to move a file onto itself and
+    the existence check above would refuse it, blaming the score for being where
+    it is. _same_file asks the filesystem instead of the path text.
+
+    THE EXDEV FALLBACK IS NARROWED TO EXDEV, and that is a fix rather than
+    tidying. shutil.move copies and unlinks, and copying onto an existing
+    destination OVERWRITES it - so catching every OSError and falling through to
+    it turned the one case rule 3 forbids (a file already there, appearing in the
+    gap between the check and the rename, which is exactly the race an upload can
+    produce) into a silent overwrite of somebody's file.
+    """
+    if dest.exists() and not _same_file(src, dest):
+        raise HTTPException(409, f"there is already a file at {dest}")
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise _fs_refused(exc) from None
+    try:
+        src.rename(dest)
+        return
+    except FileExistsError:
+        # Windows' rename refuses an existing destination outright; POSIX's
+        # replaces it silently, which is why the check above exists at all.
+        raise HTTPException(409, f"there is already a file at {dest}") from None
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise _fs_refused(exc) from None
+    # Different filesystems under one library tree (a bind mount inside a bind
+    # mount). Re-checked, because the copy below would overwrite where the
+    # rename above would not.
+    if dest.exists() and not _same_file(src, dest):
+        raise HTTPException(409, f"there is already a file at {dest}")
+    try:
+        shutil.move(str(src), str(dest))
+    except OSError as exc:
+        raise _fs_refused(exc) from None
+
+
+_MOVE_CHANGED_ADVICE = "Scan the library so Fermata re-reads it, then move the score again."
+
+# WHY THE RESTORE PATH NEEDS ITS OWN SENTENCE. The advice this refusal used to
+# give everybody - scan the library and try again - was actively harmful before
+# the rollback above existed, because the file was left at the new path and a
+# scan filed it as a brand new historyless score. With the rollback it is no
+# longer harmful, but on the restore path it is still USELESS: the file is back
+# in the trash, and scans skip the trash folder by design, so the one action the
+# message asks for provably cannot change the outcome. What is actually true
+# there is that the file in the trash is no longer the file that was deleted,
+# and a person has two real ways out.
+_RESTORE_CHANGED_ADVICE = (
+    "The file in the trash is not the one this score was deleted with - check it: put the "
+    "original back in the trash folder and restore again, or, if this score is not worth "
+    "keeping, delete it for good."
+)
+
+
+def _relink_moved_file(conn, row, dest_rel: str, advice: str = _MOVE_CHANGED_ADVICE) -> None:
+    """Point the score row at where its file now is - by content, not by trust.
+
+    The hash is recomputed at the destination and checked against the one the
+    row already carries, and that check is the whole of this function's claim to
+    be safe. It is the same identity test scanner._scan_file's relink makes,
+    for the same reason: the bytes are what say two paths hold the same score.
+    Here it is applied to a file whose row is already known, so the answer is
+    yes or no rather than a search - but a NO still has to be an error, because
+    a mismatch means the file changed under Fermata between being listed and
+    being moved, and pointing the row at it anyway would attach somebody's
+    practice history to different music.
+
+    size and mtime are refreshed alongside, so the next scan's unchanged-file
+    shortcut recognises the file rather than re-reading and re-hashing it.
+    """
+    dest = _resolve_in_library(dest_rel)
+    moved_hash = scanner.hash_file(dest)
+    if moved_hash != row["hash"]:
+        raise HTTPException(
+            409,
+            "the file's contents are not the ones Fermata recorded for this score, so it "
+            "stopped rather than attach this score's practice history and transcription to "
+            f"different music. Nothing was changed. {advice}",
+        )
+    stat = dest.stat()
+    _repoint_row(conn, row["id"], dest_rel, stat.st_size, stat.st_mtime)
+
+
+def _repoint_row(conn, score_id: int, dest_rel: str, size=None, mtime=None) -> None:
+    """Say where a score's file is now, and re-derive the two fields that
+    describe where it lives.
+
+    `size` and `mtime` are omitted for a score whose file is NOT THERE - see
+    rename_folder, which has to carry a score marked missing along with the
+    folder it is filed under. There is nothing to stat, and the figures the row
+    already carries are the last true ones: overwriting them with zeroes would
+    make the scanner's unchanged-file shortcut re-read the file the day it comes
+    back, which is harmless, and would make the stored size a lie in the
+    meantime, which is not.
+    """
+    collection, series = _location_fields(dest_rel)
+    fields = {"path": dest_rel, "collection": collection, "series": series}
+    if size is not None:
+        fields["size"], fields["mtime"] = size, mtime
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    conn.execute(f"UPDATE scores SET {sets} WHERE id = ?", [*fields.values(), score_id])
+
+
+def _plan_line(row, dest_rel: str, status: str, reason: str | None = None) -> dict:
+    return {
+        "score_id": row["id"],
+        "title": row["title"],
+        "from_path": row["path"],
+        "to_path": dest_rel,
+        "status": status,
+        "reason": reason,
+    }
+
+
+def _plan_move(conn, row, dest_rel: str, claimed: set[str]) -> dict:
+    """One line of a move plan: what would happen to this score, and why not.
+
+    `claimed` carries the destinations earlier lines in the same batch have
+    already taken, so two scores with the same file name moving into one folder
+    are both reported as blocked rather than the second one silently landing on
+    the first.
+    """
+    if row["deleted_at"] is not None:
+        # Checked FIRST, and before the unchanged shortcut, because a deleted
+        # score has a perfectly good file sitting in the trash: without this it
+        # would be moved back out into the library while its row stays marked
+        # deleted, leaving a file nothing in the library shows and a trash entry
+        # whose file is not in the trash. Restoring is an action with a button,
+        # and it is the only thing that takes a score out of the trash.
+        return _plan_line(
+            row,
+            dest_rel,
+            "blocked",
+            "that score is in the trash. Put it back from there first, and then move it.",
+        )
+    if dest_rel == row["path"]:
+        return _plan_line(row, dest_rel, "unchanged")
+    if row["missing_since"] is not None:
+        return _plan_line(
+            row,
+            dest_rel,
+            "blocked",
+            "Fermata cannot find this score's file, so there is nothing to move. Put the "
+            "file back and scan, or delete the score if it is really gone.",
+        )
+    source = _resolve_in_library(row["path"])
+    if not source.is_file():
+        return _plan_line(
+            row,
+            dest_rel,
+            "blocked",
+            "this score's file is not where Fermata last saw it - scan the library and "
+            "try again.",
+        )
+    if dest_rel in claimed:
+        return _plan_line(
+            row,
+            dest_rel,
+            "blocked",
+            "another score in this same move would be put at that exact path, and Fermata "
+            "will not overwrite one of your files with another. Rename one of them first.",
+        )
+    taken = conn.execute(
+        "SELECT id, title FROM scores WHERE path = ? AND id != ?", (dest_rel, row["id"])
+    ).fetchone()
+    if taken is not None:
+        return _plan_line(
+            row, dest_rel, "blocked", f"{taken['title']} is already at that path"
+        )
+    # `and not _same_file(...)` is what makes correcting a score's
+    # capitalisation possible on NTFS, where "Toccata.pdf" and "toccata.pdf" are
+    # one file: without it the file in the way IS this score's own file, and the
+    # plan blocked the rename while blaming the score for existing.
+    dest = _resolve_in_library(dest_rel)
+    if dest.exists() and not _same_file(source, dest):
+        return _plan_line(
+            row, dest_rel, "blocked", "there is already a file at that path"
+        )
+    claimed.add(dest_rel)
+    return _plan_line(row, dest_rel, "move")
+
+
+def _apply_plan(conn, plan: list[dict]) -> None:
+    """Carry out every 'move' line, or leave the library exactly as it was.
+
+    A blocked line anywhere refuses the whole batch - a half-applied
+    reorganisation is worse than none, because the person now has to work out
+    which half. If a move fails part way through (a file locked, a folder gone
+    read-only), the ones already made are put back before the error is raised,
+    and the surrounding write_tx rolls the rows back with it.
+    """
+    blocked = [line for line in plan if line["status"] == "blocked"]
+    if blocked:
+        raise HTTPException(
+            409,
+            "nothing was moved. "
+            + " ".join(f"{line['title']}: {line['reason']}" for line in blocked),
+        )
+    done: list[tuple[Path, Path]] = []
+    try:
+        for line in plan:
+            if line["status"] != "move":
+                continue
+            row = _score_row(conn, line["score_id"])
+            source = _resolve_in_library(row["path"])
+            dest = _resolve_in_library(line["to_path"])
+            _move_file_on_disk(source, dest)
+            done.append((source, dest))
+            _relink_moved_file(conn, row, line["to_path"])
+    except Exception:
+        for source, dest in reversed(done):
+            try:
+                dest.rename(source)
+            except OSError:  # pragma: no cover - the filesystem refusing twice
+                log.error(
+                    "could not put %s back at %s after a failed move - the file is at the "
+                    "new path and the database has been rolled back, so a scan will "
+                    "re-link it",
+                    dest,
+                    source,
+                )
+        raise
+
+
+class ScoreMoveIn(BaseModel):
+    """Where one score's file should go.
+
+    Both `folder` and `filename` are optional and at least one is required:
+    omitting the folder keeps the score where it is (so this is a rename), and
+    omitting the filename keeps its name (so this is a move). An empty string
+    for `folder` is the library root, and is not the same as omitting it.
+
+    `dry_run` defaults FALSE here and TRUE on the two bulk routes. A person
+    moving one score has that score in front of them and has said which folder;
+    making them confirm a one-line plan first is ceremony, not safety. A batch
+    is the case where what is about to happen is not obvious, which is what
+    issue #56's dry-run-by-default rule is about.
+    """
+
+    folder: str | None = None
+    filename: str | None = None
+    dry_run: bool = False
+
+
+class LibraryMoveIn(BaseModel):
+    """Several scores into one folder. See LibraryMoveOut for the plan shape."""
+
+    score_ids: list[Count] = Field(min_length=1, max_length=500)
+    folder: str
+    # True by default, on purpose - see move_scores' docstring.
+    dry_run: bool = True
+
+
+class FolderIn(BaseModel):
+    path: str = Field(max_length=1000)
+
+
+class FolderRenameIn(BaseModel):
+    from_path: str = Field(max_length=1000)
+    to_path: str = Field(max_length=1000)
+    # True by default, on purpose - see rename_folder's docstring.
+    dry_run: bool = True
+
+
+def _busy(exc: scanner.LibraryBusy) -> HTTPException:
+    """A scan (or another change) is in flight - see scanner.hold_library_still.
+
+    409 rather than 503: nothing is wrong with the server, the request simply
+    conflicts with something already happening, and it will succeed unchanged in
+    a moment.
+    """
+    return HTTPException(409, str(exc))
+
+
+@router.post("/scores/{score_id}/move", tags=[TAG_LIBRARY], response_model=ScoreMoveOut)
+def move_score(score_id: RowId, body: ScoreMoveIn):
+    """Move one score's file to another folder in the library, rename it, or
+    both, and bring the score row with it.
+
+    `folder` is a library-relative folder (omit it to keep the score where it
+    is); `filename` renames the file within that folder and must keep an
+    extension Fermata can read. `dry_run` answers with the plan and changes
+    nothing.
+
+    THIS RENAMES THE FILE, NOT THE PIECE. A score's title, composer and source
+    are edited with PATCH /api/scores/{id} and are deliberately left alone here
+    - they can have been corrected by hand, and a tidy-up of the folders must
+    not quietly undo that. The two location fields that ARE read off the path,
+    `collection` and `series`, do follow the file. Everything else on the score
+    - its practice history, goals, tags, transcription, favourite, last page
+    read and instrument - is attached to the row, and the row is updated rather
+    than replaced, so all of it survives the move untouched.
+    """
+    _require_library()
+    if body.folder is None and body.filename is None:
+        raise HTTPException(422, "give a folder to move into, a filename to rename to, or both")
+    try:
+        with scanner.hold_library_still():
+            with write_tx() as conn:
+                row = _score_row(conn, score_id)
+                dest_rel = _destination_for(row, body.folder, body.filename)
+                _resolve_in_library(dest_rel)
+                plan = [_plan_move(conn, row, dest_rel, set())]
+                if not body.dry_run:
+                    _apply_plan(conn, plan)
+    except scanner.LibraryBusy as exc:
+        raise _busy(exc) from None
+    conn = connect()
+    return {
+        "dry_run": body.dry_run,
+        "applied": not body.dry_run,
+        "moves": plan,
+        "score": _with_tags(conn, [_score_row(conn, score_id)])[0],
+    }
+
+
+@router.get("/library/folders", tags=[TAG_LIBRARY], response_model=list[FolderOut])
+def list_folders():
+    """Every folder in the library, for a move dialog to offer as a
+    destination.
+
+    Read from the filesystem rather than from the stored paths, so a folder
+    created a moment ago and still empty is offered - which is the whole point
+    of being able to create one. The trash and any other dot-folder are left
+    out: those belong to Fermata or to a sync client, not to the person's
+    library.
+    """
+    root = _require_library()
+    conn = connect()
+    counts: dict[str, int] = {}
+    for r in conn.execute("SELECT path FROM scores WHERE deleted_at IS NULL"):
+        parent = PurePosixPath(r["path"]).parent
+        key = "" if str(parent) == "." else str(parent)
+        counts[key] = counts.get(key, 0) + 1
+    folders = [
+        {
+            "path": "",
+            "name": "Library root",
+            "depth": 0,
+            "score_count": counts.get("", 0),
+        }
+    ]
+    for path in sorted(root.rglob("*")):
+        if not path.is_dir():
+            continue
+        rel = path.relative_to(root).as_posix()
+        parts = PurePosixPath(rel).parts
+        if len(parts) > MAX_FOLDER_DEPTH or any(p.startswith(".") for p in parts):
+            continue
+        folders.append(
+            {
+                "path": rel,
+                "name": parts[-1],
+                "depth": len(parts),
+                "score_count": counts.get(rel, 0),
+            }
+        )
+    return folders
+
+
+@router.post("/library/folders", tags=[TAG_LIBRARY], response_model=FolderCreateOut)
+def create_folder(body: FolderIn):
+    """Create a folder in the library, so scores can be moved into it.
+
+    Creating a folder that is already there is not an error - the caller asked
+    to have that folder and does - but the answer says which of the two
+    happened.
+
+    NOT held against a running scan, unlike every other route in this section:
+    mkdir moves nothing and removes nothing, and a scan has no opinion about an
+    empty directory. See scanner.hold_library_still for the two exemptions and
+    why each one is safe.
+    """
+    _require_library()
+    parts = _safe_parts(body.path, "path")
+    if not parts:
+        raise HTTPException(422, "give a folder name")
+    rel = "/".join(parts)
+    target = _resolve_in_library(rel)
+    existed = target.is_dir()
+    if target.exists() and not existed:
+        raise HTTPException(409, f"{rel} is a file, not a folder")
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # The segment rules cannot know what a particular filesystem will
+        # accept: Windows reserves a handful of names outright (CON, NUL, and
+        # friends) and refuses trailing dots, and any filesystem can be full or
+        # read-only. Refusing with what the filesystem actually said beats a
+        # 500 for something a person can simply rename around.
+        raise HTTPException(422, f"your filesystem would not take that folder name: {exc}") from None
+    return {"created": rel, "existed": existed}
+
+
+@router.post("/library/move", tags=[TAG_LIBRARY], response_model=LibraryMoveOut)
+def move_scores(body: LibraryMoveIn):
+    """Move several scores into one folder, keeping each one's file name.
+
+    A DRY RUN UNLESS `dry_run` IS EXPLICITLY FALSE. Issue #56 asks for that by
+    name and it is the default here rather than an option, so a client that has
+    never heard of the flag gets the plan and not the reorganisation.
+
+    All or nothing: if any line of the plan is blocked - a name collision, a
+    file that is not where Fermata thinks it is - none of the moves are made.
+    Half a reorganisation is worse than none, because the person then has to
+    work out which half happened.
+    """
+    _require_library()
+    parts = _safe_parts(body.folder)
+    folder = "/".join(parts)
+    try:
+        with scanner.hold_library_still():
+            with write_tx() as conn:
+                plan: list[dict] = []
+                claimed: set[str] = set()
+                for score_id in body.score_ids:
+                    row = _score_row(conn, score_id)
+                    dest_rel = "/".join([*parts, PurePosixPath(row["path"]).name])
+                    _resolve_in_library(dest_rel)
+                    plan.append(_plan_move(conn, row, dest_rel, claimed))
+                if not body.dry_run:
+                    _apply_plan(conn, plan)
+    except scanner.LibraryBusy as exc:
+        raise _busy(exc) from None
+    return {
+        "dry_run": body.dry_run,
+        "applied": not body.dry_run,
+        "folder": folder,
+        "moves": plan,
+        "moved": sum(1 for line in plan if line["status"] == "move"),
+        "unchanged": sum(1 for line in plan if line["status"] == "unchanged"),
+        "blocked": sum(1 for line in plan if line["status"] == "blocked"),
+    }
+
+
+@router.post("/library/folders/rename", tags=[TAG_LIBRARY], response_model=FolderRenameOut)
+def rename_folder(body: FolderRenameIn):
+    """Rename a folder, or move it under another one, taking its scores with it.
+
+    A DRY RUN UNLESS `dry_run` IS EXPLICITLY FALSE, for the same reason
+    /library/move is: this is the operation that restructures a whole shelf at
+    once.
+
+    The FOLDER is renamed on disk, in one step, rather than its scores being
+    moved out of it one at a time - so anything else in there (a cover image, a
+    text file, a subfolder Fermata does not index) goes along too, which is what
+    somebody renaming a folder means. Every score underneath it, at any depth,
+    is then re-pointed at its new path.
+    """
+    _require_library()
+    from_parts = _safe_parts(body.from_path, "from_path")
+    to_parts = _safe_parts(body.to_path, "to_path")
+    if not from_parts or not to_parts:
+        raise HTTPException(422, "give both the folder to rename and its new path")
+    from_rel, to_rel = "/".join(from_parts), "/".join(to_parts)
+    if to_rel == from_rel:
+        raise HTTPException(422, "the new path is the same as the old one")
+    if to_parts[: len(from_parts)] == from_parts:
+        raise HTTPException(422, "a folder cannot be moved inside itself")
+    source = _resolve_in_library(from_rel)
+    dest = _resolve_in_library(to_rel)
+    if not source.is_dir():
+        raise HTTPException(404, f"there is no folder {from_rel} in your library")
+    # THE SAME EXCEPTION THE FILE PATH NEEDED, for the same reason and on the
+    # same platform: "Inbox" and "inbox" are one directory on NTFS, so fixing a
+    # folder's capitalisation asks to rename it onto itself and a bare
+    # exists() refused it - "inbox already exists", naming the folder as its own
+    # obstacle. Asking the filesystem separates the two cases a path string
+    # cannot: the same directory under another spelling (allowed - it IS the
+    # rename), and a genuinely different directory that happens to be there
+    # (still refused, because renaming onto it would merge two folders' scores
+    # into one with nothing said).
+    if dest.exists() and not _same_file(source, dest):
+        raise HTTPException(409, f"{to_rel} already exists")
+    prefix = from_rel + "/"
+    try:
+        with scanner.hold_library_still():
+            with write_tx() as conn:
+                # ESCAPE IS NOT OPTIONAL HERE. `_` is a single-character
+                # wildcard in LIKE, and folder names full of underscores are
+                # exactly what this library's own filenames look like
+                # ("Terra_s Theme"). Without the escape clause the escaping
+                # below would be literal backslashes in the pattern and a folder
+                # with an underscore in its name would match NOTHING - so
+                # renaming it would move the folder on disk and re-point not one
+                # score, silently. The startswith() pass after it is the belt to
+                # this brace: LIKE is what lets SQLite use the index, and Python
+                # is what decides.
+                pattern = prefix.replace("\\", r"\\").replace("%", r"\%").replace("_", r"\_")
+                rows = [
+                    r
+                    for r in conn.execute(
+                        "SELECT * FROM scores WHERE deleted_at IS NULL"
+                        " AND path LIKE ? ESCAPE '\\' ORDER BY path",
+                        (pattern + "%",),
+                    ).fetchall()
+                    if r["path"].startswith(prefix)
+                ]
+                plan = []
+                for r in rows:
+                    dest_rel = to_rel + "/" + r["path"][len(prefix):]
+                    # A row can name a path with no file behind it - that is
+                    # exactly what a score marked missing is - and scores.path is
+                    # UNIQUE, so re-pointing a row at a path another row already
+                    # claims is an IntegrityError and a 500. Reported as a
+                    # blocked line instead, which is a sentence a person can act
+                    # on and which _apply_plan's own rule already refuses on.
+                    taken = conn.execute(
+                        "SELECT title FROM scores WHERE path = ? AND id != ?",
+                        (dest_rel, r["id"]),
+                    ).fetchone()
+                    plan.append(
+                        _plan_line(
+                            r,
+                            dest_rel,
+                            "blocked" if taken else "move",
+                            f"{taken['title']} is already at that path" if taken else None,
+                        )
+                    )
+                blocked = [line for line in plan if line["status"] == "blocked"]
+                if blocked:
+                    raise HTTPException(
+                        409,
+                        "nothing was moved. "
+                        + " ".join(f"{line['title']}: {line['reason']}" for line in blocked),
+                    )
+                if not body.dry_run:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    source.rename(dest)
+                    try:
+                        for line in plan:
+                            row = _score_row(conn, line["score_id"])
+                            if row["missing_since"] is not None:
+                                # A score under this folder whose file is not
+                                # there. It still has to follow the rename, or
+                                # it is left filed under a folder name that no
+                                # longer exists - and there is nothing to hash,
+                                # so the content check _relink_moved_file makes
+                                # would be a FileNotFoundError and a 500 for the
+                                # ordinary case of renaming a folder holding one
+                                # score whose file went astray.
+                                _repoint_row(conn, row["id"], line["to_path"])
+                            else:
+                                _relink_moved_file(conn, row, line["to_path"])
+                    except Exception:
+                        dest.rename(source)
+                        raise
+    except scanner.LibraryBusy as exc:
+        raise _busy(exc) from None
+    return {
+        "dry_run": body.dry_run,
+        "applied": not body.dry_run,
+        "from_path": from_rel,
+        "to_path": to_rel,
+        "moves": plan,
+        "moved": len(plan),
+    }
+
+
+def _free_path(rel: str, conn=None, exclude_id: int | None = None) -> str:
+    """`rel`, or the first numbered variant of it that nothing occupies.
+
+    Used where refusing would strand somebody: putting a score back from the
+    trash when something else has since taken its old path. Landing beside it
+    under a distinct name is better than either overwriting (rule 3) or telling
+    a person their own file cannot come back.
+
+    "OCCUPIED" MEANS THE DISK OR THE DATABASE, and both halves are needed.
+    scores.path is UNIQUE, so a row already naming this path makes the update
+    an IntegrityError and a 500 - and a row can name a path with no file behind
+    it, which is precisely what a score marked missing is. Checking only the
+    filesystem would therefore turn "your other copy of this went missing" into
+    an unexplained server error at the moment somebody tried to undo a
+    deletion.
+    """
+    stem, suffix = PurePosixPath(rel).stem, PurePosixPath(rel).suffix
+    candidate = PurePosixPath(rel)
+
+    def taken(path: str) -> bool:
+        if _resolve_in_library(path).exists():
+            return True
+        if conn is None:
+            return False
+        row = conn.execute(
+            "SELECT id FROM scores WHERE path = ? AND id IS NOT ?", (path, exclude_id)
+        ).fetchone()
+        return row is not None
+
+    for attempt in range(1, 1000):
+        if not taken(str(candidate)):
+            return str(candidate)
+        candidate = candidate.with_name(f"{stem} ({attempt}){suffix}")
+    raise HTTPException(409, f"nothing could be put back at {rel} - a thousand names were taken")
+
+
+def _tidy_trash_folder(rel: str) -> None:
+    """Remove a per-score trash folder once its file has left it.
+
+    Only ever the one folder, only when it is empty, and only inside the trash -
+    so this cannot reach anything of the person's. Without it the trash fills up
+    with empty numbered directories, one per score ever deleted, which is a
+    small thing that makes the folder look like a mess a person might be tempted
+    to clear out by hand.
+
+    Failure is deliberately silent: a leftover empty folder is not worth failing
+    a restore that has already succeeded over.
+    """
+    parts = PurePosixPath(rel).parts
+    if len(parts) < 2 or parts[0] != scanner.TRASH_DIR_NAME:
+        return
+    try:
+        _resolve_in_library("/".join(parts[:2])).rmdir()
+    except OSError:
+        pass
+
+
+def _now(conn) -> str:
+    """One clock, UTC, in exactly the format every other timestamp here uses.
+
+    Read from SQLite rather than from Python so a value written by hand and one
+    written by a DEFAULT cannot come out in two different formats - which is
+    what would happen the first time anything compared them as text, and every
+    date in this schema is compared as text.
+    """
+    return conn.execute("SELECT datetime('now')").fetchone()[0]
+
+
+def _attached_counts(conn, score_id: int) -> dict:
+    """How much of somebody's own work is hanging off this score row.
+
+    Counted from the database and returned with every delete, so "nothing was
+    lost" is a number a person can read rather than a promise.
+    """
+    one = lambda sql: conn.execute(sql, (score_id,)).fetchone()[0]  # noqa: E731
+    return {
+        "practice_sessions": one(
+            "SELECT COUNT(*) FROM practice_sessions WHERE score_id = ?"
+        ),
+        "goals": one("SELECT COUNT(*) FROM practice_goals WHERE score_id = ?"),
+        "tags": one("SELECT COUNT(*) FROM score_tags WHERE score_id = ?"),
+        "transcriptions": one("SELECT COUNT(*) FROM transcriptions WHERE score_id = ?"),
+    }
+
+
+@router.delete("/scores/{score_id}", tags=[TAG_LIBRARY], response_model=ScoreDeleteOut)
+def delete_score(score_id: RowId):
+    """Delete a score: its file goes to the library's trash folder and its row
+    is marked as deleted.
+
+    THIS DESTROYS NOTHING. The file is moved, not removed, into
+    `.fermata-trash` inside the library, and the score row stays exactly where
+    it was with its practice history, goals, tags and transcription still
+    attached - the response counts each of those so an interface can say so.
+    The score leaves the library views and appears in GET /api/trash, from
+    where POST /api/trash/{id}/restore puts it back.
+
+    Destroying it takes a second, deliberate request to DELETE /api/trash/{id},
+    which states what it destroys.
+    """
+    _require_library()
+    try:
+        with scanner.hold_library_still():
+            with write_tx() as conn:
+                row = _score_row(conn, score_id)
+                if row["deleted_at"] is not None:
+                    raise HTTPException(409, "that score is already in the trash")
+                kept = _attached_counts(conn, score_id)
+                name = PurePosixPath(row["path"]).name
+                # The score id in the path is what makes a trash path unique
+                # without inventing a naming scheme: two scores called
+                # "Prelude.pdf" deleted from two folders keep their own names
+                # and cannot collide, and the folder says which row the file
+                # belongs to if anybody ever looks in there by hand.
+                trash_rel = f"{scanner.TRASH_DIR_NAME}/{score_id}/{name}"
+                trash_rel = _free_path(trash_rel, conn, exclude_id=score_id)
+                source = _resolve_in_library(row["path"])
+                file_moved = source.is_file()
+                if file_moved:
+                    _move_file_on_disk(source, _resolve_in_library(trash_rel))
+                # missing_since is CARRIED when there was no file to move, and
+                # cleared when there was. A score whose file had already gone is
+                # a real thing to want out of your library - it is the case where
+                # deleting is most obviously the right answer - so this refuses
+                # nothing; but it must not then claim a file was put in the trash.
+                # `file_moved` on the response is that claim withdrawn, and the
+                # mark stays so restoring puts the score back in exactly the
+                # state it was in: present in the library, flagged as missing.
+                conn.execute(
+                    """UPDATE scores
+                          SET path = ?, deleted_from = ?, deleted_at = datetime('now'),
+                              missing_since = ?
+                        WHERE id = ?""",
+                    (
+                        trash_rel,
+                        row["path"],
+                        None if file_moved else (row["missing_since"] or _now(conn)),
+                        score_id,
+                    ),
+                )
+                # The library is smaller because somebody said so, so the mark
+                # the loss guard measures against comes down with it - see
+                # scanner.record_deliberate_shrink for what goes wrong
+                # otherwise.
+                scanner.record_deliberate_shrink(conn)
+                deleted_from = row["path"]
+                title = row["title"]
+    except scanner.LibraryBusy as exc:
+        raise _busy(exc) from None
+    return {
+        "deleted": score_id,
+        "title": title,
+        "deleted_from": deleted_from,
+        # null, not a path, when nothing was moved there - see `file_moved`.
+        "trashed_to": trash_rel if file_moved else None,
+        "file_moved": file_moved,
+        "practice_sessions_kept": kept["practice_sessions"],
+        "goals_kept": kept["goals"],
+        "tags_kept": kept["tags"],
+        "transcriptions_kept": kept["transcriptions"],
+    }
+
+
+def _deleted_row(conn, score_id: int):
+    row = _score_row(conn, score_id)
+    if row["deleted_at"] is None:
+        raise HTTPException(404, "that score is not in the trash")
+    return row
+
+
+@router.get("/trash", tags=[TAG_LIBRARY], response_model=list[ScoreOut])
+def list_trash():
+    """Scores that have been deleted and not yet destroyed, most recently
+    deleted first.
+
+    They are still whole scores - `deleted_from` says where each one came from,
+    and every session, goal, tag and transcription is still attached - which is
+    why this answers with the same shape the library does rather than a reduced
+    one.
+    """
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM scores WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC, id DESC"
+    ).fetchall()
+    return _with_tags(conn, rows)
+
+
+@router.post("/trash/{score_id}/restore", tags=[TAG_LIBRARY], response_model=ScoreRestoreOut)
+def restore_score(score_id: RowId):
+    """Put a deleted score back where it came from.
+
+    If something else has taken that exact path in the meantime the file lands
+    beside it under a numbered name rather than overwriting it, and
+    `restored_to` says where it actually went - see rule 3 in this section's
+    comment.
+
+    A SCORE WITH NO FILE IN THE TRASH STILL COMES BACK, and this used to be a
+    409 that stranded it. Two ways to reach that state - the score was already
+    marked missing when it was deleted, or somebody emptied the trash folder by
+    hand, which docs/deployment.md says they may - and in both the row is the
+    only thing left worth having. Refusing meant the score could never leave the
+    trash except by being destroyed, taking its tags and transcription with it,
+    which is the opposite of what a trash is for. It is restored to the library
+    marked missing instead: exactly the state a score whose file has gone is
+    supposed to be in, from which putting the file back and scanning recovers it
+    by itself. `file_restored` says which of the two happened.
+    """
+    _require_library()
+    try:
+        with scanner.hold_library_still():
+            with write_tx() as conn:
+                row = _deleted_row(conn, score_id)
+                came_from = row["deleted_from"] or row["path"]
+                target = _free_path(came_from, conn, exclude_id=score_id)
+                source = _resolve_in_library(row["path"])
+                file_restored = source.is_file()
+                conn.execute(
+                    "UPDATE scores SET deleted_at = NULL, deleted_from = NULL WHERE id = ?",
+                    (score_id,),
+                )
+                if not file_restored:
+                    _repoint_row(conn, score_id, target)
+                    conn.execute(
+                        "UPDATE scores SET missing_since = ? WHERE id = ? "
+                        "AND missing_since IS NULL",
+                        (_now(conn), score_id),
+                    )
+                else:
+                    _move_file_on_disk(source, _resolve_in_library(target))
+                    # THE FILESYSTEM HALF OF THE ROLLBACK, and its absence was
+                    # the one place in this section where a refusal stranded a
+                    # score rather than leaving it alone. _relink_moved_file
+                    # refuses a file whose bytes no longer match the row - the
+                    # right answer - but the file has already MOVED by then, and
+                    # write_tx only rolls back the database. So the trash listed
+                    # a score whose file was not in the trash: restoring it
+                    # refused for ever, the next scan filed the file as a brand
+                    # new historyless score, and the error told the person to
+                    # scan, which is what caused that. _apply_plan has had these
+                    # three lines from the start; this path had not.
+                    try:
+                        _relink_moved_file(conn, row, target, _RESTORE_CHANGED_ADVICE)
+                    except Exception:
+                        try:
+                            _resolve_in_library(target).rename(source)
+                        except OSError:  # pragma: no cover - refused twice
+                            log.error(
+                                "could not put %s back in the trash at %s after a refused "
+                                "restore - the file is at the new path and the database has "
+                                "been rolled back",
+                                target,
+                                row["path"],
+                            )
+                        raise
+                    _tidy_trash_folder(row["path"])
+    except scanner.LibraryBusy as exc:
+        raise _busy(exc) from None
+    conn = connect()
+    return {
+        "restored": score_id,
+        "restored_from": came_from,
+        "restored_to": target,
+        "file_restored": file_restored,
+        "score": _with_tags(conn, [_score_row(conn, score_id)])[0],
+    }
+
+
+@router.delete("/trash/{score_id}", tags=[TAG_LIBRARY], response_model=ScorePurgeOut)
+def purge_score(score_id: RowId):
+    """Destroy a deleted score for good. THIS ONE REALLY DELETES.
+
+    What it destroys: the file, removed from the trash folder and not
+    recoverable through Fermata; the score row; its tags; and any
+    transcription, including one corrected by hand, which is real work and
+    cannot be regenerated identically.
+
+    What it keeps: every practice session and goal that named this score. The
+    hours were still spent, so those rows stay in the history recording
+    practice with no piece named (see db.py's notes on ON DELETE SET NULL). The
+    response counts both sides.
+
+    Only a score already in the trash can be destroyed, so this is always the
+    second of two deliberate steps.
+    """
+    _require_library()
+    try:
+        with scanner.hold_library_still():
+            with write_tx() as conn:
+                row = _deleted_row(conn, score_id)
+                counts = _attached_counts(conn, score_id)
+                path = _resolve_in_library(row["path"])
+                removed = None
+                if path.is_file() and scanner.in_trash(row["path"]):
+                    # Guarded on the path really being in the trash, not merely
+                    # on the row saying it is deleted: unlinking is the one
+                    # thing here with no way back, so it happens only for a file
+                    # Fermata itself put in its own trash folder.
+                    path.unlink()
+                    removed = row["path"]
+                    _tidy_trash_folder(row["path"])
+                conn.execute("DELETE FROM scores WHERE id = ?", (score_id,))
+                scanner.record_deliberate_shrink(conn)
+                title = row["title"]
+    except scanner.LibraryBusy as exc:
+        raise _busy(exc) from None
+    return {
+        "deleted": score_id,
+        "title": title,
+        "file_deleted": removed,
+        "tags_destroyed": counts["tags"],
+        "transcriptions_destroyed": counts["transcriptions"],
+        "practice_sessions_kept": counts["practice_sessions"],
+        "goals_kept": counts["goals"],
+    }
