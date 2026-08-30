@@ -127,9 +127,12 @@ you either put it back or destroy it deliberately. Three things follow:
   leave it.
 - **If you back up `library/` too, back up that folder with it** — or, if you
   would rather not carry deleted files around, empty the Trash view first.
-  Deleting the folder by hand is safe for your database (nothing is lost from
-  it) but it does destroy those files, and the scores will then say they
-  cannot be put back.
+  Deleting the folder by hand is safe for your database: nothing is lost from
+  it, and the scores can still be put back. What comes back in that case is the
+  score — its practice history, tags, goals and transcription — flagged as
+  **file missing**, which is the same state any score whose file has gone shows.
+  Put the file back in your library, scan, and it recovers by itself. The bytes
+  you deleted by hand are gone, though; Fermata cannot get those back.
 
 ### Taking a backup
 

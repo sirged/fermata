@@ -118,10 +118,38 @@ instead - which is why renaming a file and renaming a piece are two different
 requests here.
 
 A move or a delete is refused with `409` while a library scan is running, and a
-scan declines to start while one is being applied. One thing reconciles the
-library at a time: a scan decides what to write from a directory listing taken
-when it started, so a file moving underneath it would read as a file that went
-missing.
+scan declines to start while one is being applied. One thing that **moves or
+removes an existing file** runs at a time: a scan decides what to write from a
+directory listing taken when it started, so a file moving underneath it would
+read as a file that went missing. `POST /api/upload` and `POST
+/api/library/folders` are deliberately outside that rule — the first only ever
+creates a file at a path nothing claims, the second creates a directory — and
+`scanner.hold_library_still` documents why each is safe.
+
+### What a deleted score may still be asked for
+
+A deleted score's row is still there, which is what makes deleting recoverable,
+so every endpoint that takes a score id can still reach one:
+
+- **Reads answer normally** — `GET /api/scores/{id}`, its `/file`, `/thumb`,
+  `/transcription` and `/practice`. The trash view is built out of exactly those
+  responses, and being able to look at a score before destroying it for ever is
+  the point of a trash you can change your mind from.
+- **Writes are refused with `409`** — `PATCH /api/scores/{id}`, logging practice
+  against it by either route, setting a goal about it, and extracting, saving or
+  deleting its transcription. Each means "work on this piece"; nothing in the
+  interface offers them for a score in the trash.
+- **Practice already logged is untouched and still counted.** A deleted score
+  still appears in `practice/summary`'s `top_scores` and in `practice/history`'s
+  `by_score`, with its hours — dropping it would leave those breakdowns not
+  adding up to the totals beside them. Both now carry `deleted: true` so a
+  client can stop offering a route into a score the library no longer holds.
+
+Deleting a score whose file has **already** gone is allowed and answers
+`file_moved: false` with `trashed_to: null` — nothing was moved, because there
+was nothing to move. Restoring it (or any score whose trashed file has since
+been removed by hand) answers `file_restored: false` and puts the score back in
+the library flagged `missing_since`, which is the state it was in before.
 
 ## Who else reads this contract
 
