@@ -144,6 +144,21 @@ MAX_HISTORY_DAYS = 366
 DEFAULT_SESSION_LIMIT = 100
 MAX_SESSION_LIMIT = 1_000
 
+# How many of one piece's sessions come back with its progress, and how many
+# goals about it. Both are windowed already, so these bound a window somebody
+# practised unusually hard in rather than a whole history - and both report
+# what they truncated, the way every other list here does.
+DEFAULT_SCORE_SESSION_LIMIT = 200
+MAX_SCORE_SESSION_LIMIT = 1_000
+MAX_SCORE_GOALS = 52
+
+# The column every aggregate in this module groups and filters by, named on
+# each response that carries one. A day is `local_date` where the practiser's
+# own clock recorded it and `date(started_at)` where it did not, and a reader
+# totalling by day needs to know which question was asked of the rows - see
+# LOCAL_DATE_SQL and the note above it.
+GROUPED_BY = "local_date"
+
 # The day a session belongs to, in SQL, for every query that groups or filters
 # by day. Written once because it is not a formula anyone should retype: the
 # COALESCE is what attributes a row from before local_date existed, and a query
@@ -787,4 +802,270 @@ def time_spent(
         "by_activity": [dict(r) for r in by_activity],
         "scores_worked": scores_worked,
         "by_score_truncated": scores_worked > len(by_score),
+    }
+
+
+# ---------------------------------------------------------------------------
+# ONE PIECE: how is this piece going (#57).
+#
+# Everything above answers "how am I doing" across the library. This answers
+# the other question the issue names, and says it is a different one: a person
+# deciding what to practise next needs the per-piece picture as much as the
+# overall one, and reassembling it from the general endpoints meant a client
+# filtering the whole history by score_id and doing the arithmetic itself -
+# which is the arithmetic a second reader (the planned MCP server, #31) would
+# then have to write again and get subtly differently.
+#
+# WHAT THIS DELIBERATELY DOES NOT COMPUTE, and will not:
+#
+#   No streak, and no run of days. docs/practice-data.md lists it under what
+#   is deliberately absent, and issue #3 asks for it by name in its "deliberately
+#   not" list: missing a week because of a busy job is information, not a moral
+#   failure. A per-piece view is exactly where a run of days would be most
+#   tempting and would do the most damage, since a piece is put down and picked
+#   up again by design.
+#
+#   No fitted line through the tempo points, and no rate of improvement. The
+#   points themselves are facts somebody entered; a slope drawn through three
+#   of them is this application claiming to know something it does not, which
+#   is the "without pretending to more analysis than the data supports" half of
+#   the issue. `comparable` says whether there is more than one point, so a
+#   reader can decline to draw anything rather than drawing a confident line
+#   through a single session.
+#
+#   No average rating and no accuracy. Counts per rating and never a mean, for
+#   the same reason a drill records counts and never a rate: a number out of
+#   five is a mark rather than a fact, and it invites a colour.
+# ---------------------------------------------------------------------------
+
+
+def score_all_time(conn, score_id: int, *, owner: str = DEFAULT_OWNER) -> dict:
+    """Everything ever practised on one piece, ignoring any window.
+
+    Separate from the windowed figures beside it, and named so, because "when
+    did I last play this" has no window: a piece untouched for four months
+    answers that with a date and answers "how much this quarter" with a zero,
+    and the two must not be read off each other. `first_practised` is the day
+    it entered the record, which is the only honest way to say how long
+    somebody has been working on something.
+    """
+    row = conn.execute(
+        f"""SELECT COUNT(*) AS sessions,
+                   COALESCE(SUM(p.seconds), 0) AS seconds,
+                   MIN({LOCAL_DATE_SQL}) AS first_practised,
+                   MAX({LOCAL_DATE_SQL}) AS last_practised,
+                   COALESCE(SUM(CASE WHEN p.local_date IS NULL THEN 1 ELSE 0 END), 0)
+                       AS sessions_inferred
+              FROM practice_sessions p
+             WHERE p.owner = ? AND p.score_id = ?""",
+        (owner, score_id),
+    ).fetchone()
+    seconds = row["seconds"]
+    return {
+        "sessions": row["sessions"],
+        "seconds": seconds,
+        # Floored, like every other minute figure here, so this can never
+        # claim a minute that was not practised.
+        "minutes": seconds // 60,
+        "first_practised": row["first_practised"],
+        "last_practised": row["last_practised"],
+        "sessions_inferred": row["sessions_inferred"],
+    }
+
+
+def tempo_progression(
+    conn, score_id: int, start: str, end: str, *, owner: str = DEFAULT_OWNER
+) -> dict:
+    """The tempo each session on this piece was practised at, oldest first.
+
+    THE POINTS ARE THE ANSWER. Each one is two numbers somebody entered - what
+    they played it at and what they were aiming for - and their own day. There
+    is no fitted line, no slope, no "improving", and no figure for how much
+    faster this month is than last: a tempo ladder is climbed and fallen off
+    and climbed again, and a trend drawn through that is a claim about a
+    person's playing that these numbers cannot support.
+
+    `axis_low` and `axis_high` are the chart's bounds and nothing else. They
+    span both numbers, so a target line fits on the same axis as the tempos
+    under it, and they are computed here rather than in a client because two
+    readers deriving an axis differently is two charts that disagree about the
+    same history. They are NOT a personal best: nothing states them as text,
+    and there is no field here comparing one point to another.
+
+    `comparable` is whether there is more than one point. One session at a
+    tempo is one session at a tempo - it is not a progression, and a view that
+    draws it as one is inventing the thing the reader came to look for.
+    `sessions_without_tempo` is how much of this piece's practice these points
+    say nothing about, so a sparse chart is not read as a sparse month.
+    """
+    rows = conn.execute(
+        f"""SELECT p.id AS session_id, {LOCAL_DATE_SQL} AS date,
+                   p.tempo_bpm, p.target_tempo_bpm, p.mode
+              FROM practice_sessions p
+             WHERE p.owner = ? AND p.score_id = ? AND p.tempo_bpm IS NOT NULL
+               AND {LOCAL_DATE_SQL} BETWEEN ? AND ?
+          ORDER BY date, p.started_at, p.id""",
+        (owner, score_id, start, end),
+    ).fetchall()
+    points = []
+    for r in rows:
+        tempo, target = r["tempo_bpm"], r["target_tempo_bpm"]
+        points.append(
+            {
+                "session_id": r["session_id"],
+                "date": r["date"],
+                "tempo_bpm": tempo,
+                "target_tempo_bpm": target,
+                # The same derivation session_dict makes, for the same reason:
+                # a stored answer is one that can contradict the two numbers it
+                # came from. None means one of them is missing, which is not
+                # the same as "did not reach it".
+                "reached_target": None if target is None else tempo >= target,
+                "mode": r["mode"],
+            }
+        )
+    without_tempo = conn.execute(
+        f"""SELECT COUNT(*) AS n FROM practice_sessions p
+             WHERE p.owner = ? AND p.score_id = ? AND p.tempo_bpm IS NULL
+               AND {LOCAL_DATE_SQL} BETWEEN ? AND ?""",
+        (owner, score_id, start, end),
+    ).fetchone()["n"]
+    numbers = [p["tempo_bpm"] for p in points]
+    numbers += [p["target_tempo_bpm"] for p in points if p["target_tempo_bpm"] is not None]
+    # The target most recently written down, which is what a piece is currently
+    # being worked towards. The LATEST and not the highest ever set: somebody
+    # who decided 120 was too fast and set 100 is aiming at 100, and reporting
+    # the number they abandoned would be this view arguing with them.
+    latest_target = next(
+        (p["target_tempo_bpm"] for p in reversed(points) if p["target_tempo_bpm"] is not None),
+        None,
+    )
+    return {
+        "points": points,
+        "count": len(points),
+        "sessions_without_tempo": without_tempo,
+        "axis_low": min(numbers) if numbers else None,
+        "axis_high": max(numbers) if numbers else None,
+        "latest_target": latest_target,
+        "comparable": len(points) > 1,
+    }
+
+
+def mode_totals(
+    conn, score_id: int, start: str, end: str, *, owner: str = DEFAULT_OWNER
+) -> list[dict]:
+    """Where this piece's time went between picking at a section and playing it
+    through - #32's "distinguish focused section work from full run-throughs",
+    asked of one piece.
+
+    A session that did not say which it was comes back with `mode` null rather
+    than being dropped or filed under one of the two. It is time that was
+    genuinely spent, and guessing which kind it was from whether a bar range
+    happens to be present is exactly what the stored column exists to avoid.
+    """
+    rows = conn.execute(
+        f"""SELECT p.mode, SUM(p.seconds) AS seconds, COUNT(*) AS sessions
+              FROM practice_sessions p
+             WHERE p.owner = ? AND p.score_id = ? AND {LOCAL_DATE_SQL} BETWEEN ? AND ?
+          GROUP BY p.mode
+          ORDER BY seconds DESC, p.mode IS NULL, p.mode""",
+        (owner, score_id, start, end),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def rating_counts(
+    conn, score_id: int, start: str, end: str, *, owner: str = DEFAULT_OWNER
+) -> dict:
+    """How many sessions on this piece got each 1-5 rating, and how many got
+    none.
+
+    COUNTS AND NEVER A MEAN. An average rating is a mark out of five wearing a
+    decimal point, and it is the field a client would eventually colour. The
+    same rule the ear-training drill follows for its answers (see
+    docs/practice-data.md) - a rate is a grade and a count is a fact.
+
+    Every rating from 1 to 5 is present whether or not it was ever chosen. A
+    bucket somebody never used is a fact about how they rate their own
+    practice, and a list with a hole in it is one a reader has to reconstruct
+    the missing rows of before it can be drawn.
+    """
+    rows = conn.execute(
+        f"""SELECT p.rating, COUNT(*) AS sessions
+              FROM practice_sessions p
+             WHERE p.owner = ? AND p.score_id = ? AND {LOCAL_DATE_SQL} BETWEEN ? AND ?
+          GROUP BY p.rating""",
+        (owner, score_id, start, end),
+    ).fetchall()
+    counted = {r["rating"]: r["sessions"] for r in rows}
+    return {
+        "counts": [
+            {"rating": rating, "sessions": counted.get(rating, 0)}
+            for rating in range(MIN_RATING, MAX_RATING + 1)
+        ],
+        "rated": sum(n for rating, n in counted.items() if rating is not None),
+        "unrated": counted.get(None, 0),
+    }
+
+
+def score_goals(
+    conn,
+    score_id: int,
+    start: str,
+    end: str,
+    today: date,
+    *,
+    owner: str = DEFAULT_OWNER,
+    limit: int = MAX_SCORE_GOALS,
+) -> list[dict]:
+    """Goals set about this piece whose period touches the window, newest
+    first, each with its progress counted the way every other goal's is.
+
+    Scoped goals only. A goal over "any practice" is not a goal about this
+    piece even in a week when this piece was the only thing practised, and
+    listing it here would put somebody's whole-week intention on a page about
+    one score, where it reads as a target for that score alone.
+    """
+    rows = conn.execute(
+        """SELECT * FROM practice_goals
+            WHERE owner = ? AND scope = 'score' AND score_id = ?
+              AND period_end >= ? AND period_start <= ?
+         ORDER BY period_start DESC LIMIT ?""",
+        (owner, score_id, start, end, limit),
+    ).fetchall()
+    return [goal_dict(conn, r, today) for r in rows]
+
+
+def score_sessions(
+    conn,
+    score_id: int,
+    start: str,
+    end: str,
+    *,
+    owner: str = DEFAULT_OWNER,
+    limit: int = DEFAULT_SCORE_SESSION_LIMIT,
+) -> dict:
+    """This piece's own sessions in the window, newest first, with their notes.
+
+    Reports `total` and `truncated` beside the rows for the same reason
+    /practice/sessions does: a list that stops at the limit and says nothing
+    looks identical to a complete one, and a reader totalling it would report
+    less practice than there was.
+    """
+    rows = conn.execute(
+        f"""SELECT * FROM practice_sessions p
+             WHERE p.owner = ? AND p.score_id = ? AND {LOCAL_DATE_SQL} BETWEEN ? AND ?
+          ORDER BY {LOCAL_DATE_SQL} DESC, p.started_at DESC, p.id DESC
+             LIMIT ?""",
+        (owner, score_id, start, end, limit),
+    ).fetchall()
+    total = conn.execute(
+        f"""SELECT COUNT(*) AS n FROM practice_sessions p
+             WHERE p.owner = ? AND p.score_id = ? AND {LOCAL_DATE_SQL} BETWEEN ? AND ?""",
+        (owner, score_id, start, end),
+    ).fetchone()["n"]
+    return {
+        "sessions": [session_dict(r) for r in rows],
+        "total": total,
+        "truncated": total > len(rows),
     }

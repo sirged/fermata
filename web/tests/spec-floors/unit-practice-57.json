@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/practice.spec.js",
+  "count": 10,
+  "reason": "issue #57: how one piece is going, in words - the whole record against a window, a single tempo point saying it is not a progression, ratings counted and never averaged, and the chart mapping into the axis the server sent."
+}

@@ -132,9 +132,10 @@ A deleted score's row is still there, which is what makes deleting recoverable,
 so every endpoint that takes a score id can still reach one:
 
 - **Reads answer normally** — `GET /api/scores/{id}`, its `/file`, `/thumb`,
-  `/transcription` and `/practice`. The trash view is built out of exactly those
-  responses, and being able to look at a score before destroying it for ever is
-  the point of a trash you can change your mind from.
+  `/transcription`, `/practice` and `/practice/progress`. The trash view is
+  built out of exactly those responses, and being able to look at a score
+  before destroying it for ever is the point of a trash you can change your
+  mind from.
 - **Writes are refused with `409`** — `PATCH /api/scores/{id}`, logging practice
   against it by either route, setting a goal about it, and extracting, saving or
   deleting its transcription. Each means "work on this piece"; nothing in the
@@ -148,6 +149,9 @@ so every endpoint that takes a score id can still reach one:
   longer holds. `score_deleted` is **not** `score_missing`: the first means the
   score is in the trash and can be put back, the second means its row is gone
   and there is no piece left to name.
+  `GET /api/scores/{id}/practice/progress` answers in full for a deleted score
+  too, with `deleted: true` — refusing would be this API deciding a deletion
+  erases practice, and the hours were still spent.
 
 Deleting a score whose file has **already** gone is allowed and answers
 `file_moved: false` with `trashed_to: null` — nothing was moved, because there

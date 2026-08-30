@@ -69,6 +69,15 @@ export const api = {
       body: JSON.stringify(body),
     }).then(j),
   practiceSummary: () => fetch("/api/practice/summary").then(j),
+  // How one piece is going (#57): its whole record, the window's per-day
+  // totals, the tempo each session was practised at, how the time split
+  // between section work and run-throughs, the sessions with their notes, and
+  // any goal set about this piece. One call, because every figure on it is
+  // counted by the server - a client totalling sessions itself would be
+  // writing arithmetic the API already owns, and getting it subtly different
+  // from whatever else reads that API next (issue #32).
+  scoreProgress: (id, days, today) =>
+    fetch(`/api/scores/${id}/practice/progress?days=${days}&today=${today}`).then(j),
   // Detail added to a session already logged. The timer stores the length the
   // moment it stops and this fills in how it went, so a stopped clock is never
   // waiting on a form and a session is never lost to an abandoned one. An

@@ -445,6 +445,117 @@ class PracticeReviewOut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Practice: one piece (#57)
+# ---------------------------------------------------------------------------
+
+
+class ScoreAllTimeOut(BaseModel):
+    """practice.score_all_time: this piece's whole record, ignoring the window
+    every other block on the response is bounded by. `first_practised` and
+    `last_practised` are practice DAYS, not timestamps - null when the piece
+    has never been practised, which is not the same as a day of zero."""
+
+    sessions: int
+    seconds: int
+    minutes: int
+    first_practised: str | None
+    last_practised: str | None
+    sessions_inferred: int
+
+
+class TempoPointOut(BaseModel):
+    """One session's tempo, as practice.tempo_progression reports it. Two
+    numbers somebody entered and the day they entered them for; nothing here
+    is fitted, smoothed or extrapolated."""
+
+    session_id: int
+    date: str
+    tempo_bpm: int
+    target_tempo_bpm: int | None
+    reached_target: bool | None
+    mode: str | None
+
+
+class TempoProgressionOut(BaseModel):
+    """practice.tempo_progression's return shape.
+
+    `axis_low` / `axis_high` are the bounds a chart of these points needs and
+    are not a personal best - see that function's docstring. `comparable` is
+    false for a single point, which is the response saying outright that there
+    is no progression here to draw. Both bounds are null when there are no
+    points at all."""
+
+    points: list[TempoPointOut]
+    count: int
+    sessions_without_tempo: int
+    axis_low: int | None
+    axis_high: int | None
+    latest_target: int | None
+    comparable: bool
+
+
+class ByModeOut(BaseModel):
+    """practice.mode_totals: section work against run-throughs, for one piece.
+    `mode` is null for the sessions that did not say which they were."""
+
+    mode: str | None
+    seconds: int
+    sessions: int
+
+
+class RatingCountOut(BaseModel):
+    rating: int
+    sessions: int
+
+
+class RatingsOut(BaseModel):
+    """practice.rating_counts: how many sessions got each 1-5 rating. Counts
+    and never a mean - see that function's docstring."""
+
+    counts: list[RatingCountOut]
+    rated: int
+    unrated: int
+
+
+class ScoreProgressOut(BaseModel):
+    """GET /api/scores/{id}/practice/progress - how one piece is going (#57).
+
+    `grouped_by` names the column every figure below was grouped and filtered
+    by, and is always practice.GROUPED_BY. It is stated rather than assumed
+    because it is the answer to a question a reader of these numbers has to
+    ask: a day here is the practiser's own calendar day where their client
+    recorded one, and the UTC day of the timestamp where it did not. See
+    `all_time.sessions_inferred` and `window.sessions_inferred` for how much of
+    each total rests on the second kind.
+
+    `deleted` is true for a piece in the trash. Its practice is still counted
+    here in full - the hours were spent - and a client must not offer it as
+    somewhere to go (#56).
+
+    `practised` is whether this piece has ever been practised at all. False
+    means every figure below is a zero about a piece nobody has played yet,
+    which is a different thing from a quiet window, and a view that cannot tell
+    them apart shows a new user a wall of noughts as though it were data."""
+
+    score_id: int
+    title: str
+    deleted: bool
+    practised: bool
+    start: str
+    end: str
+    grouped_by: str
+    all_time: ScoreAllTimeOut
+    window: PeriodFactsOut
+    tempo: TempoProgressionOut
+    modes: list[ByModeOut]
+    ratings: RatingsOut
+    goals: list[GoalOut]
+    sessions: list[PracticeSessionOut]
+    session_total: int
+    sessions_truncated: bool
+
+
+# ---------------------------------------------------------------------------
 # Transcription
 # ---------------------------------------------------------------------------
 

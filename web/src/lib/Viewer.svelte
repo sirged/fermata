@@ -462,6 +462,18 @@
           >
             {practiceStart != null ? `■ ${formatElapsed(practiceElapsed)}` : "▶ Practice"}
           </button>
+          <!-- Where the time this button records ends up. Issue #57 asks for
+               this view to be reachable from the score itself as well as from
+               a place of its own, and beside the timer is where somebody asks
+               the question - "how is this one going" comes up when you have
+               just sat down with it, not while browsing a library. -->
+          <a
+            class="ghost history-link"
+            href={"#/score/" + score.id + "/practice"}
+            title="How this piece is going: the time, the days, the tempo, and your notes"
+          >
+            ◴ History
+          </a>
           <button class="ghost fav" class:on={score.favorite} onclick={toggleFavorite}>★</button>
           <button class="ghost" onclick={enterGigMode} title="Distraction-free performance view (F)">
             ⛶ Gig mode
@@ -619,6 +631,20 @@
     background: none;
     border-color: transparent;
     color: var(--ink-dim);
+  }
+
+  /* A link, not a button, because it goes somewhere - but it sits in a row of
+     buttons and has to be the same size and shape as them or the toolbar
+     develops a step in it. app.css styles `button, select, input` and an
+     anchor is none of the three, so the box it would have inherited is
+     restated here. */
+  .history-link {
+    font-family: var(--font-ui);
+    font-size: 14px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 7px 12px;
+    white-space: nowrap;
   }
 
   .ghost:hover {

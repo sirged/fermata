@@ -39,6 +39,15 @@ import {
   tempoLabel,
   timeLeftStatement,
   weekStart,
+  allTimeStatement,
+  lastPractisedStatement,
+  modeLabel,
+  ratingStatement,
+  splitBars,
+  targetStatement,
+  tempoChart,
+  tempoStatement,
+  windowStatement,
 } from "../../src/lib/practice.js";
 
 const goal = (over = {}) => ({
@@ -176,7 +185,15 @@ test("the forbidden vocabulary is matched as whole words", () => {
 // on the whole word "record", in a file whose header says the words are the
 // feature.
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const COMPONENTS = ["Practice.svelte", "Viewer.svelte", "Library.svelte"];
+const COMPONENTS = [
+  "Practice.svelte",
+  "Viewer.svelte",
+  "Library.svelte",
+  // The per-piece view (#57). A page about one piece is the one most tempting
+  // to write a verdict on - there is a single subject and a row of numbers
+  // about it - so it is the one that most needs this check.
+  "ScoreProgress.svelte",
+];
 
 // The attributes a person actually reads. Every other attribute value is
 // dropped before the check, because they are machine vocabulary and collide
@@ -201,6 +218,232 @@ test("the practice interface's own words pass the same vocabulary check", () => 
     const source = fs.readFileSync(path.join(HERE, "..", "..", "src", "lib", name), "utf8");
     const found = forbiddenWord(visibleText(source));
     expect(found, `${name} contains the word ${found}`).toBeNull();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// One piece: how is this piece going (#57).
+//
+// Same rule as everything above - the wording IS the feature - and one more
+// that only applies here. A page about a single piece is where a direction is
+// most tempting to state, so these pin that none of it does: no "faster than",
+// no "up from", no arrow, and a single tempo point saying outright that it is
+// not a progression.
+// ---------------------------------------------------------------------------
+
+const allTime = (over = {}) => ({
+  sessions: 12,
+  seconds: 12_000,
+  minutes: 200,
+  first_practised: "2026-06-03",
+  last_practised: "2026-08-14",
+  sessions_inferred: 0,
+  ...over,
+});
+
+test("what a piece amounts to over its whole record is sessions and time, never a per-session length", () => {
+  expect(allTimeStatement(allTime())).toBe("12 sessions, 3h 20m in total");
+  expect(allTimeStatement(allTime({ sessions: 1, seconds: 600 }))).toBe(
+    "1 session, 10m in total",
+  );
+  // A piece nobody has played. Said in words rather than as "0 sessions, none
+  // in total", which is a row of noughts pretending to be a measurement.
+  expect(allTimeStatement(allTime({ sessions: 0, seconds: 0 }))).toBe(
+    "No practice logged against this piece yet",
+  );
+  expect(allTimeStatement(null)).toBe("No practice logged against this piece yet");
+  // Nothing anywhere in this statement divides one number by the other. An
+  // average session length is a standard a short evening then falls short of.
+  expect(allTimeStatement(allTime())).not.toContain("per");
+});
+
+test("when a piece was last played comes from the whole record and not from a window", () => {
+  expect(lastPractisedStatement(allTime())).toBe("Last practised 14 Aug, first on 3 Jun");
+  // One day is one day, and "first on" the same date would read as two.
+  expect(lastPractisedStatement(allTime({ first_practised: "2026-08-14" }))).toBe(
+    "Last practised 14 Aug, which is the one day it has been",
+  );
+  expect(lastPractisedStatement(allTime({ last_practised: null }))).toBe("");
+  expect(lastPractisedStatement(null)).toBe("");
+});
+
+test("a window states its own length, so an empty one is about the days and not about the piece", () => {
+  expect(windowStatement({ days_practised: 8, seconds: 12_000, sessions_inferred: 0 }, 90)).toBe(
+    "8 days, 3h 20m in the last 90 days",
+  );
+  expect(windowStatement({ days_practised: 1, seconds: 600, sessions_inferred: 0 }, 30)).toBe(
+    "1 day, 10m in the last 30 days",
+  );
+  expect(windowStatement({ days_practised: 0, seconds: 0 }, 90)).toBe(
+    "No practice on this piece in the last 90 days",
+  );
+  expect(windowStatement(null, 7)).toBe("No practice on this piece in the last 7 days");
+  // The same disclosure a week's total makes: how much of it rests on a day
+  // nobody recorded.
+  expect(windowStatement({ days_practised: 2, seconds: 3600, sessions_inferred: 1 }, 90)).toBe(
+    "2 days, 1h in the last 90 days (1 session on an assumed day)",
+  );
+  expect(windowStatement({ days_practised: 2, seconds: 3600, sessions_inferred: 2 }, 90)).toBe(
+    "2 days, 1h in the last 90 days (2 sessions on an assumed day)",
+  );
+});
+
+test("one tempo point says outright that it is not a progression", () => {
+  // Issue #57 in as many words: a week of history is a week of history, and
+  // the view should say so rather than drawing a confident trend through three
+  // points. The server decides how many points are enough (`comparable`), so
+  // this and any other reader of that API cannot disagree about it.
+  expect(tempoStatement({ count: 1, comparable: false, sessions_without_tempo: 0 })).toBe(
+    "One session with a tempo. One session is not a progression",
+  );
+  expect(tempoStatement({ count: 1, comparable: false, sessions_without_tempo: 3 })).toBe(
+    "One session with a tempo, and 3 sessions without one. One session is not a progression",
+  );
+  expect(tempoStatement({ count: 4, comparable: true, sessions_without_tempo: 0 })).toBe(
+    "4 sessions with a tempo",
+  );
+  expect(tempoStatement({ count: 4, comparable: true, sessions_without_tempo: 1 })).toBe(
+    "4 sessions with a tempo, and 1 session without one",
+  );
+  expect(tempoStatement({ count: 0, comparable: false, sessions_without_tempo: 2 })).toBe(
+    "No session on this piece wrote down a tempo",
+  );
+  expect(tempoStatement(null)).toBe("No session on this piece wrote down a tempo");
+});
+
+test("the tempo target reported is the one most recently written down", () => {
+  expect(targetStatement({ latest_target: 120 })).toBe("Working towards 120 bpm");
+  expect(targetStatement({ latest_target: null })).toBe("");
+  expect(targetStatement(null)).toBe("");
+});
+
+test("a session that did not say how it was approached reads as not stated", () => {
+  expect(modeLabel("section")).toBe("Section work");
+  expect(modeLabel("run_through")).toBe("Run-through");
+  // Not folded into either, and not blank - the column exists so this is never
+  // guessed from whether a bar range happens to be present.
+  expect(modeLabel(null)).toBe("Not stated");
+  expect(modeLabel(undefined)).toBe("Not stated");
+  // A mode a newer server knows about and this build does not must not render
+  // as "undefined" beside a real one.
+  expect(modeLabel("sight_read_through")).toBe("Not stated");
+});
+
+test("ratings are counted and never averaged", () => {
+  expect(ratingStatement({ rated: 3, unrated: 1 })).toBe("3 sessions rated, 1 without a rating");
+  expect(ratingStatement({ rated: 1, unrated: 0 })).toBe("1 session rated");
+  expect(ratingStatement({ rated: 0, unrated: 4 })).toBe("No session on this piece was rated");
+  expect(ratingStatement(null)).toBe("No session on this piece was rated");
+  // No decimal point anywhere: a number out of five with one on it is a grade.
+  expect(ratingStatement({ rated: 3, unrated: 1 })).not.toMatch(/\d\.\d/);
+});
+
+test("a split's bars are scaled inside their own split and a zero stays empty", () => {
+  const bars = splitBars([
+    { mode: "section", seconds: 1500 },
+    { mode: "run_through", seconds: 750 },
+    { mode: null, seconds: 0 },
+  ]);
+  expect(bars.map((b) => b.fill)).toEqual([1, 0.5, 0]);
+  // The row's own fields survive, so a template does not have to zip two lists.
+  expect(bars[0].mode).toBe("section");
+  // A different value to scale by - the ratings count sessions, not seconds.
+  const ratings = splitBars(
+    [
+      { rating: 1, sessions: 0 },
+      { rating: 4, sessions: 2 },
+    ],
+    (r) => r.sessions,
+  );
+  expect(ratings.map((r) => r.fill)).toEqual([0, 1]);
+  // Nothing at all: no bar is full rather than every bar being full.
+  expect(splitBars([{ mode: "section", seconds: 0 }])[0].fill).toBe(0);
+  expect(splitBars([])).toEqual([]);
+  // A tiny share still shows, so "a little" never renders as "nothing".
+  expect(splitBars([{ seconds: 1000 }, { seconds: 1 }])[1].fill).toBe(0.06);
+});
+
+test("the tempo chart maps points into the axis the server sent, and nothing else", () => {
+  const chart = tempoChart(
+    {
+      points: [
+        { session_id: 1, date: "2026-06-03", tempo_bpm: 80 },
+        { session_id: 2, date: "2026-07-01", tempo_bpm: 100 },
+        { session_id: 3, date: "2026-08-14", tempo_bpm: 120 },
+      ],
+      axis_low: 80,
+      axis_high: 120,
+      latest_target: 120,
+    },
+    { width: 100, height: 100, pad: 10 },
+  );
+  // Evenly spaced across the box, first at the left pad and last at the right.
+  expect(chart.points.map((p) => p.x)).toEqual([10, 50, 90]);
+  // The axis is axis_low..axis_high exactly - not widened, rounded or
+  // recentred. Two readers deriving an axis differently is two charts that
+  // disagree about the same history.
+  expect(chart.points.map((p) => p.y)).toEqual([90, 50, 10]);
+  expect(chart.target).toEqual({ bpm: 120, y: 10 });
+
+  // Every session at the same tempo is a real answer, and dividing by a span
+  // of zero would put every dot at the top as though it were a climb.
+  const flat = tempoChart(
+    {
+      points: [
+        { session_id: 1, tempo_bpm: 90 },
+        { session_id: 2, tempo_bpm: 90 },
+      ],
+      axis_low: 90,
+      axis_high: 90,
+      latest_target: null,
+    },
+    { width: 100, height: 100, pad: 10 },
+  );
+  expect(flat.points.map((p) => p.y)).toEqual([50, 50]);
+  expect(flat.target).toBeNull();
+
+  // A lone dot sits in the middle rather than pinned to the left edge, where
+  // it reads as the start of a line somebody has yet to draw.
+  const one = tempoChart(
+    {
+      points: [{ session_id: 1, tempo_bpm: 90 }],
+      axis_low: 90,
+      axis_high: 90,
+      latest_target: null,
+    },
+    { width: 100, height: 100, pad: 10 },
+  );
+  expect(one.points[0].x).toBe(50);
+
+  expect(tempoChart({ points: [] }).points).toEqual([]);
+  expect(tempoChart(null).points).toEqual([]);
+});
+
+test("every sentence the per-piece view produces passes the vocabulary check", () => {
+  // The same list the rest of this feature is held to, applied to the phrases
+  // #57 adds. A per-piece page is where "your best tempo" and "behind on this
+  // one" would arrive if they ever did, so the guard is on the output rather
+  // than on somebody remembering the rules at the top of practice.js.
+  const sentences = [
+    allTimeStatement(allTime()),
+    allTimeStatement(allTime({ sessions: 0, seconds: 0 })),
+    lastPractisedStatement(allTime()),
+    lastPractisedStatement(allTime({ first_practised: "2026-08-14" })),
+    windowStatement({ days_practised: 8, seconds: 12_000, sessions_inferred: 1 }, 90),
+    windowStatement({ days_practised: 0, seconds: 0 }, 90),
+    tempoStatement({ count: 1, comparable: false, sessions_without_tempo: 2 }),
+    tempoStatement({ count: 5, comparable: true, sessions_without_tempo: 0 }),
+    tempoStatement({ count: 0 }),
+    targetStatement({ latest_target: 120 }),
+    ratingStatement({ rated: 3, unrated: 1 }),
+    ratingStatement({ rated: 0, unrated: 4 }),
+    modeLabel(null),
+    modeLabel("section"),
+    modeLabel("run_through"),
+  ];
+  for (const sentence of sentences) {
+    const found = forbiddenWord(sentence);
+    expect(found, `"${sentence}" contains the word ${found}`).toBeNull();
   }
 });
 
