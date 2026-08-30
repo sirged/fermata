@@ -5366,6 +5366,11 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         # known to print at least one meter that was NOT read. Capped through
         # the same _relabel ladder the rhythm label uses, so the clause the
         # source earned survives underneath the weaker word.
+        #
+        # Cannot fire on a caller-supplied meter, whose label is "n/a - caller
+        # supplied" and is on no rung of that ladder: an override skips the
+        # timeline entirely, so `ts_unreadable` is empty and this is not
+        # reached.
         ts_confidence = _relabel(
             ts_confidence, "medium",
             f"{meter_digits_unreadable} printed meter(s) on this score were refused because a "
