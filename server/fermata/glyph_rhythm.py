@@ -1939,7 +1939,8 @@ def half_or_whole_rest(yc, line_ys, spacing):
 
 class NoteEvent:
     __slots__ = ("x", "y", "base_units", "flags", "dotted", "is_rest",
-                 "category", "notehead_kind", "tied_next", "stem_dir", "stem_key")
+                 "category", "notehead_kind", "tied_next", "tied_prev",
+                 "stem_dir", "stem_key")
 
     def __init__(self, x, y, base_units, flags, dotted, is_rest, category,
                  notehead_kind=None, stem_key=None):
@@ -1951,7 +1952,12 @@ class NoteEvent:
         self.is_rest = is_rest
         self.category = category
         self.notehead_kind = notehead_kind
-        self.tied_next = False  # best-effort: see _mark_ties()
+        # Both ends of a matched tie, because a tie's two notes are not
+        # interchangeable to anything downstream: the FIRST is struck and the
+        # second is not, so the second's fret number is usually not printed in
+        # the tablature at all. See _mark_ties() and tabextract._resolve_ties.
+        self.tied_next = False
+        self.tied_prev = False
         # Voice signals. stem_key identifies the ONE engraved stem this
         # notehead hangs off, so the several noteheads of a chord - which
         # share a single stem - can be recognised as one beat rather than
@@ -2344,13 +2350,19 @@ def _assign_stem_directions(notes, stems_by_key):
 
 
 def _mark_ties(notes, curves, tol):
-    """Best-effort tie detection: flag notes[i].tied_next when a shallow
-    curve bridges notes[i] and notes[i+1] and both sit at the same pitch
-    (same y - ties join equal pitches, unlike slurs which usually don't).
-    This is NOT used to merge durations (each notehead's own notated value
-    is kept as-is) - it is reported as a separate signal because tie
-    handling is a known weak spot worth surfacing honestly rather than
-    silently getting wrong.
+    """Best-effort tie detection: flag notes[i].tied_next and
+    notes[i+1].tied_prev when a shallow curve bridges the two and both sit at
+    the same pitch (same y - ties join equal pitches, unlike slurs which
+    usually don't).
+
+    This does NOT merge durations - each notehead keeps its own notated value,
+    which is what a tie means: two written notes, one sounding. What it is
+    for is the emission (issue #81), and BOTH ends have to be flagged for
+    that, because they are not interchangeable downstream. The first note is
+    struck and the second is not, so the tablature very often prints no fret
+    number under the second at all - see tabextract._resolve_ties, which gives
+    it the first note's string and fret rather than whatever digit the
+    matching pass found nearest.
     """
     pitched = [n for n in notes if not n.is_rest]
     for a, b in zip(pitched, pitched[1:]):
@@ -2369,6 +2381,7 @@ def _mark_ties(notes, curves, tol):
             mid = (c.x0 + c.x1) / 2
             if a.x - 2 <= mid <= b.x + 2:
                 a.tied_next = True
+                b.tied_prev = True
                 break
 
 

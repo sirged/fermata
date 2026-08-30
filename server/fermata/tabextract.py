@@ -389,6 +389,22 @@ class ExtractionResult:
     # systems that were read, and this is the number that says so.
     systems_unread: int = 0
     systems_unread_pages: list[int] = field(default_factory=list)
+    # Ties the decoder MATCHED in the engraving and this could not write,
+    # because the note they are held into was not found (issue #81), and which
+    # bars they start in. A written tie needs both ends - see _resolve_ties -
+    # so a start with no partner is dropped from the emitted score rather than
+    # written as half a tie, and this is the count of what was dropped.
+    #
+    # WHY IT IS COUNTED. It is the one figure that says the transcription
+    # re-strikes a note the page holds. Every other tie the decoder found IS in
+    # the file and can be counted from it; these are in neither the file nor
+    # any other figure here, and the music they describe plays wrong in a way
+    # nothing on the page-facing side would show - the bar still adds up, the
+    # note is still there, and it is struck twice where the score strikes it
+    # once. The commonest cause is a tie drawn across a SYSTEM break, which
+    # glyph._mark_ties cannot match at all.
+    tie_ends_unpaired: int = 0
+    tie_ends_unpaired_bars: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -451,6 +467,8 @@ class ExtractionResult:
             "nav_marks_unresolved_bars": list(self.nav_marks_unresolved_bars),
             "systems_unread": self.systems_unread,
             "systems_unread_pages": list(self.systems_unread_pages),
+            "tie_ends_unpaired": self.tie_ends_unpaired,
+            "tie_ends_unpaired_bars": list(self.tie_ends_unpaired_bars),
         }
 
 
@@ -2299,13 +2317,16 @@ def _resolve_nav_marks(anchored, refused=()):
 
 
 class _DigitToken:
-    __slots__ = ("text", "bbox", "font", "size")
+    __slots__ = ("text", "bbox", "font", "size", "harmonic")
 
     def __init__(self, text, bbox, font, size):
         self.text = text
         self.bbox = bbox  # (x0, y0, x1, y1)
         self.font = font
         self.size = size
+        # Set by _mark_harmonic_digits: this fret number is drawn inside the
+        # bracket pair that says it is a harmonic (issue #63).
+        self.harmonic = False
 
     @property
     def x0(self):
@@ -2342,6 +2363,85 @@ def _extract_digit_tokens(page):
     return tokens
 
 
+# The characters an engraver draws either side of a tablature fret number to
+# say the note is a HARMONIC: single guillemets, U+2039 and U+203A (issue
+# #63). Measured over the library's 297 scores, they bracket a fret number 983
+# times across 121 files and appear nowhere else on a tab staff - the census
+# found no other paired punctuation around a fret number at all, and not one
+# unpaired closing mark.
+#
+# THE SPACING IS NOT WHAT IDENTIFIES THEM, the characters are; the tolerance
+# below only has to be wide enough not to miss a real pair. Measured as a
+# fraction of the tab staff's line spacing over all 896 unambiguous pairs: the
+# gap from the opening mark to the digit runs -0.14 to 0.58 spacings (median
+# 0.06) and from the digit to the closing mark -0.14 to 0.62 (median 0.12).
+# Negative because the marks are set at 15.4pt against the digits' 9.4pt and
+# their advance boxes overlap the digit's. 0.9 spacings clears the widest
+# measured pair by half as much again, and no ordinary fret number has one of
+# these characters anywhere near it to be confused by.
+HARMONIC_BRACKETS = ("‹", "›")   # < and > as single guillemets
+HARMONIC_BRACKET_GAP_SPACINGS = 0.9
+# How far off the digit's own centre line a bracket may sit and still be its.
+# A whole line spacing: the marks are drawn at nearly twice the digits' point
+# size, so their boxes are taller and their centres do not coincide, but a
+# bracket for the string ABOVE or BELOW is a full spacing away.
+HARMONIC_BRACKET_Y_SPACINGS = 1.0
+
+
+def _harmonic_bracket_marks(page):
+    """Every harmonic bracket character the page draws, as (char, bbox).
+
+    Read from the raw character boxes rather than from spans: an engraver
+    writes the pair as its own text run with the fret number in a different
+    font between them, and PyMuPDF reports the space between the marks as part
+    of the mark's own span (measured on "Hymn of the Fayth" p1, where '<', ' '
+    and '>' are one 15.4pt TimesNewRomanPSMT run and the '12' between them is
+    a 9.4pt Arial-BoldMT one). A span bbox therefore spans the whole bracket
+    and says nothing about where either mark is.
+    """
+    marks = []
+    for block in page.get_text("rawdict").get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                for ch in span.get("chars", []):
+                    if ch["c"] in HARMONIC_BRACKETS:
+                        marks.append((ch["c"], ch["bbox"]))
+    return marks
+
+
+def _mark_harmonic_digits(tokens_for_staff, staff, marks):
+    """Flag every fret number on this staff that a bracket pair encloses.
+
+    BOTH marks are required. One alone is not the convention and would let a
+    stray character - or one belonging to the note before or after - claim a
+    note the page says nothing about, which for a harmonic is a claim about
+    the sounding pitch and not a decoration.
+
+    Returns how many were flagged.
+    """
+    if not marks:
+        return 0
+    gap = staff.spacing * HARMONIC_BRACKET_GAP_SPACINGS
+    y_tol = staff.spacing * HARMONIC_BRACKET_Y_SPACINGS
+    opening, closing = HARMONIC_BRACKETS
+    found = 0
+    for tok in tokens_for_staff:
+        before = after = False
+        for ch, bbox in marks:
+            if abs((bbox[1] + bbox[3]) / 2 - tok.yc) > y_tol:
+                continue
+            if ch == opening and -gap <= tok.bbox[0] - bbox[2] <= gap:
+                before = True
+            elif ch == closing and -gap <= bbox[0] - tok.bbox[2] <= gap:
+                after = True
+        if before and after:
+            tok.harmonic = True
+            found += 1
+    return found
+
+
 def _assign_tokens_to_tab_staves(tokens, tab_staves):
     """Return ({staff_index: [tokens]}, unmatched_tokens)."""
     by_staff = collections.defaultdict(list)
@@ -2372,6 +2472,15 @@ def _merge_multidigit(tokens_for_staff, staff):
     """Merge adjacent 1-digit tokens on the same string line into 2-digit
     fret numbers (e.g. "1" then "2" immediately right -> "12").
 
+    A merged pair inherits the harmonic mark from EITHER of its halves: a
+    two-digit fret can reach here as two separate one-character tokens, and
+    the bracket pair is drawn around the number, so only the first token has
+    an opening mark beside it and only the second a closing one (see
+    _mark_harmonic_digits, which requires both and therefore flags neither) -
+    but a Finale export can equally emit the same number as one two-character
+    span, which is flagged. Taking either half keeps the two spellings of one
+    fret number reading the same way.
+
     Returns (merged_notes, rejected_count, suspicious_count):
     - rejected_count is how many candidate merges were declined because the
       result exceeded _MAX_SANE_FRET (kept as two separate notes instead).
@@ -2389,7 +2498,7 @@ def _merge_multidigit(tokens_for_staff, staff):
         s = staff.string_for_y(tok.yc)
         per_string[s].append(tok)
 
-    merged_notes = []  # (x0, string, fret_text, yc)
+    merged_notes = []  # (x0, string, fret_text, yc, harmonic)
     rejected = 0
     suspicious = 0
     for s, toks in per_string.items():
@@ -2414,15 +2523,16 @@ def _merge_multidigit(tokens_for_staff, staff):
                 fret_text = t.text + nxt.text
                 if int(fret_text) > _MAX_SANE_FRET:
                     rejected += 1
-                    merged_notes.append((t.x0, s, t.text, t.yc))
+                    merged_notes.append((t.x0, s, t.text, t.yc, t.harmonic))
                     i += 1
                 else:
-                    merged_notes.append((t.x0, s, fret_text, (t.yc + nxt.yc) / 2))
+                    merged_notes.append((t.x0, s, fret_text, (t.yc + nxt.yc) / 2,
+                                         t.harmonic or nxt.harmonic))
                     i += 2
             else:
                 if len(t.text) == 2 and int(t.text) > _MAX_SANE_FRET:
                     suspicious += 1
-                merged_notes.append((t.x0, s, t.text, t.yc))
+                merged_notes.append((t.x0, s, t.text, t.yc, t.harmonic))
                 i += 1
     merged_notes.sort(key=lambda n: n[0])
     return merged_notes, rejected, suspicious
@@ -2434,22 +2544,29 @@ def _merge_multidigit(tokens_for_staff, staff):
 
 
 def _group_into_columns(notes, x_tol=1.5, wide_chord_ratio=0.35):
-    """notes: list of (x0, string, fret_text, yc) sorted by x0.
-    Returns [{"x": float, "notes": [(string, fret_text), ...]}].
+    """notes: list of (x0, string, fret_text, yc, harmonic) sorted by x0.
+    Returns [{"x": float, "notes": [MarkedNote(string, fret_text), ...]}].
 
     Two passes: tight x-proximity clustering catches chords engraved at
     exactly the same column; a second pass merges adjacent columns whose gap
     is small relative to the local column spacing, since engravers commonly
     offset a bass tab number a couple points right of a treble number in the
     same chord to keep both legible.
+
+    A note is built as a musicxml.MarkedNote and then MOVED rather than
+    rebuilt - both the merge and the dedupe below carry the object across, not
+    its (string, fret) contents - because rebuilding the pair silently drops
+    whatever the page said about the note. See MarkedNote's own docstring.
     """
     columns = []
-    for x0, s, fret, yc in notes:
+    for x0, s, fret, yc, harmonic in notes:
+        note = mxl.MarkedNote(
+            s, fret, harmonic=mxl.HARMONIC_UNSPECIFIED if harmonic else None)
         if columns and (x0 - columns[-1]["x"]) < x_tol:
-            columns[-1]["notes"].append((s, fret))
+            columns[-1]["notes"].append(note)
             columns[-1]["x"] = min(columns[-1]["x"], x0)
         else:
-            columns.append({"x": x0, "notes": [(s, fret)]})
+            columns.append({"x": x0, "notes": [note]})
 
     if len(columns) > 2:
         gaps = [b["x"] - a["x"] for a, b in zip(columns, columns[1:])]
@@ -2471,11 +2588,12 @@ def _group_into_columns(notes, x_tol=1.5, wide_chord_ratio=0.35):
     for col in columns:
         seen = set()
         deduped = []
-        for s, fret in col["notes"]:
+        for note in col["notes"]:
+            s = note[0]
             if s in seen:
                 continue
             seen.add(s)
-            deduped.append((s, fret))
+            deduped.append(note)
         col["notes"] = sorted(deduped, key=lambda n: n[0])
     return columns
 
@@ -3082,6 +3200,39 @@ def _share_unison_digits(heads, digits, taken, per_group):
     return starved, sharedn
 
 
+def _mark_from_notehead(note, head):
+    """Move what the NOTATION staff says about a note onto the tab digit that
+    will be emitted for it.
+
+    Two marks travel this way, and neither can be read from the tablature
+    alone:
+
+      - a DIAMOND notehead is how the notation staff writes a harmonic (issue
+        #63). It says only that the note is one, not whether it is natural or
+        artificial - the two are drawn with the same head - so the mark it
+        sets is HARMONIC_UNSPECIFIED. Where the tab ALSO brackets the fret
+        number the note is already marked and this changes nothing: the two
+        conventions travel together on 120 of the library's 121 harmonic
+        scores, which is why either alone is enough and neither is required.
+      - both ends of a TIE (issue #81), matched from the engraved curve by
+        glyph._mark_ties. Both, and not only the start, because the two ends
+        are not interchangeable here: the second note of a tie is not struck,
+        so the tablature normally prints NO fret number under it, and the
+        digit this note is holding is therefore very often a neighbour's that
+        the rank match reached for. Which note it should really be is settled
+        by _resolve_ties, over the whole part, from the note the tie starts
+        at - a tie can cross a barline and this function sees one onset.
+
+    A rest carries neither: `head` is always a pitched notehead here.
+    """
+    harmonic = ... if head.notehead_kind != "notehead_diamond" else mxl.HARMONIC_UNSPECIFIED
+    if harmonic is ... and not head.tied_next and not head.tied_prev:
+        return note
+    return mxl.mark_note(note, harmonic=harmonic,
+                         tie_start=True if head.tied_next else ...,
+                         tie_stop=True if head.tied_prev else ...)
+
+
 def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol, split_tol):
     """Hand the tab digits sounding at one onset out to the groups there.
 
@@ -3109,10 +3260,18 @@ def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol, split_
     one-notehead-one-digit rank match runs a digit short at that onset. See
     _share_unison_digits, which is what closes the gap.
 
-    Returns ({id(group): [(string, fret), ...]}, noteheads_with_no_digit,
-    digits_shared) - the last being how many noteheads were given a digit
-    the tab printed for their coincident twin rather than for them, which is
-    an inference and is disclosed as such (`unison_digits_shared`).
+    WHAT THE NOTEHEAD SAYS ABOUT THE NOTE comes across here too, and this is
+    the only place it can: the tab digit is what gets emitted, the notehead is
+    what carries the mark, and this rank match is where the two meet. A
+    diamond notehead says the note is a harmonic (issue #63) and a matched tie
+    curve says it is held into the next note of the same pitch (issue #81);
+    both are moved onto the digit the head was given. See _mark_from_notehead.
+
+    Returns ({id(group): [MarkedNote(string, fret), ...]},
+    noteheads_with_no_digit, digits_shared) - the last being how many
+    noteheads were given a digit the tab printed for their coincident twin
+    rather than for them, which is an inference and is disclosed as such
+    (`unison_digits_shared`).
     """
     heads = sorted(((m, g) for g in onset_groups for m in g.members),
                    key=lambda mg: mg[0].y)
@@ -3150,6 +3309,7 @@ def _match_onset_columns(onset_groups, cols_sorted, col_xcs, used, x_tol, split_
     # which is the only digit the tab printed for that string.
     taken = {}
     for (m, g), digit in zip(heads, digits):
+        digit = _mark_from_notehead(digit, m)
         per_group[id(g)].append(digit)
         taken.setdefault((round(m.x, 2), round(m.y, 2)), (digit, id(g)))
     starved, shared_here = _share_unison_digits(heads, digits, taken, per_group)
@@ -3670,8 +3830,10 @@ _TUPLET_WARNING = (
     "will show its plain written duration rather than the shortened tuplet duration"
 )
 _TIE_WARNING = (
-    "tie detection is low confidence - some tied notes may show up as separately "
-    "re-struck notes instead of one held note"
+    "a tie is written only where the curve joining its two notes was matched on one "
+    "staff (issue #81) - a tie drawn across a system break is engraved as two partial "
+    "curves with its notes on different staves, is not matched, and its second note is "
+    "transcribed as a separate re-struck note rather than as one held note"
 )
 
 
@@ -3781,6 +3943,154 @@ def _voices_of(beats):
     if not beats:
         return []
     return list(beats) if isinstance(beats[0], list) else [beats]
+
+
+class _TieReport(NamedTuple):
+    """What _resolve_ties did, as data.
+
+    `written` is how many complete ties the emitted score holds. `unpaired`
+    counts tie ENDS, not ties: a start with no stop after it and a stop no
+    start reached are each one, because each is a separate mark the decoder
+    made and could not spend, and there is no way to tell which two of them
+    were meant to be one tie. `bars` is where they were, deduplicated."""
+    written: int
+    unpaired: int
+    bars: list[int]
+
+
+def _resolve_ties(measures) -> _TieReport:
+    """Close every tie the decoder opened, or drop it, IN PLACE.
+
+    glyph._mark_ties can only say "a curve joins this notehead to the next one
+    at the same pitch". A written tie needs both ends - MusicXML spells it as
+    a `start` on one note and a `stop` on another, and a renderer that finds a
+    start with no stop either draws a mark going nowhere or, in the renderer
+    this project embeds, keeps it pending for the rest of the part and lets
+    some distant note of the same pitch close it. So the second end is found
+    here, over the WHOLE part, because a tie's commonest use is exactly the
+    one _build_measure_beats_glyph cannot see: holding a note across a barline.
+
+    THE PARTNER IS THE VERY NEXT NOTE IN THE SAME VOICE that the decoder
+    flagged as the OTHER END of a matched curve. Both ends come from
+    glyph._mark_ties, so this is not a search for a plausible partner - it is
+    the note the tie was measured to reach - and the adjacency test is what
+    keeps a tie from spanning something the tie's own curve does not. A voice
+    is followed across measures because the emitted `<voice>` numbers are what
+    a consumer reads, and voice 1 of one measure and voice 1 of the next are
+    one voice to it.
+
+    THE HELD NOTE TAKES THE STRUCK NOTE'S STRING AND FRET, always, whatever
+    the tab-matching pass gave it. That is not a repair of a defect elsewhere;
+    it is what a tie IS. The second note of a tie is not plucked, so the
+    engraving prints no fret number under it - measured on "Close in the
+    Distance (FF XIV Endwalker)" bar 6, where the tab draws `0` under the
+    struck sixteenth and nothing at all under the half note it is held into -
+    and the rank match, which hands out whatever digits are near an onset,
+    therefore gave that half note a digit belonging to a different string
+    entirely (fret 0 on string 5, two octaves below the note actually
+    written). MusicXML requires the two notes of a tie to carry the same
+    pitch, alphaTab's importer matches them by pitch and then overwrites the
+    destination's fret from the origin anyway, and the page means one sounding
+    note - so the only defensible value is the one that was struck.
+
+    SILENCE THE PRODUCER INVENTED IS STEPPED OVER; silence the page prints is
+    not. A bar that came up short of its meter is padded with inferred rests
+    (Rule 14, _pad_voice_to_budget) which are written as `<forward>` and were
+    never on the page - a note tied across a barline into the next bar still
+    has its partner immediately after it as far as the engraving is concerned,
+    and the padding sits between them only because something else in that bar
+    was read short. A PRINTED rest between two notes means they are not
+    adjacent, and no tie is written.
+
+    A HALF-TIE IS ERASED, at either end: an unpaired start, and a stop no
+    start reached. Neither is written, so the beats the emitters read cannot
+    describe half a tie, and `unpaired` counts what was erased with the bars
+    it happened in - the commonest cause being a tie drawn across a SYSTEM
+    break, where the engraving splits it into two partial curves whose notes
+    sit on different staves and glyph._mark_ties matches neither half.
+
+    A beat is REPLACED rather than edited: a beat's notes list can be the very
+    list a tab column holds (the placeholder and spacing-heuristic paths hand
+    `col["notes"]` straight through), so writing into one would reach back into
+    the column grid this has no business touching.
+    """
+    written = 0
+    unpaired = 0
+    bars = []
+    closed = set()
+
+    class _Slot:
+        """One sounding beat of one voice: where it lives, and its notes."""
+        __slots__ = ("bar", "voice", "index", "notes")
+
+        def __init__(self, bar, voice, index):
+            self.bar = bar
+            self.voice = voice
+            self.index = index
+            self.notes = voice[index][2]
+
+        def replace(self, note_index, note):
+            notes = list(self.notes)
+            notes[note_index] = note
+            code, dots, _old = self.voice[self.index]
+            self.voice[self.index] = (code, dots, notes)
+            self.notes = notes
+
+        def remark(self, note_index, **marks):
+            self.replace(note_index, mxl.mark_note(self.notes[note_index], **marks))
+
+    per_voice = collections.defaultdict(list)
+    for index, measure_in in enumerate(measures):
+        # (beats, meter) is what _extract builds; a bare beats list is what a
+        # caller with no per-measure meter hands over, and _voices_of below
+        # accepts either a list of voices or a flat list of beats.
+        beats_in = (measure_in[0] if isinstance(measure_in, tuple) and len(measure_in) == 2
+                    else measure_in)
+        for voice_number, voice in enumerate(_voices_of(beats_in), start=1):
+            for beat_index, (_code, _dots, notes) in enumerate(voice):
+                # Silence the producer deduced is not a barrier between two
+                # notes the page draws a tie between; a printed rest is.
+                if not notes and mxl.is_inferred_rest(notes):
+                    continue
+                per_voice[voice_number].append(_Slot(index + 1, voice, beat_index))
+
+    for slots in per_voice.values():
+        for position, slot in enumerate(slots):
+            starts = [i for i, n in enumerate(slot.notes)
+                      if mxl.note_tie_start(n)]
+            following = slots[position + 1] if position + 1 < len(slots) else None
+            for note_index in starts:
+                note = slot.notes[note_index]
+                partner = None
+                if following is not None:
+                    for i, candidate in enumerate(following.notes):
+                        if (id(following), i) in closed:
+                            continue
+                        if mxl.note_tie_stop(candidate):
+                            partner = i
+                            break
+                if partner is None:
+                    unpaired += 1
+                    bars.append(slot.bar)
+                    slot.remark(note_index, tie_start=False)
+                    continue
+                string, fret = note
+                following.replace(partner, mxl.mark_note(
+                    mxl.MarkedNote(string, fret), tie_stop=True,
+                    harmonic=mxl.note_harmonic(note)))
+                closed.add((id(following), partner))
+                written += 1
+
+    # Anything still claiming to be the end of a tie no start reached is half
+    # a tie, and is erased for the same reason an unpaired start is.
+    for slots in per_voice.values():
+        for slot in slots:
+            for i, note in enumerate(slot.notes):
+                if mxl.note_tie_stop(note) and (id(slot), i) not in closed:
+                    unpaired += 1
+                    bars.append(slot.bar)
+                    slot.remark(i, tie_stop=False)
+    return _TieReport(written, unpaired, sorted(set(bars)))
 
 
 def _voice_quarters(beats, count_inferred=True) -> list[float]:
@@ -4235,8 +4545,28 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
 # ---------------------------------------------------------------------------
 
 
-def _fmt_note(string, fret):
-    return f"{fret}.{string}"
+def _fmt_note(note, extra=()):
+    """One note as alphaTex `fret.string`, with any effects it carries.
+
+    `extra` is effects the BEAT contributes (the augmentation dot), folded
+    into the same brace group: alphaTex takes one `{...}` list per note and
+    two consecutive groups are not a thing it parses.
+    """
+    string, fret = note
+    effects = list(extra)
+    if mxl.note_tie_stop(note):
+        # `t` is alphaTex's tie-destination property, and it is the spelling
+        # to use rather than the `-` note value the format also accepts: `-`
+        # replaces the fret number, so a reader of the stored transcription -
+        # this format exists to be hand-edited - loses which string and fret
+        # the held note is on. `t` keeps both and says the note is held.
+        # alphaTab's own exporter writes `t` for the same reason.
+        #
+        # Only the DESTINATION is spelled: alphaTex has no tie-origin token,
+        # because the destination naming itself is the whole statement.
+        effects.append("t")
+    body = f"{fret}.{string}"
+    return f"{body}{{{' '.join(effects)}}}" if effects else body
 
 
 def _fmt_beat(duration_code, dots, notes):
@@ -4253,16 +4583,33 @@ def _fmt_beat(duration_code, dots, notes):
     # MusicXML is the canonical output and does mark it (Rule 14); this format
     # exists for the transcription editor to work in, and the padded bars are
     # named in the warnings for a reader of either.
-    if not notes:
-        body = "r"
-    else:
-        body = (
-            " ".join(_fmt_note(s, f) for s, f in notes)
-            if len(notes) == 1
-            else "(" + " ".join(_fmt_note(s, f) for s, f in notes) + ")"
-        )
+    #
+    # A HARMONIC IS NOT WRITTEN HERE, deliberately, and this is not the same
+    # decision as the inferred rest above. alphaTex has a perfectly good
+    # harmonic vocabulary - `{nh}`, `{ah n}`, `{ph n}` and the rest - but none
+    # of those tokens is an annotation: each one names WHICH harmonic, and the
+    # renderer then sounds the note at the pitch that implies (a `{nh}` on a
+    # 12th-fret note plays an octave above the fretted pitch, and one on a
+    # 7th-fret note a twelfth above it). What this extractor reads off the page
+    # is that a note is a harmonic, not which kind - the diamond notehead and
+    # the bracketed fret number say the same thing for a natural and an
+    # artificial one - so writing any of those tokens would re-pitch a note on
+    # a guess. MusicXML can say exactly what was read, because `<harmonic>`
+    # takes an empty body, and it does (Rule 19).
     dot_effect = "{d}" if dots == 1 else "{dd}" if dots == 2 else ""
+    if not notes:
+        return f":{duration_code} r{dot_effect}"
+    if len(notes) == 1:
+        # One note: the beat's dot joins that note's own effect group, since
+        # alphaTex parses a single `{...}` list after a note and not two.
+        return f":{duration_code} {_fmt_note(notes[0], _DOT_EFFECTS.get(dots, ()))}"
+    body = "(" + " ".join(_fmt_note(n) for n in notes) + ")"
     return f":{duration_code} {body}{dot_effect}"
+
+
+# The augmentation dot as alphaTex effect tokens, for folding into a single
+# note's own effect group - see _fmt_note.
+_DOT_EFFECTS = {1: ("d",), 2: ("dd",)}
 
 
 def _escape_tex_string(s: str) -> str:
@@ -4945,6 +5292,12 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         tokens = _extract_digit_tokens(page)
         by_staff, unmatched = _assign_tokens_to_tab_staves(tokens, tab_staves)
         unmatched_total += len(unmatched)
+        # Which of this page's fret numbers the engraving brackets as
+        # harmonics (issue #63). Read once per page and applied per staff,
+        # because the tolerance is in the staff's own line spacing.
+        harmonic_marks = _harmonic_bracket_marks(page)
+        for si, staff in enumerate(tab_staves):
+            _mark_harmonic_digits(by_staff.get(si, []), staff, harmonic_marks)
         # Computed once per page and reused for every staff on it - see
         # _detect_barlines docstring.
         vseg = _vertical_segments(page)
@@ -5339,6 +5692,22 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             meter_digits_unreadable=meter_digits_unreadable,
         )
 
+    # Close the ties the decoder opened, before either emitter reads the beats
+    # (issue #81). A tie's second note is very often in the NEXT bar, so this
+    # cannot happen while the bars are being built - and both emitters have to
+    # see the same answer, so it happens once, here, on the model they share.
+    tie_report = _resolve_ties(all_measures)
+    if tie_report.unpaired:
+        where = (f" Bars: {_bar_list(tie_report.bars)}."
+                 if tie_report.bars else "")
+        warnings.append(
+            f"{tie_report.unpaired} end(s) of a tie were found in the engraving whose other "
+            "end was not, so those ties are not written and their second note is transcribed "
+            "as separately re-struck rather than held. A tie drawn across a system break is "
+            "the usual cause: the engraving splits it into two partial curves whose notes sit "
+            f"on different staves, and neither half finds its partner.{where}"
+        )
+
     title = Path(pdf_path).stem
     alphatex = _build_alphatex(title, tempo, tuning, ts, all_measures)
     musicxml = mxl.build(title, tempo, tuning, ts, all_measures, fifths=key_fifths,
@@ -5507,4 +5876,6 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         nav_marks_unanchored=nav_unanchored,
         nav_marks_unresolved=len(nav_unresolved_bars),
         nav_marks_unresolved_bars=nav_unresolved_bars,
+        tie_ends_unpaired=tie_report.unpaired,
+        tie_ends_unpaired_bars=list(tie_report.bars),
     )
