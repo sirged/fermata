@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/zzzz-score-progress.spec.js",
+  "count": 10,
+  "reason": "issue #57: the per-piece practice view - the empty state a new piece gets instead of a screen of noughts, one tempo point drawn as one session rather than a trend, the tempo values present as text for a music stand, a deleted piece keeping its hours and losing its link (#56), and nothing on the page in the error colour."
+}

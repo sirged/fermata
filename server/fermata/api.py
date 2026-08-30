@@ -49,6 +49,7 @@ from .api_models import (
     ScoreMoveOut,
     ScoreOut,
     ScorePracticeOut,
+    ScoreProgressOut,
     ScorePurgeOut,
     ScoreRestoreOut,
     SessionDeleteOut,
@@ -3286,4 +3287,96 @@ def purge_score(score_id: RowId):
         "transcriptions_destroyed": counts["transcriptions"],
         "practice_sessions_kept": counts["practice_sessions"],
         "goals_kept": counts["goals"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# HOW IS THIS PIECE GOING (#57).
+#
+# The practice page answers "how am I doing" across the library. This answers
+# the other question the issue names and treats it as a different one, because
+# it is: deciding what to practise next needs the per-piece picture as much as
+# the overall one, and the two are not slices of each other. "When did I last
+# play this" has no window; "where did the time go this quarter" has nothing
+# else.
+#
+# ONE ENDPOINT AND NOT SIX, and every figure on it computed here. A client that
+# had to fetch the sessions for one score and total them itself would be
+# writing the arithmetic this module already owns - and the second reader of
+# this surface (the planned MCP server, #31) would then write it a third time,
+# slightly differently, with nothing to say which of the three was right. See
+# issue #32's design rules: every field readable through the documented API, so
+# any future integration wraps one source of truth.
+#
+# WHAT IS NOT HERE, deliberately: no streak and no run of days, no trend line
+# through the tempo points, no average rating, and no comparison between this
+# window and any other. All four are listed under "what is deliberately absent"
+# in docs/practice-data.md and asked for by name in issue #3's own "deliberately
+# not" list. A per-piece view is where each would be most tempting and would do
+# the most damage - a piece is put down and picked up again by design, and a
+# run of days is a number that punishes exactly that.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/scores/{score_id}/practice/progress",
+    tags=[TAG_PRACTICE],
+    response_model=ScoreProgressOut,
+)
+def score_practice_progress(
+    score_id: RowId,
+    days: int = practice.DEFAULT_HISTORY_DAYS,
+    today: str | None = None,
+    limit: int = practice.DEFAULT_SCORE_SESSION_LIMIT,
+):
+    """How one piece is going: its whole record, the last stretch of days a
+    piece at a time, the tempo each session was practised at, how the time
+    split between section work and run-throughs, what was written about it,
+    and any goal set about this piece.
+
+    Every figure is grouped by the practice day, which the response names in
+    `grouped_by` - see the model for what that means for a session whose day
+    was not recorded. `all_time` is the one block the window does not bound.
+
+    A piece in the trash answers this in full and says so: the practice still
+    counts, and only the way into the library goes away (#56).
+    """
+    if not 1 <= days <= practice.MAX_HISTORY_DAYS:
+        raise HTTPException(422, f"days must be between 1 and {practice.MAX_HISTORY_DAYS}")
+    if not 1 <= limit <= practice.MAX_SCORE_SESSION_LIMIT:
+        raise HTTPException(
+            422, f"limit must be between 1 and {practice.MAX_SCORE_SESSION_LIMIT}"
+        )
+    end = _today(today)
+    start = end - timedelta(days=days - 1)
+    first, last = start.isoformat(), end.isoformat()
+    conn = connect()
+    # _score_row and NOT _live_score_row: a piece in the trash still has every
+    # hour that was ever spent on it, and refusing to report them would be this
+    # application deciding a deletion erases practice - which is the one thing
+    # the whole feature is built not to do. The row says `deleted` instead.
+    row = _score_row(conn, score_id)
+    all_time = practice.score_all_time(conn, score_id)
+    listed = practice.score_sessions(conn, score_id, first, last, limit=limit)
+    return {
+        "score_id": score_id,
+        "title": row["title"],
+        "deleted": row["deleted_at"] is not None,
+        # Asked of the whole record and not of the window: a piece practised
+        # solidly last year and untouched since has been practised, and a view
+        # that greeted it with "nothing logged yet" would be wrong about the
+        # one thing this page exists to remember.
+        "practised": all_time["sessions"] > 0,
+        "start": first,
+        "end": last,
+        "grouped_by": practice.GROUPED_BY,
+        "all_time": all_time,
+        "window": practice.period_facts(conn, first, last, scope="score", score_id=score_id),
+        "tempo": practice.tempo_progression(conn, score_id, first, last),
+        "modes": practice.mode_totals(conn, score_id, first, last),
+        "ratings": practice.rating_counts(conn, score_id, first, last),
+        "goals": practice.score_goals(conn, score_id, first, last, end),
+        "sessions": listed["sessions"],
+        "session_total": listed["total"],
+        "sessions_truncated": listed["truncated"],
     }

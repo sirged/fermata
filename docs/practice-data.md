@@ -182,6 +182,16 @@ period gains one question - *was this goal realistic?* - whose answer is
 - **No verdict vocabulary.** The interface states counts - "3 of 4 planned
   days" - and stops. `web/src/lib/practice.js` owns the phrasing and carries
   the word list its tests check it against.
+- **No trend line, and no rate of improvement.** This one bites hardest on the
+  per-piece view (#57), where there is a single subject and a row of numbers
+  about it. The tempo points are stated with their days and joined in the order
+  they happened; nothing fits a line through them, reports a slope, or says a
+  piece is coming on. A piece is put down for a fortnight and picked up again
+  by design, and a direction drawn through that is a claim about somebody's
+  playing these numbers cannot support.
+- **No average rating.** Counts per rating and never a mean, for the same
+  reason a drill records counts and never a rate: a number out of five with a
+  decimal point on it is a mark rather than a fact, and it invites a colour.
 
 ## Asking questions
 
@@ -212,6 +222,41 @@ the questions rather than around the tables.
 - `GET /api/practice/history?days=&today=` - per-day totals, per-piece totals
   and per-activity totals over a window of up to a year. *Where has the time
   gone over three months.*
+- `GET /api/scores/{id}/practice/progress?days=&today=&limit=` - **how one
+  piece is going.** *Where am I with this piece.* One response, because
+  reassembling it from the general endpoints meant a client filtering the whole
+  history by `score_id` and doing the arithmetic itself - the arithmetic a
+  second reader of this API would then write again and get subtly differently.
+  It carries:
+
+  | Block | What it answers |
+  | --- | --- |
+  | `all_time` | Sessions, seconds, minutes, and the **first** and **last** practice day. The one block no window bounds. |
+  | `window` | `period_facts` scoped to this piece: every day in the window including the empty ones, and the window's totals. |
+  | `tempo` | One point per session that recorded a tempo, oldest first, with its day, its target and `reached_target`. |
+  | `modes` | Section work against run-throughs, and the sessions that said neither. |
+  | `ratings` | How many sessions got each 1-5 rating, and how many got none. Every bucket present, whether or not it was ever chosen. |
+  | `goals` | Goals scoped to **this piece** whose period touches the window, each with its progress. Never a `scope='all'` goal. |
+  | `sessions` | This piece's own sessions in the window, newest first, with their notes - and `session_total` / `sessions_truncated` beside them. |
+
+  `practised` says whether the piece has ever been practised at all, which is a
+  different fact from a window of zeros and is what lets an interface show a
+  real empty state rather than a screen of noughts. `deleted` is true for a
+  piece in the trash: it answers in full and is still counted, and only the way
+  into the library goes away. `grouped_by` names the column every figure was
+  grouped by, always `local_date` - see *Why the practice day is stored rather
+  than derived*.
+
+  On the tempo block specifically: `comparable` is false for a single point.
+  One session at a tempo is one session at a tempo, and a view that draws it as
+  a progression is inventing the thing the reader came to look for.
+  `sessions_without_tempo` is how much of the piece's practice those points say
+  nothing about. `axis_low` and `axis_high` span both the tempos and the
+  targets and exist so a chart's bounds are decided once rather than by each
+  reader separately; **they are not a personal best**, nothing states them as
+  text, and no field here compares one point to another. `latest_target` is the
+  target most recently written down, not the highest ever set - somebody who
+  decided 140 was too fast and set 110 is aiming at 110.
 - `GET /api/scores?practiced=recent|neglected` - the library's own views.
   *Which pieces have I neglected.* Windowed on the practice day, like
   everything else: the library is the view a person sees first, so it must not

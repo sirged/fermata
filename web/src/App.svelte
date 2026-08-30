@@ -5,8 +5,14 @@
   import Practice from "./lib/Practice.svelte";
   import MetronomePage from "./lib/MetronomePage.svelte";
   import EarTraining from "./lib/EarTraining.svelte";
+  import ScoreProgress from "./lib/ScoreProgress.svelte";
 
   function parse(hash) {
+    // Checked BEFORE the bare score route, which matches a prefix: without
+    // this, #/score/7/practice opens the viewer for score 7 and the progress
+    // page is unreachable by URL.
+    const progress = hash.match(/^#\/score\/(\d+)\/practice/);
+    if (progress) return { page: "score-progress", id: Number(progress[1]) };
     const m = hash.match(/^#\/score\/(\d+)/);
     if (m) return { page: "score", id: Number(m[1]) };
     if (hash.startsWith("#/demo")) return { page: "demo" };
@@ -26,7 +32,9 @@
   });
 </script>
 
-{#if route.page === "score"}
+{#if route.page === "score-progress"}
+  <ScoreProgress id={route.id} />
+{:else if route.page === "score"}
   <Viewer id={route.id} />
 {:else if route.page === "demo"}
   <Viewer demo={true} />

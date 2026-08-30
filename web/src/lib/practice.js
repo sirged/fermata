@@ -347,6 +347,188 @@ export function rangeLabel(session) {
   return parts.join(", ");
 }
 
+// ---------------------------------------------------------------------------
+// ONE PIECE: how is this piece going (#57).
+//
+// The same rules as everything above, and one more that only bites here. A
+// page about a single piece is where a trend line is most tempting, because
+// there is one subject and a row of numbers about it - and it is where drawing
+// one would be least supported, because a piece is put down for a fortnight
+// and picked up again and that is not a decline. So:
+//
+//   Nothing below turns two numbers into a direction. No "faster than", no
+//   "up from", no arrow. The points are stated with their days and the reader
+//   draws their own conclusion, which is the only one that knows whether the
+//   fortnight was a holiday.
+//
+//   Every figure comes from the server. These functions put a number into
+//   words; not one of them computes a number the endpoint did not send. See
+//   issue #32's design rules - the arithmetic lives in one place so a second
+//   reader of that API cannot disagree with this one.
+// ---------------------------------------------------------------------------
+
+/** What this piece amounts to over the whole record, in words.
+ *
+ * Sessions and time, and never a per-session length: an average is a mark
+ * wearing a decimal point, and "your usual session is 24 minutes" is a
+ * standard a twenty-minute evening then falls short of.
+ */
+export function allTimeStatement(allTime) {
+  if (!allTime || !allTime.sessions) return "No practice logged against this piece yet";
+  const sessions = `${allTime.sessions} session${allTime.sessions === 1 ? "" : "s"}`;
+  return `${sessions}, ${formatDuration(allTime.seconds)} in total`;
+}
+
+/** When this piece was last played, and when it was first. Both are practice
+ * days rather than timestamps, and both come from the whole record rather than
+ * from whatever window is on screen - "when did I last play this" has no
+ * window, and answering it from one would call a piece untouched because the
+ * last month happened to be quiet. */
+export function lastPractisedStatement(allTime) {
+  if (!allTime || !allTime.last_practised) return "";
+  const last = `Last practised ${shortDate(allTime.last_practised)}`;
+  if (!allTime.first_practised || allTime.first_practised === allTime.last_practised) {
+    return `${last}, which is the one day it has been`;
+  }
+  return `${last}, first on ${shortDate(allTime.first_practised)}`;
+}
+
+/** What a window came to for one piece. The window's own length is named, so
+ * "nothing here" is plainly about a stretch of days rather than about the
+ * piece - which is the difference between a quiet quarter and a piece nobody
+ * has opened. */
+export function windowStatement(window, days) {
+  const span = `the last ${days} days`;
+  if (!window || !window.days_practised) return `No practice on this piece in ${span}`;
+  const total = `${formatDays(window.days_practised)}, ${formatDuration(window.seconds)} in ${span}`;
+  // The same disclosure periodStatement makes, for the same reason: a total
+  // that silently adds a recorded day to an assumed one is two kinds of day
+  // added together with nothing marking the join.
+  const inferred = window.sessions_inferred ?? 0;
+  if (!inferred) return total;
+  return `${total} (${inferred} session${inferred === 1 ? "" : "s"} on an assumed day)`;
+}
+
+/** What the tempo points do and do not amount to.
+ *
+ * A single point says so outright. This is the sentence issue #57 asks for in
+ * as many words - a week of history is a week of history, and the view should
+ * say so rather than drawing a confident trend through three points - and it
+ * is the reason the server sends `comparable` rather than leaving a client to
+ * decide how many points are enough.
+ */
+export function tempoStatement(tempo) {
+  if (!tempo || !tempo.count) return "No session on this piece wrote down a tempo";
+  const without = tempo.sessions_without_tempo ?? 0;
+  const rest = without
+    ? `, and ${without} session${without === 1 ? "" : "s"} without one`
+    : "";
+  if (!tempo.comparable) {
+    return `One session with a tempo${rest}. One session is not a progression`;
+  }
+  return `${tempo.count} sessions with a tempo${rest}`;
+}
+
+/** The tempo this piece is currently being worked towards, if any was written
+ * down. The latest target and not the highest ever set - see the server's
+ * tempo_progression for why reporting an abandoned number would be this page
+ * arguing with the person who abandoned it. */
+export function targetStatement(tempo) {
+  if (!tempo || tempo.latest_target == null) return "";
+  return `Working towards ${tempo.latest_target} bpm`;
+}
+
+/** How the work was approached, in words. A session that did not say is
+ * "Not stated" rather than being folded into either - the column exists so
+ * this is never guessed from whether a bar range happens to be present. */
+export function modeLabel(mode) {
+  return MODE_LABELS[mode] ?? "Not stated";
+}
+
+/** How many sessions on this piece carry the player's own sense of how it
+ * went. Counts, never a mean: a number out of five with a decimal point on it
+ * is a grade, and it is the figure a page would eventually colour. */
+export function ratingStatement(ratings) {
+  if (!ratings || !ratings.rated) return "No session on this piece was rated";
+  const unrated = ratings.unrated ?? 0;
+  const rated = `${ratings.rated} session${ratings.rated === 1 ? "" : "s"} rated`;
+  return unrated ? `${rated}, ${unrated} without a rating` : rated;
+}
+
+/** The bars of a split - section work against run-throughs, or the ratings -
+ * scaled against the largest bar IN THAT SPLIT.
+ *
+ * Within its own set, for the same reason dayBars is: a bar that shrinks
+ * because some other piece was worked harder is a comparison drawn in pixels.
+ */
+export function splitBars(rows = [], value = (row) => row.seconds) {
+  const most = rows.reduce((max, row) => Math.max(max, value(row) ?? 0), 0);
+  return rows.map((row) => ({
+    ...row,
+    // A floor so "a little" never renders as "nothing", and zero stays zero -
+    // a bucket nobody used is an empty bar, not a hairline that reads as one
+    // they did.
+    fill: most > 0 && (value(row) ?? 0) > 0 ? Math.max(0.06, value(row) / most) : 0,
+  }));
+}
+
+/** Where each tempo point sits in a box `width` by `height`, as plain numbers
+ * a template can put straight into an SVG.
+ *
+ * PIXELS ONLY. The axis this maps into is `axis_low` to `axis_high` as the
+ * SERVER sent them, and nothing here widens, rounds or recentres it: two
+ * readers deriving an axis differently is two charts that disagree about the
+ * same history, which is the whole reason that pair is on the response. What
+ * this function decides is entirely where a dot goes on a screen.
+ *
+ * A single point sits in the middle horizontally rather than at x=0, because a
+ * lone dot pinned to the left edge reads as the start of a line somebody has
+ * yet to draw.
+ */
+// How much horizontal room a printed bpm needs before the next one crowds it.
+// Measured against the chart's own type size rather than guessed at: three
+// digits at 15px in this application's UI face come to a little under 30 units
+// in the chart's coordinate space, and this leaves a gap either side.
+const LABEL_ROOM = 34;
+
+export function tempoChart(tempo, { width = 640, height = 180, pad = 26 } = {}) {
+  const points = tempo?.points ?? [];
+  if (!points.length) return { points: [], target: null, width, height, pad };
+  const low = tempo.axis_low;
+  const high = tempo.axis_high;
+  // A flat axis - every session at the same tempo, which is a real and common
+  // answer - would divide by zero and put every dot at the top. Centred
+  // instead, which is what "nothing changed" should look like.
+  const span = high > low ? high - low : 0;
+  const inner = height - pad * 2;
+  const y = (bpm) => (span ? pad + inner * (1 - (bpm - low) / span) : pad + inner / 2);
+  const step = points.length > 1 ? (width - pad * 2) / (points.length - 1) : 0;
+  // A value is printed beside its own dot when there is room for it. Below
+  // about this much step the numbers start to sit on each other, and two
+  // figures overlapping is worse than one of them being read off the list
+  // underneath the chart - which carries every point with its day, always, and
+  // is the reason thinning these is safe rather than a loss.
+  const spacing = step > 0 ? Math.max(1, Math.ceil(LABEL_ROOM / step)) : 1;
+  const last = points.length - 1;
+  return {
+    width,
+    height,
+    pad,
+    points: points.map((point, i) => ({
+      ...point,
+      x: points.length > 1 ? pad + step * i : width / 2,
+      y: y(point.tempo_bpm),
+      // The most recent session is always labelled whatever the spacing works
+      // out to: it is the one number somebody opening this came to see.
+      label: i % spacing === 0 || i === last,
+    })),
+    target:
+      tempo.latest_target == null
+        ? null
+        : { bpm: tempo.latest_target, y: y(tempo.latest_target) },
+  };
+}
+
 /** A session's tempo, and whether a ladder run reached what it was aiming at.
  *
  * "reached 120" only when it did; when it did not, the two numbers are stated

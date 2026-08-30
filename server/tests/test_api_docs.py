@@ -292,8 +292,9 @@ def test_every_route_has_exactly_the_expected_operation_count(openapi_schema):
     count = sum(1 for _ in _operations(openapi_schema))
     # 41 before issue #56, plus its nine: move one score, list/create folders,
     # rename a folder, move several scores, delete a score, list the trash,
-    # restore from it, and destroy from it.
-    assert count == 50
+    # restore from it, and destroy from it. Plus issue #57's one: how one
+    # piece is going.
+    assert count == 51
 
 
 def test_binary_routes_do_not_advertise_a_json_content_type(openapi_schema):
@@ -456,6 +457,26 @@ def test_practice_responses_match_their_models(client, insert_score):
             f"/api/practice/sessions/{session.id}", json={"rating": 4}
         ).json()
     )
+    # Issue #57's endpoint, exercised with a session, a tempo, a mode, a
+    # rating and a goal actually present - every nested block below `progress`
+    # is empty or absent-shaped on a piece nobody has practised, and a drift
+    # guard that only ever sees empty lists cannot notice a field dropped from
+    # the objects inside them.
+    detailed = client.post(
+        f"/api/scores/{score_id}/practice",
+        json={"seconds": 900, "tempo_bpm": 90, "target_tempo_bpm": 120, "mode": "section", "rating": 4},
+    )
+    assert detailed.status_code == 200, detailed.text
+    scoped = client.post(
+        "/api/practice/goals",
+        json={"scope": "score", "score_id": score_id, "target_days": 2, "intent": "bar 34"},
+    )
+    assert scoped.status_code == 200, scoped.text
+    api_models.ScoreProgressOut.model_validate(
+        client.get(f"/api/scores/{score_id}/practice/progress").json()
+    )
+    client.delete(f"/api/practice/goals/{scoped.json()['id']}")
+
     api_models.SessionListOut.model_validate(client.get("/api/practice/sessions").json())
     api_models.PracticeSummaryOut.model_validate(client.get("/api/practice/summary").json())
     api_models.PracticeHistoryOut.model_validate(client.get("/api/practice/history").json())
