@@ -3646,9 +3646,12 @@ def _resolve_rhythm_source(page, std_staff, pair_reason, decoded):
         # Reported however few there are, and NOT ratio-gated, for the same
         # reason an unrecognised notehead above is not: how dense the staff
         # around it happens to be is not evidence about this note. Measured
-        # over the library that degrades 493 of the 2657 notation staves that
+        # over the library that degrades 507 of the 2771 notation staves that
         # supplied glyph durations at all, which is the honest size of the
         # problem rather than a threshold chosen to keep the count down.
+        # (This figure was 493 of 2657 as of e2ddf37, the commit that added
+        # this no-stem counter and moved the library's degraded-staff total
+        # from 3 to 507; it has moved again since as the library changed.)
         return _RhythmSource(
             PROV_GLYPHS_DEGRADED, note_events, stats=stats,
             detail=(

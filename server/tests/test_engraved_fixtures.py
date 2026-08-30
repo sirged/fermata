@@ -36,7 +36,7 @@ coverage and is not is worse than none:
     the real examples live only in the maintainer's library.
   * A filled notehead whose stem the vector pass cannot see. This engraver
     draws every stem as a clean vector line, so all twelve fixtures here
-    report zero of them, while 493 of the 2657 notation staves in the
+    report zero of them, while 507 of the 2771 notation staves in the
     library that supplied glyph durations at all carry at least one. The
     counter and the disclosure for that state (see #115) are exercised
     against a real score in test_tabextract.py and against explicit
