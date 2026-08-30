@@ -896,20 +896,24 @@ carries `<tie type="stop"/>` and `<tied type="stop"/>` in the same two
 places. A note in the middle of a chain of ties carries the stop before the
 start, in both places, which is the order the two events are in time.
 
-**Why both spellings.** They are not duplicates: `<tie>` is the *sound* of a
-tie — the schema's own documentation calls it "just the sounding tie", and it
-is what says the second note is not struck — while `<tied>` is the *printed
-mark*, a member of `<notations>` alongside slurs and articulations. The
-specification's own guidance is that "Ties that join two notes of the same
-pitch together should be represented with a tied element on the first note
-with type="start" and a tied element on the second note with type="stop"",
-and separately that the notated `<tied>` and the sounded `<tie>` are distinct
-elements. Consumers genuinely differ on which they read, and the difference is
-audible rather than cosmetic: **alphaTab, the renderer this project embeds,
-reads only `<tied>`** — its MusicXML importer's `<note>` child switch has no
-`tie` case at all, so a file carrying only the sounding element re-strikes
-every note it should hold. Writing one without the other produces a file that
-is correct for half of its readers.
+**Why both spellings.** They are not duplicates. The schema says so itself,
+twice: *"The tie element indicates sound; the tied element indicates
+notation"*, and *"The tied element represents the notated tie. The tie element
+represents the tie sound."* `<tie>` is a child of `<note>` (`maxOccurs="2"`,
+which is what makes a stop-then-start pair on one note legal); `<tied>` is a
+member of `<notations>`, alongside slurs and articulations. The
+specification's instruction for the notated half is explicit — *"Ties that
+join two notes of the same pitch together should be represented with a tied
+element on the first note with type="start" and a tied element on the second
+note with type="stop""* — and it says nothing about which of the two a reader
+must consult.
+
+Readers genuinely differ, and the difference is audible rather than cosmetic:
+**alphaTab, the renderer this project embeds, reads only `<tied>`** — its
+MusicXML importer's `<note>` child switch has no `tie` case at all, so a file
+carrying only the sounding element re-strikes every note it should hold.
+Writing one without the other produces a file that is correct for half of its
+readers.
 
 **The two notes carry the same pitch, string and fret.** This is a
 requirement, not a coincidence. An unnumbered `<tied>` is matched by pitch:
@@ -983,10 +987,12 @@ a bare `<harmonic/>`.
 **`<pitch>`, `<string>` and `<fret>` are the fretted position, unchanged.**
 Rule 10's pitch is the open string plus the fret, and a harmonic does not
 change what the tablature says to do — it says where to touch. Writing the
-*sounding* pitch instead would need the kind (a natural harmonic at the 12th
-fret sounds an octave above the fretted note, at the 7th a twelfth above it,
-and an artificial one is a different calculation again), which is precisely
-what a bare `<harmonic/>` says was not read.
+*sounding* pitch instead would need the kind, which is precisely what a bare
+`<harmonic/>` says was not read: a natural harmonic sounds a fixed interval
+above the OPEN string, not above the fretted note, so the correction is zero
+at the 12th fret, an octave at the 7th and nineteen semitones at the 5th —
+and an artificial harmonic is a different calculation again, taken from the
+stopped pitch rather than the open one.
 
 **What the renderer does with it, plainly: nothing.** alphaTab's MusicXML
 importer consumes the `<harmonic>` element and discards it — the `technical`
@@ -998,12 +1004,14 @@ this project is the MusicXML file and a mark a reader cannot use is worth
 more than a mark that was never made.
 
 **Not carried into alphaTex, deliberately.** alphaTex has a harmonic
-vocabulary (`{nh}`, `{ah n}`, `{ph n}`, …) and alphaTab honours all of it,
-but none of those tokens is an annotation: each names *which* harmonic, and
-the renderer then sounds the note at the pitch that implies. Writing one on
-the strength of a convention that does not distinguish the kinds would
-re-pitch a note on a guess. This is the same reasoning as Rule 14's inferred
-rest, which alphaTex also does not carry.
+vocabulary (`{nh}`, `{ah n}`, `{ph n}`, …) and alphaTab honours all of it —
+it draws the effect band, replaces the tab fret with `<n>` and re-pitches the
+note. That last part is the problem: none of those tokens is an annotation.
+Each names *which* harmonic, and the renderer then sounds the note at the
+pitch that implies, so writing one on the strength of a convention that does
+not distinguish the kinds would move a note's pitch on a guess. This is the
+same reasoning as Rule 14's inferred rest, which alphaTex also does not
+carry.
 
 **Conventions that are not read.** A `harm.` or `art. harm.` text marker, and
 the small circle some editions draw above the note, are **not** recognised.
@@ -1011,6 +1019,17 @@ They mark a passage rather than a note, and this profile does not guess a
 note's extent from a direction. Measured on this project's library, they
 appear on 19 of 297 scores and the two conventions that *are* read appear on
 121; on all but one of those 121, both appear together.
+
+**What this rule does NOT fix: a harmonic's duration.** Marking the note says
+nothing about how long it is, and the notehead a harmonic is drawn with is
+still not calibrated for its own value. Finale's Maestro glyph 174 — an open
+diamond, rendered from *Courage (Final Fantasy XVI)* page 2 — is read at a
+quarter's floor rather than a half's, so a harmonic engraved as a dotted half
+comes out a dotted quarter; MuseScore's three SMuFL diamonds are not in the
+codepoint map at all, and a score using them is counted as partly
+unrecognised. Both are separate, measurable gaps, and neither is hidden: the
+second degrades the score's reported confidence through the unrecognised-
+notehead gate.
 
 **The invariant this rule does not disturb.** `<harmonic>` carries no
 duration and moves no Rule 8 figure. Measured on the library, marking 1030
