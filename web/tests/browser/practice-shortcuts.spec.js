@@ -735,6 +735,45 @@ test.describe("a page turn pressed before the PDF has rendered", () => {
     await expect(page.locator(".pdf-page")).toHaveCount(2);
     await expect(page.locator(".hud span")).toHaveText("2 / 2");
   });
+
+  // The residual the test above does not reach, and the one that took CI on
+  // #173's branch three times running. That test proves a turn pressed
+  // before any canvas EXISTS is remembered. This one is about a turn pressed
+  // while the canvases are being RE-RENDERED underneath it, at a new width -
+  // which is what the side-by-side layout does on every load, because the
+  // staff pane finishing its own layout resizes this one.
+  //
+  // For the duration of that re-render PdfViewer used to blank its
+  // IntersectionObserver (suppressTracking), and an IntersectionObserver
+  // only ever fires on a CHANGE: a page crossing delivered inside the
+  // blanked window is not re-delivered afterwards, so the pane ended up
+  // showing the new page while the indicator still read the old one, for as
+  // long as the score stayed open. The re-render's own scroll restore, which
+  // aimed at the last page OBSERVED rather than the one asked for, then
+  // scrolled the reader back off it as well.
+  //
+  // Twenty pages, and the resize is issued 230ms before the key: the 200ms
+  // debounce has expired and the re-render is provably still in flight when
+  // the press lands, rather than that being true only on a slow runner.
+  test("survives the pages being re-rendered underneath it", async ({ page }) => {
+    await stubScoreApi(page, transcriptionResponse({ warnings: [], confidence: CLEAN_CONFIDENCE }));
+    await page.route("**/api/scores/1/file", (route) =>
+      route.fulfill({ body: buildMultiPagePdf(20), contentType: "application/pdf" }),
+    );
+    await page.goto("/#/score/1");
+    await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+    await expect(page.locator(".pdf-page")).toHaveCount(20, { timeout: 15_000 });
+    await expect(page.locator(".hud span")).toHaveText("1 / 20");
+    // let the load's own resize settle, so the one below is the only one in
+    // flight and the timing under test is the timing being set up
+    await page.waitForTimeout(600);
+
+    await page.setViewportSize({ width: 900, height: 720 });
+    await page.waitForTimeout(230);
+    await page.keyboard.press("ArrowRight");
+
+    await expect(page.locator(".hud span")).toHaveText("2 / 20");
+  });
 });
 
 // ------------------------------------------------------------- gig mode
