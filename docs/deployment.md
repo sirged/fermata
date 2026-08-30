@@ -8,6 +8,7 @@ that's enough. Every command below is meant to be copied and pasted as-is.
 
 - [Getting it running](#getting-it-running)
 - [Reaching it from another device](#reaching-it-from-another-device)
+- [Reverse proxy authentication](#reverse-proxy-authentication)
 - [Backups](#backups)
 - [Upgrading](#upgrading)
 - [Current limitations](#current-limitations)
@@ -101,7 +102,245 @@ private networks.
 
 This also means anyone else on that network can reach it, with no login of
 any kind — see [Current limitations](#current-limitations) before deciding
-whether that network is trusted.
+whether that network is trusted, and see the next section if you want to put
+a login in front of it.
+
+## Reverse proxy authentication
+
+Fermata still has no accounts or login screen of its own — see
+[Current limitations](#current-limitations) — but it can trust one that a
+reverse proxy in front of it already did. This is the standard pattern
+self-hosted services use to add a login without building one: an
+authenticating proxy (Caddy, Authelia, authentik, and others all support it)
+sits in front of the app and, once a visitor has signed in, sets an HTTP
+header naming them on every request it forwards. Fermata can be told to
+trust that header.
+
+**This is off by default, and stays off after an upgrade unless you turn it
+on.** Nothing below does anything unless you set both environment variables
+it describes — an existing `docker-compose.yml` that predates this feature
+keeps behaving exactly as it always did.
+
+### Turning it on
+
+Two environment variables, both required together:
+
+- `FERMATA_AUTH_HEADER` — the header your proxy sets with the logged-in
+  username, e.g. `X-Remote-User` or `Remote-User`. Whatever your proxy
+  actually sends; there is no fixed default.
+- `FERMATA_TRUSTED_PROXIES` — a comma-separated list of IP addresses and/or
+  CIDR ranges Fermata will accept that header from. **This is the setting
+  that matters for security.** Fermata trusts `FERMATA_AUTH_HEADER` only on
+  a request whose direct connection comes from an address on this list — a
+  request from anywhere else has the header ignored entirely, even if it
+  sends one, because nothing stops a client on your network from setting
+  that header itself otherwise. Set this to your proxy container's address,
+  not a broad range, if you can — see the worked example below for how to
+  give it a fixed one.
+
+Setting `FERMATA_AUTH_HEADER` without also setting `FERMATA_TRUSTED_PROXIES`
+does not accidentally trust everyone — it does the opposite. An empty trusted
+list trusts no address at all, so every request is refused once the header
+name is set, including ones from your actual proxy. This is deliberate: the
+one way to misconfigure this fails as "nobody can get in, and the log says
+why" rather than "anyone can set the header themselves and get in as
+anyone." Look at `docker compose logs fermata` if turning this on locks you
+out unexpectedly — a rejected request logs why, including the address it
+came from.
+
+In `docker-compose.yml`, add both under the `fermata` service's `environment:`
+(or `environment:` doesn't exist yet — add it):
+
+```yaml
+services:
+  fermata:
+    environment:
+      FERMATA_AUTH_HEADER: X-Remote-User
+      FERMATA_TRUSTED_PROXIES: 172.28.1.10/32
+```
+
+### What is and isn't covered
+
+Once both variables are set, **every route requires the header** — the API
+and the browser app it serves both — with exactly one exception:
+`GET /api/health` stays open with no header at all, because that is what
+Docker's own `HEALTHCHECK` (see the `Dockerfile`) polls from inside the
+container, and it would be a strange kind of security to let a
+misconfiguration here turn a healthy container "unhealthy" and drop it into
+Compose's restart loop. `/docs` and `/openapi.json` are **not** exempt —
+turning this on locks those down along with everything else, so a request
+without a trusted header sees a plain `401` with a short JSON message, never
+a stack trace or a half-loaded page.
+
+A request from a trusted proxy carrying no header, or an empty one, is
+refused the same way — a proxy that is supposed to authenticate visitors but
+was itself misconfigured (auth disabled on its side, a typo in the header
+name it forwards) fails closed here too, rather than Fermata quietly letting
+the request through unauthenticated.
+
+The username Fermata reads is logged (at request time, alongside what was
+rejected and why when auth fails) and available at `GET /api/me`:
+
+```json
+{"enabled": true, "username": "alice"}
+```
+
+`enabled` reports whether reverse-proxy auth is turned on at all, independent
+of whether this particular request carried an identity — with it off, or on
+but reaching this endpoint through a different path than your proxy, that is
+`{"enabled": false, "username": null}` rather than an error. **Nothing in
+Fermata acts on this identity today** — there are no per-user permissions,
+no filtering of what a given username can see, and this does not turn
+Fermata into a multi-user application. It is read, logged, and left there
+for a future consumer — the practice-data MCP server this project is heading
+toward, or a possible sharing layer — to build on. (A few database tables
+already carry an `owner` column reserved for that future, every row
+currently written as the single placeholder owner `local` — wiring a real
+username into it today would only orphan your own data from the very
+queries that read it back, which is a bigger feature than reverse-proxy
+authentication is meant to be.)
+
+### Example: Caddy
+
+This is the config actually used to verify this feature — run for real
+against a built image, a Caddy container in front of it on its own Docker
+network, and curled from the host: a request straight to Fermata's own port
+with a forged header came back `401`, the same request routed through Caddy
+with a valid login came back `200` carrying the right username, and the
+container's own `HEALTHCHECK` stayed `healthy` throughout.
+
+`Caddyfile`, exactly as tested (`:8080` rather than a domain name, matching
+the rest of this guide's LAN-only, no-TLS setup — replace `:8080` with your
+own domain if you have one and want Caddy's automatic HTTPS on top of this):
+
+```
+:8080 {
+	basic_auth {
+		alice JDJhJDE0JEV4YW1wbGVIYXNoR29lc0hlcmUuLi4
+	}
+	reverse_proxy fermata:8080 {
+		header_up X-Remote-User {http.auth.user.id}
+	}
+}
+```
+
+Generate a real password hash for that `basic_auth` line rather than typing a
+password in plainly:
+
+```bash
+docker run --rm caddy:2-alpine caddy hash-password --plaintext 'your password here'
+```
+
+(Caddy's `basic_auth` is a minimal example that needs no separate service —
+swap it for `forward_auth` pointed at Authelia or authentik if you want a
+real login page, shared sessions, and more than one user; the `header_up`
+line stays the same either way, since it is Caddy that sets the header for
+Fermata, not whatever authenticated the visitor.)
+
+Add Caddy as a second service in `docker-compose.yml`, and — this matters —
+**stop publishing Fermata's own port to the host once Caddy is in front of
+it**, so the only way in is through the proxy that is actually checking
+logins:
+
+```yaml
+services:
+  fermata:
+    # no "ports:" here anymore - only reachable from other containers on
+    # this compose network, which is what makes FERMATA_TRUSTED_PROXIES
+    # below meaningful rather than cosmetic.
+    environment:
+      FERMATA_AUTH_HEADER: X-Remote-User
+      FERMATA_TRUSTED_PROXIES: 172.28.1.10/32
+    volumes:
+      - ./library:/data/library
+      - ./config:/data/config
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    restart: unless-stopped
+    networks:
+      default:
+        ipv4_address: 172.28.1.10
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.28.1.0/24
+
+volumes:
+  caddy-data:
+```
+
+Caddy is given a fixed address (`172.28.1.10`) on the compose network
+specifically so `FERMATA_TRUSTED_PROXIES` can name that one address rather
+than the whole network range — a request that reaches Fermata directly
+(bypassing Caddy some other way) does not arrive from `172.28.1.10` even if
+it is on the same network, and is refused exactly as a request from the
+open internet would be. This is the same reason Fermata's own `ports:` is
+removed above: with it still published, a request to that port would look,
+from inside the container, like it came from the Docker network's gateway
+address rather than from Caddy — which a broader trusted range would wrongly
+accept. Naming Caddy's own address, and taking Fermata off the host network
+entirely, closes both gaps at once.
+
+### Example: Authelia
+
+Authelia and authentik both work the same way — they sit in front of
+Fermata behind a reverse proxy (commonly Caddy, nginx, or Traefik) and set a
+`Remote-User` header once a visitor authenticates. This example is
+`docker-compose.yml` and Caddyfile syntax; it has been checked for correct
+syntax but **not run end-to-end** the way the plain-Caddy example above was
+— standing up Authelia's own session store and configuration is
+disproportionate to verify in this repository, so treat this as a starting
+point to adapt rather than a copy-paste guarantee.
+
+`Caddyfile`, with Authelia running as a third container reachable at
+`authelia:9091`:
+
+```
+fermata.example.com {
+	forward_auth authelia:9091 {
+		uri /api/verify?rd=https://auth.example.com
+		copy_headers Remote-User
+	}
+	reverse_proxy fermata:8080 {
+		header_up X-Remote-User {http.request.header.Remote-User}
+	}
+}
+```
+
+`docker-compose.yml` gains an `authelia` service (see
+[Authelia's own deployment docs](https://www.authelia.com/integration/deployment/docker/)
+for its configuration file, which is more involved than Caddy's and out of
+scope here) alongside the same `fermata` and `caddy` services as the plain
+example — Fermata's own environment and missing `ports:` are unchanged:
+
+```yaml
+services:
+  fermata:
+    environment:
+      FERMATA_AUTH_HEADER: X-Remote-User
+      FERMATA_TRUSTED_PROXIES: 172.28.1.10/32
+    # ... volumes, restart, networks as above - no "ports:"
+
+  caddy:
+    # ... as above, with the Caddyfile shown here instead
+
+  authelia:
+    image: authelia/authelia:latest
+    volumes:
+      - ./authelia:/config
+    networks:
+      default:
+        ipv4_address: 172.28.1.11
+```
 
 ## Backups
 
@@ -284,8 +523,15 @@ Because of that, Fermata belongs on a home network you trust, not on the open
 internet. If you forward its port to the internet or otherwise expose it
 publicly, anyone who finds it — and on the open internet, something usually
 does find an open port before long — gets that same unrestricted access with
-no username or password standing in the way. There is nothing in Fermata
-today that mitigates this; it simply is not built for that exposure yet.
+no username or password standing in the way, UNLESS you have set up
+[reverse proxy authentication](#reverse-proxy-authentication): it puts a real
+login in front of Fermata via a proxy like Caddy, Authelia, or authentik, but
+it is off by default and does nothing until you configure it. It also stays
+what its name says — everyone who logs in still sees the same one library,
+the same tags, the same practice history, all of it fully shared. There is no
+per-user privacy or permissions inside Fermata itself, and no plan to build
+that; a login only decides who is allowed in at all, not what any of them
+can see once they are.
 
 ## Troubleshooting
 
