@@ -225,7 +225,9 @@ demo*) if your library is PDF-only so far.
   scoped to the strings and frets you are working on
 - Setlists, and recognition for what you have accomplished over time
 - Annotations on PDFs (fingerings, markings)
-- Reverse proxy authentication, then multi-user accounts
+- Multi-user accounts (reverse proxy authentication - trusting a login a
+  proxy in front of Fermata already did - shipped; see
+  docs/deployment.md#reverse-proxy-authentication)
 - Splitting compilation books into individual pieces
 - Tablet-first PWA mode with pedal-friendly full-screen
 - Recognition for scanned PDFs, which carry no readable text or glyphs
