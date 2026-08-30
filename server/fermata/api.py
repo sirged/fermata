@@ -14,6 +14,7 @@ from fastapi import (
     HTTPException,
     Path as PathParam,
     Query,
+    Request,
     UploadFile,
 )
 from fastapi.responses import FileResponse
@@ -39,6 +40,7 @@ from .api_models import (
     InstrumentPresetOut,
     LibraryMoveOut,
     LogPracticeOut,
+    MeOut,
     PracticeHistoryOut,
     PracticeReviewOut,
     PracticeSessionOut,
@@ -62,6 +64,7 @@ from .api_models import (
     UploadOut,
     VersionOut,
 )
+from . import config
 from .config import FILE_TYPES, LIBRARY_DIR
 from .db import DEFAULT_OWNER, connect, tx, write_tx
 from .glyph_rhythm import VALID_TS_DENOMINATORS
@@ -82,6 +85,7 @@ log = logging.getLogger("fermata.api")
 # documents and why it lives apart from the routes. TAG_* names are declared
 # once here so a route and /docs agree on the exact string.
 TAG_SYSTEM = "system"
+TAG_AUTH = "auth"
 TAG_SETTINGS = "settings"
 TAG_INSTRUMENTS = "instruments"
 TAG_LIBRARY = "library"
@@ -248,6 +252,24 @@ def health():
 def get_version():
     """What build is actually running - see fermata/version.py."""
     return version_info.info()
+
+
+@router.get("/me", tags=[TAG_AUTH], response_model=MeOut)
+def get_me(request: Request):
+    """The identity, if any, a trusted reverse proxy vouched for on this
+    request - see fermata/authproxy.py and issue #16. Fermata has no login
+    of its own; this reads back only what RemoteUserAuthMiddleware already
+    verified before this handler ran (a header naming the user, sent by a
+    proxy address on the configured trust list) and stashed on
+    `request.state`. Nothing in Fermata acts on this today - no per-user
+    filtering, no permissions - it exists for a future consumer (the
+    planned MCP server, a possible sharing layer) to read. Always 200: when
+    reverse-proxy auth is off (the default) or this particular request
+    carried no identity, that is `{"enabled": false, "username": null}`
+    rather than an error, since asking "who am I" is safe regardless of
+    whether anything answers it."""
+    username = getattr(request.state, "fermata_username", None)
+    return {"enabled": bool(config.AUTH_HEADER), "username": username}
 
 
 @router.get("/settings", tags=[TAG_SETTINGS], response_model=SettingsOut)

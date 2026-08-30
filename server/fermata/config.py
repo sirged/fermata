@@ -1,3 +1,4 @@
+import ipaddress
 import os
 from pathlib import Path
 
@@ -7,6 +8,71 @@ WEB_DIST = os.environ.get("FERMATA_WEB_DIST", "")
 
 CACHE_DIR = CONFIG_DIR / "cache"
 DB_PATH = CONFIG_DIR / "fermata.db"
+
+# Reverse-proxy authentication (issue #16) - trust a header naming the
+# logged-in user, but ONLY when it was set by something Fermata was told to
+# trust. Off by default: AUTH_HEADER empty means the whole feature is a
+# no-op and every request behaves exactly as it did before this existed,
+# which is what keeps an existing deployment working unattended on upgrade.
+#
+# Setting FERMATA_AUTH_HEADER alone does not turn anything on for real - see
+# fermata/authproxy.py, which refuses to trust ANY request's header until
+# FERMATA_TRUSTED_PROXIES also names the proxy allowed to set it. That is a
+# deliberate fail-closed default: forgetting to set the trusted-proxy list
+# after setting the header name locks every request out (a loud, safe
+# failure) rather than silently trusting a header anyone could send by hand
+# (the spoofing hole this exists to close). Documented in
+# docs/deployment.md's "Reverse proxy authentication" section.
+AUTH_HEADER = os.environ.get("FERMATA_AUTH_HEADER", "").strip()
+AUTH_TRUSTED_PROXIES_RAW = os.environ.get("FERMATA_TRUSTED_PROXIES", "")
+
+
+def parse_trusted_proxies(raw: str) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """Turn a comma/whitespace-separated list of IPs and CIDR ranges into
+    networks `authproxy.is_trusted_proxy` can test an address against. A bare
+    IP (`127.0.0.1`) is treated as a /32 (or /128 for IPv6) - a network of
+    exactly one address - via `strict=False`, so operators do not have to
+    remember to spell a single address as a range.
+
+    Raises RuntimeError on a token that is neither, naming it and the whole
+    setting it came from - this only ever runs at startup, against a value
+    someone just typed into an environment variable, so failing loudly there
+    beats accepting a typo that silently trusts nothing (or, worse, is later
+    misread as trusting everything)."""
+    networks = []
+    for token in raw.replace(",", " ").split():
+        try:
+            networks.append(ipaddress.ip_network(token, strict=False))
+        except ValueError as exc:
+            raise RuntimeError(
+                f"FERMATA_TRUSTED_PROXIES entry {token!r} is not a valid IP address or CIDR "
+                "range. See docs/deployment.md's 'Reverse proxy authentication' section."
+            ) from exc
+    return networks
+
+
+# NOT parsed here, deliberately. This module is imported at the very top of
+# main.py, before uvicorn's lifespan protocol exists to catch anything - a
+# RuntimeError raised during this import crashes the whole process with a
+# raw "Error loading ASGI app" traceback, which is exactly the ugly,
+# unexplained failure main.py's lifespan (see its own docstring) exists to
+# avoid for every OTHER startup misconfiguration. So this starts as "nothing
+# trusted" (fail closed, same as an empty setting) and is actually parsed by
+# load_auth_trusted_networks(), called from main.py's lifespan inside the
+# same try/except that turns ensure_dirs's RuntimeError into a readable
+# message first - a bad CIDR in FERMATA_TRUSTED_PROXIES gets the same
+# treatment, not a worse one.
+AUTH_TRUSTED_NETWORKS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+
+
+def load_auth_trusted_networks() -> None:
+    """Actually parse FERMATA_TRUSTED_PROXIES into AUTH_TRUSTED_NETWORKS.
+    Called once from main.py's lifespan, before the app serves a single
+    request - see the module comment on AUTH_TRUSTED_NETWORKS for why this
+    is not done at import time."""
+    global AUTH_TRUSTED_NETWORKS
+    AUTH_TRUSTED_NETWORKS = parse_trusted_proxies(AUTH_TRUSTED_PROXIES_RAW)
+
 
 # File extensions the scanner picks up, mapped to a broad type used by the UI
 # to pick a viewer.

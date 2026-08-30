@@ -293,8 +293,8 @@ def test_every_route_has_exactly_the_expected_operation_count(openapi_schema):
     # 41 before issue #56, plus its nine: move one score, list/create folders,
     # rename a folder, move several scores, delete a score, list the trash,
     # restore from it, and destroy from it. Plus issue #57's one: how one
-    # piece is going.
-    assert count == 51
+    # piece is going. Plus issue #16's one: GET /api/me.
+    assert count == 52
 
 
 def test_binary_routes_do_not_advertise_a_json_content_type(openapi_schema):
@@ -320,6 +320,7 @@ def test_binary_routes_do_not_advertise_a_json_content_type(openapi_schema):
 def test_system_and_settings_responses_match_their_models(client):
     api_models.HealthOut.model_validate(client.get("/api/health").json())
     api_models.VersionOut.model_validate(client.get("/api/version").json())
+    api_models.MeOut.model_validate(client.get("/api/me").json())
     api_models.SettingsOut.model_validate(client.get("/api/settings").json())
     api_models.SettingsOut.model_validate(
         client.put("/api/settings", json={"staff_theme": "noir"}).json()
