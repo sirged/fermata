@@ -1086,6 +1086,38 @@ def test_a_score_that_is_not_in_the_trash_cannot_be_restored_or_destroyed(
     assert client.get(f"/api/scores/{score_id}").json()["deleted_at"] is None
 
 
+def test_a_score_in_the_trash_cannot_be_moved_back_out_by_a_move(client, library, add_score):
+    """A deleted score has a perfectly good file sitting in the trash, so a move
+    would happily take it back out - leaving a file in the library that nothing
+    in the library shows (the row is still marked deleted) and a trash entry
+    whose file is not in the trash. Restoring is the only thing that takes a
+    score out of there."""
+    score_id = add_score("Inbox/Study.pdf")
+    trashed = client.delete(f"/api/scores/{score_id}").json()
+
+    previewed = client.post(
+        f"/api/scores/{score_id}/move", json={"folder": "Classical", "dry_run": True}
+    ).json()
+    assert previewed["moves"][0]["status"] == "blocked"
+    assert "in the trash" in previewed["moves"][0]["reason"]
+
+    single = client.post(f"/api/scores/{score_id}/move", json={"folder": "Classical"})
+    assert single.status_code == 409
+    assert "in the trash" in single.json()["detail"]
+
+    batch = client.post(
+        "/api/library/move",
+        json={"score_ids": [score_id], "folder": "Classical", "dry_run": False},
+    )
+    assert batch.status_code == 409
+    assert "in the trash" in batch.json()["detail"]
+
+    # Still in the trash, file and row alike.
+    assert (library / trashed["trashed_to"]).is_file()
+    assert not (library / "Classical/Study.pdf").exists()
+    assert [s["id"] for s in client.get("/api/trash").json()] == [score_id]
+
+
 def test_deleting_a_score_twice_is_refused_rather_than_moving_it_again(client, add_score):
     score_id = add_score("Inbox/Study.pdf")
     client.delete(f"/api/scores/{score_id}")

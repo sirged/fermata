@@ -2337,6 +2337,19 @@ def _plan_move(conn, row, dest_rel: str, claimed: set[str]) -> dict:
     are both reported as blocked rather than the second one silently landing on
     the first.
     """
+    if row["deleted_at"] is not None:
+        # Checked FIRST, and before the unchanged shortcut, because a deleted
+        # score has a perfectly good file sitting in the trash: without this it
+        # would be moved back out into the library while its row stays marked
+        # deleted, leaving a file nothing in the library shows and a trash entry
+        # whose file is not in the trash. Restoring is an action with a button,
+        # and it is the only thing that takes a score out of the trash.
+        return _plan_line(
+            row,
+            dest_rel,
+            "blocked",
+            "that score is in the trash. Put it back from there first, and then move it.",
+        )
     if dest_rel == row["path"]:
         return _plan_line(row, dest_rel, "unchanged")
     if row["missing_since"] is not None:
