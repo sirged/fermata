@@ -247,6 +247,36 @@ class ExtractionResult:
     # a field on its own reaches nobody.
     spacing_bars: list[int] = field(default_factory=list)
     degraded_bars: list[int] = field(default_factory=list)
+    # The same two facts as COUNTS, and the reason they are separate fields
+    # rather than left inside `rhythm_provenance` is issue #117 (see also #103
+    # and #115, which are the same failure): `rhythm_provenance` is not stored,
+    # is not on the API response, and is read by no interface code, so 110
+    # staff systems' worth of durations that were guessed from the horizontal
+    # gaps between noteheads presented identically to durations that were read.
+    # The warning prose does say it - and a bare count field on its own would
+    # have reached nobody either, which is exactly how that got missed - so
+    # these two travel the whole way: through api._BAR_KEYS into the stored
+    # confidence blob, out through TranscriptionOut, and into the disclosure
+    # panel's DISCLOSURE_ROWS, where each is shown beside the bar numbers
+    # `spacing_bars` / `degraded_bars` already carried.
+    #
+    # `staves_spacing_rhythm` is how many staff systems' durations came from
+    # note spacing rather than from glyphs; `staves_degraded_rhythm` is how
+    # many were read from the engraving with something on them left unread.
+    # Both also cap the reported rhythm confidence - see _rhythm_report - so a
+    # score with any spacing-derived staff cannot present as fully read.
+    staves_spacing_rhythm: int = 0
+    staves_degraded_rhythm: int = 0
+    # Notation staves whose printed meter was REFUSED because a glyph with no
+    # category sat among the digits it did read (issue #129). An unmapped GID
+    # in a Finale subset or an unmapped PUA name in a Sibelius one used to be
+    # dropped from the meter window rather than blocking it, so a 10/8 whose
+    # '0' the decoder does not know assembled from the digits that were left
+    # and came out as a confident (1, 8), labelled as read directly from the
+    # digits. A partial digit read is now not a meter at all; this counts how
+    # often that refusal fired, because a refusal that is never counted is
+    # indistinguishable from a staff that simply printed no meter.
+    meter_digits_unreadable: int = 0
     # Filled noteheads that came out of the decode with no stem, and how many
     # notation staves carried at least one. Such a head can be a quarter or
     # anything shorter, and the flag or beam that would say which attaches to
@@ -395,6 +425,9 @@ class ExtractionResult:
             "rhythm_provenance": self.rhythm_provenance,
             "spacing_bars": list(self.spacing_bars),
             "degraded_bars": list(self.degraded_bars),
+            "staves_spacing_rhythm": self.staves_spacing_rhythm,
+            "staves_degraded_rhythm": self.staves_degraded_rhythm,
+            "meter_digits_unreadable": self.meter_digits_unreadable,
             "notes_no_stem": self.notes_no_stem,
             "staves_no_stem": self.staves_no_stem,
             "dots_unassigned": self.dots_unassigned,
@@ -3641,6 +3674,59 @@ _TIE_WARNING = (
 
 _DOT_FACTORS = (1.0, 1.5, 1.75)
 
+# WHAT THE RHYTHM LABEL MEANS (issue #114). Stated here, stated in
+# docs/musicxml-tab-profile.md's "What the rhythm confidence label means", and
+# computed from these two constants in _rhythm_report - one rule, written once.
+#
+# The label is the WEAKER of two independent judgements about the same score:
+#
+#   PROVENANCE - how the durations were obtained. "high" for a score read
+#   entirely from its own notehead/stem/flag/beam/dot glyphs, "medium" where a
+#   staff was read from the engraving with something on it left unread,
+#   "mixed" where some staff's durations came from the gaps between noteheads
+#   instead of the noteheads, "low" where every staff did.
+#
+#   ARITHMETIC - what fraction of the score's bars are unreliable: they do not
+#   add up to their meter, or nothing in them was read at all. "high" only
+#   when that fraction is ZERO, "medium" while it stays under
+#   _RHYTHM_LOW_RATIO, "low overall" at or above it.
+#
+# THE HIGH BAND IS ZERO, not a small number, and that is the whole point of
+# issue #114. The gate used to be a single boundary at a quarter, so a score
+# read "high - decoded directly from the ... engraving" could have up to one
+# bar in four failing to add up: measured on the library at the time this was
+# written, the weakest score carrying a "high" label had 16 of its 65 bars
+# (24.6%) arithmetically impossible, and 25 of the 30 "high" scores had at
+# least one such bar. A musician reading the headline word does not expect to
+# hit a wrong bar every fourth measure, and the whole argument for this
+# pipeline is that it says what it could not read. So "high" now means exactly
+# one checkable thing - EVERY bar in this score adds up to its meter, and
+# every bar holds something that was read - and the middle band carries the
+# rest, with the count of unreliable bars appended to the string either way.
+_RHYTHM_LOW_RATIO = 0.25
+# The ladder the two judgements are compared on. "mixed" and "medium" are the
+# same rung said two different ways (one names spacing-derived rhythm, the
+# other an incompletely-read staff); a tie keeps the PROVENANCE word, because
+# it is the one carrying the extra fact - a score whose rhythm came partly out
+# of note spacing must keep saying so in its headline (issue #117).
+_CONFIDENCE_RANK = {"low overall": 0, "low": 1, "mixed": 2, "medium": 2, "high": 3}
+
+
+def _relabel(confidence, word, reason=None):
+    """Re-head a confidence string with `word` if `word` is the weaker of the
+    two, and append `reason` to whatever it ends up saying.
+
+    Composes onto the clause that is already there rather than replacing it.
+    Replacing it re-asserted the exact claim a degraded or spacing-derived
+    score had just finished disclosing as NOT fully true - the headline flatly
+    contradicting the sentence right below it.
+    """
+    head, _sep, rest = confidence.partition(" - ")
+    if _CONFIDENCE_RANK[word] < _CONFIDENCE_RANK.get(head, _CONFIDENCE_RANK["high"]):
+        head = word
+    out = f"{head} - {rest}" if rest else head
+    return f"{out}; {reason}" if reason else out
+
 # How many bar numbers a warning names before summarising the rest. At 12 the
 # cap bound 131 of the 271 affected scores in the library, so the prose lost the
 # fact for half of them; 60 leaves 25 scores capped and is still one readable
@@ -4101,26 +4187,25 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
             f"{unreliable} of {bars} bar(s) either do not add up to their time signature "
             f"({defective}) or hold nothing that was read from the score ({len(unread_bars)})"
         )
-    if bars and unreliable / bars >= 0.25:
-        # Compose onto whatever `confidence` already says, the same way the
-        # branch below does - not replace it. Replacing it here with a fresh
-        # "durations were read from the score's own engraving" reasserted the
-        # exact claim a degraded or spacing-derived score had just finished
-        # disclosing as NOT fully true, which is the headline flatly
-        # contradicting the sentence right below it. The threshold still
-        # decides the LABEL (this is the one place "low overall" gets said),
-        # but the clause after it stays whatever the disclosure above earned.
-        _, _, rest = confidence.partition(" - ")
-        confidence = f"low overall - {rest}; {reason}" if rest else f"low overall; {reason}"
-    elif bars and unreliable:
-        # Below the threshold is not the same as clean, and a binary gate threw
-        # away everything the counts above just established: sixteen of the
-        # nineteen scores in the library that still rated "high" sat just under
-        # the quarter, one of them with invented silence in 7 of its 33 bars,
-        # and said "decoded directly from the ... engraving" with nothing
-        # qualifying it. The threshold decides the LABEL; the sentence says what
-        # is known either way.
-        confidence = f"{confidence}; {reason}"
+    if bars:
+        # The ARITHMETIC judgement, on the three bands _RHYTHM_LOW_RATIO and
+        # the zero-defect rule above define. It is composed onto the
+        # PROVENANCE judgement `confidence` already carries by _relabel, which
+        # takes the weaker of the two words and keeps the clause.
+        #
+        # The middle band exists because a binary gate threw away everything
+        # the counts above establish, in BOTH directions: below it a score
+        # said "high - decoded directly from the ... engraving" with a quarter
+        # of its bars impossible, and the qualifying sentence bolted onto the
+        # end could not undo the headline word. The reason is still appended
+        # whichever band it lands in, so the number is never only in the label.
+        if unreliable / bars >= _RHYTHM_LOW_RATIO:
+            confidence = _relabel(confidence, "low overall", reason)
+        elif unreliable:
+            confidence = _relabel(confidence, "medium", reason)
+        # A genuinely clean score is left exactly as its provenance wrote it,
+        # and says nothing extra: the qualifier has to mean something, and one
+        # that appeared on every score would not.
 
     # Surface the concrete per-staff reasons behind any downgrade, capped so
     # a long score can't turn the warning list into a wall of text.
@@ -4415,16 +4500,25 @@ def _mid_system_meters(page, staff, vseg):
     below the width of a bar and orders above that jitter.
     """
     out = []
+    unreadable = []
     opening = staff.x0 + staff.spacing * glyph.TS_LEAD_SPACINGS
     for bl in _detect_barlines(vseg, staff):
         bx = bl.x
         if bx <= opening or bx >= staff.x1 - staff.spacing:
             continue
-        ts, _why = glyph.decode_meter_after_barline(
+        ts, why = glyph.decode_meter_after_barline(
             page, staff.top, staff.bottom, bx, staff.x1, staff.spacing)
         if ts is not None:
             out.append((bx - staff.spacing, ts))
-    return out
+        elif why and why.startswith(glyph.UNREADABLE_DIGIT_REASON):
+            # A meter change refused because one of its own digits is a glyph
+            # this decoder cannot name (issue #129). Reported rather than
+            # folded into the ordinary "nothing is printed just after this
+            # barline" silence: the two are different facts about the page,
+            # and only this one means a meter WAS printed here and could not
+            # be read.
+            unreadable.append(why)
+    return out, unreadable
 
 
 def _build_time_signature_timeline(pages_with_tab):
@@ -4432,13 +4526,23 @@ def _build_time_signature_timeline(pages_with_tab):
     document order: the one at the start of each notation staff, and any
     engraved part-way along it at a barline.
 
-    Returns (timeline, reasons, opening_read) where timeline is a list of
-    (page_index, staff_top, x, (num, den)) with consecutive duplicates
+    Returns (timeline, reasons, opening_read, unreadable) where timeline is a
+    list of (page_index, staff_top, x, (num, den)) with consecutive duplicates
     collapsed, reasons is the decoder's own explanation for the staves where
     nothing was found - surfaced to the user instead of being dropped, so
-    "assumed 4/4" can say what was actually looked at - and opening_read says
+    "assumed 4/4" can say what was actually looked at - opening_read says
     whether the meter printed at the score's FIRST notation staff was one of
-    the ones read.
+    the ones read, and `unreadable` is the subset of those reasons that are a
+    REFUSAL over a glyph the decoder could not name sitting among the meter's
+    own digits (issue #129).
+
+    `unreadable` is kept apart from `reasons` because the two are surfaced
+    differently and have to be. `reasons` explains an assumed 4/4 and is only
+    worth saying when nothing was read at all; a refused meter is worth saying
+    however the score's meter was finally obtained, because it means a meter
+    WAS printed at that staff and could not be read - and if some other staff
+    supplied one, the reader would otherwise be shown a meter with no hint
+    that a different one may be printed where this refusal happened.
 
     opening_read is what stops a meter read from a later system being
     backdated over the opening. A staff that decodes to nothing is skipped,
@@ -4462,6 +4566,7 @@ def _build_time_signature_timeline(pages_with_tab):
     """
     timeline = []
     reasons = []
+    unreadable = []
     opening_read = False
     first_staff = True
     for page_idx, page, _tab_staves, std_staves in pages_with_tab:
@@ -4473,13 +4578,17 @@ def _build_time_signature_timeline(pages_with_tab):
             ts, reason = glyph.decode_time_signature(page, s.top, s.bottom, s.x0, s.spacing)
             if ts is None:
                 reasons.append(reason)
+                if reason and reason.startswith(glyph.UNREADABLE_DIGIT_REASON):
+                    unreadable.append(reason)
             else:
                 opening_read = opening_read or first_staff
                 _append_ts(timeline, (page_idx, s.top, _SYSTEM_START_X, ts))
             first_staff = False
-            for x, mid_ts in _mid_system_meters(page, s, vseg):
+            mid, mid_unreadable = _mid_system_meters(page, s, vseg)
+            unreadable.extend(mid_unreadable)
+            for x, mid_ts in mid:
                 _append_ts(timeline, (page_idx, s.top, x, mid_ts))
-    return timeline, reasons, opening_read
+    return timeline, reasons, opening_read, unreadable
 
 
 def _detect_key_signature(pages_with_tab) -> tuple[int, str, str | None]:
@@ -4622,10 +4731,11 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     # a change part-way along a system rather than at its start).
     ts_timeline = []
     ts_reasons = []
+    ts_unreadable = []
     ts_opening_read = False
     if override is None:
-        ts_timeline, ts_reasons, ts_opening_read = _build_time_signature_timeline(
-            pages_with_tab)
+        ts_timeline, ts_reasons, ts_opening_read, ts_unreadable = (
+            _build_time_signature_timeline(pages_with_tab))
         if ts_timeline and ts_opening_read:
             # The opening meter is the one printed at the score's own first
             # notation staff, and ONLY that one. Indexing the first entry
@@ -4655,6 +4765,27 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         # generic "assumed 4/4".
         for reason in list(dict.fromkeys(ts_reasons))[:3]:
             warnings.append(f"time signature: {reason}")
+
+    # A meter that was PRINTED and REFUSED, said out loud whatever source the
+    # score's meter finally came from (issue #129). This is the disclosure the
+    # refusal exists for: before it, an unrecognised glyph among the digits
+    # was dropped and the rest assembled, so a Finale 10/8 whose '0' is
+    # unmapped read as a confident (1, 8) with nothing anywhere saying a glyph
+    # had been thrown away. Refusing without saying so would only move the
+    # silence, and this must not be conditional on `ts is None` the way
+    # `ts_reasons` above is - a second staff supplying a meter does not make
+    # the refused one readable.
+    meter_digits_unreadable = len(ts_unreadable)
+    if meter_digits_unreadable:
+        warnings.append(
+            f"{meter_digits_unreadable} printed time signature(s) could not be read because a "
+            "glyph this decoder has no category for sits among their digits - a music font "
+            "subset whose glyph for one digit is not in the calibrated tables. Each was "
+            "refused outright rather than assembled from the digits that WERE recognised, "
+            "which would have produced a confident meter missing a digit; the bars they "
+            "govern are barred by whatever meter is reported instead. The decoder's own "
+            "account: " + "; ".join(list(dict.fromkeys(ts_unreadable))[:3])
+        )
 
     if ts_timeline and not ts_opening_read:
         # Said out loud, because this is the shape that used to be silent AND
@@ -5190,6 +5321,10 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             warnings=warnings,
             systems_unread=systems_unread,
             systems_unread_pages=systems_unread_pages,
+            # Carried even on the refusal path: a meter that was printed and
+            # could not be read is a fact about the PAGE, and does not stop
+            # being one because no fret digits were matched (issue #129).
+            meter_digits_unreadable=meter_digits_unreadable,
         )
 
     title = Path(pdf_path).stem
@@ -5223,6 +5358,19 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         ts_confidence = (
             "medium - read directly from the time-signature digit glyphs, but the score changes "
             "meter part-way through"
+        )
+    if meter_digits_unreadable:
+        # The reported meter may be right and still not be the whole story: a
+        # meter printed somewhere on this score was refused because one of its
+        # digits is a glyph with no category (issue #129), so this score is
+        # known to print at least one meter that was NOT read. Capped through
+        # the same _relabel ladder the rhythm label uses, so the clause the
+        # source earned survives underneath the weaker word.
+        ts_confidence = _relabel(
+            ts_confidence, "medium",
+            f"{meter_digits_unreadable} printed meter(s) on this score were refused because a "
+            "glyph with no category sits among their digits, so a meter this score prints was "
+            "not read",
         )
 
     fret_confidence = discard_note or (
@@ -5316,6 +5464,9 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         rhythm_provenance=dict(prov_counts),
         spacing_bars=spacing_bars,
         degraded_bars=degraded_bars,
+        staves_spacing_rhythm=prov_counts.get(PROV_SPACING, 0),
+        staves_degraded_rhythm=prov_counts.get(PROV_GLYPHS_DEGRADED, 0),
+        meter_digits_unreadable=meter_digits_unreadable,
         notes_no_stem=no_stem_notes,
         staves_no_stem=no_stem_staves,
         dots_unassigned=dots_unassigned_total,

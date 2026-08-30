@@ -7,13 +7,16 @@
   "endings_truncated",
   "endings_unread",
   "form_marks_unanchored",
+  "meter_digits_unreadable",
   "nav_marks_unanchored",
   "nav_marks_unresolved",
   "notes_no_stem",
   "repeats_unread",
   "staves_coincident_unsplit",
+  "staves_degraded_rhythm",
   "staves_dots_unassigned",
   "staves_no_stem",
+  "staves_spacing_rhythm",
   "systems_unread",
   "unison_digits_shared"
 ]

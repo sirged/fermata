@@ -1967,6 +1967,48 @@ def test_a_two_digit_numerator_assembles_correctly(engraved):
             assert sum(q for q, _n in voice) == 6.0, bar
 
 
+def test_a_meter_with_an_uncalibrated_digit_glyph_is_refused_not_assembled(engraved):
+    """Issue #129, on a real PDF rather than hand-built glyph coordinates.
+
+    `unmapped_meter_digit` is `multidigit_meter` with one entry of its music
+    font's ToUnicode CMap rewritten, so the '2' of its 12/8 draws as a SMuFL
+    codepoint this decoder has no category for - what a Finale subset with an
+    unmapped GID, or a Sibelius one with an unmapped PUA name, looks like from
+    here. Everything else about the page is the engraved original: same
+    outlines, same coordinates, same 12/8 printed on it.
+
+    The defect this pins closed: the uncategorised glyph used to be dropped
+    from the meter window, leaving the '1' and the '8' to assemble among
+    themselves, so this file read as a confident (1, 8) with
+    `time_signature_source` "glyph-decoded" and a "high - read directly from
+    the time-signature digit glyphs" label. Verified by running this fixture
+    on the code before the fix, which produces exactly that.
+
+    Every surface is checked, because a refusal nobody is told about is only a
+    different silence: the meter declines, the source says it was not
+    detected, the confidence is capped and says why, the counter is 1, and
+    the warning prose names the glyph by the key a calibration table would be
+    keyed on."""
+    result = tabextract.extract(engraved("unmapped_meter_digit"))
+
+    assert result.time_signature != (1, 8), (
+        "a meter assembled from only the digits that WERE recognised - the "
+        "confident wrong answer issue #129 is about")
+    assert result.time_signature_source == "not detected (assumed 4/4)"
+    assert not result.confidence["time_signature"].startswith("high")
+    assert result.meter_digits_unreadable == 1
+    reason = next(w for w in result.warnings
+                  if "unrecognised glyph sits among the time-signature digits" in w)
+    assert "U+E09E" in reason, reason
+    assert "Leland" in reason, reason
+
+    # The source fixture is untouched by the same code path - the refusal
+    # fires on the unreadable glyph, not on multi-digit meters in general.
+    clean = tabextract.extract(engraved("multidigit_meter"))
+    assert clean.time_signature == (12, 8)
+    assert clean.meter_digits_unreadable == 0
+
+
 def test_a_meter_read_later_is_not_backdated_over_an_unread_opening(engraved):
     """Issue #90, second half. This score's opening meter is engraved
     invisibly and a 3/4 is printed part-way through, so exactly one meter can
@@ -2112,7 +2154,16 @@ ENGRAVED_NAMES = (
     # (issue #113).
     "thirty_second_beams",
 )
-SYNTHESISED_NAMES = ("raster_scan", "fake_music_font")
+SYNTHESISED_NAMES = (
+    "raster_scan", "fake_music_font",
+    # multidigit_meter re-cut so one digit of its 12/8 is a SMuFL codepoint
+    # the decoder has no category for (issue #129). Synthesised for the same
+    # reason the other two are: no engraver writes a meter its own font
+    # cannot spell, and the library contains no instance - every digit glyph
+    # in all 297 scores is mapped after issue #84 - so the condition has to
+    # be cut rather than found. See engrave_fixtures.unmap_a_meter_digit.
+    "unmapped_meter_digit",
+)
 
 
 @pytest.mark.parametrize("name", ENGRAVED_NAMES + SYNTHESISED_NAMES)

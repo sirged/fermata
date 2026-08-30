@@ -107,6 +107,35 @@ export const DISCLOSURE_ROWS = [
   // counted here.
   { key: "notes_no_stem", label: "Noteheads read with no stem (quarter or shorter)" },
   { key: "staves_no_stem", label: "Staves with a stemless notehead" },
+  // HOW THE DURATIONS WERE OBTAINED (issue #117). tabextract.py counted both
+  // of these on every extraction from the start, inside `rhythm_provenance` -
+  // a field nothing stores, nothing returns and no interface code reads - so
+  // the bar lists beside them (spacing_bars / degraded_bars, already on
+  // TranscriptionOut) had no counter to hang on and never appeared here.
+  // Durations inferred from the horizontal gaps between noteheads are only as
+  // good as the engraver's spacing being proportional, which a justified or
+  // hand-adjusted system is not, and they presented identically to durations
+  // that were read off flags, beams, dots and rest shapes.
+  {
+    key: "staves_spacing_rhythm",
+    label: "Staves whose durations came from note spacing, not from glyphs",
+    barsKey: "spacing_bars",
+  },
+  {
+    key: "staves_degraded_rhythm",
+    label: "Staves read from the engraving with something on them left unread",
+    barsKey: "degraded_bars",
+  },
+  // A REFUSAL, not a defect in what was read (issue #129): a time signature
+  // printed on the page whose digits include a glyph the decoder has no
+  // category for, refused outright rather than assembled from the digits that
+  // were recognised. No barsKey - a meter that was refused governs bars this
+  // transcription barred by some other meter, so there is no bar number that
+  // is the refusal's own.
+  {
+    key: "meter_digits_unreadable",
+    label: "Printed time signatures refused over an unrecognised digit glyph",
+  },
 ];
 
 /**
