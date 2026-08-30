@@ -774,6 +774,30 @@ layer runs in, so it matters here more than it would elsewhere. Nothing in
 Fermata does that today: scores arrive as alphaTex or MusicXML and go through an
 importer. Delegating to `canCreate` covers the case regardless.
 
+**The unfretted-note case is not handled by the library, so this layer handles
+it first (issue #165).** `canCreate` for the tab factory checks only
+`staff.showTablature && staff.tuning.length > 0` — nothing about whether the
+staff's individual *notes* carry a usable fretted position. A staff can pass
+that check and still crash paint: `TabBarRenderer.collectSpaces` indexes a
+per-line array by `tuning.length - note.string` with no bounds check, and a
+note whose `<string>` was never read, or was out of MusicXML's own 1..N range,
+still satisfies `note.isStringed` (`string >= 0`) while indexing off the end
+of the array — alphaTab catches the resulting exception internally and only
+logs it, so the failure is silent rather than a dead view. So the menu this
+section describes is no longer purely `canCreate`'s own answer: before
+`supportedProfiles` is asked anything, `disqualifyUnstrungTabStaves` walks
+every staff already flagged `showTablature` and turns that flag off for any
+whose notes are not all within range — the exact lever `Staff.finish` uses
+for a percussion staff, just thrown by this layer instead of the library,
+because the library does not throw it here on its own. `canCreate` then sees
+precisely what the percussion case above already taught it to expect: a
+staff that answers "no" for `tab` before it is ever asked. The disqualified
+count is disclosed rather than left silent — `host.dataset.scoreTabWithheld`
+and a distinct viewer notice (`tabWithheldMessage`, score-render.js) —
+because "no notation or tablature" (this score never had either) and "had
+tablature, withheld it" (one bad note took an otherwise-good staff down with
+it) are different facts about the file, and only one of them is true.
+
 ### The resize handler that cannot be turned off
 
 The library registers its own resize handler in its constructor, throttled at a

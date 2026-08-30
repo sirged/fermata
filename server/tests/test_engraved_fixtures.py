@@ -47,6 +47,7 @@ coverage and is not is worse than none:
     there.
 """
 import collections
+import os
 import re
 import xml.etree.ElementTree as ET
 
@@ -2306,6 +2307,50 @@ def test_the_committed_transcription_still_matches_what_the_extractor_reads(engr
         engraved(name)  # fails loudly (not a skip) if the PDF is missing
     drifted = module.write_transcriptions(check_only=True)
     assert drifted == [], drifted
+
+
+def test_the_committed_transcriptions_validate_against_xsd():
+    """Neither of test_musicxml.py's two XSD checks reads
+    `<name>.transcription.musicxml` at all: test_validates_against_xsd
+    validates hand-built samples from musicxml.build(), and
+    test_the_published_examples_validate_against_xsd validates
+    docs/examples/*.musicxml - a different, hand-published navigation.musicxml
+    example, not this one. This is the check that actually covers the
+    TRANSCRIPTION_FIXTURES artifact: schema validation catches every
+    child-order mistake in Rule 4 and every out-of-range value in Rule 11
+    (see docs/musicxml-tab-profile.md's "Checking a file"), and this file is
+    what the web browser suite trusts as ground truth for issue #165 - it
+    being schema-valid is not optional.
+
+    Skipped unless FERMATA_MUSICXML_XSD points at a local musicxml.xsd, the
+    same condition and the same reason as both of test_musicxml.py's checks:
+    the schema's own xs:import elements name remote URLs, and a test that
+    silently depends on the network is worse than one that says it was
+    skipped."""
+    import importlib.util
+    from pathlib import Path
+
+    path = os.environ.get("FERMATA_MUSICXML_XSD")
+    if not path or not os.path.isfile(path):
+        pytest.skip("FERMATA_MUSICXML_XSD not set to a musicxml.xsd")
+    lxml_etree = pytest.importorskip("lxml.etree")
+
+    script = Path(__file__).resolve().parents[1] / "tools" / "tab_extract" / "engrave_fixtures.py"
+    spec = importlib.util.spec_from_file_location("engrave_fixtures", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    schema = lxml_etree.XMLSchema(lxml_etree.parse(path))
+    checked = 0
+    for name in module.TRANSCRIPTION_FIXTURES:
+        transcription = ENGRAVED_DIR / f"{name}.transcription.musicxml"
+        assert transcription.is_file(), transcription
+        doc = lxml_etree.parse(str(transcription))
+        if not schema.validate(doc):
+            errors = "; ".join(f"line {e.line}: {e.message}" for e in schema.error_log)
+            pytest.fail(f"{transcription.name} failed MusicXML 4.0 validation: {errors}")
+        checked += 1
+    assert checked > 0
 
 
 # ---------------------------------------------------------------------------

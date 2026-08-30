@@ -12,7 +12,7 @@ THE CHAIN, all of it in the repository:
     FIXTURES (below)  ->  <name>.musicxml  ->  MuseScore  ->  <name>.pdf
 
 `<name>.musicxml` is the ENGRAVING SOURCE - what MuseScore was asked to draw,
-not what the extractor reads back. For a couple of fixtures, something
+not what the extractor reads back. For one fixture so far, something
 outside the Python test suite (the web browser test suite, which has no
 Python to call at test time) needs the real TRANSCRIPTION too - the actual
 output of tabextract.extract() run on the committed PDF - and that is a

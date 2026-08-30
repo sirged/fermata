@@ -66,7 +66,9 @@ import {
   stubNavigationTimewiseScore,
   stubNavigationUnresolvedScore,
   stubNavigationUnstrungTabScore,
+  stubNavigationTabOnlyInvalidStringScore,
 } from "./fixtures/navigation-score.js";
+import { tabWithheldMessage, UNRENDERABLE_MESSAGE } from "../../src/lib/score-render.js";
 
 const host = (page) => page.locator(".at-host");
 const playButton = (page) => page.locator(".player button.primary");
@@ -412,6 +414,30 @@ async function drawnGlyphCount(page) {
   return await page.evaluate(() => document.querySelectorAll(".at-host svg text").length);
 }
 
+/** `data-score-profiles`, split on its comma delimiter (publish() in
+ * score-render.js writes `scoreProfiles.join(",")`) - [] once a score has
+ * loaded and found nothing drawable, since "".split(",") is [""] not []. */
+async function dataScoreProfiles(page) {
+  const raw = await host(page).getAttribute("data-score-profiles");
+  return raw ? raw.split(",") : [];
+}
+
+/** `data-score-tab-withheld` - the count disqualifyUnstrungTabStaves()
+ * disqualified, as a string, or null when the attribute is absent (nothing
+ * withheld - see its own delete call in score-render.js's scoreLoaded
+ * handler). */
+async function dataScoreTabWithheld(page) {
+  return await host(page).getAttribute("data-score-tab-withheld");
+}
+
+/** The empty-state notice's text, or null when that element is not in the
+ * DOM at all (a score that DOES have something drawable never renders
+ * `.notice`). */
+async function noticeText(page) {
+  const notice = page.locator(".notice");
+  return (await notice.count()) ? await notice.textContent() : null;
+}
+
 test.describe("a TAB staff without a fretted position does not crash the renderer", () => {
   test("the real navigation.pdf transcription renders clean, with tab glyphs drawn", async ({
     page,
@@ -433,8 +459,13 @@ test.describe("a TAB staff without a fretted position does not crash the rendere
     // of the fixture actually drew. The real transcription draws its full
     // eight bars of tab digits and navigation text; > 40 is comfortably past
     // "a handful of leftover notation glyphs" and nowhere near a tight pin
-    // on the exact digit count.
+    // on the exact digit count. (A healthy page also draws 0 SVG <path>
+    // elements on this fixture - alphaTab has nothing here it renders as
+    // one - so glyph COUNT is what discriminates a broken render, not glyph
+    // type; see fixtures/navigation-score.js's header comment.)
     expect(await drawnGlyphCount(page)).toBeGreaterThan(40);
+    // Nothing was withheld: every note in the real transcription is fretted.
+    expect(await dataScoreTabWithheld(page)).toBeNull();
   });
 
   test("a staff whose tab notes are not all fretted degrades instead of crashing", async ({
@@ -459,5 +490,61 @@ test.describe("a TAB staff without a fretted position does not crash the rendere
     // full - only the tab staff's rendering is turned off - so this is well
     // past the 12-glyph broken count without pinning an exact number.
     expect(await drawnGlyphCount(page)).toBeGreaterThan(40);
+    // The strong assertion, not just "still draws something": the tab
+    // profile was actually dropped from what this score offers, while the
+    // notation half - a real staff, unaffected by the other one's defect -
+    // stayed offered. Asserting only the glyph count above could pass for
+    // the wrong reason (e.g. a bug that left "tab" offered but drew nothing
+    // under it); this reads the renderer's own account of what it decided.
+    const profiles = await dataScoreProfiles(page);
+    expect(profiles).not.toContain("tab");
+    expect(profiles).toContain("score");
+    // Disclosed, not silently dropped (issue #165 review): one staff was
+    // withheld, and a person with devtools open (or a future test) can see
+    // it and why - see disqualifyUnstrungTabStaves's own dataset write.
+    expect(await dataScoreTabWithheld(page)).toBe("1");
+    // This score still has a notation staff to fall back to, so it is not
+    // the "nothing left to draw" case - no notice element at all.
+    expect(await noticeText(page)).toBeNull();
+  });
+
+  test("a TAB-only score with one out-of-range string degrades and discloses why, not the generic empty-score notice", async ({
+    page,
+  }) => {
+    // The adversarial-review shape: isStringed() alone (string >= 0) is NOT
+    // the crash condition - alphaTab maps a <string> element's value S to
+    // note.string = tuning.length - S + 1 with no range check, so
+    // <string>7</string> on a 6-line staff round-trips to note.string = 0,
+    // which still satisfies isStringed and still runs
+    // collectSpaces's `spaces[tuning.length - note.string]` off the end of
+    // its own array. Guarding on isStringed instead of the 1..tuning.length
+    // range reproduces the exact original crash here - see the mutation
+    // record for this file.
+    //
+    // This is also the ONE staff the score has - no notation staff to fall
+    // back to - so withholding it empties supportedProfiles() entirely, and
+    // the generic UNRENDERABLE_MESSAGE ("no notation or tablature") would be
+    // false: this score has a TAB clef, a real six-line tuning and seven of
+    // its eight notes correctly fretted.
+    // Not openScore(): this score is genuinely unrenderable (every staff
+    // disqualified, supportedProfiles() empty), so data-score-render-ok
+    // never becomes "true" and the play button's own readiness is a
+    // different question from the one this test asks. publish() still
+    // writes data-score-profiles as soon as scoreLoaded runs, though - ""
+    // once profiles is known to be empty, present (not absent) precisely
+    // because a score HAS loaded - so waiting on that value is the correct
+    // sync point for "this score's degraded/disclosed state has settled".
+    const errors = watchForErrors(page);
+    await stubNavigationTabOnlyInvalidStringScore(page);
+    await page.goto("/#/score/24");
+    await expect(host(page)).toHaveAttribute("data-score-profiles", "", { timeout: 30_000 });
+    await page.waitForTimeout(500);
+    expect(errors.consoleErrors).toEqual([]);
+    expect(errors.pageErrors).toEqual([]);
+    expect(await dataScoreTabWithheld(page)).toBe("1");
+    expect(await dataScoreProfiles(page)).toEqual([]);
+    const text = await noticeText(page);
+    expect(text).toBe(tabWithheldMessage(1));
+    expect(text).not.toBe(UNRENDERABLE_MESSAGE);
   });
 });

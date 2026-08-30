@@ -323,9 +323,21 @@ off for exactly that staff before the first render (`showTablature = false`,
 the same lever this project already relies on to keep a percussion staff's
 tuning from being offered as tab - see `disqualifyUnstrungTabStaves` in
 `web/src/lib/score-render.js`) rather than asking alphaTab to draw a staff
-whose `TabBarRenderer.collectSpaces` indexes a note's absent string straight
-off the end of its own per-line array. Standard notation on the same staff,
-or another staff in the same track, is unaffected.
+whose `TabBarRenderer.collectSpaces` indexes `tuning.length - note.string`
+with no bounds check.
+
+That check is a range, not "was a string ever read": alphaTab's importer maps
+a `<string>` value S (1..N, MusicXML's own convention) to `note.string =
+tuning.length - S + 1` with no validation, so an out-of-range S - `0` or
+`N + 1`, say - round-trips to an out-of-range `note.string` that still passes
+`Note.isStringed` (`string >= 0`). The only condition that keeps every note
+inside `collectSpaces`'s array is `1 <= note.string <= tuning.length`; a check
+against `isStringed` alone still crashes on exactly this shape. Standard
+notation on the same staff, or another staff in the same track, is
+unaffected - only tablature drawing for the disqualified staff is turned off,
+and disclosed rather than left silent (`host.dataset.scoreTabWithheld` and a
+distinct viewer notice, `tabWithheldMessage` - "no notation or tablature" is
+false for a score that had a TAB staff and lost it to one bad note).
 
 **Rule 10.** Every note that sounds also carries `<pitch>`, and its pitch
 agrees with its string, fret, the declared tuning and any capo.

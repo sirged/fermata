@@ -27,8 +27,11 @@
 // during paint: caught internally and logged rather than thrown, so the page
 // still reported `data-score-render-ok`, drew its play button and passed
 // every assertion here - while drawing almost nothing (12 SVG text glyphs,
-// 0 paths, measured on the unfixed page). Nothing in this file asserted
-// console output for that score, which is how it went unnoticed. See
+// measured on the unfixed page, against 53+ once the tab staff draws - glyph
+// COUNT is what discriminates a broken render from a healthy one here, not
+// glyph TYPE: a healthy page draws 0 SVG `<path>` elements too, alphaTab
+// having nothing on this fixture it renders as one). Nothing in this file
+// asserted console output for that score, which is how it went unnoticed. See
 // NAVIGATION_UNSTRUNG_TAB_MUSICXML and stubNavigationUnstrungTabScore below,
 // which keep exercising that exact shape on purpose - now as a check that
 // the renderer degrades a staff it cannot honestly tab rather than crashing,
@@ -70,6 +73,73 @@ export const NAVIGATION_UNSTRUNG_TAB_MUSICXML = fs.readFileSync(
   path.join(ENGRAVED_DIR, "navigation.musicxml"),
   "utf-8",
 );
+
+/**
+ * The TAB-ONLY worst case disqualifyUnstrungTabStaves() has to handle
+ * (issue #165, adversarial review): one part, one staff, a TAB clef and a
+ * real six-line tuning - Fermata's own conforming shape - eight notes, seven
+ * of them correctly fretted and the eighth carrying `<string>7</string>` on
+ * a six-line staff. That is out of MusicXML's own range (strings count from
+ * 1) but still `>= 0`, so `Note.isStringed` alone says yes - it is the
+ * out-of-bounds ARRAY INDEX that crashes `TabBarRenderer.collectSpaces`, not
+ * an absent string, and this is the shape that proves the guard checks the
+ * right thing. It is also the shape where withholding tablature empties
+ * `supportedProfiles()` entirely - no notation staff to fall back to - so
+ * this is what exercises tabWithheldMessage() rather than
+ * UNRENDERABLE_MESSAGE.
+ *
+ * Hand-built rather than derived from a real score, like
+ * NAVIGATION_TWO_VOICE_MARK_MUSICXML and NAVIGATION_TIMEWISE_MUSICXML above:
+ * Fermata's own emitter never writes an out-of-range string
+ * (musicxml.build()'s `if not 1 <= string <= len(tuning): continue` drops
+ * it), so nothing in this project's own pipeline produces this shape - only
+ * a directly uploaded or hand-edited file can.
+ */
+export const TAB_ONLY_INVALID_STRING_MUSICXML = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <work><work-title>Tab-only invalid-string fixture</work-title></work>
+  <part-list>
+    <score-part id="P1"><part-name>Guitar</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>4</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>TAB</sign><line>5</line></clef>
+        <staff-details>
+          <staff-lines>6</staff-lines>
+          <staff-tuning line="1"><tuning-step>E</tuning-step><tuning-octave>2</tuning-octave></staff-tuning>
+          <staff-tuning line="2"><tuning-step>A</tuning-step><tuning-octave>2</tuning-octave></staff-tuning>
+          <staff-tuning line="3"><tuning-step>D</tuning-step><tuning-octave>3</tuning-octave></staff-tuning>
+          <staff-tuning line="4"><tuning-step>G</tuning-step><tuning-octave>3</tuning-octave></staff-tuning>
+          <staff-tuning line="5"><tuning-step>B</tuning-step><tuning-octave>3</tuning-octave></staff-tuning>
+          <staff-tuning line="6"><tuning-step>E</tuning-step><tuning-octave>4</tuning-octave></staff-tuning>
+        </staff-details>
+      </attributes>
+      <note><pitch><step>E</step><octave>2</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>6</string><fret>0</fret></technical></notations></note>
+      <note><pitch><step>A</step><octave>2</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>5</string><fret>0</fret></technical></notations></note>
+      <note><pitch><step>D</step><octave>3</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>7</string><fret>0</fret></technical></notations></note>
+      <note><pitch><step>G</step><octave>3</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>3</string><fret>0</fret></technical></notations></note>
+    </measure>
+    <measure number="2">
+      <note><pitch><step>B</step><octave>3</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>2</string><fret>0</fret></technical></notations></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>1</string><fret>0</fret></technical></notations></note>
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>1</string><fret>3</fret></technical></notations></note>
+      <note><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>1</string><fret>5</fret></technical></notations></note>
+    </measure>
+  </part>
+</score-partwise>
+`;
 
 const DIVISIONS = 480; // ticks per quarter note
 const PITCHES = ["C", "D", "E", "F", "G", "A", "B", "C"];
@@ -529,6 +599,17 @@ export async function stubNavigationScore(page) {
  */
 export async function stubNavigationUnstrungTabScore(page) {
   await stubOneScore(page, 23, "Navigation unstrung-tab fixture", NAVIGATION_UNSTRUNG_TAB_MUSICXML);
+}
+
+/**
+ * Score id 24: the TAB-ONLY worst case (issue #165 adversarial review) - a
+ * single TAB staff, no notation staff to fall back to, one of its eight
+ * notes carrying an out-of-range `<string>7</string>`. Withholding
+ * tablature here empties supportedProfiles() entirely, which is what
+ * exercises tabWithheldMessage() rather than a partial degradation.
+ */
+export async function stubNavigationTabOnlyInvalidStringScore(page) {
+  await stubOneScore(page, 24, "Navigation tab-only invalid-string fixture", TAB_ONLY_INVALID_STRING_MUSICXML);
 }
 
 /** Score id 12: repeats and a D.S. al Coda in one piece. */

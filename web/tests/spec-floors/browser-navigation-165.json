@@ -1,5 +1,5 @@
 {
   "file": "tests/browser/navigation.spec.js",
-  "count": 2,
-  "reason": "issue #165: a TAB-staff note with no fretted position must not crash the renderer's paint - the real navigation.pdf transcription renders clean with tab glyphs drawn, and a staff whose tab data is under-specified (a shape Fermata's own emitter never produces, but a directly uploaded MusicXML/.mxl file can) degrades to notation-only instead of throwing out of TabBarRenderer.collectSpaces."
+  "count": 3,
+  "reason": "issue #165: a TAB-staff note with no fretted position must not crash the renderer's paint - the real navigation.pdf transcription renders clean with tab glyphs drawn, a notation+tab score whose tab data is under-specified degrades to notation-only (and discloses withholding it) instead of throwing out of TabBarRenderer.collectSpaces, and a TAB-only score with one out-of-range <string> (isStringed() alone is not the crash condition - it is an array index) degrades and shows a distinct notice rather than the generic 'no notation or tablature' one."
 }

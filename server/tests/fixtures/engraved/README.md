@@ -39,7 +39,7 @@ sounding note), and must never be fed to a MusicXML consumer - alphaTab
 included - as if it were the extractor's output. Doing exactly that, once,
 crashed alphaTab's `TabBarRenderer.collectSpaces` during paint (issue #165).
 
-A couple of fixtures also carry `<name>.transcription.musicxml`: the actual
+One fixture (`navigation`, so far) also carries `<name>.transcription.musicxml`: the actual
 output of `tabextract.extract()` run on the committed PDF, regenerated and
 checked byte for byte (modulo a pinned `<encoding-date>`) by
 `engrave_fixtures.py --check`'s `write_transcriptions()`. This is the real
