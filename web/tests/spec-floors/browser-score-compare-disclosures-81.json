@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-compare-disclosures.spec.js",
+  "count": 2,
+  "reason": "issue #81: a tie the engraving draws whose other end was not found reaches the panel as its own row with the bars it happened in - and is hidden entirely when the transcription wrote every tie it found, so the row appearing means something happened."
+}
