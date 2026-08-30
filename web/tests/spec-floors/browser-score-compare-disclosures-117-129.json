@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-compare-disclosures.spec.js",
+  "count": 2,
+  "reason": "issues #117 and #129: the spacing-derived and incompletely-read staff counters reach the panel beside the bar numbers they name, and a printed meter refused over an unrecognised digit glyph gets a row with no bar list."
+}

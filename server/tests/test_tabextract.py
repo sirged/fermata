@@ -1531,11 +1531,15 @@ def test_overfull_bars_are_reported_and_cap_the_confidence():
     assert not c.startswith("high")
     assert "37 of 50" in c
 
-    # A stray overfull bar is worth reporting but shouldn't condemn the score.
+    # A stray overfull bar is worth reporting but shouldn't condemn the score:
+    # it is one rung down, not two. It does cost the "high" word (issue #114),
+    # because that word now means every bar adds up - see
+    # test_high_rhythm_confidence_means_every_bar_adds_up_and_nothing_less.
     w2, c2 = tabextract._rhythm_report(
         all_glyph, {}, tabextract._BarConformance(1, 0, 1, 50))
     assert any("1 of 50 bar(s) hold more" in x for x in w2)
-    assert c2.startswith("high")
+    assert c2.startswith("medium"), c2
+    assert not c2.startswith("low"), "one bar in fifty is not a condemned score"
 
 
 def test_bar_quarters_accounts_for_dots():
@@ -1753,7 +1757,12 @@ def test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early(kaine_salv
     courtesy_staff = stds[0]
 
     # No ACCEPTED mid-system entry may read (6, 8) here at all.
-    for x, ts in tabextract._mid_system_meters(page, courtesy_staff, vseg):
+    accepted, refused_over_unreadable_digits = tabextract._mid_system_meters(
+        page, courtesy_staff, vseg)
+    assert refused_over_unreadable_digits == [], (
+        "this staff's meters are all in a calibrated font - nothing here should "
+        "trip the issue #129 refusal")
+    for x, ts in accepted:
         assert ts != (6, 8), (
             "the courtesy signature at the end of this system was read as a change here", x)
 
@@ -2110,9 +2119,9 @@ def test_short_bars_downgrade_confidence_the_same_way_overfull_ones_do():
     used to report "high - decoded directly from the ... engraving" over a
     warning list saying most of its bars do not add up."""
     counts = collections.Counter({tabextract.PROV_GLYPHS: 1})
-    _w, high = tabextract._rhythm_report(
+    _w, one_short = tabextract._rhythm_report(
         counts, {}, tabextract._BarConformance(0, 1, 1, 10))
-    assert high.startswith("high"), high
+    assert one_short.startswith("medium"), one_short
 
     _w, low = tabextract._rhythm_report(
         counts, {}, tabextract._BarConformance(0, 6, 6, 10))
@@ -2125,32 +2134,136 @@ def test_short_bars_downgrade_confidence_the_same_way_overfull_ones_do():
     assert low_over.startswith("low overall"), low_over
 
     # a bar wrong in both directions is one defective bar, not two - a 10-bar
-    # score with 2 such bars is 20% defective and must NOT be downgraded
-    _w, still_high = tabextract._rhythm_report(
+    # score with 2 such bars is 20% defective, under the "low overall" line
+    _w, mid = tabextract._rhythm_report(
         counts, {}, tabextract._BarConformance(2, 2, 2, 10))
-    assert still_high.startswith("high"), still_high
+    assert mid.startswith("medium"), mid
+    assert "2 of 10 bar(s)" in mid, "and 2, not 4 - overfull + short double-counts"
 
 
-def test_a_confidence_below_the_threshold_still_says_what_is_wrong():
-    """The threshold decides the LABEL, not whether anything is said. Sixteen of
-    the nineteen library scores that still rated "high" sat just under the
-    quarter - one with invented silence in 7 of its 33 bars - and read
-    "decoded directly from the ... engraving" with nothing qualifying it, which
-    makes a score with known defective bars indistinguishable from a clean
-    one at the single figure the application uses to summarise a
-    transcription."""
+def test_high_rhythm_confidence_means_every_bar_adds_up_and_nothing_less(monkeypatch):
+    """Issue #114. "high" used to be gated on a single boundary at a quarter,
+    so a score could carry it with up to one bar in four arithmetically
+    impossible - measured on the library, the weakest "high" score had 16 of
+    its 65 bars not adding up, and 25 of the 30 "high" scores had at least
+    one. The headline word contradicted the count printed right beside it.
+
+    The high band is now ZERO defective bars, which is the only version of
+    that word a reader can check against the page. One bar wrong in a
+    thirty-two-bar score is "medium", not "high": the score does contain a bar
+    this transcription got wrong, and a musician is entitled to know that
+    before playing it rather than after."""
     counts = collections.Counter({tabextract.PROV_GLYPHS: 1})
-    _w, high = tabextract._rhythm_report(
-        counts, {}, tabextract._BarConformance(0, 2, 2, 10))
-    assert high.startswith("high"), "still high: two of ten is under the quarter"
-    assert "2 of 10 bar(s) do not add up" in high, high
 
-    # A genuinely clean score says nothing extra - the qualifier has to mean
-    # something, and one that appears on every score would not.
     _w, clean = tabextract._rhythm_report(
-        counts, {}, tabextract._BarConformance(0, 0, 0, 10))
-    assert clean.startswith("high")
+        counts, {}, tabextract._BarConformance(0, 0, 0, 32))
+    assert clean.startswith("high"), clean
+    # A genuinely clean score says nothing extra - the qualifier has to mean
+    # something, and one that appeared on every score would not.
     assert "bar(s)" not in clean, clean
+
+    _w, one_of_32 = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 1, 1, 32))
+    assert not one_of_32.startswith("high"), (
+        "one impossible bar in thirty-two is not a fully-read score: " + one_of_32)
+    assert one_of_32.startswith("medium"), one_of_32
+    assert "1 of 32 bar(s) do not add up" in one_of_32
+
+    # Just under the old quarter gate - the exact band the issue is about.
+    _w, just_under = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 16, 16, 65))
+    assert just_under.startswith("medium"), just_under
+    assert "16 of 65 bar(s)" in just_under
+
+    # ...and the boundary itself is still where it was, so the "low overall"
+    # end of the ladder is unmoved by this change.
+    assert tabextract._RHYTHM_LOW_RATIO == 0.25
+    _w, at_the_line = tabextract._rhythm_report(
+        counts, {}, tabextract._BarConformance(0, 25, 25, 100))
+    assert at_the_line.startswith("low overall"), at_the_line
+
+
+def test_the_rhythm_label_is_the_weaker_of_provenance_and_arithmetic():
+    """The two judgements are independent and the label takes the weaker.
+    Composing them rather than letting either win outright is what keeps the
+    headline from contradicting the sentence under it: a spacing-derived score
+    whose bars happen to add up must not read "high", and a glyph-read score
+    whose bars do not must not read "high" either.
+
+    A TIE keeps the provenance word, because that word carries a fact the
+    arithmetic one does not - "mixed" says durations came out of note spacing,
+    and flattening it to "medium" would lose that (issue #117)."""
+    glyphs = collections.Counter({tabextract.PROV_GLYPHS: 1})
+    mixed = collections.Counter({tabextract.PROV_GLYPHS: 4, tabextract.PROV_SPACING: 1})
+    degraded = collections.Counter({tabextract.PROV_GLYPHS_DEGRADED: 1})
+    spacing_only = collections.Counter({tabextract.PROV_SPACING: 5})
+    clean = tabextract._BarConformance(0, 0, 0, 20)
+    some = tabextract._BarConformance(0, 2, 2, 20)
+    many = tabextract._BarConformance(0, 10, 10, 20)
+
+    def label(counts, conformance):
+        return tabextract._rhythm_report(counts, {}, conformance)[1].split(" - ")[0]
+
+    assert label(glyphs, clean) == "high"
+    assert label(glyphs, some) == "medium"
+    assert label(glyphs, many) == "low overall"
+    # provenance already below "high": clean arithmetic cannot lift it
+    assert label(mixed, clean) == "mixed"
+    assert label(mixed, some) == "mixed", "a tie keeps the word that says why"
+    assert label(mixed, many) == "low overall"
+    assert label(degraded, clean) == "medium"
+    assert label(degraded, some) == "medium"
+    assert label(spacing_only, clean) == "low"
+    assert label(spacing_only, some) == "low"
+    assert label(spacing_only, many) == "low overall"
+
+
+def test_relabel_leaves_an_unranked_head_untouched():
+    """`_CONFIDENCE_RANK` only knows the words this ladder produces itself -
+    "high", "medium", "mixed", "low" and "low overall". A caller-supplied
+    label carries its own head, "n/a" (`ts_confidence`'s "n/a - caller
+    supplied" for `time_signature_source == "manual override"`), which is on
+    no rung of that ladder at all.
+
+    The old default fell back to `_CONFIDENCE_RANK["high"]` for any head it
+    did not recognise, which fails OPEN: it treated the unranked head as the
+    STRONGEST possible confidence, so anything weaker than "high" - which is
+    everything except "high" itself - demoted it, producing nonsense like
+    "medium - caller supplied". A label nobody derived a confidence for
+    should not be relabelled at all; it should pass through unchanged."""
+    passed_through = tabextract._relabel("n/a - caller supplied", "medium")
+    assert passed_through == "n/a - caller supplied", passed_through
+
+    # The reason, when there is one, is still appended - the underlying fact
+    # is true regardless of what the headline word is allowed to say.
+    with_reason = tabextract._relabel(
+        "n/a - caller supplied", "medium", "1 printed meter(s) were refused")
+    assert with_reason == "n/a - caller supplied; 1 printed meter(s) were refused", with_reason
+
+    # A recognised head is unaffected by this change: "high" still demotes.
+    assert tabextract._relabel("high - decoded from glyphs", "medium") == (
+        "medium - decoded from glyphs")
+
+
+def test_a_spacing_derived_score_can_never_present_as_fully_read():
+    """Issue #117's own acceptance criterion, as an assertion: "a score with
+    any spacing-derived staff should not be able to present as fully read".
+
+    Durations inferred from the horizontal gaps between noteheads are only as
+    good as the engraver's spacing being proportional, which a justified or
+    hand-adjusted system is not - so one such staff is enough, however many
+    staves were read properly and however cleanly the bars add up. The loop
+    goes to a hundred glyph staves against one spacing staff on a perfectly
+    conformant score, which is the most favourable case a spacing-derived
+    score can possibly present, and it still must not say "high"."""
+    clean = tabextract._BarConformance(0, 0, 0, 100)
+    for glyph_staves in (1, 10, 100):
+        counts = collections.Counter({tabextract.PROV_GLYPHS: glyph_staves,
+                                      tabextract.PROV_SPACING: 1})
+        warnings, confidence = tabextract._rhythm_report(counts, {}, clean)
+        assert not confidence.startswith("high"), confidence
+        assert any("rougher estimate from note spacing" in w for w in warnings), (
+            "and it is said in prose too, because a field on its own reaches nobody")
 
 
 def test_bars_nothing_was_read_from_are_counted_and_named():
@@ -2169,11 +2282,13 @@ def test_bars_nothing_was_read_from_are_counted_and_named():
     assert confidence.startswith("low overall"), confidence
     assert "hold nothing that was read from the score (40)" in confidence
 
-    # Below the threshold they are still named, and still qualify the string.
+    # Below the threshold they are still named, and still qualify the string -
+    # and they move the label off "high" for the same reason a defective bar
+    # does: a bar nothing was read from is not a bar that was read (issue #114).
     warnings, confidence = tabextract._rhythm_report(
         counts, {}, tabextract._BarConformance(0, 0, 0, 40), (7, 9))
     assert any("2 of 40 bar(s) hold nothing" in w for w in warnings), warnings
-    assert confidence.startswith("high")
+    assert confidence.startswith("medium"), confidence
     assert "(2)" in confidence, confidence
 
     # And a bar that is BOTH defective and unread counts once, or the ratio

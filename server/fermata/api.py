@@ -1492,6 +1492,27 @@ _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
              # keys above are: a caller with only the API must not have to
              # infer the caveat from a file that looks complete.
              "nav_marks_unanchored", "nav_marks_unresolved",
+             # `staves_spacing_rhythm` / `staves_degraded_rhythm` (issue
+             # #117): how many staff systems' durations came from the
+             # horizontal gaps between noteheads instead of from the
+             # noteheads, and how many were read from the engraving with
+             # something on them left unread. `rhythm_provenance` on the
+             # extraction result already counted both, and that field is
+             # stored nowhere and read by nothing - so a reader reloading a
+             # transcription had `spacing_bars` (which bars) with no count
+             # beside it and no row in the disclosure panel to put it on.
+             # Spacing-derived rhythm is only as good as the engraver's
+             # spacing being proportional, which a justified or hand-adjusted
+             # system is not, so this is exactly the kind of caveat that must
+             # not be recoverable only from prose.
+             "staves_spacing_rhythm", "staves_degraded_rhythm",
+             # `meter_digits_unreadable` (issue #129): printed time signatures
+             # refused because a glyph the decoder has no category for sat
+             # among their digits. It is the count of a REFUSAL, and the only
+             # figure here that says a meter this score prints was not read -
+             # `time_signature_source` says how the meter that IS reported was
+             # obtained, and cannot say that a different, unread one exists.
+             "meter_digits_unreadable",
              # `systems_unread` (issue #152): a SYSTEM whose bars were never
              # read - the only disclosure here about music that is ABSENT
              # from the transcription rather than imperfect in it. It has to
@@ -1770,6 +1791,17 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             "staves_coincident_unsplit": result.staves_coincident_unsplit,
             "spacing_bars": result.spacing_bars,
             "degraded_bars": result.degraded_bars,
+            # The COUNTS beside those two bar lists (issue #117). The lists
+            # have been stored since they existed; the counts they belong to
+            # lived only inside `rhythm_provenance`, which nothing stores and
+            # nothing reads, so the fact that a staff's durations came out of
+            # the gaps between noteheads reached the disclosure panel through
+            # no field at all.
+            "staves_spacing_rhythm": result.staves_spacing_rhythm,
+            "staves_degraded_rhythm": result.staves_degraded_rhythm,
+            # A printed meter refused because a glyph with no category sat
+            # among its digits (issue #129).
+            "meter_digits_unreadable": result.meter_digits_unreadable,
             "repeats_unread": result.repeats_unread,
             "repeats_unread_bars": result.repeats_unread_bars,
             "endings_unread": result.endings_unread,

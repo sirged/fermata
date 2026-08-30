@@ -494,6 +494,20 @@ class TranscriptionOut(BaseModel):
     staves_coincident_unsplit: int | None
     nav_marks_unanchored: int | None
     nav_marks_unresolved: int | None
+    # How many staff systems' durations came from the horizontal gaps between
+    # noteheads rather than from the noteheads, and how many were read from
+    # the engraving with something on them left unread (issue #117). These are
+    # the counts belonging to `spacing_bars` / `degraded_bars` below, which
+    # have been on this model since they existed while the counts lived only
+    # in an extraction-time field nothing stored.
+    staves_spacing_rhythm: int | None
+    staves_degraded_rhythm: int | None
+    # Printed time signatures REFUSED because a glyph with no category sat
+    # among their digits (issue #129). Distinct from anything
+    # `time_signature_source` can say: that field describes the meter that IS
+    # reported, and cannot say that a different, unread one is printed on the
+    # page.
+    meter_digits_unreadable: int | None
     # A system whose bars were not read at all (issue #152) - music ABSENT
     # from this transcription rather than imperfect in it. Every other figure
     # on this model describes only the systems that WERE read, which makes

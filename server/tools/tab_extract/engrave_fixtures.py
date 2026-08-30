@@ -1087,6 +1087,35 @@ FAKE_FONT_NAME = "fake_music_font"
 FAKE_FONT_CODES = (0xE0A4, 0xE0A3, 0xE052, 0xE084, 0xE0A4, 0xE0A4, 0xE0A4, 0xE1E7)
 FAKE_FONT_LETTERS = "ABCDEFGH"
 
+# Derived from an engraved fixture rather than engraved itself, because no
+# engraver produces it on purpose either: a real MuseScore page whose music
+# font maps one of the meter's own digits to a SMuFL codepoint the decoder has
+# no category for. That is what a Finale subset with an unmapped GID, or a
+# Sibelius one with an unmapped PUA name, looks like from this decoder's side
+# (issue #129) - the glyph is drawn, is measured, has a position among the
+# digits, and means nothing here.
+#
+# WHY IT IS DERIVED. The library contains no instance: every digit glyph in
+# all 297 scores is mapped after issue #84, so there is nothing real to point
+# a test at, and the condition cannot be reached by engraving a score either -
+# an engraver writes the meter its font knows. Rewriting one entry of a real
+# page's ToUnicode CMap changes exactly the one thing the defect is about and
+# leaves the engraving, the glyph outlines and every coordinate alone, so what
+# the decoder walks is a genuine page whose meter it genuinely cannot read.
+#
+# multidigit_meter's 12/8 is the source because a MULTI-digit numeral is the
+# shape that used to fail silently: the digits that WERE recognised still
+# assemble, so the '2' going missing turns 12/8 into a confident 1/8 rather
+# than into a refusal. UNMAPPED_DIGIT_CODE is in the SMuFL time-signature
+# block and deliberately not in glyph_rhythm.SMUFL_CODE_MAP; if it is ever
+# calibrated, this fixture stops reproducing the defect and must be re-cut
+# against another uncalibrated codepoint.
+UNMAPPED_DIGIT_FROM = "multidigit_meter"
+UNMAPPED_DIGIT_NAME = "unmapped_meter_digit"
+UNMAPPED_DIGIT_FONT = "Leland"
+UNMAPPED_DIGIT_REPLACES = 0xE082   # digit2
+UNMAPPED_DIGIT_CODE = 0xE09E
+
 # Which tool made each committed PDF, asserted by a test. A fixture
 # re-engraved by a DIFFERENT version lands different coordinates, and the
 # assertions here measure coordinates - so the version has to be part of what
@@ -1094,7 +1123,7 @@ FAKE_FONT_LETTERS = "ABCDEFGH"
 # stronger guard: it is regenerated and compared byte for byte.
 ENGRAVER_CREATOR = "MuseScore Studio Version: 4.6.3"
 SYNTHESISED_CREATOR = "fermata engrave_fixtures.py"
-SYNTHESISED = (RASTER_NAME, FAKE_FONT_NAME)
+SYNTHESISED = (RASTER_NAME, FAKE_FONT_NAME, UNMAPPED_DIGIT_NAME)
 
 
 # ---------------------------------------------------------------------------
@@ -1255,6 +1284,48 @@ def synthesise_fake_music_font():
     print(f"  synthesised {path.name} ({path.stat().st_size} bytes)")
 
 
+def unmap_a_meter_digit():
+    """Re-cut one engraved fixture so a digit of its meter is a glyph the
+    decoder has no category for - see UNMAPPED_DIGIT_FROM above."""
+    import re
+
+    import fitz
+
+    src = FIXTURE_DIR / f"{UNMAPPED_DIGIT_FROM}.pdf"
+    doc = fitz.open(src)
+    patched = 0
+    for xref in range(1, doc.xref_length()):
+        obj = doc.xref_object(xref, compressed=True)
+        if f"/BaseFont/{UNMAPPED_DIGIT_FONT}" not in obj.replace(" ", ""):
+            continue
+        found = re.search(r"/ToUnicode (\d+) 0 R", obj)
+        if not found:
+            continue
+        cmap_xref = int(found.group(1))
+        text = doc.xref_stream(cmap_xref).decode("latin-1")
+        rewritten = text.replace(f"<{UNMAPPED_DIGIT_REPLACES:04X}>",
+                                 f"<{UNMAPPED_DIGIT_CODE:04X}>")
+        if rewritten == text:
+            continue
+        raw = rewritten.encode("latin-1")
+        doc.update_object(cmap_xref, f"<</Length {len(raw)}>>")
+        doc.update_stream(cmap_xref, raw)
+        patched += 1
+    if patched != 1:
+        raise SystemExit(
+            f"expected one {UNMAPPED_DIGIT_FONT} ToUnicode CMap carrying "
+            f"U+{UNMAPPED_DIGIT_REPLACES:04X}, patched {patched}")
+    path = FIXTURE_DIR / f"{UNMAPPED_DIGIT_NAME}.pdf"
+    doc.set_metadata({
+        "creator": SYNTHESISED_CREATOR,
+        "title": (f"{UNMAPPED_DIGIT_FROM} with one meter digit remapped to the "
+                  f"uncalibrated U+{UNMAPPED_DIGIT_CODE:04X}"),
+    })
+    doc.save(path)
+    doc.close()
+    print(f"  re-cut {path.name} ({path.stat().st_size} bytes)")
+
+
 def rasterise():
     """Flatten one engraved fixture to a page-sized image in a PDF wrapper."""
     import fitz
@@ -1329,6 +1400,7 @@ def main():
     synthesise_fake_music_font()
     print("transcriptions:")
     write_transcriptions()
+    unmap_a_meter_digit()
     if args.report:
         report()
 

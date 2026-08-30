@@ -299,6 +299,78 @@ test.describe("ScoreCompare structural disclosures", () => {
     await expect(page.locator(".disclosures ul")).toHaveAttribute("role", "list");
   });
 
+  test("a spacing-derived staff reaches the reader as its own row, with the bars it produced", async ({
+    page,
+  }) => {
+    // Issue #117. tabextract counted these staff systems from the start, in
+    // `rhythm_provenance` - a field nothing stores, nothing returns and no
+    // interface code reads - so `spacing_bars` arrived on TranscriptionOut
+    // with no counter to hang on and never appeared here at all. Durations
+    // inferred from the horizontal gaps between noteheads are only as good as
+    // the engraver's spacing being proportional, which a justified or
+    // hand-adjusted system is not, and they presented identically to
+    // durations read off flags, beams, dots and rest shapes.
+    //
+    // Dropping the staves_spacing_rhythm row from DISCLOSURE_ROWS turns this
+    // red, along with the vendored-key guard in tests/unit/disclosures.spec.js.
+    await stubScoreApi(
+      page,
+      transcriptionResponse({
+        warnings: [],
+        confidence: CLEAN_CONFIDENCE,
+        disclosures: {
+          ...zeroDisclosures(),
+          staves_spacing_rhythm: 2,
+          spacing_bars: [3, 4, 5],
+          staves_degraded_rhythm: 1,
+          degraded_bars: [9],
+        },
+      }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+
+    const spacing = page.locator('[data-disclosure="staves_spacing_rhythm"]');
+    await expect(spacing).toBeVisible();
+    await expect(spacing).toContainText(
+      "Staves whose durations came from note spacing, not from glyphs",
+    );
+    await expect(spacing.locator(".disclosure-value")).toHaveText("2");
+    await expect(spacing.locator(".disclosure-bars")).toHaveText("bars 3, 4, 5");
+
+    const degraded = page.locator('[data-disclosure="staves_degraded_rhythm"]');
+    await expect(degraded).toContainText(
+      "Staves read from the engraving with something on them left unread",
+    );
+    await expect(degraded.locator(".disclosure-bars")).toHaveText("bar 9");
+  });
+
+  test("a printed meter refused over an unrecognised digit glyph gets a row of its own", async ({
+    page,
+  }) => {
+    // Issue #129. The refusal has no bar list on purpose: a meter that was
+    // refused governs bars this transcription barred by some OTHER meter, so
+    // there is no bar number that belongs to the refusal itself.
+    await stubScoreApi(
+      page,
+      transcriptionResponse({
+        warnings: [],
+        confidence: CLEAN_CONFIDENCE,
+        disclosures: { ...zeroDisclosures(), meter_digits_unreadable: 1 },
+      }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+
+    const row = page.locator('[data-disclosure="meter_digits_unreadable"]');
+    await expect(row).toContainText(
+      "Printed time signatures refused over an unrecognised digit glyph",
+    );
+    await expect(row.locator(".disclosure-value")).toHaveText("1");
+    await expect(row.locator(".disclosure-bars")).toHaveCount(0);
+    await expect(page.locator(".disclosure-row")).toHaveCount(1);
+  });
+
   test("gig mode drops the disclosures panel along with the rest of the review chrome", async ({
     page,
   }) => {
