@@ -666,6 +666,120 @@ def test_renaming_a_folder_takes_its_scores_with_it(client, library, add_score):
     }
 
 
+def test_renaming_a_folder_whose_name_holds_sql_wildcards_still_finds_its_scores(
+    client, library, add_score
+):
+    """`_` is a single-character wildcard in SQL's LIKE, and this library's own
+    filenames are full of them - "Terra_s Theme" is the house style for an
+    apostrophe (see metadata._clean_stem). Escaped without an ESCAPE clause, the
+    pattern matches nothing at all, and renaming such a folder would move it on
+    disk and re-point NOT ONE score: every score in it silently marked missing
+    on the next scan, under a folder name that no longer exists.
+    """
+    first = add_score("Terra_s Theme/One.pdf", content=b"one")
+    second = add_score("Terra_s Theme/Deeper/Two.pdf", content=b"two")
+
+    body = client.post(
+        "/api/library/folders/rename",
+        json={"from_path": "Terra_s Theme", "to_path": "Terra's Theme", "dry_run": False},
+    ).json()
+
+    assert body["moved"] == 2, body
+    assert paths(client) == {"Terra's Theme/One.pdf", "Terra's Theme/Deeper/Two.pdf"}
+    assert (library / "Terra's Theme/Deeper/Two.pdf").read_bytes() == b"two"
+    assert client.get(f"/api/scores/{first}").json()["collection"] == "Terra's Theme"
+    assert client.get(f"/api/scores/{second}").json()["id"] == second
+
+    # ...and the same for the other wildcard, so the escaping is not tested for
+    # only one of the two characters it has to handle.
+    add_score("100% Guitar/Three.pdf", content=b"three")
+    percent = client.post(
+        "/api/library/folders/rename",
+        json={"from_path": "100% Guitar", "to_path": "All Guitar", "dry_run": False},
+    ).json()
+    assert percent["moved"] == 1, percent
+    assert (library / "All Guitar/Three.pdf").read_bytes() == b"three"
+
+
+def test_a_folder_rename_only_moves_the_folder_it_names(client, library, add_score):
+    """SQLite's LIKE is case-insensitive for ASCII, so the pattern that finds
+    this folder's scores also matches a differently-cased folder's - which on
+    any case-sensitive filesystem is a different folder entirely. The Python
+    prefix filter after it is what makes the answer case-SENSITIVE, and without
+    it renaming `Patreon` would re-point a score filed under `patreon` at a
+    folder its file was never in.
+    """
+    mine = add_score("Patreon/One.pdf", content=b"one")
+    conn = db.connect()
+    # A row under the other casing. Marked missing so it needs no file, which is
+    # also the only way to have both on a case-insensitive filesystem.
+    other = conn.execute(
+        """INSERT INTO scores(title, collection, path, file_type, hash, size, mtime,
+                              missing_since)
+           VALUES ('Other', 'patreon', 'patreon/Other.pdf', 'pdf', 'otherhash', 3, 0.0,
+                   datetime('now'))"""
+    ).lastrowid
+    conn.commit()
+
+    body = client.post(
+        "/api/library/folders/rename",
+        json={"from_path": "Patreon", "to_path": "Arrangements", "dry_run": False},
+    ).json()
+
+    assert body["moved"] == 1, body
+    assert client.get(f"/api/scores/{mine}").json()["path"] == "Arrangements/One.pdf"
+    assert client.get(f"/api/scores/{other}").json()["path"] == "patreon/Other.pdf"
+
+
+def test_renaming_a_folder_carries_a_score_whose_file_is_missing_along_with_it(
+    client, library, add_score
+):
+    """A score under this folder whose file is not there still has to follow the
+    rename, or it is left filed under a folder name that no longer exists - and
+    there is nothing to hash, so the content check every present score gets
+    would be a FileNotFoundError and a 500 for a perfectly ordinary tidy-up."""
+    present = add_score("Patreon/One.pdf", content=b"one")
+    absent = add_score("Patreon/Gone.pdf", content=b"gone")
+    (library / "Patreon/Gone.pdf").unlink()
+    conn = db.connect()
+    conn.execute("UPDATE scores SET missing_since = datetime('now') WHERE id = ?", (absent,))
+    conn.commit()
+
+    res = client.post(
+        "/api/library/folders/rename",
+        json={"from_path": "Patreon", "to_path": "Arrangements", "dry_run": False},
+    )
+
+    assert res.status_code == 200, res.text
+    assert res.json()["moved"] == 2
+    assert client.get(f"/api/scores/{present}").json()["path"] == "Arrangements/One.pdf"
+    gone = client.get(f"/api/scores/{absent}").json()
+    assert gone["path"] == "Arrangements/Gone.pdf"
+    # Still missing, still saying so, and its last known size is not overwritten
+    # with a figure read off a file that is not there.
+    assert gone["missing_since"] is not None
+    assert gone["size"] == len(b"gone")
+    assert gone["collection"] == "Arrangements"
+
+
+def test_the_trash_does_not_fill_up_with_empty_folders(client, library, add_score):
+    """One numbered folder per score ever deleted, left behind for ever, makes
+    the trash look like a mess somebody would be tempted to clear out by hand -
+    which is the one thing that really does lose a deleted score's file."""
+    restored = add_score("Inbox/One.pdf", content=b"one")
+    destroyed = add_score("Inbox/Two.pdf", content=b"two")
+
+    client.delete(f"/api/scores/{restored}")
+    client.delete(f"/api/scores/{destroyed}")
+    trash = library / scanner.TRASH_DIR_NAME
+    assert {p.name for p in trash.iterdir()} == {str(restored), str(destroyed)}
+
+    client.post(f"/api/trash/{restored}/restore")
+    client.delete(f"/api/trash/{destroyed}")
+
+    assert list(trash.iterdir()) == []
+
+
 def test_a_folder_cannot_be_renamed_into_itself_or_onto_something(client, library, add_score):
     add_score("Patreon/One.pdf")
     (library / "Taken").mkdir()

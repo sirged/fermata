@@ -2295,12 +2295,27 @@ def _relink_moved_file(conn, row, dest_rel: str) -> None:
             "Scan the library and try again.",
         )
     stat = dest.stat()
+    _repoint_row(conn, row["id"], dest_rel, stat.st_size, stat.st_mtime)
+
+
+def _repoint_row(conn, score_id: int, dest_rel: str, size=None, mtime=None) -> None:
+    """Say where a score's file is now, and re-derive the two fields that
+    describe where it lives.
+
+    `size` and `mtime` are omitted for a score whose file is NOT THERE - see
+    rename_folder, which has to carry a score marked missing along with the
+    folder it is filed under. There is nothing to stat, and the figures the row
+    already carries are the last true ones: overwriting them with zeroes would
+    make the scanner's unchanged-file shortcut re-read the file the day it comes
+    back, which is harmless, and would make the stored size a lie in the
+    meantime, which is not.
+    """
     collection, series = _location_fields(dest_rel)
-    conn.execute(
-        """UPDATE scores SET path = ?, collection = ?, series = ?, size = ?, mtime = ?
-           WHERE id = ?""",
-        (dest_rel, collection, series, stat.st_size, stat.st_mtime, row["id"]),
-    )
+    fields = {"path": dest_rel, "collection": collection, "series": series}
+    if size is not None:
+        fields["size"], fields["mtime"] = size, mtime
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    conn.execute(f"UPDATE scores SET {sets} WHERE id = ?", [*fields.values(), score_id])
 
 
 def _plan_line(row, dest_rel: str, status: str, reason: str | None = None) -> dict:
@@ -2646,12 +2661,26 @@ def rename_folder(body: FolderRenameIn):
     try:
         with scanner.hold_library_still():
             with write_tx() as conn:
-                rows = conn.execute(
-                    "SELECT * FROM scores WHERE deleted_at IS NULL AND path LIKE ?"
-                    " ORDER BY path",
-                    (prefix.replace("%", r"\%").replace("_", r"\_") + "%",),
-                ).fetchall()
-                rows = [r for r in rows if r["path"].startswith(prefix)]
+                # ESCAPE IS NOT OPTIONAL HERE. `_` is a single-character
+                # wildcard in LIKE, and folder names full of underscores are
+                # exactly what this library's own filenames look like
+                # ("Terra_s Theme"). Without the escape clause the escaping
+                # below would be literal backslashes in the pattern and a folder
+                # with an underscore in its name would match NOTHING - so
+                # renaming it would move the folder on disk and re-point not one
+                # score, silently. The startswith() pass after it is the belt to
+                # this brace: LIKE is what lets SQLite use the index, and Python
+                # is what decides.
+                pattern = prefix.replace("\\", r"\\").replace("%", r"\%").replace("_", r"\_")
+                rows = [
+                    r
+                    for r in conn.execute(
+                        "SELECT * FROM scores WHERE deleted_at IS NULL"
+                        " AND path LIKE ? ESCAPE '\\' ORDER BY path",
+                        (pattern + "%",),
+                    ).fetchall()
+                    if r["path"].startswith(prefix)
+                ]
                 plan = []
                 for r in rows:
                     dest_rel = to_rel + "/" + r["path"][len(prefix):]
@@ -2686,7 +2715,18 @@ def rename_folder(body: FolderRenameIn):
                     try:
                         for line in plan:
                             row = _score_row(conn, line["score_id"])
-                            _relink_moved_file(conn, row, line["to_path"])
+                            if row["missing_since"] is not None:
+                                # A score under this folder whose file is not
+                                # there. It still has to follow the rename, or
+                                # it is left filed under a folder name that no
+                                # longer exists - and there is nothing to hash,
+                                # so the content check _relink_moved_file makes
+                                # would be a FileNotFoundError and a 500 for the
+                                # ordinary case of renaming a folder holding one
+                                # score whose file went astray.
+                                _repoint_row(conn, row["id"], line["to_path"])
+                            else:
+                                _relink_moved_file(conn, row, line["to_path"])
                     except Exception:
                         dest.rename(source)
                         raise
@@ -2738,6 +2778,27 @@ def _free_path(rel: str, conn=None, exclude_id: int | None = None) -> str:
     raise HTTPException(409, f"nothing could be put back at {rel} - a thousand names were taken")
 
 
+def _tidy_trash_folder(rel: str) -> None:
+    """Remove a per-score trash folder once its file has left it.
+
+    Only ever the one folder, only when it is empty, and only inside the trash -
+    so this cannot reach anything of the person's. Without it the trash fills up
+    with empty numbered directories, one per score ever deleted, which is a
+    small thing that makes the folder look like a mess a person might be tempted
+    to clear out by hand.
+
+    Failure is deliberately silent: a leftover empty folder is not worth failing
+    a restore that has already succeeded over.
+    """
+    parts = PurePosixPath(rel).parts
+    if len(parts) < 2 or parts[0] != scanner.TRASH_DIR_NAME:
+        return
+    try:
+        _resolve_in_library("/".join(parts[:2])).rmdir()
+    except OSError:
+        pass
+
+
 def _attached_counts(conn, score_id: int) -> dict:
     """How much of somebody's own work is hanging off this score row.
 
@@ -2785,7 +2846,7 @@ def delete_score(score_id: RowId):
                 # and cannot collide, and the folder says which row the file
                 # belongs to if anybody ever looks in there by hand.
                 trash_rel = f"{scanner.TRASH_DIR_NAME}/{score_id}/{name}"
-                trash_rel = _free_path(trash_rel)
+                trash_rel = _free_path(trash_rel, conn, exclude_id=score_id)
                 source = _resolve_in_library(row["path"])
                 if source.is_file():
                     _move_file_on_disk(source, _resolve_in_library(trash_rel))
@@ -2872,6 +2933,7 @@ def restore_score(score_id: RowId):
                     (score_id,),
                 )
                 _relink_moved_file(conn, row, target)
+                _tidy_trash_folder(row["path"])
     except scanner.LibraryBusy as exc:
         raise _busy(exc) from None
     conn = connect()
@@ -2915,6 +2977,7 @@ def purge_score(score_id: RowId):
                     # Fermata itself put in its own trash folder.
                     path.unlink()
                     removed = row["path"]
+                    _tidy_trash_folder(row["path"])
                 conn.execute("DELETE FROM scores WHERE id = ?", (score_id,))
                 scanner.record_deliberate_shrink(conn)
                 title = row["title"]
