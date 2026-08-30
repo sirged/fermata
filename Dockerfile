@@ -33,4 +33,14 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
     CMD python -c "import urllib.request as u; u.urlopen('http://127.0.0.1:8080/api/health')" || exit 1
 
-CMD ["uvicorn", "fermata.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# --no-proxy-headers turns off uvicorn's OWN X-Forwarded-For handling -
+# without it, uvicorn rewrites the request's peer address from a
+# client-supplied header before Fermata's reverse-proxy authentication
+# (fermata/authproxy.py, issue #16) ever sees the request, which lets anyone
+# who can reach the container forge that header and impersonate a trusted
+# proxy. Fermata does its own peer-based trust for that feature and never
+# needs uvicorn's; see docs/deployment.md's "Reverse proxy authentication"
+# section. main.py's startup refuses to run reverse-proxy auth at all if it
+# cannot confirm this flag is present, as a backstop for anyone who copies
+# this CMD without this comment attached.
+CMD ["uvicorn", "fermata.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-proxy-headers"]

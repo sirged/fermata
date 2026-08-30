@@ -51,7 +51,28 @@ def parse_trusted_proxies(raw: str) -> list[ipaddress.IPv4Network | ipaddress.IP
     return networks
 
 
-AUTH_TRUSTED_NETWORKS = parse_trusted_proxies(AUTH_TRUSTED_PROXIES_RAW)
+# NOT parsed here, deliberately. This module is imported at the very top of
+# main.py, before uvicorn's lifespan protocol exists to catch anything - a
+# RuntimeError raised during this import crashes the whole process with a
+# raw "Error loading ASGI app" traceback, which is exactly the ugly,
+# unexplained failure main.py's lifespan (see its own docstring) exists to
+# avoid for every OTHER startup misconfiguration. So this starts as "nothing
+# trusted" (fail closed, same as an empty setting) and is actually parsed by
+# load_auth_trusted_networks(), called from main.py's lifespan inside the
+# same try/except that turns ensure_dirs's RuntimeError into a readable
+# message first - a bad CIDR in FERMATA_TRUSTED_PROXIES gets the same
+# treatment, not a worse one.
+AUTH_TRUSTED_NETWORKS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+
+
+def load_auth_trusted_networks() -> None:
+    """Actually parse FERMATA_TRUSTED_PROXIES into AUTH_TRUSTED_NETWORKS.
+    Called once from main.py's lifespan, before the app serves a single
+    request - see the module comment on AUTH_TRUSTED_NETWORKS for why this
+    is not done at import time."""
+    global AUTH_TRUSTED_NETWORKS
+    AUTH_TRUSTED_NETWORKS = parse_trusted_proxies(AUTH_TRUSTED_PROXIES_RAW)
+
 
 # File extensions the scanner picks up, mapped to a broad type used by the UI
 # to pick a viewer.

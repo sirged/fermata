@@ -162,8 +162,14 @@ Backend (FastAPI, Python 3.12):
 ```bash
 cd server
 pip install -e .
-FERMATA_LIBRARY=../library FERMATA_CONFIG=../config uvicorn fermata.main:app --port 8080 --reload
+FERMATA_LIBRARY=../library FERMATA_CONFIG=../config uvicorn fermata.main:app --port 8080 --reload --no-proxy-headers
 ```
+
+`--no-proxy-headers` turns off uvicorn's own X-Forwarded-For handling, which
+would otherwise let a request carrying that header rewrite what Fermata sees
+as its peer address - see docs/deployment.md's "Reverse proxy
+authentication" section for why that matters even for a plain dev server
+bound to loopback.
 
 Frontend (Svelte 5 + Vite, proxies `/api` to :8080):
 
