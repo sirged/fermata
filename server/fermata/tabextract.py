@@ -4091,8 +4091,14 @@ def _resolve_ties(measures) -> _TieReport:
                     slot.remark(note_index, tie_start=False)
                     continue
                 string, fret = note
-                following.replace(partner, mxl.mark_note(
-                    mxl.MarkedNote(string, fret), tie_stop=True,
+                # Rebuilt rather than remarked, because the value being
+                # replaced is the whole point - but the note's OWN tie start
+                # survives it: the middle link of a chain of ties is both a
+                # destination and an origin, and dropping the start here
+                # closed only the first link of every chain.
+                following.replace(partner, mxl.MarkedNote(
+                    string, fret, tie_stop=True,
+                    tie_start=mxl.note_tie_start(following.notes[partner]),
                     harmonic=mxl.note_harmonic(note)))
                 closed.add((id(following), partner))
                 written += 1

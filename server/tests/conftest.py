@@ -85,6 +85,15 @@ _FIXTURE_RELATIVE_PATHS = {
     # them (issue #116) - the residue nothing can split - so the disclosure
     # counter (coincident_unsplit_pairs) has a real score to be exercised on.
     "ronfaure": "Patreon/John Oeth/Final Fantasy/FF XI/Ronfaure (Final Fantasy XI).pdf",
+    # Ties, in both of the states that matter for issue #81, and harmonics
+    # beside them. Nothing engraved in this repository has a HALF-matched
+    # tie - `tuplet_and_tie`'s split one is matched at neither end, which is
+    # a different thing - so `tie_ends_unpaired` has no committed fixture
+    # where it is non-zero, and a counter only ever asserted at zero cannot
+    # tell a working round trip from a dropped field that reads back as
+    # None... which compares equal to nothing and unequal to 0. This score
+    # writes 6 ties, leaves 4 tie ends unpaired, and marks 19 harmonics.
+    "courage": "Patreon/John Oeth/Final Fantasy/FF XVI/Courage (Final Fantasy XVI).pdf",
     # #116's one named residual, and issue #137's whole subject: 12 onsets
     # across 4 pages where the coincident duplicate is one member of a
     # three-notehead CHORD, so the tab's two digits are consumed by the
@@ -344,6 +353,15 @@ def hymn_of_the_fayth_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing 'Hymn of the Fayth' fixture)")
+    return p
+
+
+@pytest.fixture
+def courage_pdf() -> Path:
+    p = _fixture_path("courage")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Courage' fixture)")
     return p
 
 

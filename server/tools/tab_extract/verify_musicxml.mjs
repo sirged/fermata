@@ -32,6 +32,19 @@
 // which is the only thing here that proves a file plays right rather than
 // merely parses right (issue #134 S4.2 / docs Rule 15).
 //
+// With --ties each line also carries `ties`: one entry per sounding note, as
+// [barIndex, voiceIndex, string, fret, isTieOrigin, isTieDestination,
+// harmonicType], and `noteOns`: the MIDI note-on events MidiFileGenerator
+// produces, as [tick, key]. That is what checks the profile's Rule 18 - a tie
+// is only a tie if the second note is NOT struck, and alphaTab reads the
+// `<tied>` half of the encoding and ignores the `<tie>` half entirely, so a
+// file carrying only the latter loads, validates and re-strikes the note.
+// Nothing but the note-on stream tells you which happened. harmonicType is
+// reported for the opposite reason: alphaTab's importer consumes `<harmonic>`
+// and does nothing with it (`case "harmonic": break;`), so this is the field
+// that keeps Rule 19's statement about the renderer honest rather than
+// hopeful.
+//
 // firstNoteString/Fret and tuning are the ones that matter beyond "it
 // parsed": MusicXML numbers staff LINES from the bottom and STRINGS from the
 // top, so a file with the two confused still validates against the schema and
@@ -48,7 +61,9 @@ async function main() {
     const [alphaTabPath, ...rest] = process.argv.slice(2);
     const wantOnsets = rest.includes("--onsets");
     const wantRepeats = rest.includes("--repeats");
-    const targets = rest.filter((a) => a !== "--onsets" && a !== "--repeats");
+    const wantTies = rest.includes("--ties");
+    const targets = rest.filter(
+        (a) => a !== "--onsets" && a !== "--repeats" && a !== "--ties");
     if (!alphaTabPath || targets.length === 0) {
         console.error("usage: node verify_musicxml.mjs <alphaTab.mjs> [--onsets] <file-or-dir> [...]");
         process.exit(2);
@@ -82,6 +97,7 @@ async function main() {
             let firstNoteMidi = null, firstNoteString = null, firstNoteFret = null;
             let tuning = null;
             const onsets = [];
+            const ties = [];
             for (const track of score.tracks) {
                 for (const staff of track.staves) {
                     bars = Math.max(bars, staff.bars.length);
@@ -108,6 +124,14 @@ async function main() {
                                 }
                                 for (const note of beat.notes) {
                                     notes += 1;
+                                    if (wantTies) {
+                                        ties.push([
+                                            bar.index, voice.index,
+                                            note.string, note.fret,
+                                            note.isTieOrigin, note.isTieDestination,
+                                            note.harmonicType,
+                                        ]);
+                                    }
                                     if (firstNoteMidi === null) {
                                         firstNoteMidi = note.realValue;
                                         firstNoteString = note.string;
@@ -124,6 +148,21 @@ async function main() {
                 firstNoteMidi, firstNoteString, firstNoteFret, tuning,
             });
             if (wantOnsets) result.onsets = onsets;
+            if (wantTies) {
+                result.ties = ties;
+                const midiFile = new mod.midi.MidiFile();
+                const handler = new mod.midi.AlphaSynthMidiFileHandler(midiFile);
+                const generator = new mod.midi.MidiFileGenerator(
+                    score, new Settings(), handler);
+                generator.generate();
+                const noteOns = [];
+                for (const event of midiFile.events) {
+                    if (event.constructor.name === "NoteOnEvent") {
+                        noteOns.push([event.tick, event.noteKey]);
+                    }
+                }
+                result.noteOns = noteOns;
+            }
             if (wantRepeats) {
                 const repeats = score.masterBars.map((mb) => ({
                     isRepeatStart: mb.isRepeatStart,
