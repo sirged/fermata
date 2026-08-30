@@ -419,6 +419,40 @@ test("the tempo chart maps points into the axis the server sent, and nothing els
   expect(tempoChart(null).points).toEqual([]);
 });
 
+test("printed tempo values thin out when the points crowd, and the newest is always one of them", () => {
+  const points = (n) =>
+    Array.from({ length: n }, (_, i) => ({ session_id: i, tempo_bpm: 80 + i }));
+  const chart = (n, width) =>
+    tempoChart(
+      { points: points(n), axis_low: 80, axis_high: 80 + n, latest_target: null },
+      { width, height: 100, pad: 10 },
+    );
+
+  // Room for every one: 5 points across 580 units is 145 apart.
+  expect(chart(5, 600).points.every((p) => p.label)).toBe(true);
+
+  // Packed: 40 points across 580 units is under 15 apart, so three digits
+  // printed at every dot would sit on each other.
+  const crowded = chart(40, 600);
+  const labelled = crowded.points.filter((p) => p.label);
+  expect(labelled.length).toBeLessThan(40);
+  expect(labelled.length).toBeGreaterThan(0);
+  // Whatever the spacing works out to, the most recent session is labelled -
+  // it is the one number somebody opening this came to see.
+  expect(crowded.points[crowded.points.length - 1].label).toBe(true);
+  // And the ones that are labelled are far enough apart to be read.
+  const xs = labelled.map((p) => p.x);
+  for (let i = 1; i < xs.length - 1; i += 1) {
+    expect(xs[i] - xs[i - 1], "two printed values are too close together").toBeGreaterThanOrEqual(
+      34,
+    );
+  }
+  // Nothing is lost by thinning: every point is still a point, with its own
+  // value, and the list the page draws under the chart reads from these.
+  expect(crowded.points).toHaveLength(40);
+  expect(crowded.points.every((p) => Number.isFinite(p.tempo_bpm))).toBe(true);
+});
+
 test("every sentence the per-piece view produces passes the vocabulary check", () => {
   // The same list the rest of this feature is held to, applied to the phrases
   // #57 adds. A per-piece page is where "your best tempo" and "behind on this

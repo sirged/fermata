@@ -208,7 +208,13 @@
                 y1={chart.target.y}
                 y2={chart.target.y}
               />
-              <text class="target-label" x={chart.width - chart.pad} y={chart.target.y - 8}>
+              <!-- At the LEFT end and BELOW the line. The right end is where
+                   the newest sessions are, and on a piece that has reached its
+                   target those points sit exactly on this line with their own
+                   value printed above them - so a label there lands on top of
+                   the number it is meant to explain. Below the line, a point
+                   labelled at y-14 and this at y+14 cannot collide. -->
+              <text class="target-label" x={chart.pad} y={chart.target.y + 15}>
                 target {chart.target.bpm}
               </text>
             {/if}
@@ -225,7 +231,13 @@
                 data-bpm={point.tempo_bpm}
                 data-day={point.date}
               />
-              <text class="tempo-value" x={point.x} y={point.y - 14}>{point.tempo_bpm}</text>
+              {#if point.label}
+                <!-- Thinned when the points are packed too closely to print
+                     every one without them overlapping. Nothing is lost: the
+                     list under the chart carries every point with its day, and
+                     the most recent is always labelled here. -->
+                <text class="tempo-value" x={point.x} y={point.y - 14}>{point.tempo_bpm}</text>
+              {/if}
             {/each}
           </svg>
           <ul class="tempo-days quiet">
@@ -584,7 +596,7 @@
   .target-label {
     fill: var(--ink-dim);
     font-size: 12px;
-    text-anchor: end;
+    text-anchor: start;
   }
 
   .tempo-days {

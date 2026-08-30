@@ -485,6 +485,12 @@ export function splitBars(rows = [], value = (row) => row.seconds) {
  * lone dot pinned to the left edge reads as the start of a line somebody has
  * yet to draw.
  */
+// How much horizontal room a printed bpm needs before the next one crowds it.
+// Measured against the chart's own type size rather than guessed at: three
+// digits at 15px in this application's UI face come to a little under 30 units
+// in the chart's coordinate space, and this leaves a gap either side.
+const LABEL_ROOM = 34;
+
 export function tempoChart(tempo, { width = 640, height = 180, pad = 26 } = {}) {
   const points = tempo?.points ?? [];
   if (!points.length) return { points: [], target: null, width, height, pad };
@@ -497,6 +503,13 @@ export function tempoChart(tempo, { width = 640, height = 180, pad = 26 } = {}) 
   const inner = height - pad * 2;
   const y = (bpm) => (span ? pad + inner * (1 - (bpm - low) / span) : pad + inner / 2);
   const step = points.length > 1 ? (width - pad * 2) / (points.length - 1) : 0;
+  // A value is printed beside its own dot when there is room for it. Below
+  // about this much step the numbers start to sit on each other, and two
+  // figures overlapping is worse than one of them being read off the list
+  // underneath the chart - which carries every point with its day, always, and
+  // is the reason thinning these is safe rather than a loss.
+  const spacing = step > 0 ? Math.max(1, Math.ceil(LABEL_ROOM / step)) : 1;
+  const last = points.length - 1;
   return {
     width,
     height,
@@ -505,6 +518,9 @@ export function tempoChart(tempo, { width = 640, height = 180, pad = 26 } = {}) 
       ...point,
       x: points.length > 1 ? pad + step * i : width / 2,
       y: y(point.tempo_bpm),
+      // The most recent session is always labelled whatever the spacing works
+      // out to: it is the one number somebody opening this came to see.
+      label: i % spacing === 0 || i === last,
     })),
     target:
       tempo.latest_target == null
