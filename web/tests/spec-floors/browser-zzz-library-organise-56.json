@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/zzz-library-organise.spec.js",
+  "count": 5,
+  "reason": "issue #56: moving, renaming a folder, deleting to the trash and restoring, destroying in two presses, and a batch move whose collision is blocked - each previewed or explained on the page before it happens."
+}

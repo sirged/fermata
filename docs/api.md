@@ -74,6 +74,55 @@ column - is documented in more depth in
 transcription endpoints read and write is documented in
 [docs/musicxml-tab-profile.md](musicxml-tab-profile.md).
 
+## The endpoints that write to your files
+
+Everything else in this API reads the library and writes only to Fermata's own
+database. The library-management endpoints (issue #56) move, rename and delete
+a person's own sheet music, so they are documented here as a group as well as
+individually in `/docs`:
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /api/scores/{id}/move` | Moves one score's file to another folder, renames it, or both. |
+| `POST /api/library/move` | Moves several scores into one folder. **Dry run by default.** |
+| `GET /api/library/folders` | The library's folder tree, for offering destinations. |
+| `POST /api/library/folders` | Creates a folder. |
+| `POST /api/library/folders/rename` | Renames a folder, taking its scores with it. **Dry run by default.** |
+| `DELETE /api/scores/{id}` | Deletes a score: the file goes to the trash, the row and its history stay. |
+| `GET /api/trash` | Scores that have been deleted and not destroyed. |
+| `POST /api/trash/{id}/restore` | Puts a deleted score back where it came from. |
+| `DELETE /api/trash/{id}` | Destroys a deleted score for good. The only endpoint here that really deletes. |
+
+Five rules hold across all of them, and a client can rely on each:
+
+- **Nothing is written outside the library folder.** The check is on the
+  resolved path, so a symlink out of the library is refused as well as a `..`.
+- **Deleting is a move.** The file goes to a `.fermata-trash` folder inside the
+  library and the score row is marked with `deleted_at`; its practice sessions,
+  goals, tags and transcription stay attached, and the response counts each of
+  them. Destroying takes a second, deliberate request.
+- **Nothing is destroyed as a side effect of an organisational change.** A move
+  onto an existing file is refused rather than overwriting it, and a batch
+  containing one blocked line applies none of it.
+- **A bulk operation is a dry run unless `dry_run: false` is sent.** The
+  response shape is the same either way, so the preview is a preview of the
+  thing itself.
+- **The score row follows the file by content hash** - the same identity test
+  the scanner's relink uses - so a move cannot attach one score's practice
+  history to another score's music.
+
+Moving a file re-derives only `collection` and `series`, which are read off the
+folders. `title`, `composer` and `source` are statements about the music, can
+have been corrected by hand, and are edited with `PATCH /api/scores/{id}`
+instead - which is why renaming a file and renaming a piece are two different
+requests here.
+
+A move or a delete is refused with `409` while a library scan is running, and a
+scan declines to start while one is being applied. One thing reconciles the
+library at a time: a scan decides what to write from a directory listing taken
+when it started, so a file moving underneath it would read as a file that went
+missing.
+
 ## Who else reads this contract
 
 A planned companion server speaks the Model Context Protocol, an open

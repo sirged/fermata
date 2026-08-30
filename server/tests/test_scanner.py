@@ -1281,7 +1281,8 @@ def test_the_config_folder_is_still_ours_to_create(tmp_path, monkeypatch):
 
     The config folder is Fermata's own storage: an empty one is a genuine first
     run and there is no data it could be shadowing. The library folder is the
-    user's, and Fermata only ever reads it.
+    user's, and Fermata never creates it - which matters more since #56 gave
+    Fermata the ability to move, rename and delete files inside it, not less.
     """
     library = tmp_path / "library"
     library.mkdir()
@@ -1637,7 +1638,7 @@ def test_the_scan_survives_a_file_that_cannot_be_read_and_still_reconciles(libra
     scanner._scan()
     (library / "Classical" / "Study 0.gp").unlink()
 
-    real_stat = scanner._hash_file
+    real_stat = scanner.hash_file
 
     def explode(path):
         if path.name == "Study 1.gp":
@@ -1646,7 +1647,7 @@ def test_the_scan_survives_a_file_that_cannot_be_read_and_still_reconciles(libra
 
     import unittest.mock
 
-    with unittest.mock.patch.object(scanner, "_hash_file", explode):
+    with unittest.mock.patch.object(scanner, "hash_file", explode):
         # Force every file down the hashing path by clearing the cached stats.
         db.connect().execute("UPDATE scores SET size = -1")
         db.connect().commit()

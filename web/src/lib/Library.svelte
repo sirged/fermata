@@ -15,6 +15,241 @@
   let uploadInput;
   let showDuplicates = $state(false);
   let duplicates = $state([]);
+
+  // --- Managing the library (issue #56) --------------------------------------
+  //
+  // This is the only part of Fermata that writes to somebody's own files, and
+  // the interface is built around that rather than around convenience:
+  //
+  //   ORGANISE IS A MODE, not something a stray tap can start. Outside it a
+  //   card opens a score, which is what a card has always done; inside it a
+  //   card selects, and the whole grid says so. Nothing here is a drag - this
+  //   is used on a music stand, often with a tablet, and a drag that starts by
+  //   accident on a touchscreen would be a move nobody asked for.
+  //
+  //   A MOVE IS PREVIEWED BEFORE IT HAPPENS. The dialog asks the server for
+  //   the plan (its dry run) and shows every line of it - from and to - before
+  //   the button that applies it is worth pressing. The server refuses a plan
+  //   with a blocked line, and so does this.
+  //
+  //   DELETING SAYS WHAT IT KEEPS. The confirmation is not "are you sure": it
+  //   says the file goes to the library's trash and the practice history stays,
+  //   and afterwards it says how many sessions, tags and transcriptions are
+  //   still attached, counted by the server.
+  //
+  //   DESTROYING IS SOMEWHERE ELSE ENTIRELY. The only control that really
+  //   deletes lives in the trash view, needs a second press, and lists what it
+  //   will destroy first.
+  let organising = $state(false);
+  let selected = $state([]);
+  let notice = $state("");
+  let busy = $state(false);
+
+  let folders = $state([]);
+  let moveOpen = $state(false);
+  let moveError = $state("");
+  let targetFolder = $state(null);
+  let newFolderName = $state("");
+  let movePlan = $state(null);
+  let renamingFolder = $state(false);
+  let renameTo = $state("");
+  let renamePlan = $state(null);
+
+  let deleteOpen = $state(false);
+  let deleteError = $state("");
+
+  let showTrash = $state(false);
+  let trashItems = $state([]);
+  let destroyConfirmId = $state(null);
+
+  const selectedScores = $derived(scores.filter((s) => selected.includes(s.id)));
+  const blockedLines = $derived((movePlan ?? []).filter((line) => line.status === "blocked"));
+
+  function toggleSelected(score, ev) {
+    if (!organising) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    selected = selected.includes(score.id)
+      ? selected.filter((id) => id !== score.id)
+      : [...selected, score.id];
+  }
+
+  function leaveOrganising() {
+    organising = false;
+    selected = [];
+    moveOpen = false;
+    deleteOpen = false;
+  }
+
+  async function loadFolders() {
+    folders = await api.folders();
+  }
+
+  async function openMove() {
+    moveError = "";
+    movePlan = null;
+    renamingFolder = false;
+    renamePlan = null;
+    targetFolder = null;
+    newFolderName = "";
+    await loadFolders();
+    moveOpen = true;
+  }
+
+  // The preview IS the dry run - the same endpoint, the same plan shape, asked
+  // for with dry_run true. Showing a preview computed in the browser would be
+  // showing a different operation's plan and calling it this one's.
+  async function previewMove(folder) {
+    targetFolder = folder;
+    moveError = "";
+    movePlan = null;
+    try {
+      const result = await api.moveScores(selected, folder, true);
+      movePlan = result.moves;
+    } catch (err) {
+      moveError = err?.message ?? "Fermata could not work out what that would do.";
+    }
+  }
+
+  async function applyMove() {
+    if (targetFolder === null || blockedLines.length) return;
+    busy = true;
+    moveError = "";
+    try {
+      const result = await api.moveScores(selected, targetFolder, false);
+      notice = `Moved ${result.moved} score${result.moved === 1 ? "" : "s"} to ${
+        targetFolder || "the library root"
+      }.`;
+      moveOpen = false;
+      leaveOrganising();
+      await refresh();
+    } catch (err) {
+      moveError = err?.message ?? "Fermata could not move those.";
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function createFolder() {
+    const name = newFolderName.trim();
+    if (!name) return;
+    moveError = "";
+    try {
+      const path = targetFolder ? `${targetFolder}/${name}` : name;
+      const created = await api.createFolder(path);
+      newFolderName = "";
+      await loadFolders();
+      await previewMove(created.created);
+    } catch (err) {
+      moveError = err?.message ?? "Fermata could not create that folder.";
+    }
+  }
+
+  async function previewFolderRename() {
+    renamePlan = null;
+    moveError = "";
+    try {
+      const result = await api.renameFolder(targetFolder, renameTo.trim(), true);
+      renamePlan = result.moves;
+    } catch (err) {
+      moveError = err?.message ?? "Fermata could not work out what that would do.";
+    }
+  }
+
+  async function applyFolderRename() {
+    busy = true;
+    moveError = "";
+    try {
+      const from = targetFolder;
+      const result = await api.renameFolder(from, renameTo.trim(), false);
+      notice = `Renamed ${from} to ${result.to_path}; ${result.moved} score${
+        result.moved === 1 ? "" : "s"
+      } moved with it.`;
+      moveOpen = false;
+      leaveOrganising();
+      await refresh();
+    } catch (err) {
+      moveError = err?.message ?? "Fermata could not rename that folder.";
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function applyDelete() {
+    busy = true;
+    deleteError = "";
+    try {
+      let sessions = 0;
+      let transcriptions = 0;
+      for (const id of selected) {
+        const result = await api.deleteScore(id);
+        sessions += result.practice_sessions_kept;
+        transcriptions += result.transcriptions_kept;
+      }
+      const count = selected.length;
+      notice =
+        `Moved ${count} score${count === 1 ? "" : "s"} to the trash. ` +
+        `${sessions} practice session${sessions === 1 ? "" : "s"} and ${transcriptions} ` +
+        `transcription${transcriptions === 1 ? "" : "s"} are still attached - nothing was ` +
+        `destroyed. They are in Trash until you say otherwise.`;
+      deleteOpen = false;
+      leaveOrganising();
+      await refresh();
+    } catch (err) {
+      deleteError = err?.message ?? "Fermata could not delete those.";
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function loadTrash() {
+    trashItems = await api.trash();
+  }
+
+  $effect(() => {
+    if (!showTrash) return;
+    loadTrash();
+  });
+
+  async function restore(score) {
+    busy = true;
+    try {
+      const result = await api.restoreScore(score.id);
+      notice =
+        result.restored_to === result.restored_from
+          ? `${score.title} is back at ${result.restored_to}.`
+          : `${score.title} is back, at ${result.restored_to} - something else had taken ` +
+            `${result.restored_from}, and Fermata did not overwrite it.`;
+      await loadTrash();
+      await refresh();
+    } catch (err) {
+      notice = err?.message ?? "Fermata could not put that back.";
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function destroy(score) {
+    busy = true;
+    try {
+      const result = await api.destroyScore(score.id);
+      notice =
+        `${result.title} is gone for good, with ${result.tags_destroyed} tag${
+          result.tags_destroyed === 1 ? "" : "s"
+        } and ${result.transcriptions_destroyed} transcription${
+          result.transcriptions_destroyed === 1 ? "" : "s"
+        }. ${result.practice_sessions_kept} practice session${
+          result.practice_sessions_kept === 1 ? "" : "s"
+        } stayed in your history.`;
+      destroyConfirmId = null;
+      await loadTrash();
+      await refresh();
+    } catch (err) {
+      notice = err?.message ?? "Fermata could not destroy that.";
+    } finally {
+      busy = false;
+    }
+  }
   // Which build is actually running (issue #119) - fetched once, quietly, so
   // a stale deployment is diagnosable at a glance instead of by guessing from
   // which features seem to be missing. null until it arrives, which renders
@@ -173,20 +408,27 @@
     </div>
 
     <nav>
-      <button class="side-item" class:active={!collection && !favorite && !practiced && !showDuplicates} onclick={() => { collection = ""; favorite = false; practiced = ""; showDuplicates = false; }}>
+      <button class="side-item" class:active={!collection && !favorite && !practiced && !showDuplicates && !showTrash} onclick={() => { collection = ""; favorite = false; practiced = ""; showDuplicates = false; showTrash = false; }}>
         All scores
       </button>
-      <button class="side-item" class:active={favorite} onclick={() => { favorite = !favorite; showDuplicates = false; }}>
+      <button class="side-item" class:active={favorite} onclick={() => { favorite = !favorite; showDuplicates = false; showTrash = false; }}>
         ★ Favorites
       </button>
-      <button class="side-item" class:active={practiced === "recent"} onclick={() => { practiced = practiced === "recent" ? "" : "recent"; showDuplicates = false; }}>
+      <button class="side-item" class:active={practiced === "recent"} onclick={() => { practiced = practiced === "recent" ? "" : "recent"; showDuplicates = false; showTrash = false; }}>
         ◷ Recently practiced
       </button>
-      <button class="side-item" class:active={practiced === "neglected"} onclick={() => { practiced = practiced === "neglected" ? "" : "neglected"; showDuplicates = false; }}>
+      <button class="side-item" class:active={practiced === "neglected"} onclick={() => { practiced = practiced === "neglected" ? "" : "neglected"; showDuplicates = false; showTrash = false; }}>
         ⌛ Needs attention
       </button>
-      <button class="side-item" class:active={showDuplicates} onclick={() => (showDuplicates = !showDuplicates)}>
+      <button class="side-item" class:active={showDuplicates} onclick={() => { showDuplicates = !showDuplicates; showTrash = false; }}>
         ⧉ Duplicates
+      </button>
+      <!-- Deleted scores are HERE and nowhere else. They are gone from the grid
+           and from every count in this sidebar, which is what deleting has to
+           mean, and they are one press from coming back - which is what makes
+           deleting safe to offer at all (issue #56). -->
+      <button class="side-item trash-link" class:active={showTrash} onclick={() => { showTrash = !showTrash; showDuplicates = false; leaveOrganising(); }}>
+        🗑 Trash
       </button>
 
       <div class="side-label">Collections</div>
@@ -194,7 +436,7 @@
         <button
           class="side-item"
           class:active={collection === c.collection}
-          onclick={() => { collection = collection === c.collection ? "" : c.collection; showDuplicates = false; }}
+          onclick={() => { collection = collection === c.collection ? "" : c.collection; showDuplicates = false; showTrash = false; }}
         >
           {c.collection}
           <span class="count">{c.count}</span>
@@ -213,7 +455,7 @@
         <div class="side-label">Tags</div>
         <div class="tag-cloud">
           {#each tags as t}
-            <button class="chip" class:active={tag === t.name} onclick={() => { tag = tag === t.name ? "" : t.name; showDuplicates = false; }}>
+            <button class="chip" class:active={tag === t.name} onclick={() => { tag = tag === t.name ? "" : t.name; showDuplicates = false; showTrash = false; }}>
               {t.name}
             </button>
           {/each}
@@ -312,7 +554,68 @@
       </p>
     {/if}
 
-    {#if showDuplicates}
+    {#if notice}
+      <!-- What just happened to somebody's files, in their own terms and in
+           full: which scores moved where, or what a deletion kept. Dismissible
+           rather than timed - this is the receipt for a change to their
+           library, and a receipt that disappears on its own while it is being
+           read is not one. -->
+      <p class="notice" role="status">
+        {notice}
+        <button class="notice-dismiss" onclick={() => (notice = "")}>Dismiss</button>
+      </p>
+    {/if}
+
+    {#if showTrash}
+      <header>
+        <span class="result-count">{trashItems.length} in the trash</span>
+      </header>
+      <p class="trash-intro">
+        These scores have been deleted. Their files are in a trash folder inside your library
+        and their practice history, tags and transcriptions are still attached — putting one
+        back leaves it exactly as it was.
+      </p>
+      {#if !trashItems.length}
+        <p class="empty">The trash is empty.</p>
+      {:else}
+        <div class="trash-list">
+          {#each trashItems as score (score.id)}
+            <div class="trash-row">
+              <div class="trash-what">
+                <div class="trash-title">{score.title}</div>
+                <div class="trash-path">was {score.deleted_from}</div>
+                <div class="trash-kept">
+                  {Math.round(score.practice_seconds / 60)} min practised{score.tags.length
+                    ? `, ${score.tags.length} tag${score.tags.length === 1 ? "" : "s"}`
+                    : ""}{score.has_transcription ? ", transcription kept" : ""}
+                </div>
+              </div>
+              <div class="trash-actions">
+                <button class="trash-restore" disabled={busy} onclick={() => restore(score)}>
+                  Put it back
+                </button>
+                {#if destroyConfirmId === score.id}
+                  <!-- The second press. It names what it destroys and what it
+                       cannot: the file and the transcription go, the hours
+                       stay in the practice history. -->
+                  <button class="trash-destroy-confirm" disabled={busy} onclick={() => destroy(score)}>
+                    Destroy the file{score.has_transcription ? " and its transcription" : ""} —
+                    your practice history stays
+                  </button>
+                  <button class="trash-destroy-cancel" onclick={() => (destroyConfirmId = null)}>
+                    Keep it
+                  </button>
+                {:else}
+                  <button class="trash-destroy" onclick={() => (destroyConfirmId = score.id)}>
+                    Delete permanently…
+                  </button>
+                {/if}
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {:else if showDuplicates}
       <header>
         <span class="result-count">{duplicates.length} duplicate group{duplicates.length === 1 ? "" : "s"}</span>
       </header>
@@ -341,8 +644,34 @@
             <option {value}>{label}</option>
           {/each}
         </select>
+        <button
+          class="organise-toggle"
+          class:on={organising}
+          onclick={() => (organising ? leaveOrganising() : (organising = true))}
+        >
+          {organising ? "Done organising" : "Organise"}
+        </button>
         <span class="result-count">{scores.length} score{scores.length === 1 ? "" : "s"}</span>
       </header>
+
+      {#if organising}
+        <!-- The bar only exists in organise mode, and the buttons on it only
+             do anything with something selected: a "Move" that is always
+             pressable on a page where nothing is chosen is a button that
+             either does nothing or does something surprising. -->
+        <div class="organise-bar">
+          <span class="selected-count">
+            {selected.length} selected
+          </span>
+          <button class="move-open" disabled={!selected.length} onclick={openMove}>
+            Move to folder…
+          </button>
+          <button class="delete-open" disabled={!selected.length} onclick={() => { deleteError = ""; deleteOpen = true; }}>
+            Delete…
+          </button>
+          <span class="organise-hint">Tap a score to choose it.</span>
+        </div>
+      {/if}
 
       {#if loading && !scores.length}
         <p class="empty">Loading…</p>
@@ -354,8 +683,22 @@
       {:else}
         <div class="grid">
           {#each scores as score (score.id)}
-            <a class="card" class:is-missing={score.missing_since} href={"#/score/" + score.id}>
+            <a
+              class="card"
+              class:is-missing={score.missing_since}
+              class:selectable={organising}
+              class:selected={selected.includes(score.id)}
+              href={"#/score/" + score.id}
+              onclick={(e) => toggleSelected(score, e)}
+            >
               <div class="sheet">
+                {#if organising}
+                  <!-- The whole card is the target, not a small checkbox in a
+                       corner: this is used on a stand, at arm's length, often
+                       with a tablet. The mark says which state the card is in
+                       rather than offering a second thing to hit. -->
+                  <span class="select-mark">{selected.includes(score.id) ? "✓" : ""}</span>
+                {/if}
                 {#if score.file_type === "pdf"}
                   <img src={api.thumbUrl(score.id)} alt="" loading="lazy" onerror={(e) => (e.target.style.display = "none")} />
                 {:else}
@@ -389,6 +732,145 @@
           {/each}
         </div>
       {/if}
+    {/if}
+
+    {#if moveOpen}
+      <div class="dialog-scrim">
+        <div class="dialog move" role="dialog" aria-label="Move scores">
+          <div class="dialog-head">
+            Move {selected.length} score{selected.length === 1 ? "" : "s"}
+          </div>
+          <div class="folder-list">
+            {#each folders as folder (folder.path)}
+              <button
+                class="folder-option"
+                class:chosen={targetFolder === folder.path}
+                style={`padding-left:${12 + folder.depth * 16}px`}
+                onclick={() => previewMove(folder.path)}
+              >
+                <span class="folder-name">{folder.name}</span>
+                <span class="count">{folder.score_count}</span>
+              </button>
+            {/each}
+          </div>
+
+          <div class="new-folder">
+            <input
+              class="new-folder-input"
+              type="text"
+              placeholder={targetFolder ? `New folder inside ${targetFolder}` : "New folder"}
+              bind:value={newFolderName}
+            />
+            <button class="new-folder-create" disabled={!newFolderName.trim()} onclick={createFolder}>
+              Create folder
+            </button>
+          </div>
+
+          {#if targetFolder}
+            <div class="folder-rename">
+              {#if renamingFolder}
+                <input class="folder-rename-input" type="text" bind:value={renameTo} />
+                <button
+                  class="folder-rename-preview"
+                  disabled={!renameTo.trim() || renameTo.trim() === targetFolder}
+                  onclick={previewFolderRename}
+                >
+                  Show what that would move
+                </button>
+                {#if renamePlan}
+                  <div class="rename-preview">
+                    <p class="plan-head">
+                      {renamePlan.length} score{renamePlan.length === 1 ? "" : "s"} would move
+                      with it.
+                    </p>
+                    <button class="folder-rename-apply" disabled={busy} onclick={applyFolderRename}>
+                      Rename the folder
+                    </button>
+                  </div>
+                {/if}
+              {:else}
+                <button
+                  class="folder-rename-open"
+                  onclick={() => { renamingFolder = true; renameTo = targetFolder; renamePlan = null; }}
+                >
+                  Rename “{targetFolder}” instead…
+                </button>
+              {/if}
+            </div>
+          {/if}
+
+          {#if movePlan}
+            <!-- THE PREVIEW IS THE SERVER'S OWN DRY RUN, line for line - the
+                 same request with dry_run set, so what is shown here is what
+                 would happen rather than this page's guess at it. -->
+            <div class="move-preview">
+              <p class="plan-head">This is what will happen:</p>
+              <ul>
+                {#each movePlan as line (line.score_id)}
+                  <li class="plan-line" class:blocked={line.status === "blocked"}>
+                    {#if line.status === "move"}
+                      <span class="plan-from">{line.from_path}</span> →
+                      <span class="plan-to">{line.to_path}</span>
+                    {:else if line.status === "unchanged"}
+                      <span class="plan-from">{line.from_path}</span> is already there
+                    {:else}
+                      <span class="plan-from">{line.from_path}</span> — {line.reason}
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
+
+          {#if moveError}
+            <p class="alert-error">{moveError}</p>
+          {/if}
+
+          <div class="dialog-actions">
+            <button
+              class="move-apply"
+              disabled={busy || targetFolder === null || !movePlan || blockedLines.length > 0}
+              onclick={applyMove}
+            >
+              {blockedLines.length
+                ? "Fix the problems above first"
+                : `Move ${selected.length} score${selected.length === 1 ? "" : "s"} here`}
+            </button>
+            <button class="dialog-cancel" onclick={() => (moveOpen = false)}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    {/if}
+
+    {#if deleteOpen}
+      <div class="dialog-scrim">
+        <div class="dialog delete" role="dialog" aria-label="Delete scores">
+          <div class="dialog-head">
+            Delete {selected.length} score{selected.length === 1 ? "" : "s"}?
+          </div>
+          <ul class="delete-list">
+            {#each selectedScores as score (score.id)}
+              <li>{score.title} <span class="plan-from">{score.path}</span></li>
+            {/each}
+          </ul>
+          <!-- Said before the button is pressed, not after: this is the whole
+               reason deleting can be offered at a tap in a music-stand
+               interface at all. -->
+          <p class="delete-note">
+            The file moves to a trash folder inside your library. Your practice history, tags,
+            goals and any transcription stay attached, and Trash puts it all back.
+          </p>
+          {#if deleteError}
+            <p class="alert-error">{deleteError}</p>
+          {/if}
+          <div class="dialog-actions">
+            <button class="delete-apply" disabled={busy} onclick={applyDelete}>
+              Move to trash
+            </button>
+            <button class="dialog-cancel" onclick={() => (deleteOpen = false)}>Cancel</button>
+          </div>
+        </div>
+      </div>
     {/if}
   </main>
 </div>
@@ -746,6 +1228,268 @@
     color: #e8b45c;
     font-size: 13px;
     margin: 8px 0 0;
+  }
+
+  /* ---- Managing the library (issue #56) ----------------------------------
+     Everything here is sized for a music stand: the smallest target below is
+     44px tall, because the hand reaching for it is often holding a plectrum
+     and the screen is often at arm's length. */
+
+  .organise-toggle {
+    min-height: 44px;
+    padding: 0 16px;
+  }
+
+  .organise-toggle.on {
+    background: var(--brass);
+    color: #241d0f;
+    border-color: var(--brass);
+  }
+
+  .organise-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0 0 16px;
+    padding: 10px 14px;
+    border: 1px solid rgba(232, 180, 92, 0.4);
+    background: rgba(232, 180, 92, 0.06);
+    border-radius: 8px;
+  }
+
+  .organise-bar button {
+    min-height: 44px;
+    padding: 0 18px;
+  }
+
+  .selected-count {
+    font-family: var(--font-display);
+    font-size: 15px;
+  }
+
+  .organise-hint {
+    color: var(--ink-dim);
+    font-size: 13px;
+    margin-left: auto;
+  }
+
+  .card.selectable .sheet {
+    outline: 2px solid transparent;
+  }
+
+  .card.selected .sheet {
+    outline: 3px solid var(--brass-bright);
+    outline-offset: 2px;
+  }
+
+  .select-mark {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font-size: 60px;
+    color: var(--brass-bright);
+    background: rgba(22, 19, 14, 0.35);
+  }
+
+  .notice {
+    border: 1px solid rgba(232, 180, 92, 0.45);
+    background: rgba(232, 180, 92, 0.07);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin: 0 0 16px;
+    color: var(--ink);
+    line-height: 1.5;
+  }
+
+  .notice-dismiss {
+    margin-left: 10px;
+    font-size: 12px;
+    padding: 4px 12px;
+  }
+
+  .dialog-scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(12, 10, 7, 0.72);
+    display: grid;
+    place-items: center;
+    z-index: 20;
+    padding: 20px;
+  }
+
+  .dialog {
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px;
+    width: min(620px, 100%);
+    max-height: 88vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .dialog-head {
+    font-family: var(--font-display);
+    font-size: 20px;
+    color: var(--brass-bright);
+  }
+
+  .folder-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 280px;
+    overflow-y: auto;
+  }
+
+  .folder-option {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    text-align: left;
+    min-height: 44px;
+    align-items: center;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: var(--ink);
+  }
+
+  .folder-option:hover {
+    background: var(--surface);
+  }
+
+  .folder-option.chosen {
+    background: var(--surface);
+    border-color: var(--brass);
+    color: var(--brass-bright);
+  }
+
+  .new-folder,
+  .folder-rename,
+  .dialog-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .new-folder input,
+  .folder-rename input {
+    flex: 1;
+    min-width: 180px;
+    min-height: 44px;
+  }
+
+  .new-folder button,
+  .folder-rename button,
+  .dialog-actions button {
+    min-height: 44px;
+    padding: 0 18px;
+  }
+
+  .move-preview,
+  .rename-preview,
+  .delete-list {
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+    font-size: 13px;
+    color: var(--ink-dim);
+  }
+
+  .plan-head {
+    margin: 0 0 6px;
+    color: var(--ink);
+  }
+
+  .move-preview ul,
+  .delete-list {
+    margin: 0;
+    padding-left: 18px;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .plan-line {
+    font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    word-break: break-all;
+  }
+
+  .plan-line.blocked {
+    color: #e8b45c;
+  }
+
+  .plan-to {
+    color: var(--brass-bright);
+  }
+
+  .delete-note {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .trash-intro {
+    color: var(--ink-dim);
+    font-size: 13px;
+    line-height: 1.5;
+    margin: 0 0 16px;
+    max-width: 70ch;
+  }
+
+  .trash-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .trash-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 16px;
+  }
+
+  .trash-title {
+    font-family: var(--font-display);
+    font-size: 15px;
+  }
+
+  .trash-path,
+  .trash-kept {
+    font-size: 12px;
+    color: var(--ink-dim);
+    margin-top: 2px;
+  }
+
+  .trash-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .trash-actions button {
+    min-height: 44px;
+    padding: 0 16px;
+  }
+
+  /* Amber, not red, and only on the one control that really destroys
+     something. Everything else in this view is recoverable. */
+  .trash-destroy-confirm {
+    border-color: #e8b45c;
+    color: #e8b45c;
   }
 
   .meta {

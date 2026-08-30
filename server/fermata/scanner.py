@@ -2,6 +2,8 @@ import hashlib
 import logging
 import threading
 import time
+from contextlib import contextmanager
+from pathlib import Path
 
 from .config import FILE_TYPES, LIBRARY_DIR
 from .db import DEFAULT_OWNER, connect
@@ -52,6 +54,115 @@ _state = {
     "finished_at": None,
 }
 _state_lock = threading.Lock()
+
+# Where a deleted score's file goes, as a folder name directly under the library
+# root (#56). Inside the library rather than beside it, deliberately: the library
+# folder is very often a mount or an external drive, and a trash kept anywhere
+# else would mean every deletion copying bytes across a filesystem boundary -
+# slow, and capable of filling a small system disk with somebody's PDFs. Inside,
+# the move is a rename within one filesystem: instant, atomic, and impossible to
+# half-do.
+#
+# NAMED WITH A LEADING DOT so a file manager, a sync client and a backup tool
+# all treat it the way they treat every other application's private folder. The
+# scan skips it entirely - see _library_files - which is what stops a deleted
+# score from being re-discovered as a brand new one the moment anything scans.
+TRASH_DIR_NAME = ".fermata-trash"
+
+# True while a deliberate change to the library is being applied - a move, a
+# rename, a deletion, a restore (#56).
+#
+# WHY THIS EXISTS AT ALL, and why it is not simply left to the database. A scan
+# decides what to write from a DIRECTORY LISTING taken at its start: `files`,
+# `disk_paths`, and the set of stored paths it compares them against. A move
+# landing after that listing invalidates it in the one way the scan cannot
+# detect - the row's path is now somewhere the listing never saw, so
+# _mark_absent marks a row whose file is perfectly present, and the person's
+# score reads as missing because they moved it with the button provided for
+# moving it.
+#
+# The scanner already refuses to run two scans at once for the same reason, so
+# this is that rule extended to the other kind of writer rather than a new idea:
+# ONE thing reconciles the library at a time. It is deliberately coarse - a
+# whole-library exclusion for an operation on one file - because the alternative
+# is a scan and a mutation agreeing about which paths each may touch, which is a
+# great deal of machinery to make a scan and a click overlap by a few
+# milliseconds.
+_mutating = False
+
+
+class LibraryBusy(RuntimeError):
+    """Something else is reconciling the library right now.
+
+    Raised rather than waited out: the caller is an HTTP request with a person
+    behind it, and "a scan is running, try again in a moment" is a better answer
+    than a request that hangs for the length of a scan over a library of
+    thousands of files.
+    """
+
+
+@contextmanager
+def hold_library_still():
+    """Hold the library still for one deliberate change.
+
+    Refuses if a scan is running or another change is being applied, and makes
+    start_scan decline for as long as it is held. See the comment on `_mutating`
+    for why a change to one file excludes a scan of the whole library.
+    """
+    global _mutating
+    with _state_lock:
+        if _state["scanning"]:
+            raise LibraryBusy(
+                "a library scan is running, so Fermata will not move or delete anything "
+                "just now - a scan decides what to write from a listing taken when it "
+                "started, and a file moving underneath it would read as a file that went "
+                "missing. Wait for the scan to finish and try again."
+            )
+        if _mutating:
+            raise LibraryBusy(
+                "another change to the library is being applied right now. Wait for it to "
+                "finish and try again."
+            )
+        _mutating = True
+    try:
+        yield
+    finally:
+        with _state_lock:
+            _mutating = False
+
+
+def trash_dir(root: Path | None = None) -> Path:
+    """The trash folder for a library root.
+
+    Takes the root as an argument rather than reading LIBRARY_DIR at import
+    time, because api.py and the tests each hold their own binding of it - see
+    test_scanner.py's `library` fixture, which repoints this module's.
+    """
+    return (root if root is not None else LIBRARY_DIR) / TRASH_DIR_NAME
+
+
+def in_trash(rel: str) -> bool:
+    """Is this library-relative path inside the trash folder?"""
+    parts = Path(rel.replace("\\", "/")).parts
+    return bool(parts) and parts[0] == TRASH_DIR_NAME
+
+
+def _library_files(root: Path) -> list[Path]:
+    """Every file in the library a scan is entitled to have an opinion about.
+
+    The trash is excluded here rather than filtered out later, so that it is
+    excluded from `disk_paths` too - a deleted file counting as "on disk" would
+    make the relink treat it as a live candidate and quietly resurrect the score
+    somebody deleted.
+    """
+    return [
+        p
+        for p in root.rglob("*")
+        if p.is_file()
+        and p.suffix.lower() in FILE_TYPES
+        and not in_trash(p.relative_to(root).as_posix())
+    ]
+
 
 # WHEN A SCAN REFUSES TO BELIEVE ITSELF.
 #
@@ -139,7 +250,15 @@ def scan_status() -> dict:
         return dict(_state)
 
 
-def _hash_file(path) -> str:
+def hash_file(path) -> str:
+    """A file's content hash - the only thing in Fermata that says two files
+    are the same music.
+
+    Public because the move and restore paths in api.py check a file against
+    its score's stored hash with it (#56). That is deliberately the SAME
+    identity test _scan_file's relink uses, rather than a second one: there is
+    one answer to "is this still that score's file", and it is the bytes.
+    """
     h = hashlib.sha1()
     with open(path, "rb") as f:
         while chunk := f.read(1 << 20):
@@ -313,11 +432,7 @@ def _scan(acknowledge: str | None = None) -> None:
         )
         return
 
-    files = [
-        p
-        for p in LIBRARY_DIR.rglob("*")
-        if p.is_file() and p.suffix.lower() in FILE_TYPES
-    ]
+    files = _library_files(LIBRARY_DIR)
     # Fixed for the whole scan: lets _scan_file tell a genuinely-removed row
     # (safe to re-link on a hash match) from one whose file just hasn't been
     # visited yet in this pass.
@@ -326,7 +441,18 @@ def _scan(acknowledge: str | None = None) -> None:
         _state["total"] = len(files)
 
     # --- Decide. Reads only. ---
-    rows = conn.execute("SELECT id, path, missing_since FROM scores").fetchall()
+    #
+    # A DELETED SCORE IS NOT PART OF THIS CONVERSATION, and every query below
+    # that reaches the scores table says so. Its file is in the trash, which the
+    # walk above skipped, so counting it among the rows "believed present" would
+    # make every deletion look to the guard like a file that vanished - delete
+    # half a large library on purpose and the next scan would refuse, offering a
+    # token to acknowledge something nobody did. Deleting is not something the
+    # scan has to be talked into; it already happened, deliberately, and was
+    # recorded (#56).
+    rows = conn.execute(
+        "SELECT id, path, missing_since FROM scores WHERE deleted_at IS NULL"
+    ).fetchall()
     believed_present = [r for r in rows if r["missing_since"] is None]
     unmatched = [r for r in believed_present if r["path"] not in disk_paths]
     high_water = _read_high_water(conn)
@@ -398,7 +524,7 @@ def _mark_absent(conn, seen_paths: set, were_present: int) -> None:
     unseen = [
         row
         for row in conn.execute(
-            "SELECT id, path FROM scores WHERE missing_since IS NULL"
+            "SELECT id, path FROM scores WHERE missing_since IS NULL AND deleted_at IS NULL"
         ).fetchall()
         if row["path"] not in seen_paths
     ]
@@ -454,6 +580,30 @@ def _mark_absent(conn, seen_paths: set, were_present: int) -> None:
         )
 
 
+def record_deliberate_shrink(conn) -> int:
+    """Take the library's current size as its new high-water mark, because
+    somebody just made it smaller on purpose (#56).
+
+    THIS IS THE SAME THING AN ACKNOWLEDGEMENT DOES, and for the same reason.
+    The high-water mark is what the proportional refusal is measured against
+    (see LOSS_FRACTION), and it only ever rises by itself - so without this, a
+    person who deletes two thirds of their library through Fermata is left with
+    a mark describing a library that no longer exists, and the very next file
+    that genuinely goes missing takes the remaining count under half of it and
+    refuses a scan over one file. The refusal would be about a loss they
+    already told Fermata about, one score at a time, and confirmed by pressing
+    delete.
+
+    Returns the new mark, so a caller can say what it did rather than only do
+    it.
+    """
+    present = conn.execute(
+        "SELECT COUNT(*) FROM scores WHERE missing_since IS NULL AND deleted_at IS NULL"
+    ).fetchone()[0]
+    _write_high_water(conn, present)
+    return present
+
+
 def _record_high_water(conn, previous: int, reset: bool) -> None:
     """Remember how big this library is when it is whole.
 
@@ -463,7 +613,7 @@ def _record_high_water(conn, previous: int, reset: bool) -> None:
     subsequent scan for ever, against a library that no longer exists.
     """
     present = conn.execute(
-        "SELECT COUNT(*) FROM scores WHERE missing_since IS NULL"
+        "SELECT COUNT(*) FROM scores WHERE missing_since IS NULL AND deleted_at IS NULL"
     ).fetchone()[0]
     _write_high_water(conn, present if reset else max(previous, present))
 
@@ -492,7 +642,7 @@ def _scan_file(conn, path, rel: str, seen_paths: set, disk_paths: set) -> None:
         return
 
     file_type = FILE_TYPES[path.suffix.lower()]
-    file_hash = _hash_file(path)
+    file_hash = hash_file(path)
     pages, pdf_title, pdf_creator = (None, None, None)
     if file_type == "pdf":
         pages, pdf_title, pdf_creator = pdf_info(path)
@@ -525,10 +675,21 @@ def _scan_file(conn, path, rel: str, seen_paths: set, disk_paths: set) -> None:
         # moving together) there's no way to know which one moved, so fall back
         # to an insert and let _mark_absent record whichever one truly vanished.
         # That fallback is no longer lossy.
+        #
+        # A DELETED ROW IS NEVER A CANDIDATE (#56). Its file is in the trash by
+        # somebody's decision, and its stored path points there - so without
+        # this filter, dropping a fresh copy of that content anywhere in the
+        # library would re-link the deleted score onto it, move its path back
+        # out of the trash, and hand the person back the thing they threw away,
+        # while leaving the actual trashed file behind with nothing naming it.
+        # Restoring is an action with a button; it is not something a scan
+        # should do on somebody's behalf.
         candidates = [
             r
             for r in conn.execute(
-                "SELECT id, path, missing_since FROM scores WHERE hash = ?", (file_hash,)
+                "SELECT id, path, missing_since FROM scores"
+                " WHERE hash = ? AND deleted_at IS NULL",
+                (file_hash,),
             ).fetchall()
             if r["path"] not in disk_paths
         ]
@@ -610,7 +771,11 @@ def start_scan(acknowledge: str | None = None) -> bool:
     which is the safe way for stale consent to fail.
     """
     with _state_lock:
-        if _state["scanning"]:
+        if _state["scanning"] or _mutating:
+            # `_mutating` for the same reason `scanning` is here: one thing
+            # reconciles the library at a time. A scan starting in the middle of
+            # a move would take its directory listing while the file is at
+            # neither end of the move - see the comment on `_mutating`.
             return False
         _state["scanning"] = True
         _state["started_at"] = time.time()
