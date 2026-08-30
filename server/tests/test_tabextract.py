@@ -2218,6 +2218,33 @@ def test_the_rhythm_label_is_the_weaker_of_provenance_and_arithmetic():
     assert label(spacing_only, many) == "low overall"
 
 
+def test_relabel_leaves_an_unranked_head_untouched():
+    """`_CONFIDENCE_RANK` only knows the words this ladder produces itself -
+    "high", "medium", "mixed", "low" and "low overall". A caller-supplied
+    label carries its own head, "n/a" (`ts_confidence`'s "n/a - caller
+    supplied" for `time_signature_source == "manual override"`), which is on
+    no rung of that ladder at all.
+
+    The old default fell back to `_CONFIDENCE_RANK["high"]` for any head it
+    did not recognise, which fails OPEN: it treated the unranked head as the
+    STRONGEST possible confidence, so anything weaker than "high" - which is
+    everything except "high" itself - demoted it, producing nonsense like
+    "medium - caller supplied". A label nobody derived a confidence for
+    should not be relabelled at all; it should pass through unchanged."""
+    passed_through = tabextract._relabel("n/a - caller supplied", "medium")
+    assert passed_through == "n/a - caller supplied", passed_through
+
+    # The reason, when there is one, is still appended - the underlying fact
+    # is true regardless of what the headline word is allowed to say.
+    with_reason = tabextract._relabel(
+        "n/a - caller supplied", "medium", "1 printed meter(s) were refused")
+    assert with_reason == "n/a - caller supplied; 1 printed meter(s) were refused", with_reason
+
+    # A recognised head is unaffected by this change: "high" still demotes.
+    assert tabextract._relabel("high - decoded from glyphs", "medium") == (
+        "medium - decoded from glyphs")
+
+
 def test_a_spacing_derived_score_can_never_present_as_fully_read():
     """Issue #117's own acceptance criterion, as an assertion: "a score with
     any spacing-derived staff should not be able to present as fully read".

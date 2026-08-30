@@ -3720,9 +3720,18 @@ def _relabel(confidence, word, reason=None):
     Replacing it re-asserted the exact claim a degraded or spacing-derived
     score had just finished disclosing as NOT fully true - the headline flatly
     contradicting the sentence right below it.
+
+    A head this ladder does not rank (a caller-supplied "n/a") is left alone
+    rather than demoted: failing open here would treat an unranked word as
+    the STRONGEST one on the ladder and demote it into nonsense - "n/a -
+    caller supplied" relabelled to "medium - caller supplied" reads as a
+    judgement this function never made. The reason, if any, is still
+    appended, because the caller's fact (e.g. an unreadable printed meter)
+    is true regardless of what the headline word is allowed to say.
     """
     head, _sep, rest = confidence.partition(" - ")
-    if _CONFIDENCE_RANK[word] < _CONFIDENCE_RANK.get(head, _CONFIDENCE_RANK["high"]):
+    head_rank = _CONFIDENCE_RANK.get(head)
+    if head_rank is not None and _CONFIDENCE_RANK[word] < head_rank:
         head = word
     out = f"{head} - {rest}" if rest else head
     return f"{out}; {reason}" if reason else out
