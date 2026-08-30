@@ -2366,15 +2366,17 @@ def _extract_digit_tokens(page):
 # The characters an engraver draws either side of a tablature fret number to
 # say the note is a HARMONIC: single guillemets, U+2039 and U+203A (issue
 # #63). Measured over the library's 297 scores, they bracket a fret number 983
-# times across 121 files and appear nowhere else on a tab staff - the census
-# found no other paired punctuation around a fret number at all, and not one
-# unpaired closing mark.
+# times across 121 files, and every closing mark drawn on a tab staff has an
+# opening one to go with it. A census of the character immediately either side
+# of every fret number in the library found exactly one other paired
+# punctuation anywhere near one - a single `(...)` - against 869 guillemet
+# pairs, so the characters are what identifies the convention and the geometry
+# below only has to be wide enough not to miss a real pair.
 #
-# THE SPACING IS NOT WHAT IDENTIFIES THEM, the characters are; the tolerance
-# below only has to be wide enough not to miss a real pair. Measured as a
-# fraction of the tab staff's line spacing over all 896 unambiguous pairs: the
-# gap from the opening mark to the digit runs -0.14 to 0.58 spacings (median
-# 0.06) and from the digit to the closing mark -0.14 to 0.62 (median 0.12).
+# THE SPACING IS MEASURED, not chosen, as a fraction of the tab staff's line
+# spacing over all 896 pairs that enclose exactly one digit token: the gap
+# from the opening mark to the digit runs -0.14 to 0.58 spacings (median 0.06)
+# and from the digit to the closing mark -0.14 to 0.62 (median 0.12).
 # Negative because the marks are set at 15.4pt against the digits' 9.4pt and
 # their advance boxes overlap the digit's. 0.9 spacings clears the widest
 # measured pair by half as much again, and no ordinary fret number has one of
