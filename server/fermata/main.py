@@ -33,6 +33,15 @@ async def lifespan(app: FastAPI):
         # both are startup-safety checks and belong together) and BEFORE
         # init_db, so a dangerous launch never even opens the database.
         authproxy.check_proxy_header_safety()
+        # Also fatal, same bucket: FERMATA_TRUSTED_PROXIES naming 0.0.0.0/0
+        # or ::/0 is never a real proxy's address, and with auth on it means
+        # the running server authenticates any direct request as any claimed
+        # username - strictly worse than auth being off, and invisible under
+        # `docker compose up -d` (the container reports healthy while doing
+        # it). See authproxy.check_trusted_proxies_are_not_everyone's own
+        # docstring for why this is fatal and a genuinely broad-but-real
+        # subnet is not.
+        authproxy.check_trusted_proxies_are_not_everyone()
         init_db()
     except RuntimeError as exc:
         # Said plainly BEFORE the exception propagates, because of what happens
@@ -48,16 +57,17 @@ async def lifespan(app: FastAPI):
         # for a person: a library folder that is not there, a config folder it
         # cannot write to, a database from a newer release, a trusted-proxies
         # entry that isn't a real IP or CIDR, reverse-proxy auth turned on
-        # without confirming uvicorn won't undermine it. Anything else is a
-        # bug and should arrive as the traceback it is.
+        # without confirming uvicorn won't undermine it, or a trusted-proxies
+        # list that trusts literally everyone. Anything else is a bug and
+        # should arrive as the traceback it is.
         log.error("%s", exc)
         raise
-    # Non-fatal: warns (loudly, at error level) about two ways to configure
-    # reverse-proxy auth into silently doing nothing or silently trusting
-    # everyone - see authproxy.check_auth_configuration_sanity's own
-    # docstring. Never raises, so it cannot block startup the way the checks
-    # above do; it runs after them so a genuinely fatal misconfiguration is
-    # reported as that, not buried under a warning about a different one.
+    # Non-fatal: warns (loudly, at error level) about the one remaining way
+    # to configure reverse-proxy auth into silently doing nothing - see
+    # authproxy.check_auth_configuration_sanity's own docstring. Never
+    # raises, so it cannot block startup the way the checks above do; it
+    # runs after them so a genuinely fatal misconfiguration is reported as
+    # that, not buried under a warning about a different one.
     authproxy.check_auth_configuration_sanity()
     scanner.start_scan()
     yield

@@ -167,15 +167,32 @@ anyone." Look at `docker compose logs fermata` if turning this on locks you
 out unexpectedly — a rejected request logs why, including the address it
 came from.
 
-The reverse is also checked, loudly, rather than left to fail silently:
-Fermata logs an error at startup (but still starts — these are warnings, not
-refusals) if `FERMATA_TRUSTED_PROXIES` is set while `FERMATA_AUTH_HEADER` is
-not (almost always a typo in the header variable's name — with the header
-unset, auth is entirely OFF and every request is served unauthenticated, no
-matter what the trusted-proxy list says), or if `FERMATA_TRUSTED_PROXIES`
-includes `0.0.0.0/0` or `::/0` (trusts literally every direct request,
-which defeats the point of this feature as completely as leaving it off).
-Watch `docker compose logs fermata` after changing either setting.
+The reverse is also checked, rather than left to fail silently, in two
+different ways depending on how bad the mistake is:
+
+- **`FERMATA_TRUSTED_PROXIES` set while `FERMATA_AUTH_HEADER` is not** logs
+  an error at startup but still starts — this is almost always a typo in
+  the header variable's name, and with the header unset, auth is entirely
+  OFF: every request is served unauthenticated no matter what the
+  trusted-proxy list says. A warning, not a refusal, because nothing here
+  is actively pretending to be secure while it isn't — it is visibly,
+  checkably off.
+- **`FERMATA_TRUSTED_PROXIES` including `0.0.0.0/0` or `::/0` refuses to
+  start outright.** No real proxy's own address is ever "the entire
+  internet" — this is always a mistake, never an intentional choice, unlike
+  a genuinely broad-but-real subnet (`10.0.0.0/8`, say, which stays a
+  warning if you actually mean it). With auth ON, this combination is
+  strictly worse than auth being off: the running server would authenticate
+  *any* direct request as whatever username it claims, and serve that
+  identity at `/api/me`, while `docker compose ps` reports the container
+  perfectly healthy the entire time. A log line an operator has to go
+  looking for is not enough for a failure mode that looks, from the
+  outside, like everything is working correctly - so Fermata does not
+  start at all, the same as it would for uvicorn's own proxy-header trust
+  being left on.
+
+Watch `docker compose logs fermata` after changing either setting — both
+print a plain explanation.
 
 In `docker-compose.yml`, add both under the `fermata` service's `environment:`
 (or `environment:` doesn't exist yet — add it):
@@ -218,8 +235,11 @@ refuses to start (a clear, readable error, not a silent gap) whenever
 passed, or when the `FORWARDED_ALLOW_IPS` environment variable is set at
 all — that variable is the other way to widen exactly the trust that must
 stay off. This check is best-effort (it reads this process's own command
-line) and is not a substitute for actually passing the flag; treat it as a
-safety net catching the mistake, not the fix itself.
+line — including which of `--proxy-headers` / `--no-proxy-headers` appears
+LAST, since that is the one a real launch actually obeys, not merely
+whether `--no-proxy-headers` appears anywhere) and is not a substitute for
+actually passing the flag; treat it as a safety net catching the mistake,
+not the fix itself. Simply don't pass both.
 
 ### The full configuration state space
 
@@ -230,15 +250,17 @@ assuming `--no-proxy-headers` is correctly in place:
 | `FERMATA_AUTH_HEADER` | `FERMATA_TRUSTED_PROXIES` | Forged request from an untrusted address | Notes |
 | --- | --- | --- | --- |
 | unset | unset | `200`, unauthenticated — same as before this feature existed | The default. Not a bypass: there is no auth to bypass. |
-| unset | set | `200`, unauthenticated | **Logged as an error at startup** — almost always a typo in `FERMATA_AUTH_HEADER`'s name; the trusted-proxy list is doing nothing. |
+| unset | set | `200`, unauthenticated | **Logged as an error at startup**, still starts — almost always a typo in `FERMATA_AUTH_HEADER`'s name; the trusted-proxy list is doing nothing. |
 | set | unset (empty) | `401` | Fail closed — the documented behavior of forgetting the second variable. |
 | set | a real address/subnet not matching the request | `401` | The ordinary, intended-secure state — this is the one every example above configures. |
-| set | `0.0.0.0/0` or `::/0` | `200`, as whatever the forged header said | **Logged as an error at startup.** Trusts every direct request; defeats the feature. Never a real proxy's actual address — always a mistake. |
+| set | `0.0.0.0/0` or `::/0` | *(no request ever answers)* | **Refuses to start.** No real proxy's own address is ever "the entire internet" — this is always a mistake, and worse than auth being off, so it is fatal rather than logged. |
 
-The two `200` rows below the default are exactly the states
-`check_auth_configuration_sanity` (in `fermata/authproxy.py`) watches for and
-logs about, loudly, every time Fermata starts. Every `401` row above is
-exercised directly in `server/tests/test_authproxy.py`.
+`check_auth_configuration_sanity` (in `fermata/authproxy.py`) is what logs
+the one row above that still starts. `check_trusted_proxies_are_not_everyone`
+is what refuses to start for the `0.0.0.0/0` / `::/0` row — the same fatal
+bucket `check_proxy_header_safety` is in for the proxy-headers guard, not a
+warning. Every `401` row, and the `0.0.0.0/0` refusal, are exercised
+directly in `server/tests/test_authproxy.py`.
 
 ### What is and isn't covered
 

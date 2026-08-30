@@ -4,9 +4,10 @@ config it reads from fermata/config.py.
 Three layers, deliberately kept apart:
 
 - Unit tests against `authproxy.is_trusted_proxy`, `config.parse_trusted_proxies`,
-  `authproxy.check_proxy_header_safety` and `authproxy.check_auth_configuration_sanity`
-  directly - the CIDR arithmetic and the startup-guard decisions, checked at
-  their edges, without any HTTP or app machinery in the way.
+  `authproxy.check_proxy_header_safety`, `authproxy.check_trusted_proxies_are_not_everyone`
+  and `authproxy.check_auth_configuration_sanity` directly - the CIDR
+  arithmetic and the startup-guard decisions, checked at their edges,
+  without any HTTP or app machinery in the way.
 - The full request-level matrix through `fermata.main.app` (middleware,
   routing, the SPA catch-all and /docs included) - because the whole point
   of this being middleware rather than a route dependency is that it has to
@@ -15,8 +16,9 @@ Three layers, deliberately kept apart:
   "covers the routes I happened to test". This layer also proves the
   startup guards are actually WIRED into main.py's lifespan, not just
   correct as standalone functions - see
-  test_lifespan_refuses_to_start_when_proxy_headers_not_confirmed_off and
-  test_lifespan_warns_about_both_silent_open_misconfigurations.
+  test_lifespan_refuses_to_start_when_proxy_headers_not_confirmed_off,
+  test_lifespan_refuses_to_start_on_0_0_0_0_slash_0, and
+  test_lifespan_warns_about_the_remaining_silent_open_misconfiguration.
 
 NEITHER LAYER HERE CAN PROVE THE PROXY-HEADERS BYPASS IS ACTUALLY CLOSED.
 TestClient never opens a real socket - uvicorn's own ProxyHeadersMiddleware,
@@ -194,6 +196,30 @@ def test_check_proxy_header_safety_message_names_both_problems_at_once(monkeypat
     assert "FORWARDED_ALLOW_IPS" in message
 
 
+def test_check_proxy_header_safety_treats_the_last_flag_as_authoritative(monkeypatch):
+    """The decoy the review found: click (uvicorn's CLI framework) resolves
+    a paired flag/negation option by whichever occurrence comes LAST, not by
+    whether the negation appears anywhere - confirmed directly against
+    click's own CliRunner. `--no-proxy-headers --proxy-headers` genuinely
+    leaves proxy-headers ON, so a naive `in sys.argv` check would wrongly
+    call this "confirmed off" and let the real vulnerable state through
+    with a decoy flag sitting in argv. Order matters: putting
+    --no-proxy-headers LAST must still be confirmed safe."""
+    monkeypatch.setattr(config, "AUTH_HEADER", "X-Remote-User")
+    monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
+
+    monkeypatch.setattr(
+        sys, "argv", ["uvicorn", "fermata.main:app", "--no-proxy-headers", "--proxy-headers"]
+    )
+    with pytest.raises(RuntimeError, match="no-proxy-headers"):
+        authproxy.check_proxy_header_safety()
+
+    monkeypatch.setattr(
+        sys, "argv", ["uvicorn", "fermata.main:app", "--proxy-headers", "--no-proxy-headers"]
+    )
+    authproxy.check_proxy_header_safety()  # must not raise - --no-proxy-headers wins last
+
+
 # ---------------------------------------------------------------------------
 # Unit level: the silent-open-state warnings (the review's SECOND item).
 # ---------------------------------------------------------------------------
@@ -208,26 +234,12 @@ def test_sanity_check_warns_when_trusted_proxies_set_without_a_header(monkeypatc
     assert any("FERMATA_AUTH_HEADER" in r.message for r in caplog.records)
 
 
-def test_sanity_check_warns_on_0_0_0_0_slash_0(monkeypatch, caplog):
-    monkeypatch.setattr(config, "AUTH_HEADER", "X-Remote-User")
-    monkeypatch.setattr(config, "AUTH_TRUSTED_NETWORKS", config.parse_trusted_proxies("0.0.0.0/0"))
-    with caplog.at_level(logging.ERROR, logger="fermata.authproxy"):
-        authproxy.check_auth_configuration_sanity()
-    assert any("0.0.0.0/0" in r.message for r in caplog.records)
-
-
-def test_sanity_check_warns_on_the_ipv6_equivalent(monkeypatch, caplog):
-    monkeypatch.setattr(config, "AUTH_HEADER", "X-Remote-User")
-    monkeypatch.setattr(config, "AUTH_TRUSTED_NETWORKS", config.parse_trusted_proxies("::/0"))
-    with caplog.at_level(logging.ERROR, logger="fermata.authproxy"):
-        authproxy.check_auth_configuration_sanity()
-    assert any("::/0" in r.message for r in caplog.records)
-
-
 def test_sanity_check_is_silent_in_the_two_normal_states(monkeypatch, caplog):
     """Off entirely, and on-with-a-real-subnet, are both intended states and
     must never produce an error-level log - a warning that fires on the
-    normal case trains an operator to ignore it."""
+    normal case trains an operator to ignore it. 0.0.0.0/0 and ::/0 are NOT
+    part of this claim any more - see check_trusted_proxies_are_not_everyone
+    below, which is fatal, not logged here."""
     with caplog.at_level(logging.ERROR, logger="fermata.authproxy"):
         monkeypatch.setattr(config, "AUTH_HEADER", "")
         monkeypatch.setattr(config, "AUTH_TRUSTED_NETWORKS", config.parse_trusted_proxies(""))
@@ -237,6 +249,50 @@ def test_sanity_check_is_silent_in_the_two_normal_states(monkeypatch, caplog):
         monkeypatch.setattr(config, "AUTH_TRUSTED_NETWORKS", config.parse_trusted_proxies("10.0.0.0/24"))
         authproxy.check_auth_configuration_sanity()
     assert caplog.records == []
+
+
+# ---------------------------------------------------------------------------
+# Unit level: 0.0.0.0/0 and ::/0 are FATAL, not a warning (the re-review's
+# GATE item). Escalated from check_auth_configuration_sanity above after a
+# second review pointed out that a server running with auth on and
+# trusted-proxies=0.0.0.0/0 authenticates any direct request as any claimed
+# username - strictly worse than no auth at all, and an error-level log is
+# invisible under `docker compose up -d`, which reports the container
+# healthy while it does this. A genuinely broad but REAL subnet
+# (10.0.0.0/8) stays a judgment call and stays a warning - see
+# test_sanity_check_is_silent_in_the_two_normal_states above, which already
+# covers a real /24 as one of the two states that must NOT raise or log.
+# ---------------------------------------------------------------------------
+
+
+def test_trusted_proxies_are_not_everyone_is_a_no_op_when_auth_is_off(monkeypatch):
+    monkeypatch.setattr(config, "AUTH_HEADER", "")
+    monkeypatch.setattr(config, "AUTH_TRUSTED_NETWORKS", config.parse_trusted_proxies("0.0.0.0/0"))
+    authproxy.check_trusted_proxies_are_not_everyone()  # must not raise
+
+
+def test_trusted_proxies_are_not_everyone_passes_for_a_real_subnet(monkeypatch):
+    """The judgment-call case: 10.0.0.0/8 is unusually broad, but it IS a
+    real, plausible subnet an operator's proxy could genuinely sit inside -
+    unlike 0.0.0.0/0, which no proxy's own address is ever equal to. Stays
+    a warning (see check_auth_configuration_sanity's docstring), not fatal."""
+    monkeypatch.setattr(config, "AUTH_HEADER", "X-Remote-User")
+    monkeypatch.setattr(config, "AUTH_TRUSTED_NETWORKS", config.parse_trusted_proxies("10.0.0.0/8"))
+    authproxy.check_trusted_proxies_are_not_everyone()  # must not raise
+
+
+def test_trusted_proxies_are_not_everyone_raises_on_0_0_0_0_slash_0(monkeypatch):
+    monkeypatch.setattr(config, "AUTH_HEADER", "X-Remote-User")
+    monkeypatch.setattr(config, "AUTH_TRUSTED_NETWORKS", config.parse_trusted_proxies("0.0.0.0/0"))
+    with pytest.raises(RuntimeError, match="0.0.0.0/0"):
+        authproxy.check_trusted_proxies_are_not_everyone()
+
+
+def test_trusted_proxies_are_not_everyone_raises_on_the_ipv6_equivalent(monkeypatch):
+    monkeypatch.setattr(config, "AUTH_HEADER", "X-Remote-User")
+    monkeypatch.setattr(config, "AUTH_TRUSTED_NETWORKS", config.parse_trusted_proxies("::/0"))
+    with pytest.raises(RuntimeError, match=r"::/0"):
+        authproxy.check_trusted_proxies_are_not_everyone()
 
 
 # ---------------------------------------------------------------------------
@@ -524,13 +580,14 @@ def test_lifespan_says_what_is_wrong_about_a_bad_cidr_first(app_env, monkeypatch
     assert any("not-an-ip-or-cidr" in r.message for r in caplog.records)
 
 
-def test_lifespan_warns_about_both_silent_open_misconfigurations(app_env, monkeypatch, caplog):
+def test_lifespan_warns_about_the_remaining_silent_open_misconfiguration(app_env, monkeypatch, caplog):
     """Proves main.py actually calls
     authproxy.check_auth_configuration_sanity() from its real lifespan -
     not just that the function raises/warns correctly when called directly
-    (see the unit tests above). Both misconfigurations warn but still
-    START, unlike the proxy-headers guard, so this is one successful
-    startup with two error-level log lines, not a raised exception."""
+    (see the unit tests above). Trusted-proxies-without-a-header warns but
+    still STARTS, unlike the proxy-headers guard and 0.0.0.0/0 (see the next
+    test), so this is one successful startup with an error-level log line,
+    not a raised exception."""
     monkeypatch.setattr("fermata.main.scanner.start_scan", lambda: False)
     monkeypatch.setattr(config, "AUTH_HEADER", "")
     monkeypatch.setattr(config, "AUTH_TRUSTED_PROXIES_RAW", "10.0.0.0/24")
@@ -543,14 +600,45 @@ def test_lifespan_warns_about_both_silent_open_misconfigurations(app_env, monkey
     assert any("FERMATA_AUTH_HEADER" in r.message for r in caplog.records)
 
 
+def test_lifespan_refuses_to_start_on_0_0_0_0_slash_0(app_env, monkeypatch):
+    """Proves main.py actually calls
+    authproxy.check_trusted_proxies_are_not_everyone() from its real
+    lifespan, in the SAME fatal try/except block as
+    check_proxy_header_safety - not just that the function raises when
+    called directly (see the unit tests above). The re-review's GATE item:
+    auth on plus trusted-proxies=0.0.0.0/0 must never reach a running,
+    request-serving state - the same "server refuses to start" outcome as
+    the proxy-headers guard, not merely a logged warning."""
+    from fermata import main
+
+    monkeypatch.setattr(main.scanner, "start_scan", lambda: False)
+    monkeypatch.setattr(config, "AUTH_HEADER", "X-Remote-User")
+    monkeypatch.setattr(config, "AUTH_TRUSTED_PROXIES_RAW", "0.0.0.0/0")
+    monkeypatch.setattr(sys, "argv", ["uvicorn", "fermata.main:app", "--no-proxy-headers"])
+    monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
+
+    with pytest.raises(RuntimeError, match="0.0.0.0/0"):
+        with TestClient(main.app):
+            pass
+
+
 # ---------------------------------------------------------------------------
 # The full configuration state space (the review's SECOND item) - mirrors
 # the table in docs/deployment.md's "The full configuration state space"
 # exactly. For every row, a request from an address NOT on
 # FERMATA_TRUSTED_PROXIES, carrying a forged header, must come back with the
 # status this table says - "must be NO [200/authenticated]" for every row
-# labeled secure, and the two labeled-insecure rows are exactly the ones
+# labeled secure. The one remaining "insecure" row (trusted-proxies set,
+# header unset) is a live 200, logged, and is exactly what
 # check_auth_configuration_sanity warns about above.
+#
+# trusted-proxies=0.0.0.0/0 is DELIBERATELY NOT A ROW HERE ANY MORE (it was,
+# briefly, expecting 200): after the re-review escalated it from a warning
+# to a startup refusal, there is no "request a live client and check the
+# status code" for that state at all - the server never reaches a
+# request-serving state. See test_lifespan_refuses_to_start_on_0_0_0_0_slash_0
+# above for that state's own proof, over the real lifespan rather than a
+# parametrized request.
 # ---------------------------------------------------------------------------
 
 
@@ -559,7 +647,6 @@ STATE_SPACE = [
     pytest.param("", "10.0.0.0/24", 200, id="header-unset_proxies-set_open-and-warned"),
     pytest.param("X-Remote-User", "", 401, id="header-set_proxies-empty_fail-closed"),
     pytest.param("X-Remote-User", "192.0.2.0/24", 401, id="header-set_proxies-real-subnet_secure"),
-    pytest.param("X-Remote-User", "0.0.0.0/0", 200, id="header-set_proxies-trust-everyone_insecure-and-warned"),
 ]
 
 

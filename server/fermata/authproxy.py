@@ -138,24 +138,57 @@ def is_trusted_proxy(peer_ip: str | None) -> bool:
 
 
 # The "all addresses" networks - IPv4 and IPv6's equivalent of "trust
-# everyone". A FERMATA_TRUSTED_PROXIES containing either is almost always a
-# typo (0.0.0.0/0 instead of a real subnet, or a copy-pasted example) rather
-# than an intentional choice, and it silently defeats the entire feature -
-# every direct request is "from a trusted proxy" - so check_auth_configuration
-# _sanity warns loudly about it rather than accepting it quietly. Warns
-# rather than refuses to start: unlike the proxy-headers case, there is no
-# way to be SURE this is a mistake (an operator could, however unusually,
-# mean it), so this is not put in the same fail-shut bucket as
-# check_proxy_header_safety.
+# everyone". Unlike a real broad subnet (10.0.0.0/8, say - unusually wide,
+# but conceivably what an operator actually meant), 0.0.0.0/0 and ::/0 are
+# NEVER a real proxy's address: no proxy has "the entire internet" as its
+# own IP. A FERMATA_TRUSTED_PROXIES containing either is categorically a
+# mistake (a copy-pasted example, a reflexive "just allow everything" while
+# debugging something else), and with FERMATA_AUTH_HEADER on, the running
+# server would authenticate any direct request as whatever username it
+# claims and serve that identity at /api/me - strictly worse than reverse-
+# proxy auth being off at all, and invisible under `docker compose up -d`
+# (the container reports healthy while doing it). So this is fatal - see
+# check_trusted_proxies_are_not_everyone - the same bucket as
+# check_proxy_header_safety, not a warning check_auth_configuration_sanity
+# only logs about.
 _TRUST_EVERYONE_NETWORKS = {ip_network("0.0.0.0/0"), ip_network("::/0")}
 
 
+def check_trusted_proxies_are_not_everyone() -> None:
+    """Refuses to start (raises RuntimeError, caught by main.py's lifespan
+    the same way ensure_dirs's library-folder check is) when
+    FERMATA_TRUSTED_PROXIES includes 0.0.0.0/0 or ::/0 with reverse-proxy
+    auth turned on - see the module comment on _TRUST_EVERYONE_NETWORKS for
+    why this is fatal rather than a warning. A no-op when FERMATA_AUTH_HEADER
+    is unset, same reasoning as check_proxy_header_safety: this whole class
+    of risk is specific to trusting a peer address for authentication."""
+    if not config.AUTH_HEADER:
+        return
+    if any(net in _TRUST_EVERYONE_NETWORKS for net in config.AUTH_TRUSTED_NETWORKS):
+        raise RuntimeError(
+            f"Fermata cannot start: FERMATA_TRUSTED_PROXIES ({config.AUTH_TRUSTED_PROXIES_RAW!r}) "
+            "includes 0.0.0.0/0 or ::/0, with reverse-proxy authentication turned on "
+            f"(FERMATA_AUTH_HEADER={config.AUTH_HEADER!r}).\n\n"
+            "This would trust EVERY direct request's header, from anywhere - the running "
+            "server would authenticate any request as whatever username it claims and serve "
+            "that identity at /api/me, which is worse than reverse-proxy auth being off "
+            "entirely (off, at least, makes no authentication claim at all). No real proxy's "
+            "own address is ever 0.0.0.0/0 or ::/0 - this is always a mistake, never an "
+            "intentional choice, unlike a genuinely broad subnet.\n\n"
+            "Name your actual proxy's address or subnet instead. See docs/deployment.md's "
+            "'Reverse proxy authentication' section."
+        )
+
+
 def check_auth_configuration_sanity() -> None:
-    """Two ways to configure this feature into looking secure while actually
-    doing nothing (or the opposite) - both silent otherwise, both found in
-    review. Called once from main.py's lifespan after config has loaded;
-    never raises - these are warnings, not startup failures, because unlike
-    check_proxy_header_safety neither is an active bypass by itself."""
+    """The one remaining way to configure this feature into silently doing
+    nothing - see check_trusted_proxies_are_not_everyone for the other
+    misconfiguration found in the same review, which is fatal rather than
+    logged here. Called once from main.py's lifespan after config has
+    loaded; never raises - trusted-proxies-without-a-header is not an
+    active bypass by itself (with the header unset, nothing is ever
+    authenticated at all), unlike 0.0.0.0/0 or a proxy-headers
+    misconfiguration."""
     if config.AUTH_TRUSTED_NETWORKS and not config.AUTH_HEADER:
         log.error(
             "FERMATA_TRUSTED_PROXIES is set (%r) but FERMATA_AUTH_HEADER is not (or is "
@@ -164,17 +197,6 @@ def check_auth_configuration_sanity() -> None:
             "a typo in FERMATA_AUTH_HEADER's name rather than an intentional choice - see "
             "docs/deployment.md's 'Reverse proxy authentication' section.",
             config.AUTH_TRUSTED_PROXIES_RAW,
-        )
-    if config.AUTH_HEADER and any(
-        net in _TRUST_EVERYONE_NETWORKS for net in config.AUTH_TRUSTED_NETWORKS
-    ):
-        log.error(
-            "FERMATA_TRUSTED_PROXIES (%r) includes 0.0.0.0/0 or ::/0 - this trusts EVERY "
-            "direct request's %s header, from anywhere, which defeats the entire point of "
-            "reverse-proxy authentication (the spoofing hole issue #16 exists to close). "
-            "Name your actual proxy's address or subnet instead - see "
-            "docs/deployment.md's 'Reverse proxy authentication' section.",
-            config.AUTH_TRUSTED_PROXIES_RAW, config.AUTH_HEADER,
         )
 
 
@@ -196,8 +218,20 @@ def _proxy_headers_confirmed_off() -> bool:
     uvicorn's own flags in this process's argv - hence "confirmed off" and
     not "is off": absence of the flag here does not prove proxy headers are
     on, only that this check cannot prove they are off, which is exactly why
-    check_proxy_header_safety treats that as unsafe."""
-    return "--no-proxy-headers" in sys.argv
+    check_proxy_header_safety treats that as unsafe.
+
+    Checks the LAST of `--proxy-headers` / `--no-proxy-headers` to appear in
+    argv, not merely whether `--no-proxy-headers` appears ANYWHERE - click
+    (uvicorn's CLI framework) resolves a paired flag/negation option by
+    whichever occurrence comes last, so `--no-proxy-headers --proxy-headers`
+    genuinely leaves proxy-headers ON despite `--no-proxy-headers` being
+    present in argv. A naive `in` check would call that "confirmed off" and
+    let the decoy flag through; this does not."""
+    last_seen = None
+    for arg in sys.argv:
+        if arg in ("--no-proxy-headers", "--proxy-headers"):
+            last_seen = arg
+    return last_seen == "--no-proxy-headers"
 
 
 def check_proxy_header_safety() -> None:
