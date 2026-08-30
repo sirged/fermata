@@ -226,9 +226,19 @@ class PracticeSessionOut(BaseModel):
 class PracticeSessionListOut(PracticeSessionOut):
     """A session as GET /api/practice/sessions lists it - the same fields,
     plus the piece's title joined in so a reader is not left with a bare
-    score_id (or, for a session with none, `null`)."""
+    score_id (or, for a session with none, `null`).
+
+    `score_deleted` is the same fact `top_scores` and `by_score` carry, on the
+    list that names individual sessions: the piece is in the trash. It is NOT
+    `score_missing`, which means the row itself has gone and there is no piece
+    left to name at all - a deleted score still has its title, its history and
+    a way back, and a client that conflates the two would offer to restore
+    something that cannot be restored. Both are false for a session logged
+    against no piece.
+    """
 
     score_title: str | None
+    score_deleted: bool
 
 
 class ScorePracticeOut(BaseModel):

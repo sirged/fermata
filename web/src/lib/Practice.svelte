@@ -684,7 +684,21 @@
                   {/if}
                 </span>
                 <span class="session-what" class:orphaned={session.score_missing}>
-                  {#if session.score_title}
+                  {#if session.score_title && session.score_deleted}
+                    <!-- The same treatment the by-piece list above gets, on the
+                         other list on this page that names a score. Fixing one
+                         and not the other left a live link to a deleted score
+                         two lists apart on one screen (issue #56, F6). The
+                         session itself is untouched and still counted; what it
+                         stops being is a way into a library that no longer
+                         holds the piece. -->
+                    <span
+                      class="deleted-piece"
+                      title="This score is in the trash. The practice still counts."
+                    >
+                      {session.score_title} <span class="deleted-mark">deleted</span>
+                    </span>
+                  {:else if session.score_title}
                     <a href={"#/score/" + session.score_id}>{session.score_title}</a>
                   {:else}
                     {sessionSubject(session)}

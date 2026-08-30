@@ -1099,7 +1099,18 @@ def test_a_refused_restore_puts_the_file_back_in_the_trash(client, library, add_
     res = client.post(f"/api/trash/{score_id}/restore")
 
     assert res.status_code == 409
-    assert "different music" in res.json()["detail"]
+    detail = res.json()["detail"]
+    assert "different music" in detail
+    # AND IT SAYS SOMETHING THAT HELPS. The advice this refusal used to give -
+    # scan the library and try again - was what caused the stranding above
+    # while the file was left in the library; with the rollback it is merely
+    # useless here, because scans skip the trash folder by design, so the one
+    # action it asked for provably could not change the outcome. Pinned as
+    # text, because "the message is unhelpful" is not a thing any other
+    # assertion in this file can notice.
+    assert "Scan the library" not in detail
+    assert "file in the trash is not the one this score was deleted with" in detail
+    assert "delete it for good" in detail
     # THE FILE IS BACK IN THE TRASH, byte for byte as it was when the restore
     # was attempted - not left sitting in the library with nothing naming it.
     assert trash_file.read_bytes() == b"different music entirely"
@@ -1132,20 +1143,39 @@ def test_deleting_a_score_whose_file_is_already_gone_says_no_file_was_moved(
     response no longer claims a file went anywhere.
     """
     score_id = add_score("Inbox/Study.pdf")
+    # A second score that stays, purely so the scan below is an ordinary
+    # reconcile rather than an emptied library - the loss guard refuses that
+    # one outright, and rightly, since it is what an unmounted drive looks like.
+    other = add_score("Inbox/Other.pdf", content=b"other")
     client.patch(f"/api/scores/{score_id}", json={"tags": ["keep me"]})
     client.post(f"/api/scores/{score_id}/practice", json={"seconds": 900})
     (library / "Inbox/Study.pdf").unlink()
+    # Scanned first, so the row carries a REAL missing_since to be carried -
+    # the delete-time fallback (`or _now()`) would otherwise hide whether the
+    # existing mark is kept or a fresh one is stamped, and both look "not
+    # null". That distinction is the fact this asserts below: when the file went
+    # missing is when it went missing, and deleting the score is not the moment
+    # it happened.
+    scanner._scan()
+    marked_at = client.get(f"/api/scores/{score_id}").json()["missing_since"]
+    assert marked_at is not None
 
     body = client.delete(f"/api/scores/{score_id}").json()
 
     assert body["file_moved"] is False
     assert body["trashed_to"] is None
+    # CARRIED, literally - not merely non-null, and not re-stamped to now.
+    # Writing NULL here unconditionally left every other assertion in this file
+    # green, which is how a deleted-then-restored score could come back looking
+    # present when its file had been gone for a month.
+    assert client.get(f"/api/scores/{score_id}").json()["missing_since"] == marked_at
     assert body["deleted_from"] == "Inbox/Study.pdf"
     assert body["practice_sessions_kept"] == 1
     assert body["tags_kept"] == 1
     # Out of the library, in the trash, and the trash folder holds no file for
-    # it - because there was none.
-    assert paths(client) == set()
+    # it - because there was none. The score that still had a file is untouched.
+    assert paths(client) == {"Inbox/Other.pdf"}
+    assert client.get(f"/api/scores/{other}").json()["deleted_at"] is None
     assert [s["id"] for s in client.get("/api/trash").json()] == [score_id]
     assert not any((library / scanner.TRASH_DIR_NAME).rglob("*.pdf"))
 
@@ -1262,6 +1292,14 @@ def test_the_other_characters_windows_will_not_take_are_refused(client, add_scor
     res = client.post(f"/api/scores/{score_id}/move", json={"filename": bad})
 
     assert res.status_code == 422, res.text
+    # WHICH guard refused - the same correction its `:` neighbour six lines up
+    # needed, and for the same reason. Taking these characters back out of the
+    # segment rule left this test green on Windows: the name reached the
+    # filesystem, the rename failed, and F5's wrapper answered 422 too. The two
+    # are not interchangeable - on a filesystem that accepts these bytes
+    # (ext4, and so CI) nothing would have refused at all, and the status alone
+    # cannot tell that apart from a real refusal.
+    assert "is not a usable file name" in res.json()["detail"]
     assert client.get(f"/api/scores/{score_id}").json()["path"] == "Inbox/Study.pdf"
 
 
@@ -1272,13 +1310,34 @@ def test_a_filesystem_refusing_a_move_is_a_422_not_a_500(
     filesystem would not take, and the move path answered 500 for the same
     thing - a reserved name, a path over the length limit, a read-only mount, a
     disk that filled up mid-batch. The rollback was already right; only the
-    status and the message were wrong."""
+    status and the message were wrong.
+
+    BOTH filesystem calls the move makes are covered, because there are two and
+    patching one proved nothing about the other. `dest.parent.mkdir` is the
+    first thing to touch the disk, and it is the call that fails for the
+    over-length path this docstring already claims to cover - a directory
+    Windows will not create. Patching only Path.rename left the mkdir arm
+    unpinned: deleting its `except OSError` entirely kept every test green.
+    """
     score_id = add_score("Inbox/Study.pdf")
-    real_rename = Path.rename
+    real_rename, real_mkdir = Path.rename, Path.mkdir
 
     def refuse(self, target):
         raise OSError(errno.EACCES, "Access is denied")
 
+    def refuse_mkdir(self, *a, **kw):
+        raise OSError(errno.ENAMETOOLONG, "File name too long")
+
+    # The mkdir arm: the move never reaches the rename at all.
+    monkeypatch.setattr(Path, "mkdir", refuse_mkdir)
+    res = client.post(f"/api/scores/{score_id}/move", json={"folder": "Classical"})
+    assert res.status_code == 422, res.text
+    assert "would not accept that path" in res.json()["detail"]
+    monkeypatch.setattr(Path, "mkdir", real_mkdir)
+    assert (library / "Inbox/Study.pdf").read_bytes() == FIXTURE
+    assert client.get(f"/api/scores/{score_id}").json()["path"] == "Inbox/Study.pdf"
+
+    # The rename arm: the directory is made, and moving into it is refused.
     monkeypatch.setattr(Path, "rename", refuse)
     res = client.post(f"/api/scores/{score_id}/move", json={"folder": "Classical"})
 
@@ -1334,6 +1393,55 @@ def test_a_score_can_be_renamed_to_a_different_capitalisation(client, library, a
     assert res.json()["score"]["path"] == "Classical/toccata.pdf"
     assert (library / "Classical/toccata.pdf").read_bytes() == FIXTURE
     assert client.get(f"/api/scores/{score_id}").json()["id"] == score_id
+
+
+def test_a_folder_can_be_renamed_to_a_different_capitalisation(client, library, add_score):
+    """F7 again, on the half the first fix missed: rename_folder had the same
+    bare exists() check as the file path, so "Inbox" -> "inbox" answered 409
+    "inbox already exists" on NTFS - naming the folder as its own obstacle,
+    about the folder the person is standing in. The scores under it have to come
+    with it, which is the part a same-file exception must not quietly skip.
+    """
+    score_id = add_score("Inbox/Study.pdf")
+
+    # The preview is refused by the same check, so it has to pass first - a
+    # dialog that previews fine and then fails on apply is its own bug.
+    preview = client.post(
+        "/api/library/folders/rename", json={"from_path": "Inbox", "to_path": "inbox"}
+    )
+    assert preview.status_code == 200, preview.text
+
+    res = client.post(
+        "/api/library/folders/rename",
+        json={"from_path": "Inbox", "to_path": "inbox", "dry_run": False},
+    )
+
+    assert res.status_code == 200, res.text
+    assert client.get(f"/api/scores/{score_id}").json()["path"] == "inbox/Study.pdf"
+    assert (library / "inbox/Study.pdf").read_bytes() == FIXTURE
+    assert paths(client) == {"inbox/Study.pdf"}
+
+
+def test_renaming_a_folder_onto_a_different_folder_is_still_refused(client, library, add_score):
+    """The other side of that exception, and the reason it asks the filesystem
+    rather than lowercasing two strings: a folder that genuinely is a different
+    folder still blocks the rename. Merging two folders' scores into one with
+    nothing said is the outcome this refuses.
+    """
+    add_score("Inbox/Study.pdf")
+    keep = add_score("Archive/Old.pdf")
+
+    res = client.post(
+        "/api/library/folders/rename",
+        json={"from_path": "Inbox", "to_path": "Archive", "dry_run": False},
+    )
+
+    assert res.status_code == 409, res.text
+    assert "already exists" in res.json()["detail"]
+    # Neither folder moved, and the score that was already there is untouched.
+    assert paths(client) == {"Inbox/Study.pdf", "Archive/Old.pdf"}
+    assert client.get(f"/api/scores/{keep}").json()["path"] == "Archive/Old.pdf"
+    assert (library / "Archive/Old.pdf").read_bytes() == FIXTURE
 
 
 def test_a_file_is_only_in_its_own_way_when_it_really_is_its_own_file(library):
@@ -1444,6 +1552,20 @@ def test_a_deleted_score_still_counts_in_the_practice_figures_and_says_it_is_del
     assert by_score[doomed]["seconds"] == 1800
     assert by_score[doomed]["deleted"] is True
     assert by_score[kept]["deleted"] is False
+
+    # THE THIRD LIST THAT NAMES A SCORE, and the one the first pass at this
+    # missed: the sessions themselves. Fixing the two aggregates and not this
+    # left the practice page rendering a live link to a deleted score a few
+    # rows below one it had just stopped linking to.
+    sessions = client.get("/api/practice/sessions").json()["sessions"]
+    by_session = {s["score_id"]: s for s in sessions}
+    assert by_session[doomed]["score_deleted"] is True
+    assert by_session[doomed]["score_title"] is not None  # still named, still counted
+    assert by_session[doomed]["seconds"] == 1800
+    assert by_session[kept]["score_deleted"] is False
+    # Not the same fact as score_missing: the row is still there, so a client
+    # that conflated the two would call this piece gone rather than deleted.
+    assert by_session[doomed]["score_missing"] is False
 
 
 def test_an_upload_is_not_held_against_a_change_and_the_scan_it_starts_is(

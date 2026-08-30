@@ -142,8 +142,12 @@ so every endpoint that takes a score id can still reach one:
 - **Practice already logged is untouched and still counted.** A deleted score
   still appears in `practice/summary`'s `top_scores` and in `practice/history`'s
   `by_score`, with its hours — dropping it would leave those breakdowns not
-  adding up to the totals beside them. Both now carry `deleted: true` so a
-  client can stop offering a route into a score the library no longer holds.
+  adding up to the totals beside them. Both carry `deleted: true`, and
+  `practice/sessions` carries `score_deleted: true` on each session naming that
+  piece, so a client can stop offering a route into a score the library no
+  longer holds. `score_deleted` is **not** `score_missing`: the first means the
+  score is in the trash and can be put back, the second means its row is gone
+  and there is no piece left to name.
 
 Deleting a score whose file has **already** gone is allowed and answers
 `file_moved: false` with `trashed_to: null` — nothing was moved, because there

@@ -1058,7 +1058,8 @@ def list_sessions(
     conn = connect()
     filters = " AND ".join(where)
     rows = conn.execute(
-        f"""SELECT p.*, s.title AS score_title
+        f"""SELECT p.*, s.title AS score_title,
+                   s.deleted_at IS NOT NULL AS score_deleted
               FROM practice_sessions p LEFT JOIN scores s ON s.id = p.score_id
              WHERE {filters}
           ORDER BY {practice.LOCAL_DATE_SQL} DESC, p.started_at DESC, p.id DESC
@@ -2449,7 +2450,25 @@ def _move_file_on_disk(src: Path, dest: Path) -> None:
         raise _fs_refused(exc) from None
 
 
-def _relink_moved_file(conn, row, dest_rel: str) -> None:
+_MOVE_CHANGED_ADVICE = "Scan the library so Fermata re-reads it, then move the score again."
+
+# WHY THE RESTORE PATH NEEDS ITS OWN SENTENCE. The advice this refusal used to
+# give everybody - scan the library and try again - was actively harmful before
+# the rollback above existed, because the file was left at the new path and a
+# scan filed it as a brand new historyless score. With the rollback it is no
+# longer harmful, but on the restore path it is still USELESS: the file is back
+# in the trash, and scans skip the trash folder by design, so the one action the
+# message asks for provably cannot change the outcome. What is actually true
+# there is that the file in the trash is no longer the file that was deleted,
+# and a person has two real ways out.
+_RESTORE_CHANGED_ADVICE = (
+    "The file in the trash is not the one this score was deleted with - check it: put the "
+    "original back in the trash folder and restore again, or, if this score is not worth "
+    "keeping, delete it for good."
+)
+
+
+def _relink_moved_file(conn, row, dest_rel: str, advice: str = _MOVE_CHANGED_ADVICE) -> None:
     """Point the score row at where its file now is - by content, not by trust.
 
     The hash is recomputed at the destination and checked against the one the
@@ -2470,9 +2489,9 @@ def _relink_moved_file(conn, row, dest_rel: str) -> None:
     if moved_hash != row["hash"]:
         raise HTTPException(
             409,
-            "the file changed while it was being moved, so Fermata stopped rather than "
-            "attach this score's practice history and transcription to different music. "
-            "Scan the library and try again.",
+            "the file's contents are not the ones Fermata recorded for this score, so it "
+            "stopped rather than attach this score's practice history and transcription to "
+            f"different music. Nothing was changed. {advice}",
         )
     stat = dest.stat()
     _repoint_row(conn, row["id"], dest_rel, stat.st_size, stat.st_mtime)
@@ -2858,7 +2877,16 @@ def rename_folder(body: FolderRenameIn):
     dest = _resolve_in_library(to_rel)
     if not source.is_dir():
         raise HTTPException(404, f"there is no folder {from_rel} in your library")
-    if dest.exists():
+    # THE SAME EXCEPTION THE FILE PATH NEEDED, for the same reason and on the
+    # same platform: "Inbox" and "inbox" are one directory on NTFS, so fixing a
+    # folder's capitalisation asks to rename it onto itself and a bare
+    # exists() refused it - "inbox already exists", naming the folder as its own
+    # obstacle. Asking the filesystem separates the two cases a path string
+    # cannot: the same directory under another spelling (allowed - it IS the
+    # rename), and a genuinely different directory that happens to be there
+    # (still refused, because renaming onto it would merge two folders' scores
+    # into one with nothing said).
+    if dest.exists() and not _same_file(source, dest):
         raise HTTPException(409, f"{to_rel} already exists")
     prefix = from_rel + "/"
     try:
@@ -3186,7 +3214,7 @@ def restore_score(score_id: RowId):
                     # scan, which is what caused that. _apply_plan has had these
                     # three lines from the start; this path had not.
                     try:
-                        _relink_moved_file(conn, row, target)
+                        _relink_moved_file(conn, row, target, _RESTORE_CHANGED_ADVICE)
                     except Exception:
                         try:
                             _resolve_in_library(target).rename(source)

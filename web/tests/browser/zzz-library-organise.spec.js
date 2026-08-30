@@ -337,10 +337,12 @@ test("practice on a deleted score still counts, and stops being a way into it", 
   });
   expect(logged.ok(), await logged.text()).toBe(true);
 
-  // While it is in the library, it is an ordinary link.
+  // While it is in the library, BOTH lists that name it are ordinary links.
   await page.goto("/#/practice");
   const row = page.locator(".by-score li", { hasText: score.title });
   await expect(row.locator("a")).toHaveAttribute("href", `#/score/${score.id}`);
+  const session = page.locator(".session-list li", { hasText: score.title });
+  await expect(session.locator("a")).toHaveAttribute("href", `#/score/${score.id}`);
 
   const deleted = await request.delete(`/api/scores/${score.id}`);
   expect(deleted.ok(), await deleted.text()).toBe(true);
@@ -353,6 +355,16 @@ test("practice on a deleted score still counts, and stops being a way into it", 
   await expect(after).toContainText("45m");
   // ...and no longer a route into a score that is not in the library.
   await expect(after.locator("a")).toHaveCount(0);
+
+  // AND THE SESSION LIST FURTHER DOWN THE SAME PAGE. Fixing the by-piece
+  // breakdown alone left this one still linking into the trash, two lists
+  // apart on one screen - which is why this asserts both rather than trusting
+  // that one flag reached every list that reads it.
+  const sessionAfter = page.locator(".session-list li", { hasText: score.title });
+  await expect(sessionAfter).toBeVisible();
+  await expect(sessionAfter.locator(".deleted-mark")).toHaveText("deleted");
+  await expect(sessionAfter).toContainText("45m");
+  await expect(sessionAfter.locator("a")).toHaveCount(0);
 });
 
 test("a batch move shows every line, and a collision is blocked rather than overwritten", async ({
