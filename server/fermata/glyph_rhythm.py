@@ -3939,6 +3939,17 @@ def decode_key_signature(page, staff_top, staff_bottom, staff_x0, spacing=None):
     mid = (staff_top + staff_bottom) / 2
     meter_x0, why_no_meter = _meter_left_edge(band, mid)
     if meter_x0 is None:
+        # If `why_no_meter` is issue #129's refusal (an uncategorised glyph
+        # among the meter's digits, refused here through the same
+        # `_stacked_digit_pairs` both readers of a printed meter share), this
+        # path does NOT increment `meter_digits_unreadable` - that counter is
+        # only fed by the timeline built in tabextract from
+        # decode_time_signature/decode_meter_after_barline, and this window
+        # exists only to find the key signature's right-hand boundary. The
+        # reader still gets a warning, just this one rather than #129's:
+        # "no meter is printed..." below, naming why_no_meter. Zero library
+        # occurrences today (measured: `meter_digits_unreadable` is 0 across
+        # all 297 files), so it has not yet cost a reader the fact.
         return None, (
             "no meter is printed at the start of this staff, so there is no boundary "
             f"separating a key signature from an accidental on the first note ({why_no_meter})"
