@@ -953,8 +953,15 @@ of what is written — which notes are struck — and not how long anything is.
 Measured on the library this profile was developed against, adding ties left
 `bars`, `beats`, `notes`, `bars_overfull`, `bars_short` and `bars_defective`
 each exactly where they were: 10762, 83365, 99461, 1541, 4190, 5300 across
-the 293 extractable scores, unchanged to the unit. 998 ties were written
-across 140 scores and 515 dangling ends disclosed across 122.
+the 293 extractable scores, unchanged to the unit.
+
+The tie marks themselves account for as follows. The decoder matches 1534 tie
+curves across 171 of the 297 scores, which is 3068 marked ends; 2512 of those
+reach the beats model, of which **1998 are written as 999 complete ties**
+across 140 scores and **514 are erased as unpaired** across 122; the remaining
+556 belong to noteheads that lost their fret number before emission and were
+dropped with it, which is the pre-existing `unmatched_glyph_notes` path and
+not something this rule changed.
 
 ### Harmonics (Rule 19)
 
@@ -1016,9 +1023,11 @@ carry.
 **Conventions that are not read.** A `harm.` or `art. harm.` text marker, and
 the small circle some editions draw above the note, are **not** recognised.
 They mark a passage rather than a note, and this profile does not guess a
-note's extent from a direction. Measured on this project's library, they
-appear on 19 of 297 scores and the two conventions that *are* read appear on
-121; on all but one of those 121, both appear together.
+note's extent from a direction. Measured on this project's library, a text
+marker appears on 19 of the 297 scores; the two conventions that *are* read
+appear on 121, and on 120 of those both appear together — a diamond notehead
+in the notation with the same note's fret number bracketed in the tablature
+below it. So the unread convention is never the only marking on a score.
 
 **What this rule does NOT fix: a harmonic's duration.** Marking the note says
 nothing about how long it is, and the notehead a harmonic is drawn with is
@@ -1032,7 +1041,7 @@ second degrades the score's reported confidence through the unrecognised-
 notehead gate.
 
 **The invariant this rule does not disturb.** `<harmonic>` carries no
-duration and moves no Rule 8 figure. Measured on the library, marking 1030
+duration and moves no Rule 8 figure. Measured on the library, marking 1015
 notes across 123 scores left `bars`, `beats`, `notes` and all three bar
 conformance counts exactly where they were.
 
