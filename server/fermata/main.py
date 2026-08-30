@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import scanner
 from .api import router
+from .authproxy import RemoteUserAuthMiddleware
 from .config import WEB_DIST, ensure_dirs
 from .db import init_db
 
@@ -41,6 +42,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Fermata", lifespan=lifespan)
+# Wraps every request - the SPA's static files and /docs/openapi.json
+# included, not just api.router's routes below - see authproxy.py's module
+# docstring for why this has to be middleware rather than a route
+# dependency, and for what stays exempt even when it is turned on.
+app.add_middleware(RemoteUserAuthMiddleware)
 app.include_router(router)
 
 if WEB_DIST and Path(WEB_DIST).is_dir():

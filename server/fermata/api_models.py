@@ -60,6 +60,21 @@ class VersionOut(BaseModel):
     built: str
 
 
+class MeOut(BaseModel):
+    """The identity, if any, that fermata.authproxy's reverse-proxy auth
+    middleware attached to this request (issue #16). Fermata has no accounts
+    of its own and builds none here - `username` is only ever a name a
+    trusted reverse proxy vouched for, exposed for a future consumer (the
+    planned MCP server, a possible sharing layer) to read. `enabled` is
+    whether reverse-proxy auth is turned on at all, independent of whether
+    THIS request carried an identity, so a client can tell "no auth
+    configured" apart from "auth configured but nothing to show" without
+    guessing from a null."""
+
+    enabled: bool
+    username: str | None
+
+
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
