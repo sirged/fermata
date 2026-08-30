@@ -1,7 +1,7 @@
 <script>
   import { untrack } from "svelte";
   import { api } from "./api.js";
-  import { createScoreView, UNRENDERABLE_MESSAGE } from "./score-render.js";
+  import { createScoreView, UNRENDERABLE_MESSAGE, tabWithheldMessage } from "./score-render.js";
   import { getSettings, setSetting, STAFF_THEMES, STAFF_THEME_LABELS } from "./settings.svelte.js";
   import Metronome from "./Metronome.svelte";
 
@@ -73,6 +73,13 @@
   // and rendering no buttons at all during that window is what avoids
   // offering a choice this component cannot yet vouch for.
   let profileOptions = $state(null);
+  // How many staves score-render.js's disqualifyUnstrungTabStaves() turned
+  // tablature off for on the current score (issue #165) - 0 for the ordinary
+  // case. Read only where profileOptions.length === 0, to choose
+  // tabWithheldMessage() over UNRENDERABLE_MESSAGE: a score that had a TAB
+  // clef and mostly-fretted notes but lost its only drawable staff to one bad
+  // note must not be told it never had notation or tablature at all.
+  let tabWithheldCount = $state(0);
   let playing = $state(false);
   let playerReady = $state(false);
   let speed = $state(1);
@@ -181,6 +188,7 @@
     // unknown again for this score, not "same as the last one" - see the
     // comment on profileOptions's declaration
     profileOptions = null;
+    tabWithheldCount = 0;
     // untrack: everything below is driven imperatively once the view exists;
     // tracking it here would tear down and rebuild the renderer (and stop
     // playback) on a profile switch or a toggle.
@@ -209,8 +217,13 @@
         // empty array here, not a fallback list; the empty-state notice in
         // the markup below is what tells the profileOptions.length === 0
         // case apart from "still loading" (profileOptions still null).
-        onProfiles: (profiles) => {
+        // `withheld` (issue #165) is how many staves lost tablature to
+        // disqualifyUnstrungTabStaves() - kept so the empty-state notice can
+        // tell "never had notation or tablature" apart from "had tablature,
+        // withheld it"; see tabWithheldCount's own declaration.
+        onProfiles: (profiles, _unrenderable, withheld) => {
           profileOptions = profiles;
+          tabWithheldCount = withheld ?? 0;
         },
         // The highlighted button has to follow what actually finished
         // drawing, not what was most recently requested - setProfile() below
@@ -621,8 +634,17 @@
     source rather than shown, so this plain sentence - not a stack trace - is
     the only thing a guitarist sees. The staff area below stays in the DOM
     (score-render.js's `host` binding needs a stable element) but is hidden
-    rather than left showing whatever the failed render left behind. -->
-    <p class="notice">{UNRENDERABLE_MESSAGE}</p>
+    rather than left showing whatever the failed render left behind.
+
+    Two different sentences share this slot (issue #165): a score that never
+    had notation or tablature at all gets UNRENDERABLE_MESSAGE, and a score
+    that had a TAB staff disqualifyUnstrungTabStaves() had to withhold gets
+    tabWithheldMessage() instead - "no notation or tablature" is false for
+    the second case, which can be a TAB clef, real tuning and every note but
+    one correctly fretted. -->
+    <p class="notice">
+      {tabWithheldCount > 0 ? tabWithheldMessage(tabWithheldCount) : UNRENDERABLE_MESSAGE}
+    </p>
   {/if}
 
   <div class="score-scroll" class:hidden={profileOptions?.length === 0} bind:this={scroller}>

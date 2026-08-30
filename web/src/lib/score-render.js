@@ -202,8 +202,122 @@ export function supportedProfiles(tracks) {
   }
 }
 
-/** Shown in place of the staff view when supportedProfiles() comes back empty. */
+/** Shown in place of the staff view when supportedProfiles() comes back empty
+ * and no tab staff was withheld - a score with nothing drawable at all under
+ * any profile. See tabWithheldMessage() for the case this must NOT be shown
+ * for: a score that DID have tablature, some of which had to be turned off. */
 export const UNRENDERABLE_MESSAGE = "This score has no notation or tablature the staff view can draw.";
+
+/** The distinct notice for a score `disqualifyUnstrungTabStaves()` emptied
+ * `supportedProfiles()` for by withholding tablature - "no notation or
+ * tablature" (UNRENDERABLE_MESSAGE) is false for this score: it has a TAB
+ * clef, real tuning and, in the case that motivated this, 31 of 32 correctly
+ * fretted notes. One bad note took the whole staff down with it, and the
+ * viewer has to say so distinctly rather than claim the score never had
+ * either (issue #165). */
+export function tabWithheldMessage(count) {
+  const staves = count === 1 ? "its one tablature staff" : `${count} of its tablature staves`;
+  return (
+    `This score has tablature, but ${staves} could not be drawn: at least one note has no ` +
+    "fretted position. Every note on that staff needs a matching string and fret to render it."
+  );
+}
+
+/**
+ * A staff whose `showTablature` is true but whose notes are not all
+ * fretted, disqualified from tab rendering in place (issue #165).
+ *
+ * docs/musicxml-tab-profile.md Rule 9 requires `<string>`/`<fret>` on every
+ * sounding note of a conforming FILE, and Fermata's own emitter (see
+ * musicxml.build's note-writing branch) never violates it - a note it
+ * cannot fret is dropped to a rest, never written half-specified. Nothing
+ * here enforces that on Fermata's own output, because nothing needs to:
+ * this is a defence for input this project did not write. A directly
+ * uploaded `.musicxml`/`.mxl` file, or a hand-edited one, can legally
+ * declare a tab staff (tuning, TAB clef) and still leave some of that
+ * staff's notes without a fretted position - third-party notation software
+ * writes exactly that shape when a tab staff is LINKED to a notation staff
+ * and left for the reading application to fret.
+ *
+ * THE PREDICATE IS AN ARRAY INDEX, NOT "was a string ever set". alphaTab's
+ * MusicXML importer maps a `<string>` element's value S (1 = highest,
+ * MusicXML's own convention) to `note.string = staff.tuning.length - S + 1`
+ * (`_parseTechnical`'s `"string"` case) with no range check, so an
+ * out-of-range S round-trips to an out-of-range `note.string` that is still
+ * `>= 0` - `note.isStringed` (`this.string >= 0`) says yes. `<string>0</string>`
+ * on a 6-line staff becomes `note.string = 7`; `<string>7</string>` becomes
+ * `note.string = 0`. Both pass `isStringed` and both still crash: painting
+ * indexes a per-staff-line array as `spaces[tuning.length - note.string]`,
+ * which is `spaces[-1]` for the first and `spaces[6]` for the second - one
+ * argument short of the array (built `tuning.length` entries long, valid
+ * indices 0..tuning.length-1), so the slot read back is `undefined` and
+ * `.push()` on it throws, straight out of paint. The only condition that
+ * actually keeps every note inside that array is `note.string` between 1 and
+ * `tuning.length` inclusive - checked below, not `isStringed`. Measured on
+ * exactly this shape (a `<string>7</string>` on a 6-line staff): the
+ * exception is caught inside alphaTab's own API layer and only logged, not
+ * re-thrown, so the page still reports a finished render and passes any
+ * check that does not itself read console output - while drawing almost
+ * nothing of that staff.
+ *
+ * The honest response is the one Rule 9's own producer-side guidance
+ * describes for a note that genuinely has no string: this staff cannot be
+ * drawn as tablature, so it is not offered as one. `showTablature = false`
+ * is the exact lever alphaTab's own `TabBarRendererFactory.canCreate`
+ * checks (`staff.showTablature && staff.tuning.length > 0`), and the one
+ * this project already relies on for the same purpose on a percussion
+ * staff (see mirroredCanDraw's comment on `Staff.finish`) - so a staff this
+ * function disqualifies is skipped by alphaTab's own renderer selection,
+ * not merely hidden from the profile buttons canDraw/supportedProfiles
+ * offer. Standard notation on the SAME staff, or another staff in the same
+ * track, is unaffected: only tablature drawing for the disqualified staff
+ * is turned off.
+ *
+ * Returns the list of disqualified staves so the caller can disclose what
+ * happened - see the scoreLoaded handler below, which sets
+ * `host.dataset.scoreTabWithheld` and logs, the same pattern
+ * applyLoadedNavigation uses for `data-score-jumps-unread` a few lines
+ * above it, and passes the count on to onProfiles() so the viewer can tell
+ * "no notation or tablature at all" (UNRENDERABLE_MESSAGE) apart from "had
+ * tablature, withheld it" (tabWithheldMessage()) rather than only being able
+ * to show the former for both.
+ *
+ * Called from the scoreLoaded handler, before supportedProfiles() reads the
+ * score - same timing requirement as the profile correction beside it, and
+ * for the same reason: AlphaTabApiBase triggers scoreLoaded synchronously
+ * and only renders once every listener has returned.
+ */
+export function disqualifyUnstrungTabStaves(score) {
+  const disqualified = [];
+  for (const track of score?.tracks ?? []) {
+    for (const staff of track?.staves ?? []) {
+      if (!staff?.showTablature) continue;
+      const lines = staff.tuning?.length ?? 0;
+      let hasUnfrettedNote = false;
+      for (const bar of staff.bars ?? []) {
+        for (const voice of bar?.voices ?? []) {
+          for (const beat of voice?.beats ?? []) {
+            if (beat?.isRest) continue;
+            for (const note of beat?.notes ?? []) {
+              if (!(note?.string >= 1 && note.string <= lines)) {
+                hasUnfrettedNote = true;
+                break;
+              }
+            }
+            if (hasUnfrettedNote) break;
+          }
+          if (hasUnfrettedNote) break;
+        }
+        if (hasUnfrettedNote) break;
+      }
+      if (hasUnfrettedNote) {
+        staff.showTablature = false;
+        disqualified.push(staff);
+      }
+    }
+  }
+  return disqualified;
+}
 
 // ---------------------------------------------------------------- layout
 
@@ -1666,11 +1780,17 @@ async function readMusicXml(bytes) {
  * @param opts.onError      (message) load or render failed
  * @param opts.onPassComplete  one pass finished (drives the tempo ladder)
  * @param opts.onLayout     (layout) the chosen layout changed
- * @param opts.onProfiles   (profiles, unrenderable) the profiles this score
- *                          supports changed - fires once a score has loaded.
- *                          `profiles` can be empty; `unrenderable` is true in
- *                          exactly that case, when nothing about this score
- *                          can be drawn under any profile
+ * @param opts.onProfiles   (profiles, unrenderable, tabWithheldCount) the
+ *                          profiles this score supports changed - fires once
+ *                          a score has loaded. `profiles` can be empty;
+ *                          `unrenderable` is true in exactly that case, when
+ *                          nothing about this score can be drawn under any
+ *                          profile. `tabWithheldCount` is how many staves
+ *                          disqualifyUnstrungTabStaves() turned tablature off
+ *                          for (issue #165) - a caller showing its own
+ *                          unrenderable notice needs this to tell "no
+ *                          notation or tablature at all" apart from "had
+ *                          tablature, withheld it"; see tabWithheldMessage()
  * @param opts.onProfileApplied  (profile) a render has actually finished
  *                          successfully with this profile showing - the
  *                          signal a caller should wait for before treating a
@@ -2491,6 +2611,31 @@ export function createScoreView(host, opts = {}) {
     // the loaded score, and the midi generated after it returns has to see
     // the finished model rather than the imported one.
     applyLoadedNavigation(loadedScore);
+    // Also before supportedProfiles() reads the score: a staff that cannot be
+    // honestly drawn as tablature must be disqualified before canDraw is
+    // asked about it, or "tab"/"scoretab" would still be offered for a staff
+    // whose paint throws (issue #165) - see disqualifyUnstrungTabStaves.
+    const tabWithheld = disqualifyUnstrungTabStaves(loadedScore);
+    // Disclosed the same way applyLoadedNavigation discloses an unread
+    // navigation mark a few lines above: a dataset attribute a test (or a
+    // person with devtools open) can read, plus a console line, present only
+    // when there is something to disclose - "not withheld" and "no score
+    // loaded yet" both read as the attribute being absent, same convention
+    // dataset.scoreProfiles documents at its own delete call below.
+    if (host) {
+      if (tabWithheld.length) {
+        host.dataset.scoreTabWithheld = String(tabWithheld.length);
+        console.info(
+          `score-render: ${tabWithheld.length} staff(es) declared as tablature carry a note ` +
+            "with no fretted position - drawing them as tablature would crash the renderer's " +
+            "paint (issue #165), so tablature is turned off for just those staves. This is not " +
+            "Fermata's own transcription shape; it happens on a directly uploaded file whose " +
+            "tab staff is under-specified.",
+        );
+      } else {
+        delete host.dataset.scoreTabWithheld;
+      }
+    }
     scoreProfiles = supportedProfiles(api.tracks?.length ? api.tracks : loadedScore.tracks);
     unrenderable = scoreProfiles.length === 0;
     if (!unrenderable && !scoreProfiles.includes(profile)) {
@@ -2501,7 +2646,11 @@ export function createScoreView(host, opts = {}) {
     metronome.scoreLoaded(loadedScore);
     onScoreTempo(loadedScore?.tempo ?? null, tempoProvenance(loadedScore));
     publish();
-    onProfiles(scoreProfiles, unrenderable);
+    // Third argument: how many staves disqualifyUnstrungTabStaves() withheld,
+    // so a caller whose profiles came back empty can tell "no notation or
+    // tablature at all" apart from "had tablature, withheld it" - see
+    // tabWithheldMessage() and TabViewer.svelte's use of it.
+    onProfiles(scoreProfiles, unrenderable, tabWithheld.length);
     // A freshly loaded score starts at bar one, not wherever the previous
     // score's cursor happened to be left - see the dataset.cursorTick reset
     // above for the same reasoning applied to the attribute this reflects.

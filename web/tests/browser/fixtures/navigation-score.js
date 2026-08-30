@@ -6,19 +6,43 @@
 // and nothing short of the real loader can answer that.
 //
 // THE HEADLINE FIXTURE IS NOT BUILT HERE. It is read, byte for byte, off
-// server/tests/fixtures/engraved/navigation.musicxml - the transcription of
-// the committed navigation.pdf, produced by the extractor and checked into
-// the repository by issue #134. That file is the acceptance case, and a
-// hand-written imitation of it would only prove that this file and the spec
-// beside it agree with each other. The two built fixtures below cover the
-// shapes that transcription does NOT have: a jump crossing a repeat, and a
-// jump whose target the score never draws.
+// server/tests/fixtures/engraved/navigation.transcription.musicxml - the
+// actual output of tabextract.extract() run on the committed navigation.pdf,
+// regenerated and checked byte for byte by
+// server/tools/tab_extract/engrave_fixtures.py's write_transcriptions() (see
+// TRANSCRIPTION_FIXTURES there). A hand-written imitation of it would only
+// prove that this file and the spec beside it agree with each other. The two
+// built fixtures below cover the shapes that transcription does NOT have: a
+// jump crossing a repeat, and a jump whose target the score never draws.
+//
+// THIS USED TO READ navigation.musicxml INSTEAD (issue #165). That file is a
+// different thing entirely: the ENGRAVING SOURCE MuseScore was asked to draw
+// - two staves, notation over tab, the tab staff's notes carrying `<pitch>`
+// and no `<string>`/`<fret>` at all, because MuseScore frets them itself
+// while engraving. It was never a conforming file under
+// docs/musicxml-tab-profile.md Rule 9, and was never "produced by the
+// extractor" despite what this comment used to claim - it is the *input* to
+// MuseScore, one step before the extractor ever runs. Feeding it to alphaTab
+// as if it were a transcription crashed `TabBarRenderer.collectSpaces`
+// during paint: caught internally and logged rather than thrown, so the page
+// still reported `data-score-render-ok`, drew its play button and passed
+// every assertion here - while drawing almost nothing (12 SVG text glyphs,
+// measured on the unfixed page, against 53+ once the tab staff draws - glyph
+// COUNT is what discriminates a broken render from a healthy one here, not
+// glyph TYPE: a healthy page draws 0 SVG `<path>` elements too, alphaTab
+// having nothing on this fixture it renders as one). Nothing in this file
+// asserted console output for that score, which is how it went unnoticed. See
+// NAVIGATION_UNSTRUNG_TAB_MUSICXML and stubNavigationUnstrungTabScore below,
+// which keep exercising that exact shape on purpose - now as a check that
+// the renderer degrades a staff it cannot honestly tab rather than crashing,
+// not as a stand-in for ground truth.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const ENGRAVED_DIR = path.join(here, "..", "..", "..", "..", "server", "tests", "fixtures", "engraved");
 
 /**
  * The committed transcription of navigation.pdf: eight 4/4 bars carrying a
@@ -31,9 +55,91 @@ const here = path.dirname(fileURLToPath(import.meta.url));
  * all.
  */
 export const NAVIGATION_MUSICXML = fs.readFileSync(
-  path.join(here, "..", "..", "..", "..", "server", "tests", "fixtures", "engraved", "navigation.musicxml"),
+  path.join(ENGRAVED_DIR, "navigation.transcription.musicxml"),
   "utf-8",
 );
+
+/**
+ * The ENGRAVING SOURCE navigation.pdf was drawn from - two staves, notation
+ * over tab, the tab staff's notes carrying no `<string>`/`<fret>` (issue
+ * #165; see the header comment above). Kept and read on purpose, not
+ * deleted: it is a real shape a directly-uploaded MusicXML/.mxl file can
+ * have (Fermata's own transcriptions never have it - see
+ * musicxml.build()'s note-writing branch - but nothing stops a third-party
+ * export or a hand-edited file from linking a tab staff to notation without
+ * fretting it), and the renderer must not crash on it either way.
+ */
+export const NAVIGATION_UNSTRUNG_TAB_MUSICXML = fs.readFileSync(
+  path.join(ENGRAVED_DIR, "navigation.musicxml"),
+  "utf-8",
+);
+
+/**
+ * The TAB-ONLY worst case disqualifyUnstrungTabStaves() has to handle
+ * (issue #165, adversarial review): one part, one staff, a TAB clef and a
+ * real six-line tuning - Fermata's own conforming shape - eight notes, seven
+ * of them correctly fretted and the eighth carrying `<string>7</string>` on
+ * a six-line staff. That is out of MusicXML's own range (strings count from
+ * 1) but still `>= 0`, so `Note.isStringed` alone says yes - it is the
+ * out-of-bounds ARRAY INDEX that crashes `TabBarRenderer.collectSpaces`, not
+ * an absent string, and this is the shape that proves the guard checks the
+ * right thing. It is also the shape where withholding tablature empties
+ * `supportedProfiles()` entirely - no notation staff to fall back to - so
+ * this is what exercises tabWithheldMessage() rather than
+ * UNRENDERABLE_MESSAGE.
+ *
+ * Hand-built rather than derived from a real score, like
+ * NAVIGATION_TWO_VOICE_MARK_MUSICXML and NAVIGATION_TIMEWISE_MUSICXML above:
+ * Fermata's own emitter never writes an out-of-range string
+ * (musicxml.build()'s `if not 1 <= string <= len(tuning): continue` drops
+ * it), so nothing in this project's own pipeline produces this shape - only
+ * a directly uploaded or hand-edited file can.
+ */
+export const TAB_ONLY_INVALID_STRING_MUSICXML = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <work><work-title>Tab-only invalid-string fixture</work-title></work>
+  <part-list>
+    <score-part id="P1"><part-name>Guitar</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>4</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>TAB</sign><line>5</line></clef>
+        <staff-details>
+          <staff-lines>6</staff-lines>
+          <staff-tuning line="1"><tuning-step>E</tuning-step><tuning-octave>2</tuning-octave></staff-tuning>
+          <staff-tuning line="2"><tuning-step>A</tuning-step><tuning-octave>2</tuning-octave></staff-tuning>
+          <staff-tuning line="3"><tuning-step>D</tuning-step><tuning-octave>3</tuning-octave></staff-tuning>
+          <staff-tuning line="4"><tuning-step>G</tuning-step><tuning-octave>3</tuning-octave></staff-tuning>
+          <staff-tuning line="5"><tuning-step>B</tuning-step><tuning-octave>3</tuning-octave></staff-tuning>
+          <staff-tuning line="6"><tuning-step>E</tuning-step><tuning-octave>4</tuning-octave></staff-tuning>
+        </staff-details>
+      </attributes>
+      <note><pitch><step>E</step><octave>2</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>6</string><fret>0</fret></technical></notations></note>
+      <note><pitch><step>A</step><octave>2</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>5</string><fret>0</fret></technical></notations></note>
+      <note><pitch><step>D</step><octave>3</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>7</string><fret>0</fret></technical></notations></note>
+      <note><pitch><step>G</step><octave>3</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>3</string><fret>0</fret></technical></notations></note>
+    </measure>
+    <measure number="2">
+      <note><pitch><step>B</step><octave>3</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>2</string><fret>0</fret></technical></notations></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>1</string><fret>0</fret></technical></notations></note>
+      <note><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>1</string><fret>3</fret></technical></notations></note>
+      <note><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type>
+        <notations><technical><string>1</string><fret>5</fret></technical></notations></note>
+    </measure>
+  </part>
+</score-partwise>
+`;
 
 const DIVISIONS = 480; // ticks per quarter note
 const PITCHES = ["C", "D", "E", "F", "G", "A", "B", "C"];
@@ -479,6 +585,31 @@ async function stubOneScore(page, id, title, xml) {
 /** Score id 11: the committed navigation.pdf transcription. */
 export async function stubNavigationScore(page) {
   await stubOneScore(page, 11, "Navigation fixture", NAVIGATION_MUSICXML);
+}
+
+/**
+ * Score id 23: the navigation.pdf ENGRAVING SOURCE (issue #165) - two
+ * staves, notation over tab, the tab staff's notes carrying no
+ * `<string>`/`<fret>`. Before this issue's fix, opening this exact document
+ * crashed `TabBarRenderer.collectSpaces` during paint; the crash was caught
+ * internally by alphaTab and logged rather than thrown, so nothing here
+ * failed until a test actually looked at console output. See
+ * "a TAB staff the renderer cannot honestly draw degrades instead of
+ * crashing" in navigation.spec.js.
+ */
+export async function stubNavigationUnstrungTabScore(page) {
+  await stubOneScore(page, 23, "Navigation unstrung-tab fixture", NAVIGATION_UNSTRUNG_TAB_MUSICXML);
+}
+
+/**
+ * Score id 24: the TAB-ONLY worst case (issue #165 adversarial review) - a
+ * single TAB staff, no notation staff to fall back to, one of its eight
+ * notes carrying an out-of-range `<string>7</string>`. Withholding
+ * tablature here empties supportedProfiles() entirely, which is what
+ * exercises tabWithheldMessage() rather than a partial degradation.
+ */
+export async function stubNavigationTabOnlyInvalidStringScore(page) {
+  await stubOneScore(page, 24, "Navigation tab-only invalid-string fixture", TAB_ONLY_INVALID_STRING_MUSICXML);
 }
 
 /** Score id 12: repeats and a D.S. al Coda in one piece. */

@@ -300,6 +300,45 @@ so string numbers start at 1. A conforming file's string numbers are all within
 the instrument's string count, so that each resolves against a declared
 `<staff-tuning>`.
 
+**What a producer does when it cannot fret a note.** `musicxml.build()` never
+writes a sounding note with `<pitch>` and no `<technical>` half - a note it
+has a (string, fret) pair for gets both, written together; a note it does not
+is written as a `<rest>` of the same duration instead (Rule 11 covers the one
+case that reaches this: a fret number MusicXML's `<octave>` cannot express).
+There is no third shape. This is a structural property of the emitter's own
+branching, not a claim that happens to hold on every fixture measured against
+it - see `test_library_wide_every_sounding_note_carries_string_and_fret` and
+its engraved-fixtures counterpart in the test suite, which check it against
+every PDF this project can commit or point `FERMATA_TEST_LIBRARY` at, and
+found nothing (issue #165).
+
+**What a consumer does when a file does not hold to this.** Rule 9 binds a
+*producer*; nothing stops a file this project did not write - a direct
+`.musicxml`/`.mxl` upload, or one hand-edited afterward - from declaring a TAB
+staff and leaving some of its notes unfretted anyway, which third-party
+notation software does for a tab staff LINKED to a notation staff and left
+for the reading application to fret. A staff like that cannot be honestly
+drawn as tablature, and Fermata's renderer does not try: it turns tablature
+off for exactly that staff before the first render (`showTablature = false`,
+the same lever this project already relies on to keep a percussion staff's
+tuning from being offered as tab - see `disqualifyUnstrungTabStaves` in
+`web/src/lib/score-render.js`) rather than asking alphaTab to draw a staff
+whose `TabBarRenderer.collectSpaces` indexes `tuning.length - note.string`
+with no bounds check.
+
+That check is a range, not "was a string ever read": alphaTab's importer maps
+a `<string>` value S (1..N, MusicXML's own convention) to `note.string =
+tuning.length - S + 1` with no validation, so an out-of-range S - `0` or
+`N + 1`, say - round-trips to an out-of-range `note.string` that still passes
+`Note.isStringed` (`string >= 0`). The only condition that keeps every note
+inside `collectSpaces`'s array is `1 <= note.string <= tuning.length`; a check
+against `isStringed` alone still crashes on exactly this shape. Standard
+notation on the same staff, or another staff in the same track, is
+unaffected - only tablature drawing for the disqualified staff is turned off,
+and disclosed rather than left silent (`host.dataset.scoreTabWithheld` and a
+distinct viewer notice, `tabWithheldMessage` - "no notation or tablature" is
+false for a score that had a TAB staff and lost it to one bad note).
+
 **Rule 10.** Every note that sounds also carries `<pitch>`, and its pitch
 agrees with its string, fret, the declared tuning and any capo.
 

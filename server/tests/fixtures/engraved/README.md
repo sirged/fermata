@@ -29,6 +29,27 @@ The whole chain is in the repository:
 Nothing purchased or downloaded can go in this directory. That is how the
 gap this directory exists to close was created.
 
+**`<name>.musicxml` is the engraving SOURCE, not a transcription.** It is
+what MuseScore was asked to draw - for a tab-and-notation fixture, that
+includes the tab staff's own notes, written as plain `<pitch>` with no
+`<string>`/`<fret>` at all, because MuseScore frets them itself while
+engraving. It is therefore not a conforming file under
+docs/musicxml-tab-profile.md (Rule 9 requires `<string>`/`<fret>` on every
+sounding note), and must never be fed to a MusicXML consumer - alphaTab
+included - as if it were the extractor's output. Doing exactly that, once,
+crashed alphaTab's `TabBarRenderer.collectSpaces` during paint (issue #165).
+
+One fixture (`navigation`, so far) also carries `<name>.transcription.musicxml`: the actual
+output of `tabextract.extract()` run on the committed PDF, regenerated and
+checked byte for byte (modulo a pinned `<encoding-date>`) by
+`engrave_fixtures.py --check`'s `write_transcriptions()`. This is the real
+ground truth, always a single TAB staff with `<string>`/`<fret>` on every
+note - see `TRANSCRIPTION_FIXTURES` in `engrave_fixtures.py` for which names
+have one. It exists for consumers that cannot call the Python extractor at
+test time, currently the web browser test suite
+(`web/tests/browser/fixtures/navigation-score.js`), which needs real
+transcription bytes to feed the real alphaTab importer through.
+
 ## What each one is for
 
 | fixture | shape it covers |

@@ -11,15 +11,30 @@ THE CHAIN, all of it in the repository:
 
     FIXTURES (below)  ->  <name>.musicxml  ->  MuseScore  ->  <name>.pdf
 
+`<name>.musicxml` is the ENGRAVING SOURCE - what MuseScore was asked to draw,
+not what the extractor reads back. For one fixture so far, something
+outside the Python test suite (the web browser test suite, which has no
+Python to call at test time) needs the real TRANSCRIPTION too - the actual
+output of tabextract.extract() run on the committed PDF - and that is a
+second, separate committed file: `<name>.transcription.musicxml`, for the
+names in TRANSCRIPTION_FIXTURES below. The two are not interchangeable: the
+engraving source's tab-staff notes carry no `<string>`/`<fret>` at all
+(MuseScore assigns them itself while engraving), so it is not a conforming
+file under docs/musicxml-tab-profile.md and must never be handed to a
+renderer expecting Rule 9 - doing exactly that, once, crashed alphaTab's
+`TabBarRenderer.collectSpaces` (issue #165).
+
 Run with no arguments to rebuild the MusicXML and, if MuseScore is
 installed, re-engrave the PDFs:
 
     python server/tools/tab_extract/engrave_fixtures.py
 
-    --check     rewrite nothing; report whether the committed MusicXML
-                still matches what this script would write (a fixture whose
-                source drifted from its generator is no longer regenerable)
-    --musicxml  write the MusicXML only, no engraving
+    --check     rewrite nothing; report whether the committed MusicXML and
+                transcription files still match what this script would
+                write (a fixture whose source drifted from its generator is
+                no longer regenerable)
+    --musicxml  write the engraving-source MusicXML only, no engraving and
+                no transcription regeneration (that needs a current PDF)
     --report    engrave, then print what the extractor makes of each PDF
 
 MuseScore is found via $MUSESCORE, or the usual install locations. Any
@@ -31,6 +46,7 @@ coordinates and can change what the tests measure.
 import argparse
 import contextlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1123,6 +1139,59 @@ def write_musicxml(check_only=False):
     return drifted
 
 
+# Fixtures that also need a committed TRANSCRIPTION artifact: the actual
+# output of tabextract.extract() run on the committed PDF, as distinct from
+# the `<name>.musicxml` beside it (the engraving source MuseScore was asked
+# to draw). Only fixtures something outside the Python test suite needs to
+# read get one - currently just the web browser test suite, which has no
+# Python to call at test time and needs real ground truth to feed the real
+# alphaTab importer/renderer through (issue #165: the engraving source is
+# not a conforming file - its tab-staff notes carry no <string>/<fret> at
+# all, MuseScore having been left to assign them itself while engraving -
+# and reading it directly as if it were a transcription crashed
+# TabBarRenderer.collectSpaces the one time that happened).
+TRANSCRIPTION_FIXTURES = ("navigation",)
+
+# musicxml.build's own default for <encoding-date> is today's date, which
+# would make this file drift every time it is regenerated for no reason a
+# diff could ever explain - the same problem docs/examples/monophonic.musicxml
+# solves by pinning one. Pinned here the same way, to the date this file was
+# first committed.
+_TRANSCRIPTION_ENCODING_DATE = "2026-08-29"
+
+_ENCODING_DATE_RE = re.compile(r"<encoding-date>[^<]*</encoding-date>")
+
+
+def write_transcriptions(check_only=False):
+    """Regenerate `<name>.transcription.musicxml` for each name in
+    TRANSCRIPTION_FIXTURES: tabextract.extract() run on the already-engraved
+    `<name>.pdf`, with <encoding-date> pinned so the file does not drift on
+    its own. Requires the PDF to already exist and be current - run after
+    engrave(), never instead of it."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from fermata import tabextract
+
+    drifted = []
+    for name in TRANSCRIPTION_FIXTURES:
+        pdf = FIXTURE_DIR / f"{name}.pdf"
+        if not pdf.is_file():
+            raise SystemExit(f"{pdf} is missing - engrave the fixtures first")
+        result = tabextract.extract(pdf)
+        if not result.extractable:
+            raise SystemExit(f"{name}.pdf did not extract: {result.reason}")
+        wanted = _ENCODING_DATE_RE.sub(
+            f"<encoding-date>{_TRANSCRIPTION_ENCODING_DATE}</encoding-date>", result.musicxml)
+        path = FIXTURE_DIR / f"{name}.transcription.musicxml"
+        if check_only:
+            have = path.read_text(encoding="utf-8") if path.is_file() else None
+            if have != wanted:
+                drifted.append(f"{name}.transcription.musicxml")
+            continue
+        path.write_text(wanted, encoding="utf-8")
+        print(f"  wrote {path.name} ({len(wanted)} bytes)")
+    return drifted
+
+
 def engrave(musescore):
     for name in sorted(FIXTURES):
         src = FIXTURE_DIR / f"{name}.musicxml"
@@ -1236,6 +1305,7 @@ def main():
 
     if args.check:
         drifted = write_musicxml(check_only=True)
+        drifted += write_transcriptions(check_only=True)
         if drifted:
             raise SystemExit(
                 "these fixtures' committed MusicXML no longer matches this script: "
@@ -1257,6 +1327,8 @@ def main():
     engrave(musescore)
     rasterise()
     synthesise_fake_music_font()
+    print("transcriptions:")
+    write_transcriptions()
     if args.report:
         report()
 

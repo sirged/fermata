@@ -4223,6 +4223,57 @@ def test_library_wide_note_ids_are_unique_and_valid_ncnames(library_root):
     assert scores_checked >= 250, f"only {scores_checked} scores were checked"
 
 
+def test_library_wide_every_sounding_note_carries_string_and_fret(library_root):
+    """Rule 9, library-wide (issue #165). Every `<note>` this project emits
+    that is not a `<rest>` carries `<notations><technical><string>` and
+    `<fret>` - musicxml.build() writes a note with the full (string, fret,
+    midi) triple or writes no pitched note at all, never one in between (see
+    the `if not writable` / `else` split in build()). Checked here at the
+    scale a real library reaches, the same shape as
+    test_library_wide_note_ids_are_unique_and_valid_ncnames just above.
+
+    Issue #165's own crash was not this: it was a browser test fixture
+    reading the ENGRAVING SOURCE of navigation.pdf (whose tab-staff notes
+    MuseScore fretted itself while engraving, never a conforming file under
+    this profile) as if it were the extractor's own transcription. This test
+    is the direct check that the transcription side has no such gap anywhere
+    in the library - measured at 0 stringless sounding notes across 297
+    library PDFs plus the 30 committed engraved fixtures before this issue
+    was ever opened."""
+    scores_checked = 0
+    total_sounding = 0
+    stringless = []
+    for pdf in _library_pdfs(library_root):
+        try:
+            result = tabextract.extract(pdf)
+        except Exception:
+            continue
+        if not result.extractable or not result.musicxml:
+            continue
+        root = ET.fromstring(result.musicxml)
+        notes = root.findall("./part/measure/note")
+        if not notes:
+            continue
+        scores_checked += 1
+        for note in notes:
+            if note.find("rest") is not None:
+                continue
+            total_sounding += 1
+            technical = note.find("notations/technical")
+            string_el = technical.find("string") if technical is not None else None
+            fret_el = technical.find("fret") if technical is not None else None
+            if string_el is None or fret_el is None:
+                stringless.append((pdf.name, note.get("id")))
+
+    _assert_no_offenders([f"{name}:{note_id}" for name, note_id in stringless],
+                          "TAB-staff note(s) with no <string>/<fret>")
+    assert total_sounding > 0
+    # A floor rather than a pin, for the same reason the note-id sweep above
+    # uses one: which PDFs extract cleanly can change, but the check must not
+    # have silently stopped running against anything close to the library.
+    assert scores_checked >= 250, f"only {scores_checked} scores were checked"
+
+
 def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
     """Issue #109's own self-check, which needs no reference to a printed
     page: a note whose written value exceeds its bar's meter is impossible
