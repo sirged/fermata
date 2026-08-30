@@ -230,17 +230,18 @@ MAESTRO_GID_MAP = {
     # no rule-derived fallback available here the way there is for Opus's
     # missing digits above.
     #
-    # THIS IS STILL AN OPEN GAP, not a safe default: a numerator or
-    # denominator that needs a '0' does not fall through to "not detected"
-    # the way an earlier version of this docstring claimed. The unmapped '0'
-    # glyph resolves to no category at all, so `_stacked_digit_pairs` simply
-    # never sees it - a Finale 10/8 loses its '0' the same way a Sibelius
-    # 12/8 used to lose its '1', and is returned as a confident (1, 8). Fixing
-    # that for real needs the decoder to refuse whenever an UNCATEGORISED
-    # glyph sits among the digits it did read, not another table entry - see
-    # issue #84 - and is out of scope for this table-filling change, so it is
-    # recorded here rather than silently left for the next reader to
-    # rediscover.
+    # THIS IS STILL AN OPEN GAP IN THE TABLE - a Maestro 10/8's '0' resolves
+    # to no category, and no amount of reading this table will tell you what
+    # meter such a staff prints. What it is no longer is a WRONG ANSWER. An
+    # earlier version of this docstring claimed such a digit fell through to
+    # "not detected"; tracing the code showed it did not - the unmapped glyph
+    # was simply never seen by `_stacked_digit_pairs`, so a Finale 10/8 lost
+    # its '0' the same way a Sibelius 12/8 used to lose its '1' and came back
+    # as a confident (1, 8). Issue #129 closed that: an uncategorised glyph
+    # sitting among the digits the decoder DID read now refuses the whole
+    # decode, naming the glyph - see _unreadable_digit_neighbour. The missing
+    # entry costs a meter that has to be assumed, which is what "not detected"
+    # has always meant here, and no longer costs a meter that is wrong.
     #
     # flag32, rest16 and rest32 are likewise NOT mapped for Maestro: the same
     # full-library GID rescan that turned up no evidence for digit0 also
@@ -3427,6 +3428,70 @@ def _cluster_value(cluster):
     return int("".join(str(DIGIT_CATS[e.category]) for e in cluster))
 
 
+# The prefix every refusal caused by an unrecognised glyph inside the meter's
+# own digits carries, so a caller can tell that specific refusal apart from
+# "this staff prints no meter" without parsing the rest of the sentence. See
+# _unreadable_digit_neighbour.
+UNREADABLE_DIGIT_REASON = "an unrecognised glyph sits among the time-signature digits"
+
+
+def _unreadable_digit_neighbour(digits, window, mid):
+    """The uncategorised glyph engraved where another digit of a numeral this
+    window did read would go, or None (issue #129).
+
+    A glyph with no category is not "nothing there". It is a glyph this
+    decoder could not name - an unmapped GID in a Finale subset, an unmapped
+    PUA name in a Sibelius one - and until this existed it was simply dropped
+    from the meter window, leaving the digits that WERE recognised to assemble
+    among themselves. A Finale 10/8 whose '0' is unmapped therefore came out
+    as a confident (1, 8), labelled as read directly from the digits, and
+    nothing anywhere said a glyph had been thrown away. That is the exact
+    shape #84 fixed for the entries the tables were known to be missing, one
+    level down: the tables can be complete for every glyph we have seen and an
+    unseen subset can still produce a confident wrong meter.
+
+    WHAT COUNTS AS "AMONG THE DIGITS" is _group_digit_clusters' own adjacency
+    rule, run over the digits and the uncategorised glyphs together, rather
+    than a box drawn around the meter. That is the rule that decides which
+    glyphs are successive digits of one numeral in the first place, so asking
+    it is asking exactly the right question: would an engraver have put
+    another digit of this number here? A cluster holding both a digit and an
+    uncategorised glyph answers yes, and the numeral this window would read is
+    therefore missing at least one of its digits.
+
+    Run PER BAND - numerator glyphs against numerator glyphs, denominator
+    against denominator - for the same reason _stacked_digit_pairs calls that
+    function per band. _group_digit_clusters walks its input in x order and
+    breaks a run whenever two neighbours are on different rows, so handing it
+    the whole window at once lets a denominator digit sitting between two
+    numerator glyphs in x split the numerator's own run in two and hide
+    exactly the adjacency being looked for. That is not hypothetical: it is
+    the geometry of the engraved fixture this was written against, where the
+    '8' of a 12/8 sits horizontally between the '1' and the glyph standing in
+    for the '2'.
+
+    Deliberately NOT every uncategorised glyph in the window. The window holds
+    the clef and the key signature too, and an ornament or an editorial mark
+    this decoder has not been calibrated for says nothing about whether the
+    meter's digits were all read - refusing on one of those would throw away
+    meters that are complete.
+    """
+    if not digits:
+        return None
+    unknown = [e for e in window if e.category is None]
+    if not unknown:
+        return None
+    for above in (True, False):
+        band = [e for e in digits + unknown if (e.yc < mid) is above]
+        for cluster in _group_digit_clusters(band):
+            if len(cluster) < 2:
+                continue
+            stray = [e for e in cluster if e.category is None]
+            if stray and any(e.category is not None for e in cluster):
+                return stray[0]
+    return None
+
+
 def _cluster_span(cluster):
     return min(e.x0 for e in cluster), max(e.x1 for e in cluster)
 
@@ -3450,6 +3515,22 @@ def _stacked_digit_pairs(window, mid):
     digits = [e for e in window if e.category in DIGIT_CATS]
     if len(digits) < 2:
         return [], f"only {len(digits)} time-signature digit glyph(s) found"
+
+    # A digit this decoder could not name, engraved among the ones it could
+    # (issue #129). Refused here rather than in _signature_from_window so
+    # BOTH readers of a printed meter stop: assembling a numeral out of the
+    # digits that happened to be recognised is exactly the confident wrong
+    # answer this module exists not to give, and _meter_left_edge would
+    # otherwise still hand decode_key_signature a boundary derived from half
+    # a numeral. Named in the reason, with the calibration key the gap can be
+    # looked up by, so the refusal is a report and not just a silence.
+    stray = _unreadable_digit_neighbour(digits, window, mid)
+    if stray is not None:
+        return [], (
+            f"{UNREADABLE_DIGIT_REASON} ({stray.family} {stray.calibration_key}), so the "
+            "meter would be assembled from only the digits that were recognised - treated "
+            "as not detected"
+        )
 
     num_digits = [e for e in digits if e.yc < mid]
     den_digits = [e for e in digits if e.yc >= mid]
@@ -3858,6 +3939,17 @@ def decode_key_signature(page, staff_top, staff_bottom, staff_x0, spacing=None):
     mid = (staff_top + staff_bottom) / 2
     meter_x0, why_no_meter = _meter_left_edge(band, mid)
     if meter_x0 is None:
+        # If `why_no_meter` is issue #129's refusal (an uncategorised glyph
+        # among the meter's digits, refused here through the same
+        # `_stacked_digit_pairs` both readers of a printed meter share), this
+        # path does NOT increment `meter_digits_unreadable` - that counter is
+        # only fed by the timeline built in tabextract from
+        # decode_time_signature/decode_meter_after_barline, and this window
+        # exists only to find the key signature's right-hand boundary. The
+        # reader still gets a warning, just this one rather than #129's:
+        # "no meter is printed..." below, naming why_no_meter. Zero library
+        # occurrences today (measured: `meter_digits_unreadable` is 0 across
+        # all 297 files), so it has not yet cost a reader the fact.
         return None, (
             "no meter is printed at the start of this staff, so there is no boundary "
             f"separating a key signature from an accidental on the first note ({why_no_meter})"

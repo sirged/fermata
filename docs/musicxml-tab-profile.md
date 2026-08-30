@@ -1350,9 +1350,53 @@ separately for the reason given in [Rule 14](#inferred-silence-rule-14): the
 measure of rests they hold does add up, so counting them as Rule 8 defects would
 make these figures disagree with the file, and *not* counting them anywhere let
 a score read as nothing at all report every measure conforming. They are folded
-into the reported confidence instead. That confidence also states any known
-defect below the threshold at which it changes label, so an unqualified
-high-confidence string means no measure was in question rather than not many.
+into the reported confidence instead.
+
+**What the rhythm confidence label means.** The label is the weaker of two
+independent judgements about the same transcription, and the string states
+both — the word first, then the clause the provenance earned, then the count.
+
+*How the durations were obtained.* `high` means every staff system's durations
+were decoded from the notehead, stem, flag, beam and rest glyphs the score
+itself is engraved with — none of it inferred from spacing. `medium` means at
+least one staff was read that way with something on it left unread — a glyph
+outside the decoder's calibrated vocabulary, a notehead whose stem it could
+not find, or a rest whose printed position did not say which value it was.
+An augmentation dot that could not be bound to the notehead or rest it
+belongs to (`dots_unassigned`) is disclosed on its own and does not gate this
+label: a staff otherwise fully decoded still reads `high` with dots left
+unbound, because a missing dot changes one note's length rather than the
+staff's provenance. `mixed` means at least one staff's
+durations were inferred from the horizontal gaps between noteheads instead;
+`low` means every staff was. A transcription with **any** spacing-derived staff
+can never present as fully read, however many other staves were decoded and
+however cleanly its measures add up, because spacing is only evidence about
+rhythm while the engraver's spacing is proportional — which a justified or
+hand-adjusted system is not.
+
+*Whether the measures add up.* `high` requires that **no** measure is
+unreliable: every measure sums to its meter under Rule 8, and every measure
+holds something that was read. `medium` covers any smaller fraction than a
+quarter; at or above a quarter the label is `low overall`.
+
+Rule 8 has no anacrusis model: a pickup measure — deliberately short of its
+meter, with the missing beats made up by the piece's final measure — is
+scored exactly like a mistake, so a demotion earned on bar 1 alone may just
+be a pickup rather than a misread bar.
+
+So an unqualified `high` is a claim a reader can check against the page, and it
+is the strongest one this profile makes: not "few measures were in question"
+but *none were*. Any known defect is stated whichever band it falls in — the
+count never lives only in the label — but below the top band the headline word
+moves too, because a word that contradicts the sentence under it is not a
+disclosure.
+
+The fraction is over `bars_defective` and `bars_unread` together, and each
+measure counts once. That is why `bars_defective` counts a measure once
+whichever way it is wrong: a measure over its meter in one voice and under it
+in another would otherwise count twice, and a measure that is both defective
+and unread would count twice again — either of which could put the fraction
+above 1 and make the bands meaningless.
 
 **How each measure's durations were obtained** is reported alongside them.
 `rhythm_provenance` counts staff systems by source: `glyphs` means flags,
@@ -1364,6 +1408,24 @@ was read from its engraving with something on it left unread. `spacing_bars`
 and `degraded_bars` are the measure numbers those systems produced. The counts
 say how much of a transcription is in question, and only the lists say which of
 it — which is the form of the fact a reader comparing against the PDF can use.
+
+`staves_spacing_rhythm` and `staves_degraded_rhythm` are those first two counts
+again, as fields of their own beside the measure lists they belong to.
+`rhythm_provenance` is produced by the extractor and is not stored, so a
+consumer reading a transcription back — which is every reading of it after the
+first — has these two and not that. They are what the two measure lists are
+counts of, and they are the pair that decides the provenance half of the rhythm
+label above.
+
+**A meter that was printed and refused** is reported by
+`meter_digits_unreadable`: printed time signatures the decoder declined because
+a glyph with no category sat among the digits it did read. This is not
+recoverable from `time_signature_source`, which describes how the meter that
+*is* reported was obtained and cannot say that a different, unread one is
+printed on the page. The refusal exists because assembling a numeral out of the
+digits that happened to be recognised produces a confident wrong meter: a 10/8
+whose `0` the decoder cannot name reads as 1/8, and every measure in the score
+is then barred against it.
 
 `notes_no_stem` is how many filled noteheads were read with no stem attached,
 across `staves_no_stem` notation staves. A note's flags and beams hang off its

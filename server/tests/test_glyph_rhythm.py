@@ -827,40 +827,84 @@ def test_maestro_digit0_flag32_and_rests_remain_an_acknowledged_gap():
     """The Maestro-side twin of the Opus test above. A Maestro GID carries no
     naming rule to extrapolate from (unlike Opus's uniF03X), so an entry
     absent from every library sample cannot be rule-derived - only guessed,
-    which this table's own discipline refuses to do. This is the residual
-    gap the module docstring now states plainly: a Finale 10/8 still decodes
-    as a confident (1, 8), because the '0' glyph resolves to no category and
-    is invisible to the digit clustering rather than blocking it."""
+    which this table's own discipline refuses to do.
+
+    The TABLE gap is still open and this pins that it is. What is no longer
+    open is the consequence: a Finale 10/8's unmapped '0' used to be invisible
+    to the digit clustering and let the '1' and '8' assemble into a confident
+    (1, 8); it now blocks the decode instead (issue #129 - see
+    test_a_finale_ten_eight_is_refused_rather_than_read_as_one_eight)."""
     assert "digit0" not in G.MAESTRO_GID_MAP.values()
     assert "flag32" not in G.MAESTRO_GID_MAP.values()
     assert "rest16" not in G.MAESTRO_GID_MAP.values()
     assert "rest32" not in G.MAESTRO_GID_MAP.values()
 
 
-def test_a_finale_ten_eight_still_silently_loses_its_zero():
-    """Documents, rather than fixes, the residual Maestro gap: the digit0 GID
-    genuinely has no library evidence to confirm (see MAESTRO_GID_MAP's
-    comment), so this reproduces the exact wrong-not-refused shape the
-    review on issue #84 measured, using the same category-level mechanism
-    test_opus_12_8_assembles_once_digit1_exists proves fixed for Opus. If
-    this ever starts returning (10, 8) or None, MAESTRO_GID_MAP grew a real,
-    library-verified digit0 entry and this test's docstring is stale, not
-    the assertion."""
+def test_a_finale_ten_eight_is_refused_rather_than_read_as_one_eight():
+    """Issue #129, and the assertion this test used to make inverted.
+
+    The digit0 GID still has no library evidence to confirm (see
+    MAESTRO_GID_MAP's comment), so a Finale 10/8's '0' still resolves to no
+    category - that gap is unchanged and the sibling test above still pins it.
+    What changed is what happens next. The unmapped glyph used to be simply
+    dropped from the meter window, leaving the '1' and the '8' to assemble
+    among themselves, so this returned a confident (1, 8) labelled as read
+    directly from the digits. It now refuses, and names the glyph it could not
+    read.
+
+    Weakening _unreadable_digit_neighbour - dropping the per-band split, or
+    only refusing when the stray glyph is the FIRST in its run - puts (1, 8)
+    back and turns this red."""
     mid = 224.0
     window = [
         _ev("digit1", 60.0, 212.0, 66.0, 220.0),
-        _ev(None, 66.2, 212.0, 74.0, 220.0),         # the unmapped '0'
+        _ev(None, 66.2, 212.0, 74.0, 220.0, gid=99),  # the unmapped '0'
         _ev("digit8", 62.0, 226.0, 70.0, 234.0),
     ]
     ts, reason = G._signature_from_window(window, mid)
-    # The wrong, confident answer issue #84 measured - not the desired one.
-    # A future fix (refusing whenever an uncategorised glyph sits among the
-    # digits that WERE read, per the issue's review) should change this to
-    # (None, ...); until then this pins the actual, documented behaviour.
-    assert ts == (1, 8), (
-        f"expected the documented (1, 8) mis-read - got {ts!r} ({reason!r}); "
-        "if this changed, MAESTRO_GID_MAP or the refusal behaviour moved and "
-        "this test's docstring needs updating too")
+    assert ts is None, f"a partial digit read must not become a meter - got {ts!r}"
+    assert reason.startswith(G.UNREADABLE_DIGIT_REASON), reason
+    # and it says WHICH glyph, by the key a calibration table would be keyed
+    # on, so the gap can actually be looked up later
+    assert "Maestro" in reason and "99" in reason, reason
+
+
+def test_an_unrecognised_glyph_beside_a_meter_does_not_refuse_it():
+    """The other half of the rule, and the reason it is not "any uncategorised
+    glyph in the window". The meter's window also holds the clef and the key
+    signature, and reaches as far as the first thing that sounds - so an
+    ornament, an editorial mark or any other glyph outside the calibrated
+    vocabulary routinely sits in it. Refusing on one of those would throw away
+    meters whose digits were all read perfectly well.
+
+    Replacing the per-band cluster walk with "is there any uncategorised glyph
+    in this window" turns this red."""
+    mid = 224.0
+    window = [
+        _ev("digit3", 60.0, 212.0, 66.0, 220.0),
+        _ev("digit4", 60.0, 226.0, 66.0, 234.0),
+        # far to the right, where a note's articulation would be - nowhere an
+        # engraver would put another digit of the numerator
+        _ev(None, 140.0, 212.0, 148.0, 220.0),
+    ]
+    ts, _reason = G._signature_from_window(window, mid)
+    assert ts == (3, 4)
+
+
+def test_an_unrecognised_glyph_among_the_denominator_refuses_too():
+    """The refusal is per band, and the denominator is a numeral like any
+    other: a 4/16 whose '1' is unmapped assembles into a confident 4/6
+    otherwise, which is a usable denominator and so clears every other guard
+    in this module."""
+    mid = 224.0
+    window = [
+        _ev("digit4", 60.0, 212.0, 66.0, 220.0),
+        _ev(None, 58.0, 226.0, 64.0, 234.0),         # the unmapped '1'
+        _ev("digit6", 64.2, 226.0, 70.2, 234.0),
+    ]
+    ts, reason = G._signature_from_window(window, mid)
+    assert ts is None, f"got {ts!r}"
+    assert reason.startswith(G.UNREADABLE_DIGIT_REASON), reason
 
 
 # ---------------------------------------------------------------------------

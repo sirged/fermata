@@ -405,7 +405,16 @@ BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
             # And for issue #152's lost-system counter, in the same change
             # as _BAR_KEYS and the confidence_json write - the reload path
             # exercised here rather than assumed.
-            "systems_unread")
+            "systems_unread",
+            # staves_spacing_rhythm / staves_degraded_rhythm (issue #117):
+            # the counts belonging to spacing_bars / degraded_bars below,
+            # which have round-tripped since they existed while the counts
+            # lived only in `rhythm_provenance` - a field this application
+            # neither stores nor returns.
+            "staves_spacing_rhythm", "staves_degraded_rhythm",
+            # meter_digits_unreadable (issue #129): printed meters refused
+            # because a glyph with no category sat among their digits.
+            "meter_digits_unreadable")
 # Which bars, and how much silence - the figures that only exist as data. The
 # warning prose caps its bar list, and the profile document promises a consumer
 # that `inferred_rest_quarters` is the sum of the `<forward>` durations in the
@@ -493,6 +502,15 @@ def test_which_bars_were_not_read_from_glyphs_survives_a_reload(
     assert posted["spacing_bars"] == list(range(1, 13))
     assert fetched["spacing_bars"] == posted["spacing_bars"]
     assert fetched["degraded_bars"] == []
+    # ...and the COUNT beside the list, asserted as a LITERAL rather than
+    # against the other side of the same stored row (issue #117, and the #146
+    # lesson about what a `posted[key] == fetched[key]` loop cannot catch: an
+    # unwritten field compares None == None and passes). This edition is
+    # tab-only, so both of its staff systems had to guess their durations from
+    # the horizontal gaps between noteheads.
+    assert posted["staves_spacing_rhythm"] == 2, posted["staves_spacing_rhythm"]
+    assert fetched["staves_spacing_rhythm"] == 2
+    assert fetched["staves_degraded_rhythm"] == 0
     assert fetched["notes_no_stem"] == 0, "no notation staff here to read a stem off"
     assert fetched["staves_no_stem"] == 0
     assert fetched["dots_unassigned"] == 0, "no notation staff here to read a dot off either"
@@ -555,6 +573,60 @@ def test_a_shared_unison_digit_survives_a_reload(app_env, engraved, monkeypatch,
 
     assert posted["unison_digits_shared"] == 32
     assert fetched["unison_digits_shared"] == 32
+
+
+def test_an_incompletely_read_staff_survives_a_reload(app_env, engraved, monkeypatch,
+                                                      insert_score):
+    """`staves_spacing_rhythm`'s sibling (issue #117), against the one
+    committed fixture where it is non-zero rather than against a score where
+    it is 0 and a dropped field would be indistinguishable from success.
+
+    harmonics_dense has one notation staff the decoder read from the engraving
+    with something on it left unread; the four bars that staff produced are
+    already carried as `degraded_bars`, and until now the count they are a
+    count OF lived only in `rhythm_provenance`, which nothing stores."""
+    pdf = engraved("harmonics_dense")
+    monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    fetched = api.get_transcription(score_id)
+
+    assert posted["staves_degraded_rhythm"] == 1, posted["staves_degraded_rhythm"]
+    assert fetched["staves_degraded_rhythm"] == 1
+    assert fetched["degraded_bars"] == [1, 2, 3, 4]
+    assert fetched["staves_spacing_rhythm"] == 0
+
+
+def test_a_refused_meter_digit_survives_a_reload(app_env, engraved, monkeypatch, insert_score):
+    """meter_digits_unreadable (issue #129) round trips against the one
+    fixture where it is non-zero, and as a LITERAL - the #146 lesson again: a
+    `posted[key] == fetched[key]` loop over a field nothing wrote compares
+    None == None and passes.
+
+    The fixture is `multidigit_meter` re-cut so the '2' of its 12/8 is a SMuFL
+    codepoint the decoder has no category for - what a Finale subset with an
+    unmapped GID looks like from this side. Before the refusal, the '1' and
+    the '8' assembled among themselves and the score reported a confident
+    `(1, 8)` at `time_signature_source` "glyph-decoded"; both halves of that
+    are asserted here, because the counter is only worth storing if the meter
+    it qualifies actually declined."""
+    pdf = engraved("unmapped_meter_digit")
+    monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    fetched = api.get_transcription(score_id)
+
+    assert posted["meter_digits_unreadable"] == 1, posted["meter_digits_unreadable"]
+    assert fetched["meter_digits_unreadable"] == 1
+    # The refusal itself, not just its count: no confident partial meter.
+    assert fetched["time_signature"] != [1, 8], "the mis-read issue #129 is about"
+    assert fetched["time_signature_source"].startswith("not detected")
+    assert any("unrecognised glyph sits among the time-signature digits" in w
+               for w in fetched["warnings"]), fetched["warnings"]
 
 
 def _confidence_json_keys() -> set:

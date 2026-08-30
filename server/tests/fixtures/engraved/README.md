@@ -79,14 +79,15 @@ transcription bytes to feed the real alphaTab importer through.
 | `mid_system_key_and_meter_change` | four sharps printed behind a barline, pushing a mid-system meter change's digits past the flat reach a mid-system reader alone needs — the mid-system counterpart of `four_sharps_in_three_four` |
 | `multidigit_meter` | a 12/8 meter — a numerator that needs two digit glyphs stacked at one x column, which is exactly the shape a missing digit in a font's calibration table (issue #84) turns into a confident wrong meter instead of a detected gap |
 
-Two fixtures are **synthesised** rather than engraved, because no engraver
-produces them on purpose. The script builds both, and their `/Creator` says
-so.
+Three fixtures are **synthesised** rather than engraved, because no engraver
+produces them on purpose. The script builds all three, and their `/Creator`
+says so.
 
 | fixture | shape it covers |
 | --- | --- |
 | `raster_scan` | `notation_and_tab` flattened to an image — refused as a scan |
 | `fake_music_font` | a page whose "music font" is an unembedded text font drawing the letters A–H, with a ToUnicode CMap claiming they are SMuFL music symbols as its only credential — refused |
+| `unmapped_meter_digit` | `multidigit_meter` with one entry of its music font's ToUnicode CMap rewritten, so the `2` of its 12/8 draws as a SMuFL codepoint outside the decoder's calibrated tables — what a Finale subset with an unmapped glyph ID, or a Sibelius one with an unmapped PUA name, looks like from this side (issue #129). The engraving, the outlines and every coordinate are the original's; only that one mapping differs. Before the refusal it read as a confident 1/8 "read directly from the time-signature digit glyphs" |
 
 ## What they cannot cover
 
