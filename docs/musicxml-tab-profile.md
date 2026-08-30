@@ -1357,11 +1357,16 @@ independent judgements about the same transcription, and the string states
 both — the word first, then the clause the provenance earned, then the count.
 
 *How the durations were obtained.* `high` means every staff system's durations
-were decoded from the notehead, stem, flag, beam, dot and rest glyphs the score
-itself is engraved with. `medium` means at least one staff was read that way
-with something on it left unread — a glyph outside the decoder's calibrated
-vocabulary, a notehead whose stem it could not find, or a rest whose printed
-position did not say which value it was. `mixed` means at least one staff's
+were decoded from the notehead, stem, flag, beam and rest glyphs the score
+itself is engraved with — none of it inferred from spacing. `medium` means at
+least one staff was read that way with something on it left unread — a glyph
+outside the decoder's calibrated vocabulary, a notehead whose stem it could
+not find, or a rest whose printed position did not say which value it was.
+An augmentation dot that could not be bound to the notehead or rest it
+belongs to (`dots_unassigned`) is disclosed on its own and does not gate this
+label: a staff otherwise fully decoded still reads `high` with dots left
+unbound, because a missing dot changes one note's length rather than the
+staff's provenance. `mixed` means at least one staff's
 durations were inferred from the horizontal gaps between noteheads instead;
 `low` means every staff was. A transcription with **any** spacing-derived staff
 can never present as fully read, however many other staves were decoded and
@@ -1373,6 +1378,11 @@ hand-adjusted system is not.
 unreliable: every measure sums to its meter under Rule 8, and every measure
 holds something that was read. `medium` covers any smaller fraction than a
 quarter; at or above a quarter the label is `low overall`.
+
+Rule 8 has no anacrusis model: a pickup measure — deliberately short of its
+meter, with the missing beats made up by the piece's final measure — is
+scored exactly like a mistake, so a demotion earned on bar 1 alone may just
+be a pickup rather than a misread bar.
 
 So an unqualified `high` is a claim a reader can check against the page, and it
 is the strongest one this profile makes: not "few measures were in question"
