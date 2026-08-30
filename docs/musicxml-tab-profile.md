@@ -1381,10 +1381,12 @@ count never lives only in the label — but below the top band the headline word
 moves too, because a word that contradicts the sentence under it is not a
 disclosure.
 
-The same rule fixes the boundaries the other way round. `bars_defective`
-counting a measure once whichever way it is wrong is what makes the fraction
-comparable to `bars_measured` at all; a measure that is both defective and
-unread counts once, so the fraction can never exceed 1.
+The fraction is over `bars_defective` and `bars_unread` together, and each
+measure counts once. That is why `bars_defective` counts a measure once
+whichever way it is wrong: a measure over its meter in one voice and under it
+in another would otherwise count twice, and a measure that is both defective
+and unread would count twice again — either of which could put the fraction
+above 1 and make the bands meaningless.
 
 **How each measure's durations were obtained** is reported alongside them.
 `rhythm_provenance` counts staff systems by source: `glyphs` means flags,
