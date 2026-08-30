@@ -27,7 +27,9 @@ straight to SQL proves the row exists while proving nothing about whether the
 library shows it.
 """
 
+import errno
 import time
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -1072,6 +1074,402 @@ def test_a_folder_name_the_filesystem_refuses_is_a_422_not_a_500(client, monkeyp
 
     assert res.status_code == 422
     assert "would not take that folder name" in res.json()["detail"]
+
+
+def test_a_refused_restore_puts_the_file_back_in_the_trash(client, library, add_score):
+    """The one write path that had no filesystem rollback (adversarial review
+    F1), and the stranding it caused.
+
+    _relink_moved_file refuses a file whose bytes no longer match the row - the
+    right answer - but the file has already MOVED by then, and write_tx rolls
+    back only the database. So the trash listed a score whose file was not in
+    the trash: every later restore refused for the same reason, the next scan
+    filed the orphaned file as a brand new score with none of the history (a
+    deleted row is correctly excluded from the relink, so it could not even be
+    adopted back), and the refusal's own advice - scan and try again - was what
+    caused that.
+    """
+    score_id = add_score("Inbox/Study.pdf")
+    client.post(f"/api/scores/{score_id}/practice", json={"seconds": 1500})
+    trashed = client.delete(f"/api/scores/{score_id}").json()
+    trash_file = library / trashed["trashed_to"]
+    # Something rewrites the trashed file - a sync client, a hand edit.
+    trash_file.write_bytes(b"different music entirely")
+
+    res = client.post(f"/api/trash/{score_id}/restore")
+
+    assert res.status_code == 409
+    assert "different music" in res.json()["detail"]
+    # THE FILE IS BACK IN THE TRASH, byte for byte as it was when the restore
+    # was attempted - not left sitting in the library with nothing naming it.
+    assert trash_file.read_bytes() == b"different music entirely"
+    assert not (library / "Inbox/Study.pdf").exists()
+    # And the row is exactly as it was: still in the trash, still pointing at
+    # the trashed file, still holding the practice.
+    row = client.get(f"/api/scores/{score_id}").json()
+    assert row["path"] == trashed["trashed_to"]
+    assert row["deleted_at"] is not None
+    assert row["deleted_from"] == "Inbox/Study.pdf"
+    assert row["practice_seconds"] == 1500
+    assert [s["id"] for s in client.get("/api/trash").json()] == [score_id]
+
+    # Not stranded: put the score's own bytes back and the restore works.
+    trash_file.write_bytes(FIXTURE)
+    restored = client.post(f"/api/trash/{score_id}/restore")
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["restored_to"] == "Inbox/Study.pdf"
+    assert client.get(f"/api/scores/{score_id}").json()["practice_seconds"] == 1500
+
+
+def test_deleting_a_score_whose_file_is_already_gone_says_no_file_was_moved(
+    client, library, add_score
+):
+    """Adversarial review F2. `if source.is_file()` skipped the move and the
+    response reported `trashed_to` as fact anyway - a path with nothing at it -
+    after which the score could never be restored, only destroyed, taking its
+    tags and transcription with it. It is still deleted (a score whose file has
+    gone is the case where deleting is MOST obviously the right answer), and the
+    response no longer claims a file went anywhere.
+    """
+    score_id = add_score("Inbox/Study.pdf")
+    client.patch(f"/api/scores/{score_id}", json={"tags": ["keep me"]})
+    client.post(f"/api/scores/{score_id}/practice", json={"seconds": 900})
+    (library / "Inbox/Study.pdf").unlink()
+
+    body = client.delete(f"/api/scores/{score_id}").json()
+
+    assert body["file_moved"] is False
+    assert body["trashed_to"] is None
+    assert body["deleted_from"] == "Inbox/Study.pdf"
+    assert body["practice_sessions_kept"] == 1
+    assert body["tags_kept"] == 1
+    # Out of the library, in the trash, and the trash folder holds no file for
+    # it - because there was none.
+    assert paths(client) == set()
+    assert [s["id"] for s in client.get("/api/trash").json()] == [score_id]
+    assert not any((library / scanner.TRASH_DIR_NAME).rglob("*.pdf"))
+
+
+def test_such_a_score_still_comes_back_out_of_the_trash_marked_missing(
+    client, library, add_score
+):
+    """The other half of F2: refusing to restore it was the stranding.
+
+    It returns to the library in exactly the state a score whose file has gone
+    is supposed to be in - present, flagged missing, everything still attached -
+    from which putting the file back and scanning recovers it with no further
+    action. The same path covers a trash folder somebody emptied by hand, which
+    docs/deployment.md says they may.
+    """
+    score_id = add_score("Inbox/Study.pdf")
+    client.post(f"/api/scores/{score_id}/practice", json={"seconds": 900})
+    (library / "Inbox/Study.pdf").unlink()
+    client.delete(f"/api/scores/{score_id}")
+
+    res = client.post(f"/api/trash/{score_id}/restore")
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    assert body["file_restored"] is False
+    assert body["restored_to"] == "Inbox/Study.pdf"
+    row = client.get(f"/api/scores/{score_id}").json()
+    assert row["deleted_at"] is None and row["deleted_from"] is None
+    assert row["missing_since"] is not None
+    assert row["practice_seconds"] == 900
+    assert paths(client) == {"Inbox/Study.pdf"}
+    assert client.get("/api/trash").json() == []
+
+    # ...and putting the file back really does recover it, with no action.
+    (library / "Inbox/Study.pdf").write_bytes(FIXTURE)
+    scanner._scan()
+    assert client.get(f"/api/scores/{score_id}").json()["missing_since"] is None
+
+
+def test_the_trash_folder_cannot_be_reached_by_a_trailing_dot(client, library, add_score):
+    """Adversarial review F3. Windows silently strips a trailing dot from every
+    path component, so ".fermata-trash." passes the trash-folder check on its
+    text and lands, on disk, INSIDE the trash - where scans skip it (so the
+    score is marked missing) and where docs/deployment.md tells people they may
+    delete files by hand.
+    """
+    score_id = add_score("Inbox/Study.pdf")
+
+    res = client.post(f"/api/scores/{score_id}/move", json={"folder": ".fermata-trash."})
+
+    assert res.status_code == 422, res.text
+    assert "space or a dot" in res.json()["detail"]
+    assert (library / "Inbox/Study.pdf").read_bytes() == FIXTURE
+    assert not (library / scanner.TRASH_DIR_NAME).exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("folder", "Classical."),
+        ("folder", "Classical "),
+        ("folder", "Deep/Nested."),
+        ("filename", "Study.pdf."),
+        ("filename", "Study.pdf "),
+    ],
+)
+def test_a_name_the_filesystem_would_silently_rename_is_refused(
+    client, library, add_score, field, value
+):
+    """The benign half of the same rule: a trailing dot or space anywhere makes
+    the path Fermata recorded and the path on disk two different places."""
+    score_id = add_score("Inbox/Study.pdf")
+
+    res = client.post(f"/api/scores/{score_id}/move", json={field: value})
+
+    assert res.status_code == 422, res.text
+    assert "space or a dot" in res.json()["detail"]
+    assert client.get(f"/api/scores/{score_id}").json()["path"] == "Inbox/Study.pdf"
+
+
+def test_a_filename_that_opens_a_data_stream_is_refused(client, library, add_score):
+    """Adversarial review F4. "evil:stream.pdf" is not a file name on NTFS; it
+    is a hidden alternate data stream attached to a file called "evil". Every
+    check this code makes used to pass - the move succeeded, and the content
+    hash read back THROUGH the stream matched - while the library got a 0-byte
+    "evil" the scanner cannot read, and any copy that does not preserve streams
+    drops the music silently.
+    """
+    score_id = add_score("Inbox/Study.pdf")
+
+    res = client.post(f"/api/scores/{score_id}/move", json={"filename": "evil:stream.pdf"})
+
+    assert res.status_code == 422, res.text
+    # WHICH guard refused, not merely that something did. Letting ':' back into
+    # the segment rule left this test green: the name then reached the
+    # filesystem, Windows refused the rename, and F5's wrapper answered 422 with
+    # a message that also happened to contain a colon. That is the overlapping
+    # guard this file has already been bitten by twice - and here the two are
+    # not equivalent at all, because on a filesystem where ':' is an ordinary
+    # character (ext4, and so CI) nothing would have refused it at all.
+    assert "hidden data stream" in res.json()["detail"]
+    assert client.get(f"/api/scores/{score_id}").json()["path"] == "Inbox/Study.pdf"
+    assert (library / "Inbox/Study.pdf").read_bytes() == FIXTURE
+    assert not (library / "Inbox" / "evil").exists()
+    assert [p.name for p in (library / "Inbox").iterdir()] == ["Study.pdf"]
+
+
+@pytest.mark.parametrize("bad", ['a<b.pdf', 'a>b.pdf', 'a"b.pdf', "a|b.pdf", "a?b.pdf", "a*b.pdf"])
+def test_the_other_characters_windows_will_not_take_are_refused(client, add_score, bad):
+    """Refused rather than left to be a 500 from inside a rename on Windows and
+    an uncopyable filename on Linux - one answer on both."""
+    score_id = add_score("Inbox/Study.pdf")
+
+    res = client.post(f"/api/scores/{score_id}/move", json={"filename": bad})
+
+    assert res.status_code == 422, res.text
+    assert client.get(f"/api/scores/{score_id}").json()["path"] == "Inbox/Study.pdf"
+
+
+def test_a_filesystem_refusing_a_move_is_a_422_not_a_500(
+    client, library, add_score, monkeypatch
+):
+    """Adversarial review F5: create_folder answered 422 for a name the
+    filesystem would not take, and the move path answered 500 for the same
+    thing - a reserved name, a path over the length limit, a read-only mount, a
+    disk that filled up mid-batch. The rollback was already right; only the
+    status and the message were wrong."""
+    score_id = add_score("Inbox/Study.pdf")
+    real_rename = Path.rename
+
+    def refuse(self, target):
+        raise OSError(errno.EACCES, "Access is denied")
+
+    monkeypatch.setattr(Path, "rename", refuse)
+    res = client.post(f"/api/scores/{score_id}/move", json={"folder": "Classical"})
+
+    assert res.status_code == 422, res.text
+    assert "would not accept that path" in res.json()["detail"]
+    monkeypatch.setattr(Path, "rename", real_rename)
+    # Nothing moved, and the score is still usable afterwards.
+    assert (library / "Inbox/Study.pdf").read_bytes() == FIXTURE
+    assert client.get(f"/api/scores/{score_id}").json()["path"] == "Inbox/Study.pdf"
+    assert client.post(
+        f"/api/scores/{score_id}/move", json={"folder": "Classical"}
+    ).status_code == 200
+
+
+def test_the_cross_device_fallback_cannot_overwrite_what_appeared_in_the_gap(
+    client, library, add_score, monkeypatch
+):
+    """The hole the F5 fix closed on the way past.
+
+    shutil.move copies and unlinks, and copying onto an existing destination
+    OVERWRITES it - so catching every OSError and falling through to it turned
+    the one case rule 3 forbids into a silent overwrite. Simulated exactly: the
+    destination appears between the check and the rename, and the rename then
+    reports EXDEV (a bind mount inside a bind mount), which is the only error
+    the fallback is now allowed to answer.
+    """
+    score_id = add_score("Inbox/Study.pdf")
+    (library / "Classical").mkdir()
+
+    def appear_then_exdev(self, target):
+        Path(target).write_bytes(b"somebody else's file")
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(Path, "rename", appear_then_exdev)
+    res = client.post(f"/api/scores/{score_id}/move", json={"folder": "Classical"})
+
+    assert res.status_code == 409, res.text
+    assert (library / "Classical/Study.pdf").read_bytes() == b"somebody else's file"
+    assert (library / "Inbox/Study.pdf").read_bytes() == FIXTURE
+    assert client.get(f"/api/scores/{score_id}").json()["path"] == "Inbox/Study.pdf"
+
+
+def test_a_score_can_be_renamed_to_a_different_capitalisation(client, library, add_score):
+    """Adversarial review F7. On NTFS - the deployment platform - "Toccata.pdf"
+    and "toccata.pdf" are one file, so correcting a score's capitalisation asks
+    to move a file onto itself; the existence check refused it and blamed the
+    score for being where it is."""
+    score_id = add_score("Classical/Toccata.pdf")
+
+    res = client.post(f"/api/scores/{score_id}/move", json={"filename": "toccata.pdf"})
+
+    assert res.status_code == 200, res.text
+    assert res.json()["score"]["path"] == "Classical/toccata.pdf"
+    assert (library / "Classical/toccata.pdf").read_bytes() == FIXTURE
+    assert client.get(f"/api/scores/{score_id}").json()["id"] == score_id
+
+
+def test_a_file_is_only_in_its_own_way_when_it_really_is_its_own_file(library):
+    """_same_file asked of the filesystem, not of the path text - which is what
+    makes the case-only rename above work on a case-insensitive filesystem and
+    still refuses a genuine collision on any filesystem."""
+    (library / "a.pdf").write_bytes(b"one")
+    (library / "b.pdf").write_bytes(b"two")
+
+    assert api._same_file(library / "a.pdf", library / "a.pdf") is True
+    assert api._same_file(library / "a.pdf", library / "b.pdf") is False
+    # Not there at all is not "the same file", which is what every caller needs.
+    assert api._same_file(library / "a.pdf", library / "gone.pdf") is False
+
+
+# ---------------------------------------------------------------------------
+# What a deleted score may still be asked for (adversarial review F6).
+# ---------------------------------------------------------------------------
+
+
+def test_a_deleted_score_refuses_every_write_that_means_working_on_it(
+    client, library, add_score
+):
+    """Each of these means "work on this piece", nothing in the interface offers
+    any of them for a deleted score, and accepting one leaves practice or an
+    edit attached to something that is not in the library. Refused with 409 and
+    a sentence naming the fix - see api._live_score_row."""
+    score_id = add_score("Inbox/Study.pdf")
+    client.delete(f"/api/scores/{score_id}")
+
+    refused = {
+        "patch": client.patch(f"/api/scores/{score_id}", json={"title": "Renamed"}),
+        "practice on the score path": client.post(
+            f"/api/scores/{score_id}/practice", json={"seconds": 600}
+        ),
+        "practice on the general path": client.post(
+            "/api/practice/sessions", json={"seconds": 600, "score_id": score_id}
+        ),
+        "a goal about it": client.post(
+            "/api/practice/goals",
+            json={"scope": "score", "score_id": score_id, "target_days": 3},
+        ),
+        "transcribe": client.post(f"/api/scores/{score_id}/transcribe"),
+        "save a transcription": client.put(
+            f"/api/scores/{score_id}/transcription", json={"content": '\\title "x"\n.\n:4 0.1 |'}
+        ),
+        "throw a transcription away": client.delete(f"/api/scores/{score_id}/transcription"),
+    }
+    for what, res in refused.items():
+        assert res.status_code == 409, f"{what}: {res.status_code} {res.text}"
+        assert "in the trash" in res.json()["detail"], what
+
+    # Nothing landed: no practice, no goal, no title change.
+    assert client.get(f"/api/scores/{score_id}").json()["title"] == "Study"
+    assert client.get(f"/api/scores/{score_id}/practice").json()["session_count"] == 0
+    assert client.get("/api/practice/goals").json()["goals"] == []
+
+
+def test_a_deleted_score_can_still_be_read_and_looked_at(client, library, add_score):
+    """The other half of the same policy, and it is deliberate rather than an
+    oversight: the trash view is built out of these responses, and being able to
+    open a score - and read the transcription you spent an evening correcting -
+    before destroying it for ever is the point of a trash you can change your
+    mind from."""
+    score_id = add_score("Inbox/Study.pdf")
+    client.put(
+        f"/api/scores/{score_id}/transcription", json={"content": '\\title "kept"\n.\n:4 0.1 |'}
+    )
+    client.post(f"/api/scores/{score_id}/practice", json={"seconds": 1200})
+    client.delete(f"/api/scores/{score_id}")
+
+    assert client.get(f"/api/scores/{score_id}").status_code == 200
+    assert client.get(f"/api/scores/{score_id}/practice").json()["practice_seconds"] == 1200
+    transcription = client.get(f"/api/scores/{score_id}/transcription")
+    assert transcription.status_code == 200
+    assert transcription.json()["content"] == '\\title "kept"\n.\n:4 0.1 |'
+    served = client.get(f"/api/scores/{score_id}/file")
+    assert served.status_code == 200
+    assert served.content == FIXTURE
+
+
+def test_a_deleted_score_still_counts_in_the_practice_figures_and_says_it_is_deleted(
+    client, library, add_score
+):
+    """Practice history is sacred, so the hours stay counted and the piece stays
+    named - dropping it would leave these breakdowns not adding up to the totals
+    beside them. What was wrong is that a dashboard named a piece and gave a
+    client every reason to link to it, into a library that no longer holds it.
+    The fact travels with the row instead, the same shape as `score_missing` on
+    a session."""
+    kept = add_score("Inbox/Kept.pdf", content=b"kept")
+    doomed = add_score("Inbox/Doomed.pdf", content=b"doomed")
+    client.post(f"/api/scores/{kept}/practice", json={"seconds": 600})
+    client.post(f"/api/scores/{doomed}/practice", json={"seconds": 1800})
+    client.delete(f"/api/scores/{doomed}")
+
+    summary = client.get("/api/practice/summary").json()
+    by_id = {row["id"]: row for row in summary["top_scores"]}
+    assert by_id[doomed]["practice_seconds"] == 1800
+    assert by_id[doomed]["deleted"] is True
+    assert by_id[kept]["deleted"] is False
+    # The totals still add up, which is why the row is not simply dropped.
+    assert summary["week_seconds"] == 2400
+    assert sum(r["practice_seconds"] for r in summary["top_scores"]) == 2400
+
+    history = client.get("/api/practice/history").json()
+    by_score = {row["score_id"]: row for row in history["by_score"]}
+    assert by_score[doomed]["seconds"] == 1800
+    assert by_score[doomed]["deleted"] is True
+    assert by_score[kept]["deleted"] is False
+
+
+def test_an_upload_is_not_held_against_a_change_and_the_scan_it_starts_is(
+    client, library, add_score
+):
+    """Adversarial review F8, and the exemption stated as a test rather than
+    only as a comment.
+
+    Upload only ever CREATES a file at a path nothing claims, so it cannot
+    invalidate a scan's listing the way a move does - and holding it would
+    refuse the second of two uploads in a row for the scan the first one
+    started. What is still true while a change is being applied is that no SCAN
+    runs, which is the property the interlock is actually for.
+    """
+    with scanner.hold_library_still():
+        res = client.post(
+            "/api/upload?folder=Uploads",
+            files={"file": ("new.pdf", b"%PDF-1.4 arriving mid-move", "application/pdf")},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["saved"].endswith("new.pdf")
+        # The scan the upload asked for was declined, so nothing walked the
+        # library while it was being changed.
+        assert scanner.scan_status()["scanning"] is False
+
+    assert (library / "Uploads/new.pdf").is_file()
 
 
 def test_a_score_that_is_not_in_the_trash_cannot_be_restored_or_destroyed(

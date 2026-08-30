@@ -749,10 +749,17 @@ def time_spent(
     did I work on" rather than a bucket labelled "no piece" that a reader has
     to know to ignore.
     """
+    # `deleted` travels with the row (#56). A score somebody deleted is STILL
+    # listed here, because the hours were spent and dropping it would leave this
+    # breakdown not adding up to the total beside it - the same reason
+    # `scores_worked` below exists. What it must not do is read as a piece that
+    # is in the library: a client can render it as gone, and stop linking to it,
+    # only if it is told.
     by_score = conn.execute(
         f"""SELECT p.score_id, s.title,
                    SUM(p.seconds) AS seconds, COUNT(*) AS sessions,
-                   MAX({LOCAL_DATE_SQL}) AS last_practised
+                   MAX({LOCAL_DATE_SQL}) AS last_practised,
+                   s.deleted_at IS NOT NULL AS deleted
               FROM practice_sessions p JOIN scores s ON s.id = p.score_id
              WHERE p.owner = ? AND {LOCAL_DATE_SQL} BETWEEN ? AND ?
           GROUP BY p.score_id ORDER BY seconds DESC, s.title LIMIT ?""",
@@ -776,7 +783,7 @@ def time_spent(
         (owner, start, end),
     ).fetchall()
     return {
-        "by_score": [dict(r) for r in by_score],
+        "by_score": [{**dict(r), "deleted": bool(r["deleted"])} for r in by_score],
         "by_activity": [dict(r) for r in by_activity],
         "scores_worked": scores_worked,
         "by_score_truncated": scores_worked > len(by_score),

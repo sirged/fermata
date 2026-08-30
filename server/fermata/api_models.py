@@ -258,6 +258,11 @@ class TopScoreOut(BaseModel):
     id: int
     title: str
     practice_seconds: int
+    # True when this score has been deleted (#56). It is still counted - the
+    # hours were spent, and dropping it would stop these figures adding up to
+    # the week beside them - but it is no longer in the library, so a client
+    # must not offer it as somewhere to go. See api.practice_summary.
+    deleted: bool
 
 
 class PracticeSummaryOut(BaseModel):
@@ -292,6 +297,8 @@ class ByScoreOut(BaseModel):
     seconds: int
     sessions: int
     last_practised: str | None
+    # Same fact, same reason as TopScoreOut.deleted - see practice.time_spent.
+    deleted: bool
 
 
 class ByActivityOut(BaseModel):
@@ -718,7 +725,12 @@ class ScoreDeleteOut(BaseModel):
     deleted: int
     title: str
     deleted_from: str
-    trashed_to: str
+    # Null when there was no file to move - a score whose file had already gone
+    # can still be deleted, and saying it was "trashed to" somewhere would be a
+    # path with nothing at it. `file_moved` is the same fact as a flag, stated
+    # so a client branches on a boolean rather than on a null.
+    trashed_to: str | None
+    file_moved: bool
     practice_sessions_kept: int
     goals_kept: int
     tags_kept: int
@@ -739,6 +751,10 @@ class ScoreRestoreOut(BaseModel):
     restored: int
     restored_from: str
     restored_to: str
+    # False when there was no file in the trash to bring back - the score
+    # returns to the library flagged as missing rather than being stranded in
+    # the trash for ever. See api.restore_score.
+    file_restored: bool
     score: ScoreOut
 
 

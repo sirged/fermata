@@ -323,6 +323,38 @@ test("destroying a score takes two presses and says what it destroys", async ({
   expect(survivor.score_id).toBeNull();
 });
 
+test("practice on a deleted score still counts, and stops being a way into it", async ({
+  page,
+  request,
+}) => {
+  // Issue #56, adversarial review F6. The hours were spent, so the piece stays
+  // in the by-piece breakdown and its totals still add up - dropping it would
+  // leave that column not adding up to the total beside it. What it must stop
+  // being is a LINK, into a library that no longer holds the score.
+  const score = await upload(request, "organise-history.musicxml");
+  const logged = await request.post(`/api/scores/${score.id}/practice`, {
+    data: { seconds: 2700, note: "before it went" },
+  });
+  expect(logged.ok(), await logged.text()).toBe(true);
+
+  // While it is in the library, it is an ordinary link.
+  await page.goto("/#/practice");
+  const row = page.locator(".by-score li", { hasText: score.title });
+  await expect(row.locator("a")).toHaveAttribute("href", `#/score/${score.id}`);
+
+  const deleted = await request.delete(`/api/scores/${score.id}`);
+  expect(deleted.ok(), await deleted.text()).toBe(true);
+
+  await page.reload();
+  const after = page.locator(".by-score li", { hasText: score.title });
+  await expect(after).toBeVisible();
+  await expect(after.locator(".deleted-mark")).toHaveText("deleted");
+  // Still counted - the 45 minutes are still on the page...
+  await expect(after).toContainText("45m");
+  // ...and no longer a route into a score that is not in the library.
+  await expect(after.locator("a")).toHaveCount(0);
+});
+
 test("a batch move shows every line, and a collision is blocked rather than overwritten", async ({
   page,
   request,

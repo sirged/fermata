@@ -83,11 +83,31 @@ TRASH_DIR_NAME = ".fermata-trash"
 #
 # The scanner already refuses to run two scans at once for the same reason, so
 # this is that rule extended to the other kind of writer rather than a new idea:
-# ONE thing reconciles the library at a time. It is deliberately coarse - a
-# whole-library exclusion for an operation on one file - because the alternative
-# is a scan and a mutation agreeing about which paths each may touch, which is a
-# great deal of machinery to make a scan and a click overlap by a few
-# milliseconds.
+# ONE THING THAT MOVES OR REMOVES AN EXISTING FILE RUNS AT A TIME. It is
+# deliberately coarse - a whole-library exclusion for an operation on one file -
+# because the alternative is a scan and a mutation agreeing about which paths
+# each may touch, which is a great deal of machinery to make a scan and a click
+# overlap by a few milliseconds.
+#
+# WHAT IS NOT HELD, stated exactly, because "one writer at a time" is easy to
+# say and would be false as a flat claim:
+#
+#   UPLOAD IS NOT HELD, on purpose. It only ever CREATES a file at a path
+#   nothing claims; it never moves or removes one, so it cannot invalidate a
+#   scan's listing the way a move does - a scan either sees the new file and
+#   inserts a row, or does not and the upload's own scan picks it up. Holding it
+#   would also break the ordinary case rather than protect it: every upload
+#   starts a scan, so uploading two files in a row would have the second refused
+#   for the first one's scan. The one interaction that matters is an upload
+#   landing on a move's destination, and that is caught where it has to be
+#   caught anyway (a person can drop a file into the library folder with no
+#   endpoint involved at all): _move_file_on_disk refuses a destination that
+#   exists, and its rename fails rather than overwriting if the file appears in
+#   the gap after that check.
+#
+#   CREATING A FOLDER IS NOT HELD either, and needs no argument beyond stating
+#   it: mkdir moves nothing and removes nothing, and a scan does not have an
+#   opinion about an empty directory.
 _mutating = False
 
 

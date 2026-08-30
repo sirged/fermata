@@ -613,7 +613,18 @@
               <ul class="spent by-score">
                 {#each history.by_score as row (row.score_id)}
                   <li>
-                    <a href={"#/score/" + row.score_id}>{row.title}</a>
+                    {#if row.deleted}
+                      <!-- The hours were spent and still count, so the piece
+                           stays listed and the totals still add up - but it is
+                           in the trash, so this is not a way into it. A link
+                           here led to a score the library no longer holds
+                           (issue #56). -->
+                      <span class="deleted-piece" title="This score is in the trash. The practice still counts.">
+                        {row.title} <span class="deleted-mark">deleted</span>
+                      </span>
+                    {:else}
+                      <a href={"#/score/" + row.score_id}>{row.title}</a>
+                    {/if}
                     <span class="quiet">{formatDuration(row.seconds)}</span>
                   </li>
                 {/each}
@@ -779,6 +790,23 @@
   .quiet {
     color: var(--ink-dim);
     font-size: 13px;
+  }
+
+  /* A piece that is in the trash: still listed, still counted, and no longer
+     somewhere to go. Dimmed rather than struck through - the practice is not
+     cancelled, only the score is out of the library (issue #56). */
+  .deleted-piece {
+    color: var(--ink-dim);
+  }
+
+  .deleted-mark {
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    color: #e8b45c;
+    border: 1px solid rgba(232, 180, 92, 0.5);
+    border-radius: 99px;
+    padding: 1px 7px;
+    margin-left: 4px;
   }
 
   .hint {
