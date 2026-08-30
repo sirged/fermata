@@ -575,6 +575,30 @@ def test_a_shared_unison_digit_survives_a_reload(app_env, engraved, monkeypatch,
     assert fetched["unison_digits_shared"] == 32
 
 
+def test_an_incompletely_read_staff_survives_a_reload(app_env, engraved, monkeypatch,
+                                                      insert_score):
+    """`staves_spacing_rhythm`'s sibling (issue #117), against the one
+    committed fixture where it is non-zero rather than against a score where
+    it is 0 and a dropped field would be indistinguishable from success.
+
+    harmonics_dense has one notation staff the decoder read from the engraving
+    with something on it left unread; the four bars that staff produced are
+    already carried as `degraded_bars`, and until now the count they are a
+    count OF lived only in `rhythm_provenance`, which nothing stores."""
+    pdf = engraved("harmonics_dense")
+    monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    fetched = api.get_transcription(score_id)
+
+    assert posted["staves_degraded_rhythm"] == 1, posted["staves_degraded_rhythm"]
+    assert fetched["staves_degraded_rhythm"] == 1
+    assert fetched["degraded_bars"] == [1, 2, 3, 4]
+    assert fetched["staves_spacing_rhythm"] == 0
+
+
 def test_a_refused_meter_digit_survives_a_reload(app_env, engraved, monkeypatch, insert_score):
     """meter_digits_unreadable (issue #129) round trips against the one
     fixture where it is non-zero, and as a LITERAL - the #146 lesson again: a
