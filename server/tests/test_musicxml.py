@@ -794,6 +794,115 @@ def test_ids_are_stable_under_an_unrelated_measure_change():
 
 
 # ---------------------------------------------------------------------------
+# Rules 18 and 19: ties and harmonics
+# ---------------------------------------------------------------------------
+
+
+def test_a_tie_is_written_in_both_of_the_specifications_spellings():
+    """Rule 18. `<tie>` is the SOUND of the tie and sits under `<note>`;
+    `<tied>` is the printed mark and sits under `<notations>`. Consumers read
+    different ones - alphaTab reads only `<tied>` and has no `tie` case in its
+    importer at all - so a file with one and not the other is right for half
+    its readers. Both, at both ends, in the schema's own child order."""
+    held = musicxml.MarkedNote(1, 5, tie_start=True)
+    landing = musicxml.MarkedNote(1, 5, tie_stop=True)
+    root = _root(musicxml.build("T", None, DEFAULT_TUNING, (4, 4),
+                                [([[(2, 0, [(2, 3)]), (2, 0, [held])]], (4, 4)),
+                                 ([[(2, 0, [landing]), (2, 0, [(2, 3)])]], (4, 4))]))
+    measures = root.findall("./part/measure")
+    start = measures[0].findall("./note")[-1]
+    stop = measures[1].findall("./note")[0]
+    assert [c.tag for c in start] == [
+        "pitch", "duration", "tie", "voice", "type", "notations"]
+    assert start.find("tie").get("type") == "start"
+    assert [c.tag for c in start.find("notations")] == ["tied", "technical"]
+    assert start.find("notations/tied").get("type") == "start"
+    assert stop.find("tie").get("type") == "stop"
+    assert stop.find("notations/tied").get("type") == "stop"
+    # Nothing else claims one.
+    assert len(root.findall(".//tie")) == 2 and len(root.findall(".//tied")) == 2
+
+
+def test_a_note_in_the_middle_of_a_tie_chain_stops_before_it_starts():
+    """Rule 18. A held note that is itself held on carries both ends, and
+    stop comes before start in both places - the order the two events are in
+    time, and the order a reader accumulating them has to see."""
+    middle = musicxml.MarkedNote(1, 5, tie_start=True, tie_stop=True)
+    root = _root(_one_bar([[(4, 0, [middle])]]))
+    note = _notes(root)[0]
+    assert [c.get("type") for c in note.findall("tie")] == ["stop", "start"]
+    assert [c.get("type") for c in note.findall("notations/tied")] == ["stop", "start"]
+
+
+def test_a_harmonic_is_written_inside_technical_beside_its_string_and_fret():
+    """Rule 19. `<harmonic>` goes in `<technical>`, after the string and fret
+    it is played at, and with an EMPTY body where the kind was not read - the
+    schema makes both of its children optional, so that is a valid document
+    that claims exactly what the engraving said."""
+    note = musicxml.MarkedNote(1, 12, harmonic=musicxml.HARMONIC_UNSPECIFIED)
+    root = _root(_one_bar([[(4, 0, [note])]]))
+    technical = _notes(root)[0].find("notations/technical")
+    assert [c.tag for c in technical] == ["string", "fret", "harmonic"]
+    assert list(technical.find("harmonic")) == [], "no kind claimed"
+
+
+def test_a_harmonic_whose_kind_was_read_says_which():
+    """Rule 19. A producer that CAN tell a natural from an artificial writes
+    it; this emitter is asked to carry either."""
+    for kind, tag in ((musicxml.HARMONIC_NATURAL, "natural"),
+                      (musicxml.HARMONIC_ARTIFICIAL, "artificial")):
+        note = musicxml.MarkedNote(1, 12, harmonic=kind)
+        root = _root(_one_bar([[(4, 0, [note])]]))
+        harmonic = _notes(root)[0].find("notations/technical/harmonic")
+        assert [c.tag for c in harmonic] == [tag]
+
+
+def test_a_marked_note_is_still_a_plain_string_fret_pair():
+    """The whole reason MarkedNote rides on the TYPE, like InferredRest: every
+    reader of the beats model that only wants (string, fret) is untouched by
+    a note that carries marks, and a plain tuple answers the mark questions
+    too."""
+    marked = musicxml.MarkedNote(3, 7, harmonic=musicxml.HARMONIC_NATURAL,
+                                 tie_start=True)
+    assert marked == (3, 7)
+    string, fret = marked
+    assert (string, fret) == (3, 7)
+    assert musicxml.note_harmonic(marked) == musicxml.HARMONIC_NATURAL
+    assert musicxml.note_tie_start(marked) and not musicxml.note_tie_stop(marked)
+    # A plain pair answers, without pretending it was marked.
+    assert musicxml.note_harmonic((3, 7)) is None
+    assert not musicxml.note_tie_start((3, 7))
+    assert not musicxml.note_tie_stop((3, 7))
+    # mark_note takes either, and `...` leaves a field alone.
+    grown = musicxml.mark_note((3, 7), tie_stop=True)
+    assert grown == (3, 7) and musicxml.note_tie_stop(grown)
+    kept = musicxml.mark_note(marked, tie_stop=True)
+    assert musicxml.note_harmonic(kept) == musicxml.HARMONIC_NATURAL
+    assert musicxml.note_tie_start(kept) and musicxml.note_tie_stop(kept)
+    cleared = musicxml.mark_note(marked, tie_start=False)
+    assert not musicxml.note_tie_start(cleared)
+    assert musicxml.note_harmonic(cleared) == musicxml.HARMONIC_NATURAL
+
+
+def test_marks_do_not_change_what_a_note_is_worth():
+    """Neither a tie nor a harmonic carries duration, so the emitted score has
+    to be byte-identical to the unmarked one apart from the elements they
+    add - and every figure a consumer computes from it unmoved."""
+    plain = [[(2, 0, [(1, 5)]), (2, 0, [(2, 3)])]]
+    marked = [[(2, 0, [musicxml.MarkedNote(
+        1, 5, harmonic=musicxml.HARMONIC_UNSPECIFIED)]), (2, 0, [(2, 3)])]]
+    assert (musicxml.written_beats([(plain, (4, 4))])
+            == musicxml.written_beats([(marked, (4, 4))]) == 2)
+    assert (musicxml.voice_durations(plain) == musicxml.voice_durations(marked)
+            == [musicxml.measure_divisions((4, 4))])
+    without = _root(_one_bar(plain))
+    with_marks = _root(_one_bar(marked))
+    assert len(_notes(without)) == len(_notes(with_marks))
+    assert ([n.findtext("duration") for n in _notes(without)]
+            == [n.findtext("duration") for n in _notes(with_marks)])
+
+
+# ---------------------------------------------------------------------------
 # Validation against the real schema
 # ---------------------------------------------------------------------------
 
@@ -873,6 +982,29 @@ def _emitted_samples():
                 3: {"after": [{"words": "D.C. al Fine", "sound": {"dacapo": "yes"}},
                               {"words": "D.S. al Fine", "sound": None}]},
             }),
+        # Rules 18 and 19: ties and harmonics, for the same reason the two
+        # samples above exist - `<tie>`, `<tied>` and `<harmonic>` reach the
+        # schema through nothing else here, and all three are in strict
+        # sequences (`tie` between `duration` and `voice`; `tied` before
+        # `technical` inside `notations`; `harmonic` after `string`/`fret`
+        # inside `technical`) that a plausible-looking wrong order passes
+        # every other test in this file with.
+        "ties-and-harmonics": musicxml.build(
+            "Ties and Harmonics", None, DEFAULT_TUNING, (4, 4), [
+                ([[(4, 0, [(1, 0)]),
+                   (4, 0, [musicxml.MarkedNote(1, 12, tie_start=True)]),
+                   (2, 0, [musicxml.MarkedNote(1, 12, tie_start=True, tie_stop=True)])]],
+                 (4, 4)),
+                ([[(4, 0, [musicxml.MarkedNote(
+                        1, 12, tie_stop=True,
+                        harmonic=musicxml.HARMONIC_UNSPECIFIED)]),
+                   (4, 0, [musicxml.MarkedNote(
+                        2, 7, harmonic=musicxml.HARMONIC_NATURAL)]),
+                   (4, 0, [musicxml.MarkedNote(
+                        3, 5, harmonic=musicxml.HARMONIC_ARTIFICIAL),
+                       musicxml.MarkedNote(4, 5)]),
+                   (4, 0, [(6, 0)])]], (4, 4)),
+            ]),
     }
 
 

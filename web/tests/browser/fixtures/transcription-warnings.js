@@ -75,7 +75,7 @@ export const SAMPLE_TEX = `\\title "Test Score"
 export const NINE_WARNINGS = [
   "3 of 50 bar(s) hold more than their time signature allows. Music written in two voices (a melody over a separate bass line) is separated into concurrent voices where the stems say so, but a bar whose voices the stems do not separate is still flattened into one, and an undetected tuplet or a missed flag lands here too - the notes and their individual durations can still be right while the bar as a whole is not, so playback timing will drift in those bars",
   "tuplets (triplets and similar) are not detected - a note written inside a tuplet will show its plain written duration rather than the shortened tuplet duration",
-  "tie detection is low confidence - some tied notes may show up as separately re-struck notes instead of one held note",
+  "a tie is written only where the curve joining its two notes was matched on one staff (issue #81) - a tie drawn across a system break is engraved as two partial curves with its notes on different staves, is not matched, and its second note is transcribed as a separate re-struck note rather than as one held note",
   "time signature not detected - glyphs live in a subsetted music font at remapped codepoints; assumed 4/4 for bar/beat grouping, pass time_signature to override",
   "key signature: could not be read - notes are spelled as if there were none",
   "2 fret number(s) could not be matched to a note in the engraved notation and got an estimated duration instead - treat those specific notes as low confidence",
@@ -127,7 +127,7 @@ export const TWO_VOICE_CONFIDENCE = {
 
 export const STANDING_LIMITS_ONLY_WARNINGS = [
   "tuplets (triplets and similar) are not detected - a note written inside a tuplet will show its plain written duration rather than the shortened tuplet duration",
-  "tie detection is low confidence - some tied notes may show up as separately re-struck notes instead of one held note",
+  "a tie is written only where the curve joining its two notes was matched on one staff (issue #81) - a tie drawn across a system break is engraved as two partial curves with its notes on different staves, is not matched, and its second note is transcribed as a separate re-struck note rather than as one held note",
 ];
 
 /**
@@ -317,6 +317,7 @@ export function editedTranscriptionResponse() {
     form_marks_unanchored_bars: null,
     nav_marks_unresolved_bars: null,
     systems_unread_pages: null,
+    tie_ends_unpaired_bars: null,
     // _BAR_AMOUNT_KEYS (api.py).
     inferred_rest_quarters: null,
     // _PROVENANCE_KEYS (api.py) - what the meter/key/tuning were obtained

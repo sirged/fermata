@@ -2382,9 +2382,11 @@ def _extract_digit_tokens(page):
 HARMONIC_BRACKETS = ("‹", "›")   # < and > as single guillemets
 HARMONIC_BRACKET_GAP_SPACINGS = 0.9
 # How far off the digit's own centre line a bracket may sit and still be its.
-# A whole line spacing: the marks are drawn at nearly twice the digits' point
-# size, so their boxes are taller and their centres do not coincide, but a
-# bracket for the string ABOVE or BELOW is a full spacing away.
+# An outer bound only - which digit a mark belongs to is decided by taking the
+# NEAREST one rather than by this number, because a chord stacks its digits one
+# spacing apart and the marks are drawn at nearly twice the digits' point size,
+# so their boxes are taller than a string's worth of space and no fixed window
+# separates a chord's members. Nearest-wins does.
 HARMONIC_BRACKET_Y_SPACINGS = 1.0
 
 
@@ -2417,26 +2419,40 @@ def _mark_harmonic_digits(tokens_for_staff, staff, marks):
     BOTH marks are required. One alone is not the convention and would let a
     stray character - or one belonging to the note before or after - claim a
     note the page says nothing about, which for a harmonic is a claim about
-    the sounding pitch and not a decoration.
+    how the note is played and not a decoration.
+
+    EACH MARK GOES TO ITS NEAREST DIGIT, and to only one. A chord stacks its
+    fret numbers a single line spacing apart while the marks are set at nearly
+    twice the digits' point size, so a mark's box is taller than the gap
+    between two strings and no fixed vertical window can separate a chord's
+    members: given one, a bracketed digit's neighbour on the string below was
+    marked a harmonic too. Nearest-wins needs no threshold to get that right.
 
     Returns how many were flagged.
     """
-    if not marks:
+    if not marks or not tokens_for_staff:
         return 0
     gap = staff.spacing * HARMONIC_BRACKET_GAP_SPACINGS
     y_tol = staff.spacing * HARMONIC_BRACKET_Y_SPACINGS
     opening, closing = HARMONIC_BRACKETS
+    before = set()
+    after = set()
+    for ch, bbox in marks:
+        if ch == opening:
+            side, reach = before, [t for t in tokens_for_staff
+                                   if -gap <= t.bbox[0] - bbox[2] <= gap]
+        elif ch == closing:
+            side, reach = after, [t for t in tokens_for_staff
+                                  if -gap <= bbox[0] - t.bbox[2] <= gap]
+        else:
+            continue
+        mid = (bbox[1] + bbox[3]) / 2
+        reach = [t for t in reach if abs(t.yc - mid) <= y_tol]
+        if reach:
+            side.add(id(min(reach, key=lambda t: abs(t.yc - mid))))
     found = 0
     for tok in tokens_for_staff:
-        before = after = False
-        for ch, bbox in marks:
-            if abs((bbox[1] + bbox[3]) / 2 - tok.yc) > y_tol:
-                continue
-            if ch == opening and -gap <= tok.bbox[0] - bbox[2] <= gap:
-                before = True
-            elif ch == closing and -gap <= bbox[0] - tok.bbox[2] <= gap:
-                after = True
-        if before and after:
+        if id(tok) in before and id(tok) in after:
             tok.harmonic = True
             found += 1
     return found

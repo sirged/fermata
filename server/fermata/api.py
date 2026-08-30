@@ -1620,6 +1620,16 @@ _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
              # `time_signature_source` says how the meter that IS reported was
              # obtained, and cannot say that a different, unread one exists.
              "meter_digits_unreadable",
+             # `tie_ends_unpaired` (issue #81): an end of a tie the decoder
+             # matched in the engraving whose other end it did not, so the
+             # tie is not written and its second note is transcribed as
+             # separately re-struck rather than held. It belongs here for the
+             # same reason as its neighbours and one of its own: EVERY OTHER
+             # tie is countable from the emitted file, and these are in
+             # neither the file nor any other figure - the bar still adds up,
+             # the note is still there, and it is struck twice where the
+             # score strikes it once, which nothing else stored here says.
+             "tie_ends_unpaired",
              # `systems_unread` (issue #152): a SYSTEM whose bars were never
              # read - the only disclosure here about music that is ABSENT
              # from the transcription rather than imperfect in it. It has to
@@ -1657,6 +1667,12 @@ _BAR_LIST_KEYS = ("padded_bars", "unread_bars", "spacing_bars", "degraded_bars",
                    # has no list of its own on purpose: a mark with no bar
                    # to name has no bar number to report.
                    "nav_marks_unresolved_bars",
+                   # WHICH bars hold an end of a tie whose other end was not
+                   # found - the bar-number half of `tie_ends_unpaired`. The
+                   # bar named is where the unmatched END is, which for a tie
+                   # broken across a system break is the bar the phrase
+                   # resumes in as often as the one it left.
+                   "tie_ends_unpaired_bars",
                    # WHICH PAGES a lost system was on (issue #152). This is a
                    # page list where its neighbours are bar lists, and that is
                    # forced by the defect: a system that was never read has no
@@ -1928,6 +1944,12 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
             # fails by name if a _BAR_KEYS entry never reaches this dict.
             "systems_unread": result.systems_unread,
             "systems_unread_pages": result.systems_unread_pages,
+            # tie_ends_unpaired / tie_ends_unpaired_bars (issue #81), written
+            # here for the same reason: this dict is the only path into
+            # storage, and a count that reaches ExtractionResult and not this
+            # comes back None on every reload.
+            "tie_ends_unpaired": result.tie_ends_unpaired,
+            "tie_ends_unpaired_bars": result.tie_ends_unpaired_bars,
             "time_signature": list(result.time_signature) if result.time_signature else None,
             "time_signature_source": result.time_signature_source,
             "key_fifths": result.key_fifths,

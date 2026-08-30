@@ -31,6 +31,8 @@ several things this profile has to decide.
   - [Navigation marks](#navigation-marks-rule-16)
     - [A system that was not read](#a-system-that-was-not-read)
   - [Note identifiers](#note-identifiers-rule-17)
+  - [Ties](#ties-rule-18)
+  - [Harmonics](#harmonics-rule-19)
 - [Example 1: one monophonic bar](#example-1-one-monophonic-bar)
 - [Example 2: two voices in one bar](#example-2-two-voices-in-one-bar)
 - [Checking a file](#checking-a-file)
@@ -884,6 +886,137 @@ developed against: adding note ids to all 293 extractable scores left
 they were before the change, and every byte of every emitted file was
 unchanged apart from the `id="…"` attribute added to each `<note>`.
 
+### Ties (Rule 18)
+
+**Rule 18.** A tie is written at **both** of its ends and in **both** of the
+specification's two spellings. The note the tie starts at carries
+`<tie type="start"/>` as a direct child of `<note>` and
+`<tied type="start"/>` inside its `<notations>`; the note it is held into
+carries `<tie type="stop"/>` and `<tied type="stop"/>` in the same two
+places. A note in the middle of a chain of ties carries the stop before the
+start, in both places, which is the order the two events are in time.
+
+**Why both spellings.** They are not duplicates: `<tie>` is the *sound* of a
+tie — the schema's own documentation calls it "just the sounding tie", and it
+is what says the second note is not struck — while `<tied>` is the *printed
+mark*, a member of `<notations>` alongside slurs and articulations. The
+specification's own guidance is that "Ties that join two notes of the same
+pitch together should be represented with a tied element on the first note
+with type="start" and a tied element on the second note with type="stop"",
+and separately that the notated `<tied>` and the sounded `<tie>` are distinct
+elements. Consumers genuinely differ on which they read, and the difference is
+audible rather than cosmetic: **alphaTab, the renderer this project embeds,
+reads only `<tied>`** — its MusicXML importer's `<note>` child switch has no
+`tie` case at all, so a file carrying only the sounding element re-strikes
+every note it should hold. Writing one without the other produces a file that
+is correct for half of its readers.
+
+**The two notes carry the same pitch, string and fret.** This is a
+requirement, not a coincidence. An unnumbered `<tied>` is matched by pitch:
+alphaTab's importer resolves a `stop` by searching its pending starts for one
+whose `<pitch>` computes to the same MIDI value, and silently drops the tie if
+it finds none. Two notes joined by a tie are one sounding note on one string,
+so `<string>`, `<fret>` and `<pitch>` are all the struck note's — see the
+producer note below.
+
+**`number` is not written.** The schema allows a `number` attribute to
+disambiguate overlapping ties. This profile leaves it off: unnumbered
+matching is the well-trodden path in every reader tested, and a producer that
+writes one tie per pitch at a time never needs the disambiguation.
+
+**What a producer does about the held note's fret number.** A tie's second
+note is not plucked, so a tab staff normally prints **no fret number under
+it** — and it must still be written with the struck note's string and fret,
+because it is that same string still sounding. Measured over this project's
+297-score library: for an ordinary struck note, the nearest tablature digit
+column sits a median 0.64 staff spacings from the notehead, and for the first
+note of a tie the median is the same 0.64; for the second note of a tie it is
+1.26, with a 95th percentile of 4.41. The nearest digit to a held note is
+usually the *next* note's. So the extractor gives the second note of every
+written tie the first note's string and fret outright, rather than whatever
+digit the notehead-to-digit match found nearest it.
+
+**What a producer does when it can only find one end.** It writes neither.
+A `start` with no `stop` is not a half-written tie; in alphaTab it is a start
+that stays pending for the rest of the part and can be closed by an unrelated
+later note of the same pitch. Both dangling ends are therefore removed from
+the emitted score and counted instead, as `tie_ends_unpaired` with the bars
+they were in. The count is of tie **ends**, not ties, because there is no way
+to tell which two dangling ends were meant to be one tie.
+
+**The invariant this rule does not disturb.** A tie changes the *structure*
+of what is written — which notes are struck — and not how long anything is.
+Measured on the library this profile was developed against, adding ties left
+`bars`, `beats`, `notes`, `bars_overfull`, `bars_short` and `bars_defective`
+each exactly where they were: 10762, 83365, 99461, 1541, 4190, 5300 across
+the 293 extractable scores, unchanged to the unit. 998 ties were written
+across 140 scores and 515 dangling ends disclosed across 122.
+
+### Harmonics (Rule 19)
+
+**Rule 19.** A note the engraving marks as a harmonic carries `<harmonic>`
+inside its `<technical>`, beside the `<string>` and `<fret>` Rule 9 already
+requires:
+
+```xml
+<notations>
+  <technical>
+    <string>1</string>
+    <fret>12</fret>
+    <harmonic/>
+  </technical>
+</notations>
+```
+
+**`<harmonic>` is written with an empty body unless the kind was read.** The
+schema makes both of its children optional (`<natural/>`/`<artificial/>` and
+`<base-pitch/>`/`<touching-pitch/>`/`<sounding-pitch/>` are each a
+`minOccurs="0"` choice), so `<harmonic/>` alone is valid and says exactly what
+was read: this note is a harmonic. The two engraving conventions this
+extractor reads — a diamond notehead on the notation staff, and a fret number
+in single guillemets (`‹12›`, U+2039 and U+203A) on the tablature staff —
+mark a natural and an artificial harmonic identically, so naming one would be
+a guess dressed as a reading. A producer that *can* tell them apart should
+write `<natural/>` or `<artificial/>`; a consumer must not assume either from
+a bare `<harmonic/>`.
+
+**`<pitch>`, `<string>` and `<fret>` are the fretted position, unchanged.**
+Rule 10's pitch is the open string plus the fret, and a harmonic does not
+change what the tablature says to do — it says where to touch. Writing the
+*sounding* pitch instead would need the kind (a natural harmonic at the 12th
+fret sounds an octave above the fretted note, at the 7th a twelfth above it,
+and an artificial one is a different calculation again), which is precisely
+what a bare `<harmonic/>` says was not read.
+
+**What the renderer does with it, plainly: nothing.** alphaTab's MusicXML
+importer consumes the `<harmonic>` element and discards it — the `technical`
+child switch has `case "harmonic": break;`, and never descends into it — so
+`harmonicType` stays `None`, no harmonic marking is drawn, and playback
+sounds the fretted pitch. That is a limitation of that importer and not of
+this encoding; the element is still written, because the canonical output of
+this project is the MusicXML file and a mark a reader cannot use is worth
+more than a mark that was never made.
+
+**Not carried into alphaTex, deliberately.** alphaTex has a harmonic
+vocabulary (`{nh}`, `{ah n}`, `{ph n}`, …) and alphaTab honours all of it,
+but none of those tokens is an annotation: each names *which* harmonic, and
+the renderer then sounds the note at the pitch that implies. Writing one on
+the strength of a convention that does not distinguish the kinds would
+re-pitch a note on a guess. This is the same reasoning as Rule 14's inferred
+rest, which alphaTex also does not carry.
+
+**Conventions that are not read.** A `harm.` or `art. harm.` text marker, and
+the small circle some editions draw above the note, are **not** recognised.
+They mark a passage rather than a note, and this profile does not guess a
+note's extent from a direction. Measured on this project's library, they
+appear on 19 of 297 scores and the two conventions that *are* read appear on
+121; on all but one of those 121, both appear together.
+
+**The invariant this rule does not disturb.** `<harmonic>` carries no
+duration and moves no Rule 8 figure. Measured on the library, marking 1030
+notes across 123 scores left `bars`, `beats`, `notes` and all three bar
+conformance counts exactly where they were.
+
 ## Example 1: one monophonic bar
 
 One bar of 4/4 at 80 bpm in standard tuning: open first string (E4), second
@@ -1484,7 +1617,6 @@ promise more interoperability than exists.
   applications.
 - Tapping (`<tap>`), hammer-ons and pull-offs (`<hammer-on>`, `<pull-off>`),
   slides (`<slide>`) and glissandi.
-- Harmonics (`<harmonic>`), whether natural or artificial.
 - Vibrato, tremolo, palm muting, `<open-string>`, `<thumb-position>`,
   `<golpe>`, `<fingernails>`.
 - Left-hand fingering and right-hand plucking indications (`<fingering>`,
@@ -1495,9 +1627,17 @@ promise more interoperability than exists.
 - Tuplets (`<time-modification>`, `<tuplet>`). This is why Rule 2's divisions
   value is chosen to divide by 3 — so adding them later does not require
   changing it.
-- Ties (`<tie>`, `<tied>`) and slurs.
+- Slurs (`<slur>`). Ties are covered — see [Rule 18](#ties-rule-18) — but a
+  slur is a different mark: it joins notes of *different* pitch, and the
+  equal pitch a tie joins is the only thing this extractor uses to tell one
+  curve from the other.
 - Grace notes, which the schema handles as a separate `<note>` branch with no
-  `<duration>` at all.
+  `<duration>` at all. This is a live source of wrong arithmetic rather than
+  an absence: a grace note is decoded as an ordinary note and given its
+  written duration, so it adds time its bar does not have. Measured: "The
+  Cosmic Wheel (Final Fantasy XI)" bar 13 is a slashed grace note slurred
+  into a whole note, and comes out `:16 3.1 :1 5.1` — 4.25 quarters in a 4/4
+  bar, one of that score's eight overfull bars.
 - A `<segno/>` or `<coda/>` written inside a `<barline>` rather than as a
   `<direction>`. The schema allows both; this profile writes the direction,
   which is where a sign that is not on a barline has to go anyway — see

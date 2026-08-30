@@ -63,7 +63,7 @@ transcription bytes to feed the real alphaTab importer through.
 | `unison_voices` | `two_voices` with the upper voice dropped to the lower voice's own pitch — a unison every beat, drawn as the same notehead glyph twice at the identical position, once per voice's stem (issue #116) |
 | `unison_in_chord` | `unison_voices` with the upper voice thickened into a chord, so the unison is one MEMBER of it — three noteheads at the onset, two positions, and only **two** tab digits, because a unison is one plucked string and prints one number however many voices sound it (issue #137) |
 | `three_voices` | a melody, an arpeggiated accompaniment and a sustained whole-note bass, all three attacking together on beat one (issue #133) |
-| `tuplet_and_tie` | a triplet (not detected, so its bar is reported overfull) and a tie across a barline |
+| `tuplet_and_tie` | a triplet (not detected, so its bar is reported overfull) and two ties across a barline — one inside a system, which is matched and written at both ends, and one at a system break, which is engraved as two partial curves on different staves and is not matched at all (issue #81) |
 | `drop_d` | a non-standard tuning named in the score's text, and a metronome mark |
 | `defective_bars` | bars over their meter, bars under it, and a bar wrong in both directions at once |
 | `volta` | a repeat with "1." / "2." ending brackets close under the staff |
@@ -79,15 +79,16 @@ transcription bytes to feed the real alphaTab importer through.
 | `mid_system_key_and_meter_change` | four sharps printed behind a barline, pushing a mid-system meter change's digits past the flat reach a mid-system reader alone needs — the mid-system counterpart of `four_sharps_in_three_four` |
 | `multidigit_meter` | a 12/8 meter — a numerator that needs two digit glyphs stacked at one x column, which is exactly the shape a missing digit in a font's calibration table (issue #84) turns into a confident wrong meter instead of a detected gap |
 
-Three fixtures are **synthesised** rather than engraved, because no engraver
-produces them on purpose. The script builds all three, and their `/Creator`
-says so.
+Four fixtures are **synthesised** rather than engraved, because no engraver
+available here produces them on purpose. The script builds all four, and their
+`/Creator` says so.
 
 | fixture | shape it covers |
 | --- | --- |
 | `raster_scan` | `notation_and_tab` flattened to an image — refused as a scan |
 | `fake_music_font` | a page whose "music font" is an unembedded text font drawing the letters A–H, with a ToUnicode CMap claiming they are SMuFL music symbols as its only credential — refused |
 | `unmapped_meter_digit` | `multidigit_meter` with one entry of its music font's ToUnicode CMap rewritten, so the `2` of its 12/8 draws as a SMuFL codepoint outside the decoder's calibrated tables — what a Finale subset with an unmapped glyph ID, or a Sibelius one with an unmapped PUA name, looks like from this side (issue #129). The engraving, the outlines and every coordinate are the original's; only that one mapping differs. Before the refusal it read as a confident 1/8 "read directly from the time-signature digit glyphs" |
+| `harmonic_brackets` | `notation_and_tab` with four of its fret numbers wrapped in the single guillemets that mark a **harmonic** in tablature — `‹2›`, U+2039 and U+203A — at the offsets measured over the 896 real bracket pairs in the maintainer's library. One of the four is a single member of a three-note chord, whose neighbours a string spacing away must not be swept up with it. MuseScore cannot engrave this: asked for a `<harmonic>` on a tab staff it draws a plain notehead and a plain digit, its own importer discarding the element (issue #63) |
 
 ## What they cannot cover
 
@@ -104,10 +105,19 @@ looks like coverage and is not is worse than none:
   with.
 - **Reading a raster page.** The rasterised fixture proves extraction
   declines a scan, not that anything reads one.
-- **Reading a diamond or harmonic notehead.** Those codepoints are
-  deliberately absent from the SMuFL map, because which one means which was
-  not established. `harmonics_dense` covers the *reporting* of that gap, not
-  its closure — a score with harmonics still loses their durations.
+- **Reading a diamond notehead's DURATION.** Those codepoints are still
+  deliberately absent from the SMuFL map, so `harmonics_dense` still covers
+  the *reporting* of that gap rather than its closure: a score whose
+  harmonics are drawn with a diamond still loses their durations. What is no
+  longer missing is the harmonic itself — `harmonic_brackets` covers the
+  tablature convention, which names the note without saying anything about
+  how long it is (Rule 19).
+- **The notation-staff half of a harmonic**, a diamond notehead in a
+  *calibrated* font. That is Finale's Maestro glyph 174, and Maestro cannot
+  be committed here — the same limit as the two rows above. The tablature
+  half is what `harmonic_brackets` covers, and on 120 of the 121 scores in
+  the maintainer's library that carry either convention, both are present
+  together.
 - **A note shorter than a 32nd.** `_beam_count_near` follows a beam stack to
   any depth and counts a four-stroke group correctly - there is a unit test
   on constructed geometry for it - but nothing downstream can carry the

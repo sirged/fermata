@@ -136,6 +136,17 @@ export const DISCLOSURE_ROWS = [
     key: "meter_digits_unreadable",
     label: "Printed time signatures refused over an unrecognised digit glyph",
   },
+  // Counted per tie END, not per tie (issue #81): a start with no stop and a
+  // stop no start reached are each one, because there is no way to tell which
+  // two of them were meant to be the same tie. tabextract.py's _resolve_ties
+  // erases both, so the note the score holds is transcribed as struck twice -
+  // the bar still adds up and the note is still there, which is exactly why
+  // this needs saying. The bar named is where the unmatched END sits.
+  {
+    key: "tie_ends_unpaired",
+    label: "Tie ends whose other end was not found",
+    barsKey: "tie_ends_unpaired_bars",
+  },
 ];
 
 /**
@@ -157,8 +168,10 @@ export const DISCLOSURE_ROWS = [
  * at all (the common shape of a hand-edited row - see saveEdit() in
  * ScoreCompare.svelte, which states every one of these `null` on purpose).
  * That state already renders as nothing elsewhere on this panel (no bar
- * headline, no warnings block), and a wall of seventeen "not measured" rows
- * would be exactly the noise this function exists to avoid - so this
+ * headline, no warnings block), and a wall of one "not measured" row per
+ * counter above would be exactly the noise this function exists to avoid
+ * (there were seventeen of them when issue #155 wrote this, and the list only
+ * grows, which is why the sentence no longer names a number) - so this
  * returns no rows at all rather than that wall. A row that measured SOME of
  * these counters (a real extraction whose schema predates one particular
  * counter) still shows the gap on that one counter specifically, because in
