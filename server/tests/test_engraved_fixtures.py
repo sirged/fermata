@@ -2281,6 +2281,33 @@ def test_the_committed_musicxml_still_matches_its_generator():
     assert drifted == [], drifted
 
 
+def test_the_committed_transcription_still_matches_what_the_extractor_reads(engraved):
+    """The companion of the check above, for the second artifact
+    TRANSCRIPTION_FIXTURES commits: `<name>.transcription.musicxml`, the
+    actual output of tabextract.extract() on the committed PDF - not the
+    engraving source, which is what the check above covers.
+
+    This is the one that matters for issue #165: the web browser suite has no
+    Python to call at test time, so it reads this committed file as ground
+    truth for what alphaTab renders. A drifted copy would mean that suite is
+    silently testing stale extractor output - and, before this file existed
+    at all, the browser suite was reading the engraving source instead, which
+    is not a conforming file under docs/musicxml-tab-profile.md Rule 9 and
+    crashed alphaTab's TabBarRenderer.collectSpaces the one time that
+    happened."""
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "tools" / "tab_extract" / "engrave_fixtures.py"
+    spec = importlib.util.spec_from_file_location("engrave_fixtures", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for name in module.TRANSCRIPTION_FIXTURES:
+        engraved(name)  # fails loudly (not a skip) if the PDF is missing
+    drifted = module.write_transcriptions(check_only=True)
+    assert drifted == [], drifted
+
+
 # ---------------------------------------------------------------------------
 # Rule 17: note identifiers, pinned across every committed engraved fixture
 # ---------------------------------------------------------------------------
@@ -2321,3 +2348,52 @@ def test_every_engraved_fixtures_note_id_is_unique_and_a_valid_ncname():
     # stopped running against anything at all.
     assert checked >= 20, "fewer engraved fixtures were checked than expected"
     assert total_notes > 0
+
+
+# ---------------------------------------------------------------------------
+# Rule 9: every sounding note carries <string> and <fret>
+# ---------------------------------------------------------------------------
+
+
+def test_every_engraved_fixtures_sounding_note_carries_string_and_fret():
+    """Issue #165. musicxml.build() either writes a note with a full
+    (string, fret, midi) triple or writes no pitched note at all (an
+    unwritable one becomes a rest, per Rule 11) - never a `<pitch>` with no
+    `<notations><technical><string>`/`<fret>` beside it. That is a structural
+    property of build()'s own branching (see the `if not writable` / `else`
+    split in build()), not a coincidence of what this repository's fixtures
+    happen to contain, so this checks it holds for every committed engraved
+    PDF - the full extraction pipeline, not build() called directly with a
+    hand-assembled beats model.
+
+    The bug issue #165 reports was never here: it was a browser test fixture
+    (web/tests/browser/fixtures/navigation-score.js) reading
+    navigation.musicxml - the ENGRAVING SOURCE MuseScore was asked to draw,
+    whose tab-staff notes carry no string/fret at all because MuseScore
+    assigns them itself while engraving - and feeding it to alphaTab
+    mislabelled as "the transcription... produced by the extractor". That
+    file was never a conforming file under this profile and this test does
+    not read it; see navigation.transcription.musicxml and
+    TRANSCRIPTION_FIXTURES in engrave_fixtures.py for the artifact that
+    actually is one."""
+    checked = 0
+    total_sounding = 0
+    stringless = []
+    for pdf in sorted(ENGRAVED_DIR.glob("*.pdf")):
+        result = tabextract.extract(pdf)
+        if not result.extractable or not result.musicxml:
+            continue
+        root = ET.fromstring(result.musicxml)
+        for note in root.findall("./part/measure/note"):
+            if note.find("rest") is not None:
+                continue
+            total_sounding += 1
+            technical = note.find("notations/technical")
+            string_el = technical.find("string") if technical is not None else None
+            fret_el = technical.find("fret") if technical is not None else None
+            if string_el is None or fret_el is None:
+                stringless.append((pdf.name, note.get("id")))
+        checked += 1
+    assert stringless == [], f"TAB-staff note(s) with no <string>/<fret>: {stringless[:10]}"
+    assert checked >= 20, "fewer engraved fixtures were checked than expected"
+    assert total_sounding > 0

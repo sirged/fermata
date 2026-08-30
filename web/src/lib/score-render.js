@@ -205,6 +205,89 @@ export function supportedProfiles(tracks) {
 /** Shown in place of the staff view when supportedProfiles() comes back empty. */
 export const UNRENDERABLE_MESSAGE = "This score has no notation or tablature the staff view can draw.";
 
+/**
+ * A staff whose `showTablature` is true but whose notes are not all
+ * strung, disqualified from tab rendering in place (issue #165).
+ *
+ * docs/musicxml-tab-profile.md Rule 9 requires `<string>`/`<fret>` on every
+ * sounding note of a conforming FILE, and Fermata's own emitter (see
+ * musicxml.build's note-writing branch) never violates it - a note it
+ * cannot fret is dropped to a rest, never written half-specified. Nothing
+ * here enforces that on Fermata's own output, because nothing needs to:
+ * this is a defence for input this project did not write. A directly
+ * uploaded `.musicxml`/`.mxl` file, or a hand-edited one, can legally
+ * declare a tab staff (tuning, TAB clef) and still leave some of that
+ * staff's notes without a fretted position - third-party notation software
+ * writes exactly that shape when a tab staff is LINKED to a notation staff
+ * and left for the reading application to fret. alphaTab's own TAB renderer
+ * assumes every note it is asked to draw carries one: a note whose `string`
+ * was never set defaults to -1 (not stringed), which is still indexed into
+ * `TabBarRenderer.collectSpaces`'s per-line array as
+ * `spaces[tuning.length - str]` - out of bounds for -1, so the array slot
+ * read back is `undefined` and `.push()` on it throws, straight out of
+ * paint. Measured on exactly this shape: the exception is caught inside
+ * alphaTab's own API layer and only logged, not re-thrown, so the page
+ * still reports a finished render and passes any check that does not
+ * itself read console output - while drawing almost nothing of that staff.
+ *
+ * The honest response is the one Rule 9's own producer-side guidance
+ * describes for a note that genuinely has no string: this staff cannot be
+ * drawn as tablature, so it is not offered as one. `showTablature = false`
+ * is the exact lever alphaTab's own `TabBarRendererFactory.canCreate`
+ * checks (`staff.showTablature && staff.tuning.length > 0`), and the one
+ * this project already relies on for the same purpose on a percussion
+ * staff (see mirroredCanDraw's comment on `Staff.finish`) - so a staff this
+ * function disqualifies is skipped by alphaTab's own renderer selection,
+ * not merely hidden from the profile buttons canDraw/supportedProfiles
+ * offer. Standard notation on the SAME staff, or another staff in the same
+ * track, is unaffected: only tablature drawing for the disqualified staff
+ * is turned off.
+ *
+ * Called from the scoreLoaded handler, before supportedProfiles() reads the
+ * score - same timing requirement as the profile correction beside it, and
+ * for the same reason: AlphaTabApiBase triggers scoreLoaded synchronously
+ * and only renders once every listener has returned.
+ */
+export function disqualifyUnstrungTabStaves(score) {
+  const disqualified = [];
+  for (const track of score?.tracks ?? []) {
+    for (const staff of track?.staves ?? []) {
+      if (!staff?.showTablature) continue;
+      let hasUnstrungNote = false;
+      for (const bar of staff.bars ?? []) {
+        for (const voice of bar?.voices ?? []) {
+          for (const beat of voice?.beats ?? []) {
+            if (beat?.isRest) continue;
+            for (const note of beat?.notes ?? []) {
+              if (!note?.isStringed) {
+                hasUnstrungNote = true;
+                break;
+              }
+            }
+            if (hasUnstrungNote) break;
+          }
+          if (hasUnstrungNote) break;
+        }
+        if (hasUnstrungNote) break;
+      }
+      if (hasUnstrungNote) {
+        staff.showTablature = false;
+        disqualified.push(staff);
+      }
+    }
+  }
+  if (disqualified.length) {
+    console.warn(
+      `score-render: ${disqualified.length} staff(es) declared as tablature carry a note with ` +
+        "no fretted position - drawing them as tablature would crash the renderer's paint " +
+        "(issue #165), so tablature is turned off for just those staves. This is not Fermata's " +
+        "own transcription shape; it happens on a directly uploaded file whose tab staff is " +
+        "under-specified.",
+    );
+  }
+  return disqualified;
+}
+
 // ---------------------------------------------------------------- layout
 
 // Widths are of the score container, not the window: a side-by-side PDF
@@ -2491,6 +2574,11 @@ export function createScoreView(host, opts = {}) {
     // the loaded score, and the midi generated after it returns has to see
     // the finished model rather than the imported one.
     applyLoadedNavigation(loadedScore);
+    // Also before supportedProfiles() reads the score: a staff that cannot be
+    // honestly drawn as tablature must be disqualified before canDraw is
+    // asked about it, or "tab"/"scoretab" would still be offered for a staff
+    // whose paint throws (issue #165) - see disqualifyUnstrungTabStaves.
+    disqualifyUnstrungTabStaves(loadedScore);
     scoreProfiles = supportedProfiles(api.tracks?.length ? api.tracks : loadedScore.tracks);
     unrenderable = scoreProfiles.length === 0;
     if (!unrenderable && !scoreProfiles.includes(profile)) {

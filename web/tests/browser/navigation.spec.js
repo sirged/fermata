@@ -65,6 +65,7 @@ import {
   stubNavigationScore,
   stubNavigationTimewiseScore,
   stubNavigationUnresolvedScore,
+  stubNavigationUnstrungTabScore,
 } from "./fixtures/navigation-score.js";
 
 const host = (page) => page.locator(".at-host");
@@ -383,5 +384,80 @@ test.describe("navigation marks reach playback", () => {
         timeout: 90_000,
       })
       .toBe("1 2 3 4 1 2 6");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #165: a TAB-staff note with no <string> must not crash the renderer
+// ---------------------------------------------------------------------------
+
+/** Every console message Playwright reports as an error, plus any uncaught
+ * page exception - the check "the committed navigation transcription plays
+ * the form it carries" above never made, which is exactly how issue #165's
+ * crash went unnoticed: alphaTab catches TabBarRenderer's paint exceptions
+ * internally and logs them rather than throwing, so a page that draws almost
+ * nothing can still set data-score-render-ok, enable the play button and
+ * pass every assertion that does not itself read the console. */
+function watchForErrors(page) {
+  const consoleErrors = [];
+  const pageErrors = [];
+  page.on("console", (m) => {
+    if (m.type() === "error") consoleErrors.push(m.text());
+  });
+  page.on("pageerror", (e) => pageErrors.push(String(e)));
+  return { consoleErrors, pageErrors };
+}
+
+async function drawnGlyphCount(page) {
+  return await page.evaluate(() => document.querySelectorAll(".at-host svg text").length);
+}
+
+test.describe("a TAB staff without a fretted position does not crash the renderer", () => {
+  test("the real navigation.pdf transcription renders clean, with tab glyphs drawn", async ({
+    page,
+  }) => {
+    // The ground truth for issue #165's own "Verifying" checklist: every
+    // TAB-staff note in the committed transcription carries <string> and
+    // <fret> (see server/tests/test_engraved_fixtures.py's and
+    // test_tabextract.py's Rule 9 sweeps for the structural proof), so this
+    // is the render-side half - the score page actually draws it, with
+    // nothing logged to the console.
+    const errors = watchForErrors(page);
+    await stubNavigationScore(page);
+    await openScore(page, 11);
+    await page.waitForTimeout(1000);
+    expect(errors.consoleErrors).toEqual([]);
+    expect(errors.pageErrors).toEqual([]);
+    // Measured on the unfixed page (reading navigation.musicxml, the
+    // engraving source, straight into alphaTab): 12 glyphs - almost nothing
+    // of the fixture actually drew. The real transcription draws its full
+    // eight bars of tab digits and navigation text; > 40 is comfortably past
+    // "a handful of leftover notation glyphs" and nowhere near a tight pin
+    // on the exact digit count.
+    expect(await drawnGlyphCount(page)).toBeGreaterThan(40);
+  });
+
+  test("a staff whose tab notes are not all fretted degrades instead of crashing", async ({
+    page,
+  }) => {
+    // Issue #165's actual reproduction: navigation.pdf's own ENGRAVING
+    // SOURCE (two staves, notation over tab, the tab staff's notes carrying
+    // no <string>/<fret> because MuseScore frets them itself while
+    // engraving) fed to the real renderer as if it were a score - the shape
+    // a directly uploaded MusicXML/.mxl file can legally have even though
+    // Fermata's own transcriptions never produce it. Before
+    // disqualifyUnstrungTabStaves existed, this threw straight out of
+    // TabBarRenderer.paintStaffLines (caught and logged by alphaTab, not
+    // re-thrown - see watchForErrors above), drawing 12 glyphs total.
+    const errors = watchForErrors(page);
+    await stubNavigationUnstrungTabScore(page);
+    await openScore(page, 23);
+    await page.waitForTimeout(1000);
+    expect(errors.consoleErrors).toEqual([]);
+    expect(errors.pageErrors).toEqual([]);
+    // The notation staff (the same 32 notes, standard clef) still draws in
+    // full - only the tab staff's rendering is turned off - so this is well
+    // past the 12-glyph broken count without pinning an exact number.
+    expect(await drawnGlyphCount(page)).toBeGreaterThan(40);
   });
 });

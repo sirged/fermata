@@ -300,6 +300,33 @@ so string numbers start at 1. A conforming file's string numbers are all within
 the instrument's string count, so that each resolves against a declared
 `<staff-tuning>`.
 
+**What a producer does when it cannot fret a note.** `musicxml.build()` never
+writes a sounding note with `<pitch>` and no `<technical>` half - a note it
+has a (string, fret) pair for gets both, written together; a note it does not
+is written as a `<rest>` of the same duration instead (Rule 11 covers the one
+case that reaches this: a fret number MusicXML's `<octave>` cannot express).
+There is no third shape. This is a structural property of the emitter's own
+branching, not a claim that happens to hold on every fixture measured against
+it - see `test_library_wide_every_sounding_note_carries_string_and_fret` and
+its engraved-fixtures counterpart in the test suite, which check it against
+every PDF this project can commit or point `FERMATA_TEST_LIBRARY` at, and
+found nothing (issue #165).
+
+**What a consumer does when a file does not hold to this.** Rule 9 binds a
+*producer*; nothing stops a file this project did not write - a direct
+`.musicxml`/`.mxl` upload, or one hand-edited afterward - from declaring a TAB
+staff and leaving some of its notes unfretted anyway, which third-party
+notation software does for a tab staff LINKED to a notation staff and left
+for the reading application to fret. A staff like that cannot be honestly
+drawn as tablature, and Fermata's renderer does not try: it turns tablature
+off for exactly that staff before the first render (`showTablature = false`,
+the same lever this project already relies on to keep a percussion staff's
+tuning from being offered as tab - see `disqualifyUnstrungTabStaves` in
+`web/src/lib/score-render.js`) rather than asking alphaTab to draw a staff
+whose `TabBarRenderer.collectSpaces` indexes a note's absent string straight
+off the end of its own per-line array. Standard notation on the same staff,
+or another staff in the same track, is unaffected.
+
 **Rule 10.** Every note that sounds also carries `<pitch>`, and its pitch
 agrees with its string, fret, the declared tuning and any capo.
 

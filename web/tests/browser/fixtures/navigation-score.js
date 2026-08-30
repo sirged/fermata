@@ -6,19 +6,40 @@
 // and nothing short of the real loader can answer that.
 //
 // THE HEADLINE FIXTURE IS NOT BUILT HERE. It is read, byte for byte, off
-// server/tests/fixtures/engraved/navigation.musicxml - the transcription of
-// the committed navigation.pdf, produced by the extractor and checked into
-// the repository by issue #134. That file is the acceptance case, and a
-// hand-written imitation of it would only prove that this file and the spec
-// beside it agree with each other. The two built fixtures below cover the
-// shapes that transcription does NOT have: a jump crossing a repeat, and a
-// jump whose target the score never draws.
+// server/tests/fixtures/engraved/navigation.transcription.musicxml - the
+// actual output of tabextract.extract() run on the committed navigation.pdf,
+// regenerated and checked byte for byte by
+// server/tools/tab_extract/engrave_fixtures.py's write_transcriptions() (see
+// TRANSCRIPTION_FIXTURES there). A hand-written imitation of it would only
+// prove that this file and the spec beside it agree with each other. The two
+// built fixtures below cover the shapes that transcription does NOT have: a
+// jump crossing a repeat, and a jump whose target the score never draws.
+//
+// THIS USED TO READ navigation.musicxml INSTEAD (issue #165). That file is a
+// different thing entirely: the ENGRAVING SOURCE MuseScore was asked to draw
+// - two staves, notation over tab, the tab staff's notes carrying `<pitch>`
+// and no `<string>`/`<fret>` at all, because MuseScore frets them itself
+// while engraving. It was never a conforming file under
+// docs/musicxml-tab-profile.md Rule 9, and was never "produced by the
+// extractor" despite what this comment used to claim - it is the *input* to
+// MuseScore, one step before the extractor ever runs. Feeding it to alphaTab
+// as if it were a transcription crashed `TabBarRenderer.collectSpaces`
+// during paint: caught internally and logged rather than thrown, so the page
+// still reported `data-score-render-ok`, drew its play button and passed
+// every assertion here - while drawing almost nothing (12 SVG text glyphs,
+// 0 paths, measured on the unfixed page). Nothing in this file asserted
+// console output for that score, which is how it went unnoticed. See
+// NAVIGATION_UNSTRUNG_TAB_MUSICXML and stubNavigationUnstrungTabScore below,
+// which keep exercising that exact shape on purpose - now as a check that
+// the renderer degrades a staff it cannot honestly tab rather than crashing,
+// not as a stand-in for ground truth.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const ENGRAVED_DIR = path.join(here, "..", "..", "..", "..", "server", "tests", "fixtures", "engraved");
 
 /**
  * The committed transcription of navigation.pdf: eight 4/4 bars carrying a
@@ -31,7 +52,22 @@ const here = path.dirname(fileURLToPath(import.meta.url));
  * all.
  */
 export const NAVIGATION_MUSICXML = fs.readFileSync(
-  path.join(here, "..", "..", "..", "..", "server", "tests", "fixtures", "engraved", "navigation.musicxml"),
+  path.join(ENGRAVED_DIR, "navigation.transcription.musicxml"),
+  "utf-8",
+);
+
+/**
+ * The ENGRAVING SOURCE navigation.pdf was drawn from - two staves, notation
+ * over tab, the tab staff's notes carrying no `<string>`/`<fret>` (issue
+ * #165; see the header comment above). Kept and read on purpose, not
+ * deleted: it is a real shape a directly-uploaded MusicXML/.mxl file can
+ * have (Fermata's own transcriptions never have it - see
+ * musicxml.build()'s note-writing branch - but nothing stops a third-party
+ * export or a hand-edited file from linking a tab staff to notation without
+ * fretting it), and the renderer must not crash on it either way.
+ */
+export const NAVIGATION_UNSTRUNG_TAB_MUSICXML = fs.readFileSync(
+  path.join(ENGRAVED_DIR, "navigation.musicxml"),
   "utf-8",
 );
 
@@ -479,6 +515,20 @@ async function stubOneScore(page, id, title, xml) {
 /** Score id 11: the committed navigation.pdf transcription. */
 export async function stubNavigationScore(page) {
   await stubOneScore(page, 11, "Navigation fixture", NAVIGATION_MUSICXML);
+}
+
+/**
+ * Score id 23: the navigation.pdf ENGRAVING SOURCE (issue #165) - two
+ * staves, notation over tab, the tab staff's notes carrying no
+ * `<string>`/`<fret>`. Before this issue's fix, opening this exact document
+ * crashed `TabBarRenderer.collectSpaces` during paint; the crash was caught
+ * internally by alphaTab and logged rather than thrown, so nothing here
+ * failed until a test actually looked at console output. See
+ * "a TAB staff the renderer cannot honestly draw degrades instead of
+ * crashing" in navigation.spec.js.
+ */
+export async function stubNavigationUnstrungTabScore(page) {
+  await stubOneScore(page, 23, "Navigation unstrung-tab fixture", NAVIGATION_UNSTRUNG_TAB_MUSICXML);
 }
 
 /** Score id 12: repeats and a D.S. al Coda in one piece. */
