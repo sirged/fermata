@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/practice-shortcuts.spec.js",
+  "count": 1,
+  "reason": "issue #168's residual: a page turn pressed while the pages are being re-rendered at a new width is still recorded, rather than lost with the IntersectionObserver callback that a resize blanks."
+}

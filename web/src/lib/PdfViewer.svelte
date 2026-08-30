@@ -55,6 +55,33 @@
   // restore below does not immediately yank the reader back off the page
   // they just asked for.
   let turnedBeforeRestore = false;
+  // The page THIS COMPONENT last decided to show, while that scroll is still
+  // settling. null the rest of the time.
+  //
+  // The IntersectionObserver below is how ordinary reader scrolling - wheel,
+  // touch drag, the scrollbar - is followed, and for that it is right. It
+  // cannot also be the only way a turn the component performed ITSELF gets
+  // recorded, for two reasons that bite together:
+  //
+  //   - it is blanked wholesale for the duration of a resize re-render (see
+  //     suppressTracking), and
+  //   - it only ever fires on a CHANGE, so a crossing that lands inside that
+  //     blanked window is not re-delivered afterwards. Nothing retries it.
+  //
+  // So a turn whose crossing fell in the window used to leave the pane
+  // showing the new page while the indicator still read the old one, for as
+  // long as the score stayed open - the press was accepted and then
+  // discarded, exactly the shape of the bug this issue opened on, one layer
+  // further in. Measured on this branch (a 20-page score, resize re-render
+  // deliberately in flight): the flush began at 1569ms, the key at 1606ms,
+  // the turn's own crossing was delivered at 1615ms and dropped as
+  // suppressed, and the re-render's scroll restore then put the reader back
+  // on page 1 at 1876ms. The HUD read "1 / 20" from then on.
+  //
+  // Recording the decision here, the moment it is made, is what makes the
+  // indicator independent of whether that one callback survives.
+  let intendedPage = null;
+  let settleTimer;
 
   // half-page advance defaults on each time gig mode is entered, but the
   // performer can still turn it off without it snapping back mid-set
@@ -113,6 +140,8 @@
         if (pendingPage !== null && Math.min(pendingPage, pdfDoc.numPages) === n) {
           pendingPage = null;
           turnedBeforeRestore = true;
+          intendedPage = n;
+          setPage(n);
           canvas.scrollIntoView({ block: "start" });
         }
       }
@@ -173,12 +202,18 @@
             }
           }
           if (best) {
-            currentPage = Number(best.target.dataset.page);
-            clearTimeout(saveTimer);
-            saveTimer = setTimeout(
-              () => api.patch(score.id, { last_page: currentPage }).catch(() => {}),
-              1200,
-            );
+            const seen = Number(best.target.dataset.page);
+            // A turn this component performed is already recorded (see
+            // intendedPage). Until that scroll settles, the frames it passes
+            // through are not the reader going anywhere - taking them would
+            // drag the indicator back onto the page being LEFT, which is the
+            // same wrong answer by a different route. The arrival itself is
+            // what hands tracking back to the reader.
+            if (intendedPage !== null) {
+              if (seen === intendedPage) intendedPage = null;
+              return;
+            }
+            setPage(seen);
           }
         },
         { root: container, threshold: 0.4 },
@@ -203,10 +238,25 @@
         }, 200);
       });
       resizeObserver.observe(container);
+
+      // A programmatic turn hands tracking back to the reader when its own
+      // arrival is observed. If that never happens - the reader grabbed the
+      // scrollbar mid-turn, or the smooth scroll was cut short - the scroll
+      // going quiet is the other way it must be handed back, or the observer
+      // would be ignored for as long as the score stayed open.
+      container.addEventListener("scroll", onScroll, { passive: true });
     })();
+
+    function onScroll() {
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => (intendedPage = null), 200);
+    }
 
     return () => {
       cancelled = true;
+      container?.removeEventListener("scroll", onScroll);
+      clearTimeout(settleTimer);
+      intendedPage = null;
       // both belong to the document this pass loaded; a re-run (a different
       // score) must not inherit a turn pressed against the old one, nor its
       // permission to skip the new one's last_page restore
@@ -219,6 +269,16 @@
     };
   });
 
+  // The one place the page indicator moves, so that a turn this component
+  // performed and a scroll the reader performed are recorded identically -
+  // including the debounced last_page write, which used to live only on the
+  // observer's path and so was skipped for any turn the observer missed.
+  function setPage(n) {
+    currentPage = n;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => api.patch(score.id, { last_page: currentPage }).catch(() => {}), 1200);
+  }
+
   function goto(page) {
     // pageCount is 0 until the document's metadata has parsed. Clamping
     // against it then would fold every early turn onto page 1 - which is
@@ -228,6 +288,12 @@
     const canvas = container.querySelector(`[data-page="${target}"]`);
     if (canvas) {
       pendingPage = null;
+      // Recorded BEFORE the scroll is asked for, not as a consequence of it
+      // being observed. Everything downstream of here - the observer, the
+      // resize re-render's scroll restore - now reads the page the reader
+      // asked for rather than the last one that happened to be seen.
+      intendedPage = target;
+      setPage(target);
       canvas.scrollIntoView({ block: "start", behavior: "smooth" });
     } else {
       pendingPage = target;
