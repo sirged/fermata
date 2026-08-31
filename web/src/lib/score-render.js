@@ -3073,10 +3073,16 @@ export function createScoreView(host, opts = {}) {
     if (!note) return null;
     const stringCount = note.beat?.voice?.bar?.staff?.tuning?.length ?? 0;
     const mxString = stringCount > 0 && note.string >= 1 ? stringCount + 1 - note.string : null;
+    // alphaTab numbers a bar's voices from 0; MusicXML from 1 (Rule 6). Mirrored
+    // here so the seam speaks the document's language - what lets TabViewer
+    // cross-check the voice a note landed in against the document's own <voice>
+    // after a voice reassignment (#182), the same way mxString is cross-checked.
+    const voiceIndex = note.beat?.voice?.index;
     return {
       mxString,
       fret: note.fret ?? null,
       midi: Number.isFinite(note.realValue) ? note.realValue : null,
+      voice: Number.isInteger(voiceIndex) ? voiceIndex + 1 : null,
     };
   }
 

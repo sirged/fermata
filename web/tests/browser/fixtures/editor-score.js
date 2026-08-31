@@ -91,6 +91,56 @@ ${note("n2-1-3-0", "E", 0, 4, 2, 5)}
   </part>
 </score-partwise>`;
 
+// A one-measure score whose first beat is a two-note CHORD (Rule 7: the first
+// note carries no <chord>, the second carries <chord/>, both share one onset and
+// duration), for the move-a-note-to-another-voice edit (#182) to split. Standard
+// six-string tuning, 4/4, divisions 480.
+//
+//   ord  id          voice  onset  string  fret  pitch  midi   note
+//   0    n1-1-0-0    1      0      1       0     E4     64     chord head
+//   1    n1-1-0-1    1      0      2       0     B3     59     chord member
+//   2    n1-1-1-0    1      480    1       3     G4     67
+//   3    n1-1-2-0    1      960    2       3     D4     62
+//   4    n1-1-3-0    1      1440   1       5     A4     64
+//
+// Voice 1 sums to 480 × 4 = 1920, the 4/4 measure, so Rule 8 holds before any
+// edit. Moving the chord member (ord 1, B3) to voice 2 must leave the head (E4)
+// sounding at onset 0 and place B3 at onset 0 of the new voice.
+export const CHORD_MUSICXML = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1"><part-name>Guitar</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>480</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>TAB</sign><line>5</line></clef>${STAFF_DETAILS}
+      </attributes>
+      <note id="n1-1-0-0">
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>480</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><technical><string>1</string><fret>0</fret></technical></notations>
+      </note>
+      <note id="n1-1-0-1">
+        <chord/>
+        <pitch><step>B</step><octave>3</octave></pitch>
+        <duration>480</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><technical><string>2</string><fret>0</fret></technical></notations>
+      </note>
+${note("n1-1-1-0", "G", 0, 4, 1, 3)}
+${note("n1-1-2-0", "D", 0, 4, 2, 3)}
+${note("n1-1-3-0", "A", 0, 4, 1, 5)}
+    </measure>
+  </part>
+</score-partwise>`;
+
 // The same score with one note moved to a string the six-string staff does not
 // have (<string>7</string>) - the under-specified tab a directly uploaded or
 // hand-edited file can carry (issue #165). The editor never writes this; it is
