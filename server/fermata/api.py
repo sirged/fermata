@@ -22,6 +22,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, Response
+from lxml import etree as lxml_etree
 from pydantic import BaseModel, Field, StrictInt
 
 from . import instruments, practice, scanner, trainer, transcribe_batch
@@ -2116,17 +2117,79 @@ def _sniff_transcription_format(content: str) -> str:
     return "musicxml" if content.lstrip().startswith("<") else "alphatex"
 
 
+# Cached as (path, parsed schema) rather than just the schema, so a changed
+# config.MUSICXML_XSD - which only happens in tests, via monkeypatch; a real
+# deployment sets the environment variable once, before Fermata starts -
+# invalidates the cache instead of going on serving whatever path was parsed
+# first. Parsing the schema is not cheap (it is hundreds of kilobytes with its
+# own imports to resolve), and PUT /scores/{id}/transcription would otherwise
+# pay that cost on every single save.
+_musicxml_schema_cache: tuple[str, "lxml_etree.XMLSchema"] | None = None
+
+
+def _musicxml_schema():
+    """The parsed MusicXML 4.0 schema named by config.MUSICXML_XSD, or None
+    when it is unset or does not name a file that is actually there.
+
+    None is the default-runtime answer, and it is what keeps
+    save_transcription's behaviour unchanged for every deployment that has
+    not opted in: no schema configured means _validate_musicxml_edit is a
+    no-op, exactly as this endpoint has always behaved. Loaded from disk only
+    - this never fetches anything - which matters because the schema's own
+    xsi:noNamespaceSchemaLocation names a remote URL that must not be
+    fetched on every request. See config.MUSICXML_XSD's comment for how a
+    deployment or CI run obtains a local copy.
+    """
+    global _musicxml_schema_cache
+    path = config.MUSICXML_XSD
+    if not path or not os.path.isfile(path):
+        return None
+    if _musicxml_schema_cache is None or _musicxml_schema_cache[0] != path:
+        _musicxml_schema_cache = (path, lxml_etree.XMLSchema(lxml_etree.parse(path)))
+    return _musicxml_schema_cache[1]
+
+
+def _validate_musicxml_edit(content: str) -> None:
+    """422 when a MusicXML edit is not well-formed XML, or is well-formed but
+    invalid against the real MusicXML 4.0 schema - belt-and-suspenders behind
+    the note editor's own client-side Rule 11 guard, against a hand-crafted
+    request (#188). Only called for `fmt == "musicxml"` - alphaTex is never
+    XSD-checked, there being no schema for it.
+
+    A no-op whenever _musicxml_schema() answers None, which is the entire
+    point: an unconfigured deployment must see no change in behaviour, so
+    this function raises nothing until FERMATA_MUSICXML_XSD names a real
+    local schema. Uses the exact same lxml.etree.XMLSchema.validate call as
+    tests/test_musicxml.py's test_validates_against_xsd, against the same
+    schema, rather than a second hand-rolled loader.
+    """
+    schema = _musicxml_schema()
+    if schema is None:
+        return
+    try:
+        doc = lxml_etree.fromstring(content.encode("utf-8"))
+    except lxml_etree.XMLSyntaxError as exc:
+        raise HTTPException(422, f"transcription is not well-formed XML: {exc}") from None
+    if not schema.validate(doc):
+        errors = "; ".join(f"line {e.line}: {e.message}" for e in schema.error_log)
+        raise HTTPException(
+            422, f"transcription does not validate against the MusicXML 4.0 schema: {errors}")
+
+
 @router.put(
     "/scores/{score_id}/transcription", tags=[TAG_TRANSCRIPTION], response_model=TranscriptionOut
 )
 def save_transcription(score_id: RowId, body: TranscriptionEditIn):
     """Save a hand edit, replacing any hand edit already stored - never the
     extraction. `format` is sniffed from the content when not given - see
-    _sniff_transcription_format."""
+    _sniff_transcription_format. A MusicXML edit is also checked against the
+    real schema when one is configured - see _validate_musicxml_edit."""
     fmt = body.format or _sniff_transcription_format(body.content)
     if fmt not in VALID_TRANSCRIPTION_FORMATS:
         raise HTTPException(
             422, f"format must be one of {sorted(VALID_TRANSCRIPTION_FORMATS)}")
+    if fmt == "musicxml":
+        _validate_musicxml_edit(body.content)
     with tx() as conn:
         _live_score_row(conn, score_id, "save a transcription for it")
         conn.execute(
