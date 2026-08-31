@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-editor-fuzz-189.spec.js",
+  "count": 5,
+  "reason": "issue #189 N-random-edits divergence fuzz guard: after N seeded (mulberry32) random edits on a real polyphonic score (fixtures/editor-poly.js), the written MusicXML re-imports to a model identical to the one on screen across every note (auditAllNotes), with the per-edit divergence flag green throughout - the stronger whole-model check #10 asked for once voice moves (#182) and deletes (#186) could shift an ordinal rather than merely misread one. The five tests: the seeded run stays identical (fixed seed + N, FERMATA_FUZZ_SEED/N override for a local sweep); the guard actually CATCHES a planted stale-render divergence and NAMES the note, then heals; a single fret edit keeps the per-selection guard green over the two-voice document; and the two tie-invariant tests the fuzz surfaced - a tie must join the same fretboard position (same string+fret), not merely the same sounding pitch (alphaTab draws a tie-stop at a fret derived from its start), so a same-pitch different-position tie is refused and moving a tied note off its partner's position breaks the tie on both ends."
+}

@@ -270,7 +270,10 @@
     doc = null;
     editError = "";
     view?.editor?.setNotationShown(false);
-    if (typeof window !== "undefined") window.__scoreEditor = null;
+    if (typeof window !== "undefined") {
+      window.__scoreEditor = null;
+      window.__scoreEditorHarness = null;
+    }
   }
 
   function toggleEdit() {
@@ -349,6 +352,76 @@
       width: r.width,
       height: r.height,
     };
+  }
+
+  // The N-random-edits fuzz guard's assertion (#189), stronger than the
+  // per-selection divergence cross-check above because it spans EVERY note, not
+  // just the selected one. The per-selection guard catches a MISREAD of the note
+  // under the cursor; it cannot catch a positional-map SHIFT - a voice move or a
+  // delete that leaves the renderer's ordinal N naming a different note than the
+  // document's ordinal N - unless that exact note happens to be selected. This
+  // re-imports the WRITTEN MusicXML (a fresh parse of doc.text()) and asserts the
+  // on-screen model equals it across all ordinals, so a shift anywhere shows.
+  //
+  // The equality asserted, enumerated:
+  //   - count: the renderer's sounding-note count equals the re-import's.
+  //   - per ordinal, the note the renderer drew and the note the re-import reads
+  //     at that SAME ordinal are the same note: pitch (midi), string (MusicXML
+  //     numbering), fret and voice all agree. This is what a positional shift
+  //     breaks.
+  //   - a full written-document round-trip: the live model's own reads against a
+  //     fresh re-parse of the written text, field by field - id, pitch/spelling,
+  //     string, fret, voice, ONSET, duration (via type + dots) and TIES - so the
+  //     serializer/parser round-trip is proven lossless over onsets, durations
+  //     and ties too, not only the four the renderer exposes.
+  //
+  // Returns { ok, docCount, renderCount, divergences } where each divergence
+  // NAMES what disagreed ({ ordinal, field, id, doc, render } or a round-trip
+  // entry), so a failing fuzz run points at the note rather than only going red.
+  function auditAllNotes() {
+    if (!doc || !view) return { ok: false, docCount: 0, renderCount: 0, divergences: [{ field: "no-document" }] };
+    let redoc;
+    try {
+      redoc = createDocument(doc.text());
+    } catch (e) {
+      return { ok: false, docCount: 0, renderCount: 0, divergences: [{ field: "reimport-failed", detail: String(e?.message ?? e) }] };
+    }
+    const docCount = redoc.count();
+    const renderCount = view.editor.noteCount();
+    const divergences = [];
+    if (docCount !== renderCount) divergences.push({ field: "count", doc: docCount, render: renderCount });
+    const n = Math.min(docCount, renderCount);
+    for (let i = 0; i < n; i++) {
+      const d = redoc.noteAt(i);
+      const v = view.editor.viewInfo(i);
+      if (!v) {
+        divergences.push({ ordinal: i, field: "no-render-view", id: d?.id ?? null });
+        continue;
+      }
+      if (v.midi !== d.midi) divergences.push({ ordinal: i, field: "midi", id: d.id, doc: d.midi, render: v.midi });
+      if (v.mxString !== d.string)
+        divergences.push({ ordinal: i, field: "string", id: d.id, doc: d.string, render: v.mxString });
+      if (v.fret !== d.fret) divergences.push({ ordinal: i, field: "fret", id: d.id, doc: d.fret, render: v.fret });
+      if (v.voice != null && v.voice !== d.voice)
+        divergences.push({ ordinal: i, field: "voice", id: d.id, doc: d.voice, render: v.voice });
+    }
+    // The written-document round-trip: the live (edited-in-place) model vs a
+    // fresh re-parse of its own serialization, so onset/duration/tie identity is
+    // asserted on both sides even though the renderer seam does not expose them.
+    const live = doc.soundingNotes();
+    const round = redoc.soundingNotes();
+    if (live.length !== round.length) {
+      divergences.push({ field: "roundtrip-count", live: live.length, round: round.length });
+    } else {
+      const fields = ["id", "midi", "step", "alter", "string", "fret", "voice", "onset", "type", "dots", "tieStart", "tieStop"];
+      for (let i = 0; i < live.length; i++) {
+        for (const f of fields) {
+          if (live[i][f] !== round[i][f])
+            divergences.push({ ordinal: i, field: `roundtrip-${f}`, id: live[i].id, live: live[i][f], round: round[i][f] });
+        }
+      }
+    }
+    return { ok: divergences.length === 0, docCount, renderCount, divergences };
   }
 
   async function applyEdit(mutate, refusal) {
@@ -626,7 +699,93 @@
           viewInfo: (ordinal) => v.editor.viewInfo(ordinal),
           noteCount: () => v.editor.noteCount(),
           boundsCount: () => v.editor.boundsCount(),
+          // The whole-model re-import cross-check (#189). Read-only like the rest
+          // of this hook - it re-parses the written document and compares, it
+          // does not write. Exposed here so the fuzz spec can assert on the same
+          // audit the guard runs, and NAME a divergence when one is found.
+          audit: () => auditAllNotes(),
         };
+        // The N-random-edits fuzz DRIVER (#189) - test instrumentation, gated
+        // behind an opt-in flag a test sets before load (addInitScript), so it
+        // never exists in an ordinary session. Unlike __scoreEditor above it
+        // MUTATES, but only by calling the very functions the panel's own
+        // controls call, so it can drive nothing a user with the editor open
+        // could not. It lets a seeded sequence apply real edits through the real
+        // reload/re-render/divergence path (`apply`), and deliberately induce a
+        // stale-render divergence for the guard to catch (`corrupt`).
+        if (window.__fermataEditorHarness) {
+          window.__scoreEditorHarness = {
+            count: () => (doc ? doc.count() : 0),
+            stringCount: () => (doc ? doc.stringCount : 0),
+            noteAt: (ordinal) => (doc ? doc.noteAt(ordinal) : null),
+            text: () => (doc ? doc.text() : null),
+            select: (ordinal) => {
+              if (doc == null || ordinal == null || ordinal < 0 || ordinal >= doc.count()) return null;
+              selectedOrdinal = ordinal;
+              refreshSelection();
+              return selectedOrdinal;
+            },
+            audit: () => auditAllNotes(),
+            // Apply one shipped edit op to `ordinal` through the real handler,
+            // awaiting its reload/re-render, and report whether it applied, was
+            // refused, and the per-edit divergence flag afterwards.
+            async apply(ordinal, op, arg) {
+              if (doc == null || ordinal == null || ordinal < 0 || ordinal >= doc.count())
+                return { applied: false, refused: false, reason: "ordinal-out-of-range", divergenceOk };
+              selectedOrdinal = ordinal;
+              refreshSelection();
+              editWarn = "";
+              const before = doc.text();
+              switch (op) {
+                case "fret": await changeFret(arg); break;
+                case "string": await changeString(arg); break;
+                case "duration": await changeDuration(arg); break;
+                case "dots": await changeDots(arg); break;
+                case "tie": await toggleTie(); break;
+                case "accidental": await changeAccidental(arg); break;
+                case "enharmonic": await cycleEnharmonic(arg); break;
+                case "voice": await changeVoice(arg); break;
+                case "delete": await deleteSelected(); break;
+                default: return { applied: false, refused: false, reason: "unknown-op", divergenceOk };
+              }
+              const after = doc ? doc.text() : before;
+              return {
+                op,
+                arg: arg ?? null,
+                ordinal,
+                applied: after !== before,
+                refused: !!editWarn,
+                warn: editWarn || null,
+                selected: selectedOrdinal,
+                divergenceOk,
+              };
+            },
+            // Mutate the DOCUMENT but skip the re-render, leaving the on-screen
+            // model stale against the written MusicXML - the exact positional-map
+            // /stale-render divergence the audit exists to catch. Used by the
+            // "the guard actually catches a divergence" spec (#189, target 2).
+            corrupt(ordinal, op, arg) {
+              if (doc == null || ordinal == null || ordinal < 0 || ordinal >= doc.count()) return { changed: false };
+              const before = doc.text();
+              let changed = false;
+              switch (op) {
+                case "fret": changed = doc.setFret(ordinal, arg); break;
+                case "string": changed = doc.setString(ordinal, arg); break;
+                case "duration": changed = doc.setDurationType(ordinal, arg); break;
+                case "delete": changed = doc.deleteNote(ordinal); break;
+                case "voice": changed = doc.moveToVoice(ordinal, arg) != null; break;
+                default: return { changed: false, reason: "unknown-op" };
+              }
+              // Keep the in-place model consistent with its own text for the
+              // round-trip half of the audit, but do NOT reload the view - that
+              // is the whole point: the render now lags the written document.
+              if (changed) doc = createDocument(doc.text());
+              return { changed, before, after: doc.text() };
+            },
+          };
+        } else {
+          window.__scoreEditorHarness = null;
+        }
       }
     });
   });
