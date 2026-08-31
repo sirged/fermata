@@ -22,7 +22,7 @@
 
   import { api } from "../api.js";
   import { getInstruments, loadInstruments } from "../instruments.svelte.js";
-  import { formatDuration, localDay } from "../practice.js";
+  import { localDay } from "../practice.js";
   import Neck from "./Neck.svelte";
   import {
     DEFAULT_FRET_COUNT,
@@ -37,12 +37,10 @@
     attemptPayload,
     checkPositionAnswer,
     checkTapAnswer,
-    directionLabel,
     loggedStatement,
     pickQuestion,
     progressStatement,
     scopeIsAskable,
-    scopeLabel,
     sessionNote,
   } from "./fret-to-note.js";
 
