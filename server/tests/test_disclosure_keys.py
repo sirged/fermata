@@ -37,6 +37,13 @@ _VENDORED_PATH = (
 _RULE8_CONFORMANCE_KEYS = {
     "bars_overfull", "bars_short", "bars_defective", "bars_measured",
     "bars_padded", "bars_unread",
+    # `bars_anacrusis` (issue #174) is the Rule 8 arithmetic itself, adjusted
+    # for a first-bar pickup that is normal notation rather than a misread: it
+    # is how many bars were lifted out of bars_short / bars_defective. Shown
+    # through the bar-count headline and the warning prose (which names
+    # `anacrusis_bars`) exactly like bars_padded / bars_unread, not through the
+    # #155 disclosures panel, so it belongs here and stays off the web mirror.
+    "bars_anacrusis",
 }
 
 

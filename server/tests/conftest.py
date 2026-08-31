@@ -35,6 +35,17 @@ _FIXTURE_RELATIVE_PATHS = {
     # chord: the figure notehead-to-stem attachment gets wrong, and an Opus
     # engraving, so it also exercises the side bearing that only that font has.
     "dalza": "Classical/PrimoGuitar Misc/Dalza-Recercar-Guitar-2019.pdf",
+    # Issue #174 anacrusis cases. Sad Song opens on a two-eighth-note pickup and
+    # is otherwise clean, so recognising the pickup takes it to zero defective
+    # bars. Singing Mountain opens on a one-beat pickup but ALSO carries an
+    # unrelated short bar (19), so recognising the pickup lifts bar 1 while its
+    # demotion remains. Far Promise is the adversarial non-pickup: its first bar
+    # is short in ONE voice while another fills it (a dropped note), and its
+    # final bar IS a complete measure - so the "wholly short" guard has to keep
+    # it defective even though the final-bar half of the pairing holds.
+    "sad_song": "Patreon/John Oeth/Super Mario/Sad Song (Super Mario RPG).pdf",
+    "singing_mountain": "Patreon/John Oeth/Chrono Trigger/Singing Mountain (Chrono Trigger).pdf",
+    "far_promise": "Patreon/John Oeth/Chrono Cross/Far Promise (Radical Dreamers).pdf",
     # Filled noteheads whose stems the vector pass never sees, on every one of
     # its notation staves. Nothing engraved in this repository reproduces that
     # - MuseScore draws every stem as a clean vector line, so all twelve
@@ -382,6 +393,30 @@ def dalza_pdf() -> Path:
     p = _fixture_path("dalza")
     if p is None:
         skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Dalza fixture)")
+    return p
+
+
+@pytest.fixture
+def sad_song_pdf() -> Path:
+    p = _fixture_path("sad_song")
+    if p is None:
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing 'Sad Song' fixture)")
+    return p
+
+
+@pytest.fixture
+def singing_mountain_pdf() -> Path:
+    p = _fixture_path("singing_mountain")
+    if p is None:
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing 'Singing Mountain' fixture)")
+    return p
+
+
+@pytest.fixture
+def far_promise_pdf() -> Path:
+    p = _fixture_path("far_promise")
+    if p is None:
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing 'Far Promise' fixture)")
     return p
 
 

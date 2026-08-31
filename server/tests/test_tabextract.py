@@ -2053,31 +2053,152 @@ def test_bar_conformance_counts_both_directions():
     count existed before, so a bar with a note missing from it looked clean.
 
     The fields are (overfull, short, defective, counted, padded, padded_bars,
-    inferred_quarters, defective_bars)."""
+    inferred_quarters, defective_bars, anacrusis, anacrusis_bars). The two
+    trailing anacrusis fields (issue #174) are 0/() here: none of these cases
+    is a pickup - a single short bar is not (a pickup needs a first AND a
+    corroborating final bar), and the two-bar cases open on a FULL bar."""
     exact = [[(4, 0, [(1, 0)])] * 3]
     over = [[(4, 0, [(1, 0)])] * 4]
     short = [[(4, 0, [(1, 0)])] * 2]
-    assert tabextract._bar_conformance([(exact, (3, 4))]) == (0, 0, 0, 1, 0, (), 0.0, ())
-    assert tabextract._bar_conformance([(over, (3, 4))]) == (1, 0, 1, 1, 0, (), 0.0, (1,))
-    assert tabextract._bar_conformance([(short, (3, 4))]) == (0, 1, 1, 1, 0, (), 0.0, (1,))
+    assert tabextract._bar_conformance([(exact, (3, 4))]) == (0, 0, 0, 1, 0, (), 0.0, (), 0, ())
+    assert tabextract._bar_conformance([(over, (3, 4))]) == (1, 0, 1, 1, 0, (), 0.0, (1,), 0, ())
+    assert tabextract._bar_conformance([(short, (3, 4))]) == (0, 1, 1, 1, 0, (), 0.0, (1,), 0, ())
     # A bar with one voice over its meter and another under it is wrong ONCE.
     # overfull + short would count it twice and can exceed the bar count, which
     # is why `defective` is a field of its own.
     both = [[(4, 0, [(1, 0)])] * 4, [(4, 0, [(2, 0)])] * 2]
-    assert tabextract._bar_conformance([(both, (3, 4))]) == (1, 1, 1, 1, 0, (), 0.0, (1,))
+    assert tabextract._bar_conformance([(both, (3, 4))]) == (1, 1, 1, 1, 0, (), 0.0, (1,), 0, ())
     # A voice padded out to its meter with inferred silence is still SHORT by
     # what was missing, and the padding is reported separately: bar 2 here.
     padded = [[(4, 0, [(1, 0)])] * 3,
               [(4, 0, [(2, 0)]), (2, 0, musicxml.inferred_rest())]]
     assert tabextract._bar_conformance([(exact, (3, 4)), (padded, (3, 4))]) == (
-        0, 1, 1, 2, 1, (2,), 2.0, (2,))
+        0, 1, 1, 2, 1, (2,), 2.0, (2,), 0, ())
     # A bar with no meter is not measured against one, but its padding is still
     # counted: it carries a <forward> into the file either way, and a padded
     # count the file disagrees with is what this whole mechanism prevents.
     assert tabextract._bar_conformance([(padded, None)]) == (
-        0, 0, 0, 0, 1, (1,), 2.0, ())
+        0, 0, 0, 0, 1, (1,), 2.0, (), 0, ())
     # _overfull_bars keeps its old shape for the callers that want just that
     assert tabextract._overfull_bars([(over, (3, 4))]) == (1, 1)
+
+
+def test_a_first_bar_pickup_is_excused_from_rule_8_uncompensated():
+    """Issue #174: a deliberately short FIRST bar (an anacrusis / pickup) whose
+    piece closes on a COMPLETE final measure of the same meter is normal
+    notation, not a misread, so _bar_conformance lifts it out of the short and
+    defective counts and records it as an anacrusis instead."""
+    full = [[(4, 0, [(1, 0)])] * 3]        # one voice, 3.0 == a full 3/4 bar
+    pickup = [[(4, 0, [(1, 0)])]]          # one voice, 1.0 - short of the meter
+    c = tabextract._bar_conformance(
+        [(pickup, (3, 4)), (full, (3, 4)), (full, (3, 4))])
+    # Bar 1 was short in its only voice and the final bar is a complete measure,
+    # so bar 1 is the pickup: no short bar, no defective bar, one anacrusis.
+    assert (c.short, c.defective, c.defective_bars) == (0, 0, ())
+    assert (c.anacrusis, c.anacrusis_bars) == (1, (1,))
+
+
+def test_a_first_bar_pickup_is_excused_from_rule_8_compensated():
+    """The classical, compensated pairing: bar 1 is short AND the final bar is
+    short by exactly the beats bar 1 is missing, so the two sum to one measure
+    (Bella-Ciao is the real case - 2.0 + 2.0 in 4/4). BOTH bars are the pickup,
+    and both come out of the defective count."""
+    full = [[(4, 0, [(1, 0)])] * 4]        # 4.0 == a full 4/4 bar
+    pickup = [[(2, 0, [(1, 0)])]]          # 2.0 - short of 4/4
+    final = [[(2, 0, [(1, 0)])]]           # 2.0 - and 2.0 + 2.0 == 4.0
+    c = tabextract._bar_conformance(
+        [(pickup, (4, 4)), (full, (4, 4)), (final, (4, 4))])
+    assert (c.short, c.defective, c.defective_bars) == (0, 0, ())
+    assert (c.anacrusis, c.anacrusis_bars) == (2, (1, 3))
+
+
+def test_a_first_bar_short_in_only_one_voice_is_not_a_pickup():
+    """The central adversarial guard (issue #174): a first bar with one voice
+    that FILLS the meter and another that falls short is a dropped note, not a
+    pickup - even when the final bar is a complete measure, the shape that would
+    otherwise complete the pairing. It stays short and defective. This is the
+    _bar_conformance shape of the real Far Promise case."""
+    full = [[(4, 0, [(1, 0)])] * 4]
+    # voice 1 is 1.0, voice 2 fills the bar at 4.0 - the longest voice is NOT
+    # under the meter, so the bar is not wholly short.
+    dropped = [[(4, 0, [(1, 0)])], [(4, 0, [(2, 0)])] * 4]
+    c = tabextract._bar_conformance(
+        [(dropped, (4, 4)), (full, (4, 4)), (full, (4, 4))])
+    assert (c.short, c.defective, c.defective_bars) == (1, 1, (1,))
+    assert (c.anacrusis, c.anacrusis_bars) == (0, ())
+
+
+def test_a_short_first_bar_the_final_bar_does_not_complete_stays_defective():
+    """The other half of the adversarial guard: bar 1 IS wholly short, but the
+    final bar neither is a complete measure nor sums with bar 1 to one - so the
+    first/last pairing does not hold and bar 1 is still counted as not adding
+    up. A short first bar alone never earns the exemption."""
+    full = [[(4, 0, [(1, 0)])] * 3]
+    pickup = [[(4, 0, [(1, 0)])]]          # 1.0, wholly short
+    final = [[(4, 1, [(1, 0)])]]           # 1.5 (dotted quarter); 1.0 + 1.5 != 3.0
+    c = tabextract._bar_conformance(
+        [(pickup, (3, 4)), (full, (3, 4)), (final, (3, 4))])
+    # both the first and last bars are short, and NEITHER is excused
+    assert (c.short, c.defective, c.defective_bars) == (2, 2, (1, 3))
+    assert (c.anacrusis, c.anacrusis_bars) == (0, ())
+
+
+def test_a_single_short_bar_is_never_a_pickup():
+    """A pickup needs a first AND a corroborating final bar, so a lone short bar
+    - which is both - cannot be one. Guards against a one-bar score excusing its
+    only bar into looking clean."""
+    pickup = [[(4, 0, [(1, 0)])]]
+    c = tabextract._bar_conformance([(pickup, (3, 4))])
+    assert (c.short, c.defective, c.anacrusis) == (1, 1, 0)
+
+
+def test_the_pickup_exemption_is_disclosed_in_the_rhythm_warnings():
+    """The exemption is stated out loud, never silent (issue #174): the whole
+    risk is excusing a genuinely short first bar, so the assumption and the bar
+    it was made on reach the reader."""
+    conformance = tabextract._BarConformance(
+        overfull=0, short=0, defective=0, counted=3, anacrusis=1,
+        anacrusis_bars=(1,))
+    warnings, _confidence = tabextract._rhythm_report(
+        collections.Counter({tabextract.PROV_GLYPHS: 1}), {}, conformance)
+    assert any("pickup (anacrusis)" in w and "bars are: 1" in w for w in warnings)
+
+
+def test_sad_song_pickup_is_recognised_and_lifts_its_demotion(sad_song_pdf):
+    """Issue #174 target 1: Sad Song opens on a two-eighth-note pickup that was
+    its ONLY defective bar, so recognising it takes the score to zero defective
+    bars and its rhythm confidence from medium back to high."""
+    result = tabextract.extract(sad_song_pdf)
+    assert result.bars_anacrusis == 1
+    assert result.anacrusis_bars == [1]
+    assert result.bars_defective == 0
+    assert result.bars_short == 0
+    assert result.confidence["rhythm"].startswith("high")
+
+
+def test_singing_mountain_pickup_is_lifted_but_its_other_defect_remains(
+        singing_mountain_pdf):
+    """Issue #174 target 2: Singing Mountain opens on a one-beat pickup but also
+    carries an unrelated short bar (bar 19). The pickup is recognised - bar 1
+    leaves the defective count - while bar 19 keeps the score at medium."""
+    result = tabextract.extract(singing_mountain_pdf)
+    assert result.bars_anacrusis == 1
+    assert result.anacrusis_bars == [1]
+    # bar 19 is a genuine misread and stays defective
+    assert result.bars_defective == 1
+    assert result.confidence["rhythm"].startswith("medium")
+
+
+def test_far_promise_short_first_bar_is_not_excused_as_a_pickup(far_promise_pdf):
+    """Issue #174 adversarial non-fire on a real score: Far Promise's first bar
+    is short in one voice while another voice fills it (a dropped note), and its
+    final bar IS a complete measure - the shape that would complete the pairing.
+    The 'wholly short' guard keeps bar 1 defective and the demotion intact."""
+    result = tabextract.extract(far_promise_pdf)
+    assert result.bars_anacrusis == 0
+    assert result.anacrusis_bars == []
+    assert result.bars_defective == 2       # bars 1 and 16, both still counted
+    assert result.confidence["rhythm"].startswith("medium")
 
 
 def test_short_bars_are_reported_not_padded():
@@ -4346,6 +4467,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
         totals["bars_overfull"] += result.bars_overfull
         totals["bars_short"] += result.bars_short
         totals["bars_defective"] += result.bars_defective
+        totals["bars_anacrusis"] += result.bars_anacrusis
         totals["bars_padded"] += result.bars_padded
         totals["inferred_rest_quarters"] += result.inferred_rest_quarters
         totals["form_marks_unanchored"] += result.form_marks_unanchored
@@ -4553,10 +4675,27 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # right takes it out of bars_defective as well: bars_defective falls by 1
     # and bars_short does not move. Still no note, beat or bar moves - the rest
     # is relocated, not dropped or added.
-    assert totals["bars_overfull"] == 1535               # 1541 (#113) -> 1540 (#163) -> 1536 (#140) -> 1535 (#180, bar 16)
-    assert totals["bars_short"] == 4192                  # 4190 -> 4192 (#140); unmoved by #180
-    assert totals["bars_defective"] == 5299              # 5340; -1 at #180 (bar 16 was overfull-only)
-    assert totals["bars_padded"] == 3605                 # 3603 -> 3605 (#140)
+    assert totals["bars_overfull"] == 1535               # 1541 (#113) -> 1540 (#163) -> 1536 (#140) -> 1535 (#180, bar 16); unmoved by #174
+    # -40 at #174: a first-bar pickup (anacrusis) is normal notation, not a
+    # short bar, so _bar_conformance lifts it out of bars_short / bars_defective.
+    # 40 bars are excused across 38 scores (see bars_anacrusis below): 36 scores
+    # excuse their first bar alone, and Bella-Ciao and Peaceful Sleep (NieR
+    # Automata) each also excuse their FINAL bar, the compensated pairing where
+    # bar 1's length plus the final bar's length sum to one measure (Bella-Ciao:
+    # 2.0 + 2.0 in 4/4). Every excused bar was short in every voice, so
+    # bars_short and bars_defective each fall by exactly the same 40.
+    assert totals["bars_short"] == 4152                  # 4190 -> 4192 (#140) -> 4152 (#174, -40)
+    assert totals["bars_defective"] == 5259              # 5340; -1 at #180 (bar 16 overfull-only); -40 at #174 (pickups)
+    # Every excused pickup bar (issue #174) - the count that says how many bars
+    # bars_short and bars_defective each dropped by, and the disclosure a reader
+    # sees. Two of the 38 scores excuse two bars each (the compensated pairing
+    # above), so this is 40, not 38. Verified score by score against the printed
+    # pages for the classification movers: Sad Song (Super Mario RPG), the only
+    # score whose rhythm confidence this lifts from medium to high, is a
+    # two-eighth-note pickup; every other excused first bar leaves its score in
+    # the same rhythm band (it still carries other defects, or was already low).
+    assert totals["bars_anacrusis"] == 40
+    assert totals["bars_padded"] == 3605                 # 3603 -> 3605 (#140); unmoved by #174
     # 4897.875 before #162, 4899.875 after: Answers (Final Fantasy XIV
     # Endwalker) bar 45 held one quarter in each of its two voices in a bar read
     # a system early as 3/4. #162 puts that bar back on the running 4/4 it is
