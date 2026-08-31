@@ -121,6 +121,15 @@ _FIXTURE_RELATIVE_PATHS = {
     # got a chance to place it.
     "lenna_theme": (
         "Patreon/John Oeth/Final Fantasy/FF V/Lenna_s Theme (Final Fantasy V).pdf"),
+    # Issue #87, which is the same bug as #152 on a sibling of Lenna's Theme:
+    # page 1's last two bands each print two systems side by side, ruled 0.6pt
+    # apart in y so their lines interleave. Before #152's column split those
+    # bands came back as a 10-line and a 12-line group and were discarded whole,
+    # the "anomaly lines=10/12" the issue reports. This fixture pins that the
+    # named score's side-by-side systems are read, so #87 cannot silently
+    # regress - see test_sorrows_of_parting_reads_its_side_by_side_systems.
+    "sorrows_of_parting": (
+        "Patreon/John Oeth/Final Fantasy/FF V/Sorrows of Parting (Final Fantasy V).pdf"),
     # A "2." bracket with no matching "1." anywhere - genuinely, not from a
     # dropped candidate: the only mark near where a "1." would be sits 1.93
     # std-staff-spaces from the nearest barline, well outside every genuine
@@ -478,6 +487,15 @@ def lenna_theme_pdf() -> Path:
     p = _fixture_path("lenna_theme")
     if p is None:
         skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Lenna's Theme fixture)")
+    return p
+
+
+@pytest.fixture
+def sorrows_of_parting_pdf() -> Path:
+    p = _fixture_path("sorrows_of_parting")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Sorrows of Parting' fixture)")
     return p
 
 
