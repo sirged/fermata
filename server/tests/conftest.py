@@ -133,6 +133,25 @@ _FIXTURE_RELATIVE_PATHS = {
     # adversarial review, blocker 2).
     "victory_fanfare": (
         "Patreon/John Oeth/Final Fantasy/FF VII/Victory Fanfare (Final Fantays VII).pdf"),
+    # Two numbered segnos and two numbered D.S. jumps (issue #167): the page
+    # draws a segno printing "1" at bar 16 and one printing "2" at bar 32, and
+    # "D.S. 1"/"D.S. 2" then name one each. Before #167 both segno signs and
+    # both jumps emitted the single shared id "segno", so a numbered D.S.
+    # landed at whichever segno a reader found first.
+    "melodies_of_life": (
+        "Patreon/John Oeth/Final Fantasy/FF IX/Melodies of Life (Final Fantasy IX).pdf"),
+    # The adversarial case for #167: this page prints its segno "2" on the
+    # HIGHER system (bar 2) and its segno "1" LOWER (bar 10), so numbering by
+    # appearance order gets both backwards. The id has to come from the
+    # printed digit, which is what this fixture proves.
+    "agnea_the_dancer": (
+        "Patreon/John Oeth/Octopath Traveler/Agnea, the Dancer (Octopath Traveler II).pdf"),
+    # Numbered codas drawn as a music-font digit BEFORE the sign ("1 (sign)
+    # Coda" @19, "2 (sign) Coda" @27) rather than as the word "Coda 1" (issue
+    # #167). Also the "To Coda 1 & 2" @10 that names both, which a single-id
+    # tocoda cannot express and so is disclosed.
+    "hinata_vs_neji": (
+        "Patreon/John Oeth/Anime/Naruto/Hinata vs Neji (Naruto).pdf"),
     # Two thick strokes ("tHHt") with no repeat dots found anywhere nearby -
     # neither resolved to a direction nor unread for want of a thick stroke,
     # just two thick strokes and nothing beside them (issue #134 adversarial
@@ -468,6 +487,33 @@ def victory_fanfare_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing 'Victory Fanfare' fixture)")
+    return p
+
+
+@pytest.fixture
+def melodies_of_life_pdf() -> Path:
+    p = _fixture_path("melodies_of_life")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Melodies of Life' fixture)")
+    return p
+
+
+@pytest.fixture
+def agnea_the_dancer_pdf() -> Path:
+    p = _fixture_path("agnea_the_dancer")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Agnea, the Dancer' fixture)")
+    return p
+
+
+@pytest.fixture
+def hinata_vs_neji_pdf() -> Path:
+    p = _fixture_path("hinata_vs_neji")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing 'Hinata vs Neji' fixture)")
     return p
 
 

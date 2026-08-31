@@ -3971,6 +3971,37 @@ def navigation_glyph_events(page):
                   key=lambda e: e.x0)
 
 
+def navigation_digit_events(page):
+    """Every music-font digit drawn on this page, x-sorted.
+
+    A numbered segno prints its number as a music-font digit at the sign's
+    lower right, and some scores number a coda the same way (the digit to the
+    sign's left, "1 ⊕ Coda") rather than as the text word "Coda 1" - and the
+    caller folds the digit adjacent to a segno or coda sign into that sign's
+    number (tabextract._read_navigation_marks). The value is the
+    printed digit itself: Finale's Maestro draws '1' as GID 16 and '2' as GID
+    17, and MAESTRO_GID_MAP resolves each to `digit1`/`digit2` from the
+    rendered outline, so there is no font-encoding offset to trust - the
+    category IS the printed number (DIGIT_CATS maps it back to the integer).
+
+    Returned whole-page like navigation_glyph_events, because the digit that
+    belongs to a segno is decided by geometry against that sign, not by any
+    band this module knows. The page's other music-font digits (a stacked
+    time signature, chiefly) come back too and the caller discards them by the
+    same adjacency test the coda label fold uses.
+
+    digit0 is not in MAESTRO_GID_MAP (Finale embeds only glyphs a score
+    actually uses, and no sampled page needed a '0' - see the map's own note),
+    so a hypothetical segno numbered 10 or 20 would arrive with its '0'
+    uncategorised. No library score numbers a segno past 2, and the fold reads
+    a single adjacent digit, so this is the same documented gap the meter
+    reader carries, not a wrong answer waiting on these files.
+    """
+    glyphs = extract_glyph_events(page)
+    return sorted((e for e in glyphs.events if e.category in DIGIT_CATS),
+                  key=lambda e: e.x0)
+
+
 # ---------------------------------------------------------------------------
 # Key signature
 # ---------------------------------------------------------------------------
