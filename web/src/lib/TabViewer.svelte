@@ -185,6 +185,17 @@
   let redoStack = $state([]);
   let overlay = $state(null);
 
+  // The keyboard core loop's two-digit fret entry (#186). Typing a digit with a
+  // note selected sets its fret immediately (so "1" then a pause commits fret
+  // 1); a second digit that follows within TWO_DIGIT_MS on the SAME note
+  // extends it to a two-digit fret ("1" then a quick "2" = fret 12). Plain
+  // (non-reactive) state - nothing renders from it, it only remembers the last
+  // digit long enough to decide extend-vs-fresh at the next keypress, decided
+  // by a timestamp compare rather than a timer that could outlive the note.
+  // null between entries.
+  const TWO_DIGIT_MS = 600;
+  let fretEntry = null;
+
   function canEditNotes() {
     return editable && format === "musicxml" && tex != null;
   }
@@ -209,6 +220,9 @@
     divergenceOk = true;
     overlay = null;
     editWarn = "";
+    // A fresh selection (or none) starts a fresh two-digit fret window - a
+    // digit typed on a new note must never extend the last note's fret.
+    fretEntry = null;
   }
 
   function enterEdit() {
@@ -243,6 +257,7 @@
     const ord = view.editor.hitTest(clientX, clientY);
     if (ord == null) return;
     editWarn = "";
+    fretEntry = null;
     selectedOrdinal = ord;
     refreshSelection();
   }
@@ -330,6 +345,81 @@
 
   function changeDuration(type) {
     applyEdit(() => doc.setDurationType(selectedOrdinal, type), "That duration can't be written for this note.");
+  }
+
+  // ----------------------------------------------- the keyboard core loop (#186)
+  //
+  // Arrows move the selection, a digit sets the fret, Backspace deletes - all on
+  // the window key handler beside the transport shortcuts (see onKey), claimed
+  // only while a note is selected so the same keys still drive the transport and
+  // the staff-profile switch when it is not. NO key here starts playback: moving
+  // the selection is a document-model walk, not a transport seek, and the
+  // transport stays live throughout (Space still plays, even mid-edit).
+
+  // Move the selection note-to-note (kind "note") or bar-to-bar (kind
+  // "measure"), the editor's two arrow granularities - the same split the
+  // transport's own arrows make (a beat, and a whole bar). No playback: this
+  // only re-reads a different note into the selection.
+  function moveSelection(kind, direction) {
+    if (selectedOrdinal == null || !doc) return;
+    // Moving off the note ends its two-digit fret window.
+    fretEntry = null;
+    const target = kind === "measure" ? doc.stepMeasure(selectedOrdinal, direction) : doc.stepNote(selectedOrdinal, direction);
+    if (target == null || target === selectedOrdinal) return;
+    editWarn = "";
+    selectedOrdinal = target;
+    refreshSelection();
+  }
+
+  // A digit typed with a note selected. Sets the fret to that digit at once; a
+  // second digit within TWO_DIGIT_MS on the same note extends it to two digits
+  // (see fretEntry's declaration). Both paths write through the same
+  // applyEdit/doc.setFret the panel's Fret field uses, so the exact same
+  // writable-pitch bound (Rule 11, MIDI 12-131 / octaves 0-9) refuses an
+  // out-of-range fret here too - a two-digit value that would exceed it is
+  // refused, the already-committed single digit left in place.
+  const FRET_REFUSAL = "That fret would put the note outside the pitch range MusicXML can write (octaves 0–9).";
+  function typeFretDigit(d) {
+    if (selectedOrdinal == null || !doc) return;
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const extend = fretEntry && fretEntry.ordinal === selectedOrdinal && now - fretEntry.at <= TWO_DIGIT_MS;
+    if (extend) {
+      const combined = fretEntry.value * 10 + d;
+      // A two-digit fret is complete - a third digit starts a fresh entry
+      // rather than building a three-digit number no fretboard has.
+      fretEntry = null;
+      applyEdit(() => doc.setFret(selectedOrdinal, combined), FRET_REFUSAL);
+    } else {
+      fretEntry = { ordinal: selectedOrdinal, value: d, at: now };
+      applyEdit(() => doc.setFret(selectedOrdinal, d), FRET_REFUSAL);
+    }
+  }
+
+  // Backspace deletes the selected note by turning it into a rest (doc.deleteNote
+  // - see its comment for why a rest, not a removal). The delete shifts every
+  // ordinal after it, so the model is rebuilt from the new text (as undo's
+  // restore does) rather than trusting the in-place ordinal map; the note that
+  // slid into the selected slot stays selected, or the selection clears if the
+  // deleted note was the last one.
+  async function deleteSelected() {
+    if (selectedOrdinal == null || !doc || !view) return;
+    fretEntry = null;
+    const before = doc.text();
+    if (!doc.deleteNote(selectedOrdinal)) {
+      editWarn = "That note can't be deleted.";
+      return;
+    }
+    const after = doc.text();
+    if (after === before) return;
+    editWarn = "";
+    undoStack = [...undoStack, before];
+    redoStack = [];
+    dirty = true;
+    doc = createDocument(after);
+    editStringCount = doc.stringCount;
+    await view.editor.reload(after);
+    if (doc.noteAt(selectedOrdinal)) refreshSelection();
+    else clearSelection();
   }
 
   async function restore(text) {
@@ -679,6 +769,46 @@
       // for L/N/C, a rapid double-toggle that looks like nothing happened).
       return;
     }
+    // The keyboard core loop (#186) shares this one window handler with the
+    // transport and the staff-profile switch, and must not fight them. The
+    // arbitration rule: the editor claims arrows, digits and Backspace ONLY
+    // while a note is selected (editMode && selectedOrdinal != null); in every
+    // other state those keys fall through untouched to the switch below. So a
+    // digit sets the selected note's fret when one is selected and switches the
+    // staff profile when none is (keys "1"/"2"/"3" there); Backspace deletes the
+    // selected note when one is selected and stops the transport when none is;
+    // arrows move the selection when one is selected and move the playback
+    // cursor when none is. Every claimed key returns here, so it is handled once
+    // and never also by the switch. Space, L, S, N, C, T are never claimed - so
+    // the transport stays fully live while editing (a correction can be heard
+    // the instant it is made), which is why a note stays selected through it.
+    if (editMode && selectedOrdinal != null) {
+      switch (e.key) {
+        case "ArrowLeft":
+        case "ArrowRight":
+          e.preventDefault();
+          moveSelection("note", e.key === "ArrowRight" ? 1 : -1);
+          return;
+        case "ArrowUp":
+        case "ArrowDown":
+          e.preventDefault();
+          moveSelection("measure", e.key === "ArrowDown" ? 1 : -1);
+          return;
+        case "Backspace":
+          e.preventDefault();
+          deleteSelected();
+          return;
+        default:
+          if (e.key.length === 1 && e.key >= "0" && e.key <= "9") {
+            e.preventDefault();
+            typeFretDigit(Number(e.key));
+            return;
+          }
+          // Not an editor key (Space, L, S, ...): end any open two-digit fret
+          // window and let the transport/profile switch below handle it.
+          fretEntry = null;
+      }
+    }
     switch (e.key) {
       case " ":
         // A focused BUTTON owns Space already - see isButtonLikeTarget.
@@ -1008,10 +1138,10 @@
 
   <!-- Selecting a note is a spatial gesture: the click is hit-tested against
        the rendered note-head positions, which have no keyboard analogue here.
-       Note-to-note keyboard navigation (arrow keys, digit-sets-fret) is the
-       note-entry work #10 defers to a follow-up; when it lands it belongs on
-       the window key handler beside the transport shortcuts, not as a keydown
-       twin of this container's click. The staff itself is not a control. -->
+       Note-to-note keyboard navigation (arrow keys, digit-sets-fret, Backspace)
+       arrived in #186 and lives on the window key handler beside the transport
+       shortcuts (see onKey's arbitration comment), not as a keydown twin of
+       this container's click. The staff itself is not a control. -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div

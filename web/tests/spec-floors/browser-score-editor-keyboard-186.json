@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-editor-keyboard-186.spec.js",
+  "count": 9,
+  "reason": "issue #186 the note editor's keyboard core loop on the shared window key handler: arrows move the selection note-to-note and bar-to-bar starting no playback (cursor and Play button unmoved), a digit sets the selected note's fret with a quick second digit extending it to two digits and the window expiring committing a single digit, a two-digit fret past the writable-pitch bound refused, Backspace deleting the selected note to a rest (8->7 sounding notes, guard green, persisted as a rest), and the arbitration proven both ways - a number key still switches the staff profile with nothing selected but sets the fret with a note selected - while the transport stays live and enabled (the Play control still starts and stops playback) mid-edit."
+}
