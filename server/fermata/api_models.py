@@ -969,3 +969,44 @@ class ImportOut(BaseModel):
     practice_sessions_imported: int
     practice_goals_imported: int
     settings_imported: int
+
+
+# ---------------------------------------------------------------------------
+# Trainer: per-attempt fretboard drill results (issue #27)
+# ---------------------------------------------------------------------------
+
+
+class TrainerAttemptOut(BaseModel):
+    """One question from a fretboard drill, as trainer.attempt_dict presents
+    it - the stored row verbatim, plus `correct` as a real bool.
+
+    Exactly one of (target_string, target_fret) or (given_string, given_fret)
+    is non-null, decided by `direction` - see trainer.py's module docstring
+    for why a position-to-note question has no given position and a
+    note-to-position one has no single target position.
+    """
+
+    id: int
+    owner: str
+    session_id: int | None
+    drill: str
+    direction: str
+    target_string: int | None
+    target_fret: int | None
+    target_note: str
+    given_string: int | None
+    given_fret: int | None
+    given_note: str
+    correct: bool
+    response_ms: int | None
+    created_at: str
+
+
+class TrainerAttemptListOut(BaseModel):
+    """GET /api/trainer/attempts: the raw, queryable record - which positions
+    and which notes get missed is a WHERE clause over this, not something a
+    reader has to parse out of a session's note."""
+
+    attempts: list[TrainerAttemptOut]
+    total: int
+    truncated: bool

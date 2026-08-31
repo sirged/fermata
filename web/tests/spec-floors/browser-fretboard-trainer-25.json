@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/fretboard-trainer.spec.js",
+  "count": 14,
+  "reason": "issues #25/#27: the neck's note-at-position arithmetic rendered correctly (open strings, the fifth-fret relationship, an instrument's own tuning), a tap highlighting/identifying a position, the fret-to-note drill's full prompt-answer-feedback-next cycle in both directions with a correct and an incorrect answer, the degenerate scope states, and the structured per-question attempts (#32) plus the session log they sit beside."
+}

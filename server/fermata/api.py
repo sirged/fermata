@@ -24,7 +24,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, StrictInt
 
-from . import instruments, practice, scanner
+from . import instruments, practice, scanner, trainer
 from . import version as version_info
 from .api_models import (
     ByActivityOut,
@@ -63,6 +63,8 @@ from .api_models import (
     SessionListOut,
     SettingsOut,
     TagOut,
+    TrainerAttemptListOut,
+    TrainerAttemptOut,
     TranscribeResultOut,
     TranscriptionAnalysisOut,
     TranscriptionOut,
@@ -98,6 +100,7 @@ TAG_PRACTICE = "practice"
 TAG_TRANSCRIPTION = "transcription"
 TAG_SCAN = "scan"
 TAG_PORTABILITY = "portability"
+TAG_TRAINER = "trainer"
 
 # SQLite's INTEGER is 64-bit, and handing the driver anything wider raises
 # OverflowError from inside the query - a 500 for what is only ever a row that
@@ -4147,3 +4150,135 @@ async def import_library(file: UploadFile, dry_run: bool = True):
                 pass
         raise
     return {"dry_run": False, **result}
+
+
+# ---------------------------------------------------------------------------
+# Trainer: per-attempt fretboard drill results (issue #27)
+# ---------------------------------------------------------------------------
+
+
+class TrainerAttemptIn(BaseModel):
+    """One question from a fretboard drill, as answered.
+
+    `session_id` is optional and, in the ordinary case, absent: an attempt is
+    written the moment a question is answered, which is normally well before
+    the drill stops and the practice_sessions row that carries its total
+    TIME is written - see trainer.py's module docstring. A client that
+    already has one (a session opened up front) may still pass it.
+
+    `correct` is deliberately not a field here at all - see
+    trainer.normalise_attempt for why it is always computed from
+    target_note/given_note server-side rather than accepted from a caller.
+    """
+
+    session_id: Count | None = Field(default=None, ge=1, le=SQLITE_MAX_INTEGER)
+    drill: str
+    direction: str
+    target_string: Count | None = None
+    target_fret: Count | None = None
+    target_note: str
+    given_string: Count | None = None
+    given_fret: Count | None = None
+    given_note: str
+    response_ms: Count | None = None
+
+
+_ATTEMPT_COLUMNS = (
+    "session_id",
+    "drill",
+    "direction",
+    "target_string",
+    "target_fret",
+    "target_note",
+    "given_string",
+    "given_fret",
+    "given_note",
+    "correct",
+    "response_ms",
+)
+
+
+@router.post("/trainer/attempts", tags=[TAG_TRAINER], response_model=TrainerAttemptOut)
+def log_trainer_attempt(body: TrainerAttemptIn):
+    """Record one question from a fretboard drill: what was asked, what was
+    answered, and whether the two agree.
+
+    Structured, not a free-text note (issue #32) - so "which positions get
+    missed" is a query over this table rather than something parsed out of a
+    session's note the way ear_training's counts are. `correct` in the
+    response is what this endpoint computed, never what the request claimed.
+    """
+    with write_tx() as conn:
+        if body.session_id is not None:
+            _session_row(conn, body.session_id)
+        try:
+            values = trainer.normalise_attempt(**{
+                k: v for k, v in body.model_dump().items() if k != "session_id"
+            })
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
+        values["session_id"] = body.session_id
+        columns = ", ".join(_ATTEMPT_COLUMNS)
+        placeholders = ", ".join("?" * len(_ATTEMPT_COLUMNS))
+        row = conn.execute(
+            f"""INSERT INTO trainer_attempts(owner, {columns})
+                VALUES (?, {placeholders})
+                RETURNING *""",
+            [DEFAULT_OWNER, *(values[c] for c in _ATTEMPT_COLUMNS)],
+        ).fetchone()
+        return trainer.attempt_dict(row)
+
+
+@router.get("/trainer/attempts", tags=[TAG_TRAINER], response_model=TrainerAttemptListOut)
+def list_trainer_attempts(
+    drill: str = "",
+    direction: str = "",
+    correct: bool | None = None,
+    session_id: Annotated[int | None, Query(ge=1, le=SQLITE_MAX_INTEGER)] = None,
+    limit: int = practice.DEFAULT_SESSION_LIMIT,
+):
+    """The raw record of every question a fretboard drill has asked, newest
+    first - filterable by drill, direction, whether it was answered
+    correctly, or which session it belongs to.
+
+    This is the queryable half of issue #32's promise: a client asking "which
+    positions am I weak on" filters `correct=false` and groups the results by
+    `target_string`/`target_fret` itself, rather than needing a bespoke
+    aggregate endpoint this application would have to keep in step with every
+    future drill's own idea of what a weak spot is.
+    """
+    if not 1 <= limit <= practice.MAX_SESSION_LIMIT:
+        raise HTTPException(422, f"limit must be between 1 and {practice.MAX_SESSION_LIMIT}")
+    if drill and drill not in trainer.DRILLS:
+        raise HTTPException(422, f"drill must be one of {list(trainer.DRILLS)}")
+    if direction and direction not in trainer.DIRECTIONS:
+        raise HTTPException(422, f"direction must be one of {list(trainer.DIRECTIONS)}")
+    where = ["owner = ?"]
+    params: list = [DEFAULT_OWNER]
+    if drill:
+        where.append("drill = ?")
+        params.append(drill)
+    if direction:
+        where.append("direction = ?")
+        params.append(direction)
+    if correct is not None:
+        where.append("correct = ?")
+        params.append(1 if correct else 0)
+    if session_id is not None:
+        where.append("session_id = ?")
+        params.append(session_id)
+    filters = " AND ".join(where)
+    conn = connect()
+    rows = conn.execute(
+        f"""SELECT * FROM trainer_attempts WHERE {filters}
+             ORDER BY created_at DESC, id DESC LIMIT ?""",
+        [*params, limit],
+    ).fetchall()
+    total = conn.execute(
+        f"SELECT COUNT(*) AS n FROM trainer_attempts WHERE {filters}", params
+    ).fetchone()["n"]
+    return {
+        "attempts": [trainer.attempt_dict(r) for r in rows],
+        "total": total,
+        "truncated": total > len(rows),
+    }
