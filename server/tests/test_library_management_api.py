@@ -472,8 +472,15 @@ def test_a_scan_will_not_start_while_the_library_is_being_changed(client, add_sc
         assert scanner.start_scan() is False
         assert client.post("/api/scan").json()["started"] is False
 
-    # And the exclusion lifts by itself.
-    assert scanner.start_scan() is True
+    # And the exclusion lifts by itself - and does not silently drop what was
+    # declined while it was held: hold_library_still queues exactly one
+    # follow-up scan for it (#110), so a scan is already running or about to
+    # be the moment this returns, without anything here asking again.
+    deadline = time.monotonic() + 5
+    while scanner.scan_status()["finished_at"] is None:
+        if time.monotonic() > deadline:
+            raise AssertionError("the follow-up scan queued by the exclusion never ran")
+        time.sleep(0.02)
     _wait_for_scan()
 
 
