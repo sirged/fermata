@@ -171,6 +171,13 @@
   let selTieStart = $state(false);
   let selTieStop = $state(false);
   let selMidi = $state(null);
+  // The selected note's spelling (#185): the letter, its alteration, and the
+  // printed accidental (or null). Same sounding pitch (selMidi) however these
+  // read - the Accidental control and the enharmonic-cycle button change them
+  // without touching the sound.
+  let selStep = $state(null);
+  let selAlter = $state(null);
+  let selAccidental = $state(null);
   let selNoteId = $state(null);
   // The selected note's voice, its onset within that voice (in the document's
   // divisions), and the voices its move control offers (#182). selRenderVoice is
@@ -231,6 +238,7 @@
   function clearSelection() {
     selectedOrdinal = null;
     selFret = selString = selType = selMidi = selNoteId = null;
+    selStep = selAlter = selAccidental = null;
     selDots = 0;
     selTieStart = selTieStop = false;
     selVoice = selOnset = selRenderVoice = null;
@@ -296,6 +304,9 @@
     selTieStop = !!d.tieStop;
     selNoteId = d.id;
     selMidi = v?.midi ?? d.midi;
+    selStep = d.step;
+    selAlter = d.alter;
+    selAccidental = d.accidental;
     selVoice = d.voice;
     selOnset = d.onset;
     selRenderVoice = v?.voice ?? null;
@@ -408,6 +419,32 @@
     applyEdit(
       () => doc.setTie(selectedOrdinal, !selTieStart),
       "A tie needs the next note to be the same pitch and directly follow this one.",
+    );
+  }
+
+  // Spell the selected note with a chosen accidental - flat, natural or sharp -
+  // keeping the same sounding pitch (#185). Non-structural like a fret edit (the
+  // ordinal is unchanged), so it goes through applyEdit: the document rewrites
+  // <pitch>+<accidental>, re-imports and re-reads. setAccidental refuses a
+  // spelling that does not exist for the pitch (a natural of a black key) or that
+  // pushes the octave out of range, leaving the note as it was.
+  function changeAccidental(value) {
+    const v = Number(value);
+    if (!Number.isInteger(v)) return;
+    applyEdit(
+      () => doc.setAccidental(selectedOrdinal, v),
+      "That accidental can't spell this note (its pitch has no such spelling in a writable octave).",
+    );
+  }
+
+  // Cycle the selected note through its enharmonic spellings (F sharp <-> G flat,
+  // and so on), same sounding pitch at every step (#185). Same applyEdit path as
+  // the accidental control; refused only when the pitch has a single spelling to
+  // offer.
+  function cycleEnharmonic(direction) {
+    applyEdit(
+      () => doc.cycleSpelling(selectedOrdinal, direction),
+      "This note has no other enharmonic spelling to cycle to.",
     );
   }
 
@@ -993,6 +1030,9 @@
   data-editor-selected-tie-start={selectedOrdinal != null ? selTieStart : null}
   data-editor-selected-tie-stop={selectedOrdinal != null ? selTieStop : null}
   data-editor-selected-midi={selMidi}
+  data-editor-selected-step={selStep}
+  data-editor-selected-alter={selectedOrdinal != null && selAlter != null ? selAlter : null}
+  data-editor-selected-accidental={selAccidental}
   data-editor-selected-note-id={selNoteId}
   data-editor-selected-voice={selVoice}
   data-editor-selected-onset={selOnset}
@@ -1227,6 +1267,24 @@
               <option value="2">double</option>
             </select>
           </label>
+          <label title="How this note is spelled — a flat, a natural or a sharp — for the same sounding pitch. The key signature and any accidental already in the bar choose the default; this overrides it.">
+            Accidental
+            <select value={String(selAlter ?? 0)} onchange={(e) => changeAccidental(e.target.value)}>
+              {#if selAlter != null && ![-1, 0, 1].includes(selAlter)}
+                <option value={String(selAlter)} disabled>{selAlter > 0 ? "𝄪" : "𝄫"}</option>
+              {/if}
+              <option value="-1">♭ flat</option>
+              <option value="0">♮ natural</option>
+              <option value="1">♯ sharp</option>
+            </select>
+          </label>
+          <button
+            class="enharmonic"
+            onclick={() => cycleEnharmonic(1)}
+            title="Cycle the enharmonic spelling (F♯ ↔ G♭) — the same sounding pitch, spelled the other way"
+          >
+            ♯/♭
+          </button>
           <button
             class="tie-toggle"
             class:on={selTieStart}
@@ -1546,7 +1604,8 @@
     width: 64px;
   }
 
-  .edit-fields .tie-toggle {
+  .edit-fields .tie-toggle,
+  .edit-fields .enharmonic {
     align-self: center;
     padding: 5px 12px;
   }
