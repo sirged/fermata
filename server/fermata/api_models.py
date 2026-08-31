@@ -628,6 +628,12 @@ class TranscriptionOut(BaseModel):
     bars_measured: int | None
     bars_padded: int | None
     bars_unread: int | None
+    # How many bars a first-bar pickup (anacrusis) let Rule 8 excuse (issue
+    # #174) - a deliberately short opening measure, lifted out of bars_short /
+    # bars_defective because it is normal notation, not a misread. `anacrusis_bars`
+    # below names which; both are reported so a reader can see and check the
+    # one assumption the exemption makes about the page.
+    bars_anacrusis: int | None
     notes_no_stem: int | None
     staves_no_stem: int | None
     # A notation staff whose stem/beam vector pass found no stems at all though
@@ -678,6 +684,9 @@ class TranscriptionOut(BaseModel):
     # _BAR_LIST_KEYS
     padded_bars: list[int] | None
     unread_bars: list[int] | None
+    # Which bars a first-bar pickup excused (issue #174) - the bar-number half
+    # of bars_anacrusis.
+    anacrusis_bars: list[int] | None
     spacing_bars: list[int] | None
     degraded_bars: list[int] | None
     repeats_unread_bars: list[int] | None

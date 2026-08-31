@@ -1577,7 +1577,19 @@ def _transcription_row(conn, score_id: int):
 # that already has its own dot, not one with nothing nearby (see
 # tabextract._rhythm_report / glyph._assign_dots).
 _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
-             "bars_padded", "bars_unread", "notes_no_stem", "staves_no_stem",
+             "bars_padded", "bars_unread",
+             # `bars_anacrusis` (issue #174): how many bars a first-bar pickup
+             # let Rule 8 excuse. A Rule 8 CONFORMANCE figure, not a structural
+             # disclosure - it is the bars_short/bars_defective arithmetic
+             # itself, adjusted for a pickup that is normal notation rather than
+             # a misread, and is shown through the bar-count headline and the
+             # warning prose (which names `anacrusis_bars`) like its
+             # bars_padded / bars_unread neighbours, not the disclosures panel.
+             # So it is listed in test_disclosure_keys._RULE8_CONFORMANCE_KEYS
+             # and stays OFF the web mirror. It still has to survive a reload
+             # for the same reason the rest do: a reader reopening a stored
+             # transcription must see that a first bar was excused, and which.
+             "bars_anacrusis", "notes_no_stem", "staves_no_stem",
              # `staves_stemless` (issue #91): a notation staff whose stem/beam
              # vector pass found NO stems at all, though it decoded noteheads
              # that must carry one. A different, stronger fact than
@@ -1680,7 +1692,13 @@ _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
 # resolved each way, but that field is not one this module stores or exposes
 # - only these bar-number lists carry the fact out to a consumer, and a bar
 # number is what a reader can carry back to the PDF.
-_BAR_LIST_KEYS = ("padded_bars", "unread_bars", "spacing_bars", "degraded_bars",
+_BAR_LIST_KEYS = ("padded_bars", "unread_bars",
+                   # WHICH bars a first-bar pickup excused (issue #174) - the
+                   # bar-number half of `bars_anacrusis`, named in the warning
+                   # prose so a reader can carry it back to the printed page and
+                   # confirm the excused bar really is a pickup.
+                   "anacrusis_bars",
+                   "spacing_bars", "degraded_bars",
                    # WHICH bars carried a repeat/volta mark that could not be
                    # read in full - the bar-number half of the repeats_unread
                    # / endings_unread / endings_truncated / form_marks_unanchored
@@ -1958,6 +1976,14 @@ def _store_extraction_result(score_id: int, result) -> dict:
             "bars_unread": result.bars_unread,
             "padded_bars": result.padded_bars,
             "unread_bars": result.unread_bars,
+            # bars_anacrusis / anacrusis_bars (issue #174): how many first-bar
+            # pickups Rule 8 excused, and which bars. Written here, the only
+            # path into storage, so a reader reopening a stored transcription
+            # still sees that a first bar was read as a pickup rather than
+            # counted against the meter - the round trip the structural guard
+            # in test_transcription_api.py checks by name.
+            "bars_anacrusis": result.bars_anacrusis,
+            "anacrusis_bars": result.anacrusis_bars,
             "inferred_rest_quarters": result.inferred_rest_quarters,
             "notes_no_stem": result.notes_no_stem,
             "staves_no_stem": result.staves_no_stem,

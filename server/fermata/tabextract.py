@@ -308,6 +308,15 @@ class ExtractionResult:
     # here was read" - and they do count towards the reported confidence.
     bars_unread: int = 0
     unread_bars: list[int] = field(default_factory=list)
+    # Bars a first-bar pickup (anacrusis) let Rule 8 excuse, and which ones. A
+    # pickup is a deliberately short opening measure - normal notation, not a
+    # misread - so it is lifted out of bars_short / bars_defective rather than
+    # counted against the meter. Reported as data (not only in the warning
+    # prose) precisely because the exemption is an assumption about the page: a
+    # reader must be able to see WHICH bar was excused and check it. See
+    # _anacrusis_bars for the first/last pairing that has to hold.
+    bars_anacrusis: int = 0
+    anacrusis_bars: list[int] = field(default_factory=list)
     # Total tab / standard staff systems found across the whole document
     # (summed across pages) - same definition analyze() uses, not a
     # per-page maximum.
@@ -533,6 +542,8 @@ class ExtractionResult:
             "inferred_rest_quarters": self.inferred_rest_quarters,
             "bars_unread": self.bars_unread,
             "unread_bars": list(self.unread_bars),
+            "bars_anacrusis": self.bars_anacrusis,
+            "anacrusis_bars": list(self.anacrusis_bars),
             "tab_staff_count": self.tab_staff_count,
             "standard_staff_count": self.standard_staff_count,
             "pages_processed": self.pages_processed,
@@ -4528,6 +4539,78 @@ class _BarConformance(NamedTuple):
     # _rhythm_report), and a bar can be both - adding the two counts would
     # double-count it and could put the ratio over 1.
     defective_bars: tuple[int, ...] = ()
+    # How many bars a first-bar pickup (anacrusis) let Rule 8 excuse, and which
+    # ones (1-based). A pickup is a deliberately short FIRST bar - normal
+    # notation, not a misread - so it is lifted out of `short`/`defective`
+    # rather than counted against the meter. It is DISCLOSED here, and named in
+    # the warning prose, rather than being silently reclassified: the whole
+    # risk of the exemption is excusing a genuinely short first bar, so the
+    # assumption is made visible. See _anacrusis_bars for exactly when it fires.
+    anacrusis: int = 0
+    anacrusis_bars: tuple[int, ...] = ()
+
+
+def _anacrusis_bars(bar_info, last_index) -> tuple[int, ...]:
+    """Which bars a first-bar pickup lets Rule 8 excuse - a NEW rule, not a
+    loosening of the zero-tolerance gate #114 tightened.
+
+    `bar_info` is (index, min_voice, max_voice, budget) for every bar that had
+    BOTH a meter and at least one voice, in bar order. `last_index` is the
+    number of the score's final measure. Returns the bar numbers to lift out of
+    the defective count (empty when no pickup is recognised).
+
+    A pickup (anacrusis) is a deliberately short FIRST measure that a musician
+    reads as normal notation. The one failure mode to defend against is
+    excusing a genuinely misread first bar and handing a wrong score an
+    undeserved confidence, so this keys off the FIRST and LAST bars TOGETHER -
+    never a short first bar's own shape alone, which cannot tell a pickup from
+    a dropped note. Every one of these must hold:
+
+      - there are at least two measured bars, bar 1 is the score's actual first
+        measured bar, and the final MEASURED bar is the score's actual final
+        bar (a meterless or unread final bar disqualifies the score - the
+        "final measure" has to really be final);
+      - bar 1 and the final bar carry the SAME meter;
+      - bar 1 is short in EVERY voice - its LONGEST voice still falls under the
+        meter. One voice that fills the bar while another falls short is a
+        dropped note, not a pickup (this is the guard that keeps a bar like
+        [3.0, 4.0] in 4/4 defective), so the whole first bar has to be partial;
+      - the final bar CORROBORATES the pickup, in one of the two shapes a
+        printed anacrusis takes:
+          * it is a COMPLETE measure of the shared meter - the piece opens
+            mid-measure and closes on a full downbeat bar (the uncompensated
+            pickup these arrangements actually use); or
+          * it is itself short and bar 1's length plus the final bar's length
+            sum to exactly one measure - the compensated pairing, where the
+            beats missing from bar 1 are precisely the ones the final bar is
+            missing.
+
+    The compensated shape returns BOTH bars (the final bar's shortness is the
+    other half of the same pickup, not a defect); the uncompensated shape
+    returns bar 1 alone.
+    """
+    tol = 1e-6
+    if len(bar_info) < 2:
+        return ()
+    i1, min1, max1, b1 = bar_info[0]
+    iN, minN, maxN, bN = bar_info[-1]
+    # Bar 1 must be the real first bar and the final measured bar the real last
+    # bar; anything else means an unread/meterless bar sits at an end and the
+    # "first/last pairing" would be reading the wrong bars.
+    if i1 != 1 or iN != last_index or b1 != bN:
+        return ()
+    # Bar 1 short in every voice (longest voice under the meter). This is what
+    # separates a pickup from a dropped note in one voice of an otherwise full
+    # bar - the single most important guard here.
+    if not (max1 < b1 - tol):
+        return ()
+    final_complete = abs(minN - bN) <= tol and abs(maxN - bN) <= tol
+    if final_complete:
+        return (1,)
+    final_short = maxN < bN - tol
+    if final_short and abs((max1 + maxN) - bN) <= tol:
+        return (1, iN)
+    return ()
 
 
 def _bar_conformance(measures) -> _BarConformance:
@@ -4565,7 +4648,15 @@ def _bar_conformance(measures) -> _BarConformance:
     padded_bars = []
     defective_bars = []
     inferred_quarters = 0.0
+    # (index, min_voice, max_voice, budget) for every bar actually compared
+    # against a meter, so the pickup rule below can read the first and last
+    # bars back without a second pass. `last_index` is the score's final
+    # measure - meterless trailing bars included - so the rule can insist the
+    # final MEASURED bar really is the final bar.
+    bar_info = []
+    last_index = 0
     for index, (beats, ts) in enumerate(measures, start=1):
+        last_index = index
         # The padding accounting comes FIRST, before the meterless-bar skip: a
         # bar with no meter is not measured against one, but if it holds
         # inferred silence it still carries a `<forward>` into the file, and a
@@ -4590,9 +4681,23 @@ def _bar_conformance(measures) -> _BarConformance:
         short += under
         if over or under:
             defective_bars.append(index)
+        bar_info.append((index, min(voices), max(voices), budget))
+    # A first-bar pickup is normal notation, not a misread: lift it out of the
+    # short/defective counts the reported confidence is derived from, keeping
+    # a record of which bars for the disclosure. Only a bar that WAS defective
+    # is removed (a pickup is short by definition), and only in the short
+    # direction - the pickup rule never fires on an overfull bar.
+    anacrusis = _anacrusis_bars(bar_info, last_index)
+    excused = []
+    for bar in anacrusis:
+        if bar in defective_bars:
+            defective_bars.remove(bar)
+            short -= 1
+            excused.append(bar)
     return _BarConformance(overfull, short, len(defective_bars), counted,
                            len(padded_bars), tuple(padded_bars),
-                           inferred_quarters, tuple(defective_bars))
+                           inferred_quarters, tuple(defective_bars),
+                           len(excused), tuple(excused))
 
 
 def _overfull_bars(measures) -> tuple[int, int]:
@@ -4935,6 +5040,23 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
             "with each other; the inferred silence is NOT counted towards those bars adding up, and "
             "is written into the MusicXML as <forward> rather than as a rest so no consumer "
             "mistakes it for one the engraver printed"
+        )
+    # A recognised first-bar pickup (anacrusis) is DISCLOSED, never hidden: the
+    # whole risk of the exemption is excusing a genuinely short first bar, so
+    # the assumption is stated out loud with the bar named, the same way the
+    # padded/unread bars are. The count says how many bars were excused; the
+    # numbers say which, so a reader can check them against the printed page.
+    if conformance.anacrusis:
+        warnings.append(
+            f"{conformance.anacrusis} bar(s) were read as a pickup (anacrusis) and are NOT counted "
+            f"against the time signature. The bars are: {_bar_list(conformance.anacrusis_bars)}. A "
+            "pickup is a deliberately short measure that opens a piece - normal notation a musician "
+            "reads as a lead-in, not a mistake. It is recognised only from the FIRST and LAST bars "
+            "together: bar 1 falls short of the meter in every voice AND the final bar is a complete "
+            "measure of the same meter (or is itself short by exactly the beats bar 1 is missing, the "
+            "classical anacrusis pairing). A first bar that is short for any OTHER reason - one voice "
+            "short while another fills the bar, or a final bar that does not complete it - is still "
+            "counted as not adding up"
         )
     # A bar nothing was read from is reported SEPARATELY from the Rule 8 counts,
     # and deliberately so. It holds a whole bar of rests that do add up to its
@@ -6474,6 +6596,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None,
         inferred_rest_quarters=conformance.inferred_quarters,
         bars_unread=len(unread_bars),
         unread_bars=list(unread_bars),
+        bars_anacrusis=conformance.anacrusis,
+        anacrusis_bars=list(conformance.anacrusis_bars),
         tab_staff_count=tab_count,
         standard_staff_count=std_count,
         pages_processed=len(pages_with_tab),
