@@ -703,6 +703,10 @@ class TranscriptionOut(BaseModel):
     key_signature_source: str | None
     tuning: list[str] | None
     tuning_label: str | None
+    # How `tuning` was obtained: "instrument", "label", "assumed standard", or
+    # null on a hand-edited row or one extracted before this was recorded (issue
+    # #80). The word that stops an assumed tuning being read back as a read one.
+    tuning_source: str | None
     tuning_unread: list[str] | None
 
 

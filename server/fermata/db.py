@@ -741,12 +741,16 @@ SCHEMA_VERSION = 5
 # already has in hand. ON DELETE SET NULL because deleting an instrument means
 # the player no longer has it, not that the scores written for it are gone.
 #
-# NOTHING READS THIS COLUMN YET - see issue #72. Two things a first consumer
-# has to know. Transcription still opens every extraction with
-# tabextract.DEFAULT_TUNING, so a drop-D or seven-string score is read as a
-# standard six-string whatever instrument it names; and nothing revalidates a
+# TRANSCRIPTION NOW READS THIS COLUMN (issue #72): api.transcribe looks the
+# instrument up and passes its tuning to tabextract.extract, so a score assigned
+# an instrument is sounded against that instrument's strings rather than the
+# hardcoded standard six. Two limits remain a consumer has to know. An
+# instrument whose string count does not match the tab staff on the page is
+# reported and left unapplied, not forced on - a six-line staff is not read as a
+# seven-string instrument (see tabextract._extract). And nothing revalidates a
 # score when its instrument is edited underneath it, so a reference can outlive
-# the shape it was chosen for (see api.update_instrument).
+# the shape it was chosen for (see api.update_instrument); the tuning is read at
+# transcribe time, so re-transcribing picks up the current instrument.
 # missing_since arrives this way for an existing database and from
 # _SCORES_COLUMNS for a fresh one, which is two statements of one column and so
 # needs saying: _SCORES_COLUMNS IS THE DEFINITION OF RECORD, and this entry

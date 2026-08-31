@@ -90,6 +90,10 @@ def test_how_the_meter_key_and_tuning_were_obtained_survives_a_reload(
     assert posted["tuning_label"] is None
     assert posted["tuning"] == ["E2", "A2", "D3", "G3", "B3", "E4"]
     assert posted["tuning_unread"] == []
+    # And it is recorded as ASSUMED, not read (issue #80): the standard strings
+    # here are a default nobody read off the page, and the word that says so has
+    # to survive the reload the same way the meter's source does.
+    assert posted["tuning_source"] == "assumed standard"
 
     fetched = api.get_transcription(score_id)
     for key in (
@@ -99,6 +103,7 @@ def test_how_the_meter_key_and_tuning_were_obtained_survives_a_reload(
         "key_signature_source",
         "tuning",
         "tuning_label",
+        "tuning_source",
         "tuning_unread",
     ):
         assert fetched[key] == posted[key], key
@@ -116,9 +121,46 @@ def test_how_the_meter_key_and_tuning_were_obtained_survives_a_reload(
         "time_signature_source",
         "tuning",
         "tuning_label",
+        "tuning_source",
         "tuning_unread",
     ):
         assert edited[key] is None, key
+
+
+def test_an_assigned_instruments_tuning_is_used_over_the_page_and_survives_reload(
+    app_env, engraved, monkeypatch, insert_score
+):
+    """Issue #72: scores.instrument_id was recorded and read by nobody, so a
+    score was transcribed as a standard six-string whatever instrument it named.
+    Here the drop_d fixture - which prints "Drop D" and would read that off the
+    page on its own - is assigned a DADGAD instrument. The transcribe endpoint
+    has to sound the frets against the instrument, mark the tuning as coming
+    from it, and keep that answer on every later read."""
+    drop_d = engraved("drop_d")
+    monkeypatch.setattr(api, "LIBRARY_DIR", drop_d.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, drop_d.name)
+
+    instrument = api.create_instrument(api.InstrumentIn(
+        name="My DADGAD guitar",
+        fretted=True,
+        string_count=6,
+        string_pitches=["D2", "A2", "D3", "G3", "A3", "D4"],
+        fret_count=22,
+    ))
+    conn.execute("UPDATE scores SET instrument_id = ? WHERE id = ?",
+                 (instrument["id"], score_id))
+    conn.commit()
+
+    posted = api.transcribe(score_id, body=None)
+    assert posted["tuning"] == ["D2", "A2", "D3", "G3", "A3", "D4"]
+    assert posted["tuning_source"] == "instrument"
+    # The instrument won; the page's own printed Drop D name is not adopted.
+    assert posted["tuning_label"] is None
+
+    fetched = api.get_transcription(score_id)
+    assert fetched["tuning"] == posted["tuning"]
+    assert fetched["tuning_source"] == "instrument"
 
 
 def test_get_transcription_404_when_none_exists(app_env, insert_score):
