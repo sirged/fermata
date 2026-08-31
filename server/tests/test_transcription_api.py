@@ -13,12 +13,27 @@ runs against the library and still skips without it.
 import ast
 import inspect
 import json
+import os
 import textwrap
 
 import pytest
 from fastapi import HTTPException
 
 from fermata import api, db
+
+# A schema-valid minimal MusicXML document, used anywhere a test needs content
+# that sniffs (or is declared) as "musicxml" and must therefore survive
+# save_transcription's XSD check (#188) when FERMATA_MUSICXML_XSD is set -
+# which CI's "Fetch the MusicXML schema" step does for the whole test job, not
+# just tests/test_musicxml.py. `<score-partwise version="4.0"/>` alone is NOT
+# schema-valid (part-list is required), so it is a trap here specifically.
+MINIMAL_VALID_MUSICXML = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<score-partwise version="4.0">'
+    '<part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>'
+    '<part id="P1"><measure number="1"/></part>'
+    "</score-partwise>"
+)
 
 
 def test_edited_transcription_survives_re_extraction(app_env, extractable_pdf, monkeypatch, insert_score):
@@ -339,8 +354,8 @@ def test_an_edit_format_is_sniffed_when_the_client_does_not_say(app_env, insert_
     than assumed, because assuming wrong makes the transcription unrenderable."""
     conn = db.connect()
     score_id = insert_score(conn, "x.pdf")
-    xml = '<?xml version="1.0" encoding="UTF-8"?>\n<score-partwise version="4.0"/>'
-    saved = api.save_transcription(score_id, api.TranscriptionEditIn(content=xml))
+    saved = api.save_transcription(
+        score_id, api.TranscriptionEditIn(content=MINIMAL_VALID_MUSICXML))
     assert saved["format"] == "musicxml"
     tex = ":4 0.1 |"
     saved = api.save_transcription(score_id, api.TranscriptionEditIn(content=tex))
@@ -348,11 +363,17 @@ def test_an_edit_format_is_sniffed_when_the_client_does_not_say(app_env, insert_
 
 
 def test_an_explicit_edit_format_wins_over_the_sniff(app_env, insert_score):
+    """The client's stated format overrides what the content would sniff to -
+    content that starts with '<' and would otherwise sniff as musicxml is
+    stored as alphatex when the client says so, not reinterpreted. (Content
+    that sniffs the OTHER way and is forced to musicxml is exercised in
+    test_pasting_alphatex_over_a_musicxml_row_stores_it_as_alphatex, which
+    uses real MusicXML so it also clears the #188 schema check below.)"""
     conn = db.connect()
     score_id = insert_score(conn, "x.pdf")
     saved = api.save_transcription(
-        score_id, api.TranscriptionEditIn(content=":4 0.1 |", format="musicxml"))
-    assert saved["format"] == "musicxml"
+        score_id, api.TranscriptionEditIn(content="<not actually xml", format="alphatex"))
+    assert saved["format"] == "alphatex"
 
 
 def test_an_unknown_edit_format_is_rejected(app_env, insert_score):
@@ -362,6 +383,113 @@ def test_an_unknown_edit_format_is_rejected(app_env, insert_score):
         api.save_transcription(
             score_id, api.TranscriptionEditIn(content=":4 0.1 |", format="lilypond"))
     assert exc_info.value.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Server-side MusicXML validation of a hand edit (#188)
+# ---------------------------------------------------------------------------
+#
+# The note editor already guards Rule 11 (octaves 0-9, among other things)
+# client-side before a save is ever sent - this is belt-and-suspenders against
+# a hand-crafted PUT that skips the editor entirely. Validating needs the real
+# MusicXML 4.0 schema at runtime, which the repository does not carry (see
+# config.MUSICXML_XSD's comment), so - exactly like
+# tests/test_musicxml.py's test_validates_against_xsd - the test that proves
+# the 422 skips unless FERMATA_MUSICXML_XSD names a local copy. The test that
+# proves an unconfigured deployment is UNCHANGED needs no schema and never
+# skips: that is the default-runtime behaviour target.
+
+# A note whose octave is 10 - out of the schema's 0-9 range (issue #188's own
+# example, and the same Rule 11 case #10 the note editor already refuses
+# client-side) - inside an otherwise well-formed, schema-shaped document, so
+# what fails validation is specifically the octave, not a missing part-list
+# or the like.
+INVALID_MUSICXML_OUT_OF_RANGE_OCTAVE = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<score-partwise version="4.0">'
+    '<part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>'
+    '<part id="P1"><measure number="1">'
+    "<note><pitch><step>C</step><octave>10</octave></pitch>"
+    "<duration>4</duration><type>quarter</type></note>"
+    "</measure></part>"
+    "</score-partwise>"
+)
+
+
+def test_an_invalid_musicxml_edit_is_rejected_when_a_schema_is_configured(
+    app_env, insert_score, monkeypatch
+):
+    """A hand-crafted PUT carrying an out-of-range octave is refused with 422
+    and nothing is stored - the prior state (nothing) is unchanged - but only
+    once FERMATA_MUSICXML_XSD actually names a schema to check against."""
+    path = os.environ.get("FERMATA_MUSICXML_XSD")
+    if not path or not os.path.isfile(path):
+        pytest.skip("FERMATA_MUSICXML_XSD not set to a musicxml.xsd")
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+
+    with pytest.raises(HTTPException) as exc_info:
+        api.save_transcription(
+            score_id, api.TranscriptionEditIn(content=INVALID_MUSICXML_OUT_OF_RANGE_OCTAVE))
+    assert exc_info.value.status_code == 422
+
+    row = conn.execute(
+        "SELECT * FROM transcriptions WHERE score_id = ? AND source = 'edited'", (score_id,)
+    ).fetchone()
+    assert row is None
+
+
+def test_a_valid_musicxml_edit_is_stored_when_a_schema_is_configured(app_env, insert_score):
+    """The counterpart to the rejection test above: a well-formed, schema-valid
+    edit is still accepted (and stored) once FERMATA_MUSICXML_XSD is set -
+    the check does not merely reject everything."""
+    path = os.environ.get("FERMATA_MUSICXML_XSD")
+    if not path or not os.path.isfile(path):
+        pytest.skip("FERMATA_MUSICXML_XSD not set to a musicxml.xsd")
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+
+    saved = api.save_transcription(
+        score_id, api.TranscriptionEditIn(content=MINIMAL_VALID_MUSICXML))
+    assert saved["format"] == "musicxml"
+    row = conn.execute(
+        "SELECT * FROM transcriptions WHERE score_id = ? AND source = 'edited'", (score_id,)
+    ).fetchone()
+    assert row is not None
+
+
+def test_an_invalid_musicxml_edit_is_accepted_when_no_schema_is_configured(
+    app_env, insert_score, monkeypatch
+):
+    """The default-runtime target: with FERMATA_MUSICXML_XSD unset (or naming
+    nothing readable), save_transcription behaves exactly as it did before
+    #188 - the same out-of-range-octave body that a configured schema rejects
+    above is accepted and stored here. Needs no schema, so it never skips."""
+    monkeypatch.setattr(api.config, "MUSICXML_XSD", "")
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+
+    saved = api.save_transcription(
+        score_id, api.TranscriptionEditIn(content=INVALID_MUSICXML_OUT_OF_RANGE_OCTAVE))
+    assert saved["format"] == "musicxml"
+    row = conn.execute(
+        "SELECT * FROM transcriptions WHERE score_id = ? AND source = 'edited'", (score_id,)
+    ).fetchone()
+    assert row is not None
+    assert row["content"] == INVALID_MUSICXML_OUT_OF_RANGE_OCTAVE
+
+
+def test_an_alphatex_edit_is_unaffected_by_the_schema_check(app_env, insert_score):
+    """Only a MusicXML-formatted edit is ever run through the XSD - alphaTex
+    has no schema to check against, so it must be unaffected either way. Uses
+    whatever FERMATA_MUSICXML_XSD is (or is not) in this run rather than
+    forcing one, because the point is that alphatex bypasses the check
+    entirely - not that a schema happens to be present."""
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+    saved = api.save_transcription(
+        score_id, api.TranscriptionEditIn(content=":4 0.1 |", format="alphatex"))
+    assert saved["format"] == "alphatex"
 
 
 def test_pasting_alphatex_over_a_musicxml_row_stores_it_as_alphatex(
@@ -385,8 +513,8 @@ def test_pasting_alphatex_over_a_musicxml_row_stores_it_as_alphatex(
     assert api.get_transcription(score_id)["format"] == "alphatex"
 
     # and the reverse: MusicXML pasted over an alphatex row
-    xml = '<?xml version="1.0"?>\n<score-partwise version="4.0"/>'
-    saved = api.save_transcription(score_id, api.TranscriptionEditIn(content=xml))
+    saved = api.save_transcription(
+        score_id, api.TranscriptionEditIn(content=MINIMAL_VALID_MUSICXML))
     assert saved["format"] == "musicxml"
 
 
