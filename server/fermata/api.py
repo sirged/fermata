@@ -61,6 +61,9 @@ from .api_models import (
     ScoreRestoreOut,
     SessionDeleteOut,
     SessionListOut,
+    SetlistDeleteOut,
+    SetlistDetailOut,
+    SetlistOut,
     SettingsOut,
     TagOut,
     TrainerAttemptListOut,
@@ -105,6 +108,7 @@ TAG_TRANSCRIPTION = "transcription"
 TAG_SCAN = "scan"
 TAG_PORTABILITY = "portability"
 TAG_TRAINER = "trainer"
+TAG_SETLISTS = "setlists"
 
 # SQLite's INTEGER is 64-bit, and handing the driver anything wider raises
 # OverflowError from inside the query - a 500 for what is only ever a row that
@@ -4622,3 +4626,352 @@ def list_trainer_chord_attempts(
         "total": total,
         "truncated": total > len(rows),
     }
+
+
+# ---------------------------------------------------------------------------
+# SETLISTS (#6).
+#
+# A setlist is an ordered collection of scores a player works through - a gig
+# set, a lesson plan, a practice rotation. This surface is the whole of what a
+# setlist IS: a documented set of endpoints over the setlists and
+# setlist_scores tables, not client-side state a browser assembles and could
+# lose. Order is explicit and stored (setlist_scores.position), so reorder is a
+# real operation the server performs rather than an artefact of the order rows
+# happen to come back in.
+#
+# WHAT THESE ENDPOINTS DELIBERATELY DO NOT DO, each stated once here and
+# enforced by the routes below:
+#
+#   Removing a score from a setlist does not delete the score. It removes one
+#   membership row and nothing else - the score, its file, its practice
+#   history, its tags and its transcription are untouched, and it stays in
+#   every other setlist it is in.
+#
+#   Deleting a setlist does not touch its scores. It removes the setlist row
+#   and, by cascade, its membership rows - reaching nothing else (see db.py's
+#   setlist_scores note). DELETE reports how many scores were untouched.
+#
+#   A score can be in any number of setlists. Nothing here constrains that; the
+#   only uniqueness is that a score appears in one setlist at most once.
+#
+#   A trashed score (#56) stays in the setlists it was in, marked. The member
+#   still lists, carrying its `score.deleted_at`, so a client marks it deleted
+#   rather than offering a link into something that is not in the library. A
+#   trashed score cannot be ADDED to a setlist, the same way every other write
+#   against a trashed score is refused - see _live_score_row. A score PURGED
+#   from the trash leaves its setlists on its own, because the membership row
+#   cascades away with the score row.
+#
+# The practice-through / gig-mode flow is a client concern (it reuses the
+# existing viewer and practice logging - there is no separate "gig session"
+# row): this surface's job is to hand that client the ordered members, each
+# with the practice totals the score already carries (#32's one-source-of-truth
+# rule - see SetlistMemberOut), so nothing downstream re-counts what the API
+# already knows.
+# ---------------------------------------------------------------------------
+
+# The raw ceiling on a submitted name, before _clean_setlist_name strips
+# control characters and collapses whitespace; MAX_SETLIST_NAME_CHARS is then
+# applied to what will actually be stored. Two numbers for the same reason
+# instruments has MAX_RAW_NAME_CHARS and MAX_NAME_CHARS: reject something
+# absurdly large outright at the edge, then bound what is kept after cleaning.
+MAX_SETLIST_NAME_RAW_CHARS = 2000
+MAX_SETLIST_NAME_CHARS = 200
+
+
+class SetlistIn(BaseModel):
+    """A new setlist. Only its name is set here; scores are added afterwards
+    through POST /api/setlists/{id}/scores, and order through the reorder
+    endpoint - a setlist is created empty and arranged, rather than posted
+    whole, so the ordering operations are the one way membership and order
+    ever change and there is no second path that could disagree with them."""
+
+    name: str = Field(max_length=MAX_SETLIST_NAME_RAW_CHARS)
+
+
+class SetlistPatch(BaseModel):
+    """Rename a setlist. Name is the only thing about a setlist that is edited
+    in place - its membership and order have their own endpoints - so this
+    carries nothing else."""
+
+    name: str = Field(max_length=MAX_SETLIST_NAME_RAW_CHARS)
+
+
+class SetlistAddIn(BaseModel):
+    """Add one score to a setlist, appended after the last member. `score_id`
+    is StrictInt (via Count) for the same reason every numeric field a client
+    sends here is: Pydantic's default mode would coerce `true` to 1, and a
+    bool is never a row id."""
+
+    score_id: Count
+
+
+class SetlistOrderIn(BaseModel):
+    """Set a setlist's order outright. `score_ids` must be exactly the setlist's
+    current members, each once, in the desired order - not a subset and not a
+    superset. Reorder is a permutation, deliberately: expressing it as "here is
+    the whole order now" rather than "move this one to index n" means the
+    result cannot depend on what the client believed the old order was, and a
+    member silently missing from the list is a mistake worth a 422 rather than
+    a member quietly dropped from the setlist. Add and remove are the endpoints
+    that change WHICH scores are in the setlist; this one only changes their
+    order."""
+
+    score_ids: list[Count]
+
+
+def _clean_setlist_name(name: str) -> str:
+    """Strip control characters, collapse runs of whitespace to single spaces,
+    trim the ends, and bound the length - the same shape of cleaning
+    instruments.normalise does to an instrument name, kept here rather than
+    shared because it is three lines and a setlist name has no other rules. An
+    empty result (a name that was only whitespace, or only control characters)
+    is a 422 rather than a stored blank."""
+    cleaned = re.sub(r"\s+", " ", "".join(ch for ch in name if ch.isprintable())).strip()
+    if not cleaned:
+        raise HTTPException(422, "a setlist needs a name")
+    return cleaned[:MAX_SETLIST_NAME_CHARS]
+
+
+def _setlist_row(conn, setlist_id: int):
+    row = conn.execute(
+        "SELECT * FROM setlists WHERE id = ? AND owner = ?", (setlist_id, DEFAULT_OWNER)
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "setlist not found")
+    return row
+
+
+def _setlist_member_ids(conn, setlist_id: int) -> list[int]:
+    """The setlist's member score ids in stored order. Used both to build the
+    ordered members and to validate a reorder against the exact current set."""
+    return [
+        r["score_id"]
+        for r in conn.execute(
+            "SELECT score_id FROM setlist_scores WHERE setlist_id = ? ORDER BY position, score_id",
+            (setlist_id,),
+        )
+    ]
+
+
+def _setlist_members(conn, setlist_id: int) -> list[dict]:
+    """The ordered members, each a `position` and a whole ScoreOut-shaped
+    score - trashed members included, marked by their own `deleted_at`.
+
+    The scores go through _with_tags exactly as the library and trash views do,
+    so a member carries the same tags, transcription flag and practice totals
+    every other view of that score does (#32). `position` is kept OUT of the
+    score dict on purpose: it is the member's key, not the score's, and leaving
+    it on the score would be a field response_model drops - which the api-docs
+    drift guard would (correctly) flag."""
+    member_rows = conn.execute(
+        "SELECT score_id, position FROM setlist_scores WHERE setlist_id = ? "
+        "ORDER BY position, score_id",
+        (setlist_id,),
+    ).fetchall()
+    if not member_rows:
+        return []
+    ids = [r["score_id"] for r in member_rows]
+    placeholders = ",".join("?" * len(ids))
+    by_id = {
+        r["id"]: r
+        for r in conn.execute(f"SELECT * FROM scores WHERE id IN ({placeholders})", ids)
+    }
+    # Ordered to match member_rows so _with_tags (which returns a list aligned
+    # to its input) hands back the score dicts in setlist order.
+    ordered = [by_id[i] for i in ids]
+    scored = _with_tags(conn, ordered)
+    return [
+        {"position": m["position"], "score": s}
+        for m, s in zip(member_rows, scored)
+    ]
+
+
+def _setlist_dict(conn, setlist_id: int) -> dict:
+    row = _setlist_row(conn, setlist_id)
+    d = dict(row)
+    d["scores"] = _setlist_members(conn, setlist_id)
+    return d
+
+
+def _setlist_summary(conn, row) -> dict:
+    d = dict(row)
+    d["score_count"] = conn.execute(
+        "SELECT COUNT(*) AS n FROM setlist_scores WHERE setlist_id = ?", (row["id"],)
+    ).fetchone()["n"]
+    return d
+
+
+def _touch_setlist(conn, setlist_id: int) -> None:
+    conn.execute(
+        "UPDATE setlists SET updated_at = datetime('now') WHERE id = ?", (setlist_id,)
+    )
+
+
+@router.get("/setlists", tags=[TAG_SETLISTS], response_model=list[SetlistOut])
+def list_setlists():
+    """Every setlist, most recently created first, each with the number of
+    scores it holds. The ordered scores themselves are on the detail endpoint -
+    a list of setlists does not need every member of every one."""
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM setlists WHERE owner = ? ORDER BY created_at DESC, id DESC",
+        (DEFAULT_OWNER,),
+    ).fetchall()
+    return [_setlist_summary(conn, r) for r in rows]
+
+
+@router.post("/setlists", tags=[TAG_SETLISTS], response_model=SetlistOut)
+def create_setlist(body: SetlistIn):
+    """Make a new, empty setlist with the given name. Two setlists may share a
+    name - a name is a label a person chose, not an identity - so this never
+    refuses one for being a duplicate."""
+    name = _clean_setlist_name(body.name)
+    with write_tx() as conn:
+        cur = conn.execute(
+            "INSERT INTO setlists(owner, name) VALUES (?, ?)", (DEFAULT_OWNER, name)
+        )
+        setlist_id = cur.lastrowid
+        summary = _setlist_summary(conn, _setlist_row(conn, setlist_id))
+    return summary
+
+
+@router.get("/setlists/{setlist_id}", tags=[TAG_SETLISTS], response_model=SetlistDetailOut)
+def get_setlist(setlist_id: RowId):
+    """One setlist and its scores, in order. A member whose score is in the
+    trash is still here, marked by its `score.deleted_at` - see this section's
+    comment and SetlistMemberOut."""
+    conn = connect()
+    return _setlist_dict(conn, setlist_id)
+
+
+@router.patch("/setlists/{setlist_id}", tags=[TAG_SETLISTS], response_model=SetlistDetailOut)
+def rename_setlist(setlist_id: RowId, patch: SetlistPatch):
+    """Rename a setlist. Returns the setlist with its scores, the same shape
+    GET does, so a client that renamed from a detail view has the current
+    state without a second request."""
+    name = _clean_setlist_name(patch.name)
+    with write_tx() as conn:
+        _setlist_row(conn, setlist_id)
+        conn.execute(
+            "UPDATE setlists SET name = ?, updated_at = datetime('now') WHERE id = ? AND owner = ?",
+            (name, setlist_id, DEFAULT_OWNER),
+        )
+        detail = _setlist_dict(conn, setlist_id)
+    return detail
+
+
+@router.delete("/setlists/{setlist_id}", tags=[TAG_SETLISTS], response_model=SetlistDeleteOut)
+def delete_setlist(setlist_id: RowId):
+    """Delete a setlist. The scores in it are NOT touched - `scores_untouched`
+    counts them so a caller can say so - only the setlist and its membership
+    rows go (see db.py's setlist_scores note on the cascade). A score in this
+    setlist stays in the library, keeps its practice history, and stays in any
+    other setlist it was in."""
+    with write_tx() as conn:
+        _setlist_row(conn, setlist_id)
+        untouched = conn.execute(
+            "SELECT COUNT(*) AS n FROM setlist_scores WHERE setlist_id = ?", (setlist_id,)
+        ).fetchone()["n"]
+        # The membership rows go by cascade when the setlist row does; deleting
+        # the setlist is the whole operation.
+        conn.execute(
+            "DELETE FROM setlists WHERE id = ? AND owner = ?", (setlist_id, DEFAULT_OWNER)
+        )
+    return {"deleted": setlist_id, "scores_untouched": untouched}
+
+
+@router.post(
+    "/setlists/{setlist_id}/scores", tags=[TAG_SETLISTS], response_model=SetlistDetailOut
+)
+def add_setlist_score(setlist_id: RowId, body: SetlistAddIn):
+    """Add a score to a setlist, at the end of the order.
+
+    Refused with 409 if the score is already in this setlist (a setlist holds a
+    score at most once), or if the score is in the trash - a trashed score
+    cannot be added, the same way every write against a trashed score is
+    refused (see _live_score_row). A missing score - one whose file is gone but
+    which is still in the library - CAN be added: it is still your piece.
+    Returns the setlist with its new member in place."""
+    with write_tx() as conn:
+        _setlist_row(conn, setlist_id)
+        # 404 if the score does not exist at all, 409 if it is in the trash -
+        # the shared decision for a write naming a score (see _live_score_row).
+        _live_score_row(conn, body.score_id, "add a score that is in the trash to a setlist")
+        already = conn.execute(
+            "SELECT 1 FROM setlist_scores WHERE setlist_id = ? AND score_id = ?",
+            (setlist_id, body.score_id),
+        ).fetchone()
+        if already:
+            raise HTTPException(409, "that score is already in this setlist")
+        next_position = conn.execute(
+            "SELECT COALESCE(MAX(position), 0) + 1 AS p FROM setlist_scores WHERE setlist_id = ?",
+            (setlist_id,),
+        ).fetchone()["p"]
+        conn.execute(
+            "INSERT INTO setlist_scores(setlist_id, score_id, position) VALUES (?, ?, ?)",
+            (setlist_id, body.score_id, next_position),
+        )
+        _touch_setlist(conn, setlist_id)
+        detail = _setlist_dict(conn, setlist_id)
+    return detail
+
+
+@router.delete(
+    "/setlists/{setlist_id}/scores/{score_id}",
+    tags=[TAG_SETLISTS],
+    response_model=SetlistDetailOut,
+)
+def remove_setlist_score(setlist_id: RowId, score_id: RowId):
+    """Remove a score from a setlist. THIS DOES NOT DELETE THE SCORE - it
+    removes one membership row. The score stays in the library with everything
+    attached to it, and in any other setlist it is in. 404 if the score is not
+    a member of this setlist (the setlist itself is 404 separately, so the two
+    cases are distinguishable). The remaining members keep their order; their
+    positions are left as they were, which does not affect the order they are
+    read in. Returns the setlist as it now stands."""
+    with write_tx() as conn:
+        _setlist_row(conn, setlist_id)
+        cur = conn.execute(
+            "DELETE FROM setlist_scores WHERE setlist_id = ? AND score_id = ?",
+            (setlist_id, score_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(404, "that score is not in this setlist")
+        _touch_setlist(conn, setlist_id)
+        detail = _setlist_dict(conn, setlist_id)
+    return detail
+
+
+@router.put("/setlists/{setlist_id}/order", tags=[TAG_SETLISTS], response_model=SetlistDetailOut)
+def reorder_setlist(setlist_id: RowId, body: SetlistOrderIn):
+    """Set the order of a setlist's scores. `score_ids` must be exactly the
+    setlist's current members, each listed once, in the order wanted - see
+    SetlistOrderIn for why it is the whole permutation and not a move. A list
+    that is missing a member, names one twice, names one that is not in the
+    setlist, or is the wrong length is a 422 that says which, and nothing is
+    written. Trashed members are still members, so they are part of the
+    permutation and keep a place in the order. Returns the reordered setlist."""
+    with write_tx() as conn:
+        _setlist_row(conn, setlist_id)
+        current = _setlist_member_ids(conn, setlist_id)
+        wanted = list(body.score_ids)
+        if len(set(wanted)) != len(wanted):
+            raise HTTPException(422, "the order lists a score more than once")
+        if set(wanted) != set(current):
+            raise HTTPException(
+                422,
+                "the order must be exactly the scores currently in this setlist - it is "
+                f"missing or adds scores (setlist has {len(current)} scores, order lists "
+                f"{len(wanted)})",
+            )
+        # Positions rewritten to the given order, 1-based. No unique constraint
+        # on position (see db.py), so writing them one at a time cannot collide.
+        for index, score_id in enumerate(wanted, start=1):
+            conn.execute(
+                "UPDATE setlist_scores SET position = ? WHERE setlist_id = ? AND score_id = ?",
+                (index, setlist_id, score_id),
+            )
+        _touch_setlist(conn, setlist_id)
+        detail = _setlist_dict(conn, setlist_id)
+    return detail

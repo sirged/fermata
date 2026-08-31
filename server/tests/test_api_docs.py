@@ -301,8 +301,10 @@ def test_every_route_has_exactly_the_expected_operation_count(openapi_schema):
     # export the library to an archive, import one back. Plus issue #27's
     # two: log a fretboard drill attempt, and list them. Plus issue #55's
     # two: start a bulk transcription pass, poll its status. Plus issue #28's
-    # two: log a chord flash card attempt, and list them.
-    assert count == 60
+    # two: log a chord flash card attempt, and list them. Plus issue #6's
+    # eight setlist routes: list, create, get one, rename, delete, add a
+    # score, remove a score, reorder.
+    assert count == 68
 
 
 def test_binary_routes_do_not_advertise_a_json_content_type(openapi_schema):
@@ -549,6 +551,47 @@ def test_a_goal_about_a_deleted_score_still_validates(client, insert_score):
     assert validated.progress.sessions_inferred is None
     assert all(day.inferred is None for day in validated.progress.days)
     assert goal["id"] == validated.id
+
+
+def test_setlist_responses_match_their_models(client, insert_score):
+    """Issue #6's eight routes, through the same drift-guarded client, with a
+    real member in place - a setlist with no scores would let a field dropped
+    from SetlistMemberOut or the nested ScoreOut pass unnoticed, exactly the
+    empty-collection blind spot the practice test above guards against."""
+    from fermata import db
+
+    conn = db.connect()
+    first = insert_score(conn, "Setlist One.pdf", title="Setlist One")
+    second = insert_score(conn, "Setlist Two.pdf", title="Setlist Two")
+    conn.commit()
+
+    created = api_models.SetlistOut.model_validate(
+        client.post("/api/setlists", json={"name": "Friday gig"}).json()
+    )
+    for item in client.get("/api/setlists").json():
+        api_models.SetlistOut.model_validate(item)
+
+    client.post(f"/api/setlists/{created.id}/scores", json={"score_id": first})
+    api_models.SetlistDetailOut.model_validate(
+        client.post(f"/api/setlists/{created.id}/scores", json={"score_id": second}).json()
+    )
+    api_models.SetlistDetailOut.model_validate(
+        client.get(f"/api/setlists/{created.id}").json()
+    )
+    api_models.SetlistDetailOut.model_validate(
+        client.put(
+            f"/api/setlists/{created.id}/order", json={"score_ids": [second, first]}
+        ).json()
+    )
+    api_models.SetlistDetailOut.model_validate(
+        client.patch(f"/api/setlists/{created.id}", json={"name": "Saturday gig"}).json()
+    )
+    api_models.SetlistDetailOut.model_validate(
+        client.delete(f"/api/setlists/{created.id}/scores/{first}").json()
+    )
+    api_models.SetlistDeleteOut.model_validate(
+        client.delete(f"/api/setlists/{created.id}").json()
+    )
 
 
 def test_transcription_responses_match_their_models(client, insert_score, extractable_pdf, monkeypatch):

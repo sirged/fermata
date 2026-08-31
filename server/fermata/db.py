@@ -544,6 +544,78 @@ CREATE TABLE IF NOT EXISTS instruments (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_instruments_owner ON instruments(owner);
+
+-- A setlist is an ordered collection of scores a player works through - a gig
+-- set, a lesson plan, a practice rotation (#6). It is the one thing here that a
+-- person arranges deliberately by hand, so the order it holds is a STORED FACT
+-- (setlist_scores.position below), never insertion-order or rowid luck that a
+-- reorder could not actually change.
+--
+-- AUTOINCREMENT, for the same reason instruments and goals have it: a setlist
+-- is routinely deleted, and a plain INTEGER PRIMARY KEY hands a deleted row's
+-- id to the next one - so a rename typed into an open tab, or an id held by a
+-- second reader (the planned MCP server #31, a bookmarked gig-mode URL), could
+-- silently act on a different setlist than the one it meant.
+--
+-- `owner` mirrors settings, instruments and the practice tables: unused today,
+-- every row written with DEFAULT_OWNER, present from the start so real accounts
+-- arrive as a data migration rather than a schema redesign.
+CREATE TABLE IF NOT EXISTS setlists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL DEFAULT 'local',
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_setlists_owner ON setlists(owner);
+
+-- The membership: which scores are in a setlist, and in what order. One row per
+-- (setlist, score) - a score appears in a given setlist AT MOST ONCE (the
+-- PRIMARY KEY below), because a setlist is an arrangement of distinct pieces
+-- and letting one appear twice makes "remove it" and "move it" ambiguous about
+-- which copy is meant. A score MAY be in any number of DIFFERENT setlists -
+-- that is the whole point of setlists, and nothing here constrains it.
+--
+-- `position` is the explicit order, and it is exactly what a reorder writes:
+-- rows are read ORDER BY position, and adding a score appends it at
+-- MAX(position)+1. There is deliberately NO unique constraint on position, so a
+-- reorder can rewrite the whole column row by row without a transient collision
+-- (two rows momentarily sharing a value) aborting it; the final values are
+-- distinct because the API writes a permutation.
+--
+-- TWO ON DELETE ACTIONS, each chosen the way #94/#95 taught for score_tags and
+-- transcriptions - the test is whether the row still SAYS anything once the
+-- thing it names is gone:
+--
+--   setlist_id ON DELETE CASCADE. A membership row is purely the association -
+--   "(this setlist) holds (this score) at (this position)" - exactly like a
+--   score_tags row. Delete the setlist and it has no statement left, and would
+--   otherwise accumulate silently forever. So deleting a setlist removes its
+--   membership rows and NOTHING ELSE: the scores, and every score's practice
+--   history, tags and transcriptions, are untouched, because this table is the
+--   only place a setlist ever reached.
+--
+--   score_id ON DELETE CASCADE, and this one needs #56 spelled out because a
+--   naive reading looks like it would drop a trashed score from its setlists.
+--   It does not. A score deleted through Fermata is SOFT-deleted: the row stays,
+--   marked deleted_at, sitting in the trash. Its membership rows therefore stay
+--   too, and a setlist holding a trashed score still lists it - rendered MARKED
+--   as deleted rather than as a broken link (see api.setlist_dict, and the
+--   invariant in #6). The cascade fires only when a score is PURGED from the
+--   trash (DELETE FROM scores - #56's second, deliberate step), at which point
+--   the score is gone for good and a membership row naming it says nothing: the
+--   same fate, for the same reason, as that score's tags and transcriptions.
+--   SET NULL is NOT the alternative it is for a practice session: a session
+--   with no score is still "forty minutes that happened", but a membership row
+--   with no score is an empty slot in a list, which is nothing.
+CREATE TABLE IF NOT EXISTS setlist_scores (
+    setlist_id INTEGER NOT NULL REFERENCES setlists(id) ON DELETE CASCADE,
+    score_id INTEGER NOT NULL REFERENCES scores(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    added_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (setlist_id, score_id)
+);
+CREATE INDEX IF NOT EXISTS idx_setlist_scores_order ON setlist_scores(setlist_id, position);
 """ + _PRACTICE_SCHEMA + _TRAINER_SCHEMA + _TRAINER_CHORD_SCHEMA
 
 # The schema this code expects. Stamped into PRAGMA user_version once a startup
@@ -612,6 +684,30 @@ CREATE INDEX IF NOT EXISTS idx_instruments_owner ON instruments(owner);
 #   trash view. That is this release hiding a file somebody has on disk, on the
 #   strength of a decision the older release could not see, and it is the kind
 #   of harm the stamp exists to make impossible.
+#
+# SETLISTS (#6) DELIBERATELY DO NOT BUMP THIS, and it is worth stating why,
+# because the rule above ("bump when an older release running against the new
+# database would do harm") is what decides it - not "a new table is a schema
+# change, so bump". The setlists and setlist_scores tables are pure additions:
+# they arrive through SCHEMA's own CREATE TABLE IF NOT EXISTS on the next
+# startup of any release that has them, need no migration and no backfill, and
+# NOTHING the previous release does touches them. Walk the two harms v5 guarded
+# against and neither has an analogue here. The older release does not scan,
+# list, resurrect or hide anything on the strength of a setlist - it has no
+# setlist code at all - so it cannot act on data it cannot see. The one
+# cross-table path is that release's own purge (DELETE FROM scores, #56): the
+# setlist_scores.score_id ON DELETE CASCADE is read from the schema STORED IN
+# THE FILE, not from the running code, so an old release purging a score still
+# removes that score's membership rows correctly and leaves no dangling
+# reference. A setlist created on the new release therefore survives a rollback
+# to the old one frozen but wholly intact, and comes back on the next upgrade.
+# With no harm to guard against, bumping would only make the old release REFUSE
+# a database it can open safely - stranding a rollback over data that was never
+# at risk, which is the exact cost the v5 note above warns a bump carries. So
+# the honest version number is unchanged. (If a later setlist change DOES make
+# the old release misbehave - say a scanner that reconciles setlist membership -
+# that change is what bumps this, with the forward-path test the bump then
+# needs; adding these tables is not that change.)
 SCHEMA_VERSION = 5
 
 # Columns added to a table that had already shipped. CREATE TABLE IF NOT EXISTS
