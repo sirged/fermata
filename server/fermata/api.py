@@ -3736,6 +3736,15 @@ EXPORT_TABLE_NAMES = (
     "practice_sessions",
     "practice_goals",
     "settings",
+    # #6's two, carried so a setlist a person arranged by hand - which cannot
+    # be regenerated from anything on disk - survives an export/import round
+    # trip. `setlist_scores` rides ON the scores it references: on the way out
+    # its rows for a score this export is leaving out are dropped (the same
+    # thing score_tags does), and on the way in both its foreign keys follow
+    # this import's id remap (setlist_id to the new setlist, score_id to the
+    # new score), exactly as practice_sessions.score_id does.
+    "setlists",
+    "setlist_scores",
 )
 
 
@@ -3798,6 +3807,24 @@ def _build_export_manifest(conn, *, include_trash: bool) -> dict:
         if row["score_id"] is not None and row["score_id"] not in score_ids:
             row["score_id"] = None
 
+    # Setlists travel whole; their membership rows travel only for scores that
+    # are actually in this export. A setlist_scores row is pure association
+    # (like score_tags) - it says nothing once the score it names is gone - so
+    # a member whose score was left out (a trashed one, include_trash=False) is
+    # dropped from the archive rather than carried as a dangling reference,
+    # exactly the filter score_tags/transcriptions above use. The setlist row
+    # itself still travels; it simply arrives with that member missing.
+    setlists = _dump_table(
+        conn, "SELECT * FROM setlists WHERE owner = ? ORDER BY id", (DEFAULT_OWNER,)
+    )
+    setlist_scores = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM setlist_scores ORDER BY setlist_id, position"
+        )
+        if row["score_id"] in score_ids
+    ]
+
     return {
         "format": EXPORT_FORMAT,
         "schema_version": SCHEMA_VERSION,
@@ -3816,6 +3843,8 @@ def _build_export_manifest(conn, *, include_trash: bool) -> dict:
             "practice_sessions": practice_sessions,
             "practice_goals": practice_goals,
             "settings": _dump_table(conn, "SELECT * FROM settings ORDER BY owner, key"),
+            "setlists": setlists,
+            "setlist_scores": setlist_scores,
         },
     }
 
@@ -3829,9 +3858,9 @@ def _build_export_manifest(conn, *, include_trash: bool) -> dict:
 def export_library(include_trash: bool = True, include_files: bool = True):
     """Everything Fermata knows, as one zip archive: every score row,
     transcription (content, source and every disclosure field), practice
-    session, goal, tag, favourite, instrument and setting, plus the score
-    files themselves - see the module comment above this section for the
-    archive's exact shape.
+    session, goal, tag, favourite, instrument, setting and setlist (with its
+    ordered membership), plus the score files themselves - see the module
+    comment above this section for the archive's exact shape.
 
     `include_trash` (default true) decides whether a score currently in the
     trash - deleted but not yet destroyed, see #56 - travels too. Leaving it
@@ -4039,6 +4068,23 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile) -> dict:
     for row in tables["settings"]:
         if not isinstance(row.get("key"), str) or not row["key"] or "value" not in row:
             raise HTTPException(422, "the archive's settings table has a malformed row")
+    # Setlists and their membership (#6), checked the same way as everything
+    # else that references a score: a membership row naming a setlist or a
+    # score not also in the archive cannot be inserted without dropping the
+    # reference or crashing partway through, so it is refused here before
+    # anything is written.
+    setlist_ids = {_require_id(row, "setlists") for row in tables["setlists"]}
+    for row in tables["setlist_scores"]:
+        if row.get("setlist_id") not in setlist_ids:
+            raise HTTPException(
+                422,
+                "the archive's setlist_scores table names a setlist that is not in the archive",
+            )
+        if row.get("score_id") not in score_ids:
+            raise HTTPException(
+                422,
+                "the archive's setlist_scores table names a score that is not in the archive",
+            )
     return manifest
 
 
@@ -4210,6 +4256,28 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
             (DEFAULT_OWNER, row["key"], row["value"]),
         )
 
+    # Setlists after the scores they hold (#6): the setlist row gets a fresh
+    # id like everything else, and each membership row's TWO foreign keys are
+    # repointed - setlist_id at this import's new setlist, score_id at this
+    # import's new score - the same id-remap practice_sessions.score_id rides.
+    # setlist_scores has no id of its own (its key is the pair), so nothing
+    # here needs its lastrowid.
+    setlist_id_map: dict[int, int] = {}
+    for row in tables["setlists"]:
+        setlist_id_map[row["id"]] = _insert_row(
+            conn, "setlists", row, overrides={"owner": DEFAULT_OWNER}
+        )
+    for row in tables["setlist_scores"]:
+        _insert_row(
+            conn,
+            "setlist_scores",
+            row,
+            overrides={
+                "setlist_id": setlist_id_map[row["setlist_id"]],
+                "score_id": score_id_map[row["score_id"]],
+            },
+        )
+
     # The library just grew - see scanner.record_deliberate_shrink, which
     # (despite the name it was written under for #56's delete) only ever sets
     # the high-water mark to the library's current size. Left unset here, an
@@ -4234,17 +4302,21 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
         "practice_sessions_imported": len(tables["practice_sessions"]),
         "practice_goals_imported": len(tables["practice_goals"]),
         "settings_imported": len(tables["settings"]),
+        "setlists_imported": len(tables["setlists"]),
+        "setlist_scores_imported": len(tables["setlist_scores"]),
     }
 
 
 @router.post("/import", tags=[TAG_PORTABILITY], response_model=ImportOut)
 async def import_library(file: UploadFile, dry_run: bool = True):
     """Restore an archive written by `GET /api/export` - every score row,
-    transcription, practice session, goal, tag, instrument and setting it
-    carries, added to this library. See the module comment above this
-    section for the archive's shape, exactly what "added" means (never a
-    replace or a merge-by-matching - see there for why), and what
-    transactional covers here.
+    transcription, practice session, goal, tag, instrument, setting and
+    setlist it carries, added to this library. A setlist's ordered membership
+    is restored with both its foreign keys repointed at this import's own new
+    setlist and score rows, so the arrangement survives intact. See the
+    module comment above this section for the archive's shape, exactly what
+    "added" means (never a replace or a merge-by-matching - see there for
+    why), and what transactional covers here.
 
     `dry_run` (default true, the same default every bulk operation in this
     API uses - see #56) validates the archive completely - it really is a
@@ -4312,6 +4384,8 @@ async def import_library(file: UploadFile, dry_run: bool = True):
             "practice_sessions_imported": len(tables["practice_sessions"]),
             "practice_goals_imported": len(tables["practice_goals"]),
             "settings_imported": len(tables["settings"]),
+            "setlists_imported": len(tables["setlists"]),
+            "setlist_scores_imported": len(tables["setlist_scores"]),
         }
 
     _require_library()

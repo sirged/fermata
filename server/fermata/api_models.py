@@ -1018,6 +1018,12 @@ class ImportOut(BaseModel):
     practice_sessions_imported: int
     practice_goals_imported: int
     settings_imported: int
+    # #6's two: how many setlists, and how many membership rows across them,
+    # the archive carried (or would restore). A membership row for a score the
+    # export left out was already dropped on the way out, so this counts what
+    # actually travels, not what the setlists held before export.
+    setlists_imported: int
+    setlist_scores_imported: int
 
 
 # ---------------------------------------------------------------------------

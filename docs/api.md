@@ -205,7 +205,7 @@ that ties them together.
 
 | Endpoint | What it does |
 | --- | --- |
-| `GET /api/export` | Every score row, transcription, practice session, goal, tag, instrument and setting, plus the score files themselves, as one zip. |
+| `GET /api/export` | Every score row, transcription, practice session, goal, tag, instrument, setting and setlist (with its ordered membership), plus the score files themselves, as one zip. |
 | `POST /api/import` | Restores an archive `GET /api/export` produced. **Dry run by default.** |
 
 **The archive.** A zip with `manifest.json` at its root - a JSON object naming
@@ -289,10 +289,12 @@ on its own, because the membership row is removed with the score row.
 progress views show (issue #32's one-source-of-truth rule), so a client shows
 per-piece progress within a setlist without counting anything itself.
 
-Setlists are **not yet part of the portable archive** (issue #58's export /
-import) — a backup carries scores, transcriptions, practice, goals, tags,
-instruments and settings, but not the setlists arranged over them. Including
-them is a follow-up.
+Setlists **travel in the portable archive** (issue #58's export / import): a
+backup carries each setlist and its ordered membership, and a restore repoints
+both foreign keys at the new setlist and score rows so the arrangement survives
+intact. A membership row for a score the export leaves out (a trashed one, when
+`include_trash=false`) is dropped from the archive rather than carried as a
+dangling reference — the setlist itself still travels, just without that member.
 
 ## Who else reads this contract
 
