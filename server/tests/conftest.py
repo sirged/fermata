@@ -232,6 +232,16 @@ _FIXTURE_RELATIVE_PATHS = {
     "rito_village": (
         "Patreon/John Oeth/The Legend of Zelda/TLOZ Breath of the Wild/"
         "Rito Village - Night (The Legend of Zelda Breath of the Wild).pdf"),
+    # Issue #180: bar 16 (the Scarborough Fair setting, last system on PDF page
+    # 84) prints a whole-measure rest in the melody staff - the melody is silent
+    # for the bar - over a six-eighth arpeggio in the tablature that fills the
+    # 3/4 bar on its own. The tab staff draws no stems for the silent melody, so
+    # the stem-based voice split never makes it, and the whole rest used to be
+    # stacked onto the arpeggio's voice, reading the bar as 7.0 quarters. Now
+    # read as two voices of 3.0. Nothing committed here reproduces a
+    # whole-measure rest sharing a bar with a voice that already fills it.
+    "classical_guitar_method_vol1": (
+        "Method Books/Classical-Guitar-Method-Vol1-2020.pdf"),
 }
 
 # Skips for want of a library are COUNTED HERE as they happen, rather than
@@ -611,6 +621,16 @@ def rito_village_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing 'Rito Village - Night' fixture)")
+    return p
+
+
+@pytest.fixture
+def classical_guitar_method_vol1_pdf() -> Path:
+    p = _fixture_path("classical_guitar_method_vol1")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing "
+            "Classical-Guitar-Method-Vol1 fixture)")
     return p
 
 

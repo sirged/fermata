@@ -3632,6 +3632,68 @@ def _reduce_overlong_rests(voice, budget):
     return reduced
 
 
+def _measure_rest_beats(x, budget):
+    """One voice's worth of beats for a bar the voice is silent through -
+    a whole-measure rest, spelled as the silence the meter actually holds.
+
+    A single written rest where the meter is one a lone rest can spell (a
+    dotted-half in 3/4, a whole in 4/4), so the voice's beat count is one, the
+    way the page draws it; the rare meter no single rest equals (5/4) falls back
+    to the plain longest-first decomposition. NOT marked inferred: this silence
+    WAS printed, as a whole rest, so it is a read beat that counts towards the
+    bar (unlike _pad_voice_to_budget's meter-deduced filler).
+    """
+    cd = _single_notatable_rest(budget)
+    if cd is not None:
+        return [(x, cd[0], cd[1], [])]
+    return [(x + k, code, dots, [])
+            for k, (code, dots, _n) in enumerate(_rest_beats_for(budget))]
+
+
+def _separate_whole_measure_rest(live, budget):
+    """Lift a whole-measure rest out of a voice the sounding notes already fill
+    and into a silent voice of its own. Returns how many were lifted (issue
+    #180).
+
+    A whole rest is the whole-measure convention: drawn as a whole rest in any
+    meter, it says "this voice is silent for the whole bar". Where the melody
+    rests a bar the tablature arpeggiates through, the two are engraved as two
+    voices - but the tab staff carries no stems for the silent one, so
+    _assign_group_voices, which reads voices off stems, never makes it, and the
+    whole rest is placed (by _place_rest_clusters) in the ONE voice the arpeggio
+    does make. That voice already sums to the whole bar, so the rest stacks on
+    top of a full measure: Classical-Guitar-Method-Vol1 bar 16 is six eighths
+    filling 3/4 plus a whole rest, read as 7.0 quarters.
+
+    This is a mis-voicing, not the over-read #163 trims: #163 shortens a rest to
+    the room its voice has left, and here the voice has none, so shrinking the
+    rest would drop the written beat rather than shorten one (see
+    _reduce_overlong_rests, which declines exactly this case). So the rest is
+    moved into a voice of its own, spelled as the silence the measure holds - a
+    whole-measure rest against the accompaniment - and the accompaniment keeps
+    its own full bar.
+
+    Fires only on a plain whole rest (the whole-measure glyph) whose voice's
+    OTHER events already account for the whole bar. A partly-filled voice has
+    room and keeps #163's reduction, where the rest may be a genuine over-read;
+    it is left untouched here.
+    """
+    separated = 0
+    for voice in list(live):
+        for i, (x, code, dots, notes) in enumerate(voice):
+            if notes or code != 1 or dots:
+                continue  # not a plain whole rest - the whole-measure glyph
+            other = sum(_beat_quarters(c, d)
+                        for j, (_x, c, d, _n) in enumerate(voice) if j != i)
+            if other < budget - 1e-6:
+                continue  # room remains: #163's reduction owns this, not us
+            del voice[i]
+            live.append(_measure_rest_beats(x, budget))
+            separated += 1
+            break  # at most one whole-measure rest lifted per voice
+    return separated
+
+
 def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
                                notation_spacing, budget=None):
     """Build one measure's VOICES from glyph-decoded note/rest events on the
@@ -3667,7 +3729,8 @@ def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
     how much of each voice is silence; without it no rests are inferred.
 
     Returns (voices, unmatched_columns, unmatched_glyph_notes,
-    unison_digits_shared, overlong_rests_reduced): voices is a list of one or
+    unison_digits_shared, overlong_rests_reduced,
+    whole_measure_rests_separated): voices is a list of one or
     more beat lists, each a list of (duration_code, dots, notes) triples in x
     order ready for _fmt_beat; unmatched_columns is how many tab columns had no
     glyph note within x_tol; unmatched_glyph_notes is how many decoded
@@ -3676,7 +3739,10 @@ def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
     digit their coincident twin's position was printed with instead (see
     _share_unison_digits) - an inference, disclosed rather than silent;
     overlong_rests_reduced is how many rests read longer than their bar were
-    trimmed to what it can hold (issue #163, see _reduce_overlong_rests).
+    trimmed to what it can hold (issue #163, see _reduce_overlong_rests);
+    whole_measure_rests_separated is how many whole-measure rests were lifted
+    out of a voice the sounding notes already filled into a silent voice of
+    their own (issue #180, see _separate_whole_measure_rest).
 
     Silence that had to be deduced from the meter is not reported here: the
     beats carry it themselves, as an InferredRest notes slot, which is what the
@@ -3752,8 +3818,16 @@ def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
     # as short. A rest whose voice has no room left at all (the other events
     # already fill the bar) cannot shrink to a positive written value and is
     # left untouched here - see _reduce_overlong_rests.
+    # A whole rest sharing a bar with a voice that already fills it is not that
+    # voice's rest at all - it is a second, silent voice the tab staff drew no
+    # stems for, so the stem-based voice split never made it and the rest was
+    # stacked onto the accompaniment (issue #180). Lift it into its own voice
+    # before reducing or padding, so the arpeggio keeps its own full bar and the
+    # whole-measure rest is not then also seen as an over-read to trim.
+    whole_measure_rests_separated = 0
     overlong_rests_reduced = 0
     if budget:
+        whole_measure_rests_separated = _separate_whole_measure_rest(live, budget)
         for t in live:
             overlong_rests_reduced += _reduce_overlong_rests(t, budget)
 
@@ -3764,7 +3838,7 @@ def _build_measure_beats_glyph(m_cols, m_lo, m_hi, note_events, note_xs, x_tol,
 
     return ([[(code, dots, notes) for _x, code, dots, notes in t] for t in live],
             unmatched_columns, unmatched_glyph_notes, unison_digits_shared,
-            overlong_rests_reduced)
+            overlong_rests_reduced, whole_measure_rests_separated)
 
 
 def _voice_mean_y(groups):
@@ -4535,7 +4609,8 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
                    dots_unassigned_eliminated=0, dots_unassigned_staves=0,
                    coincident_unsplit_pairs=0, coincident_unsplit_staves=0,
                    unison_digits_shared=0, overlong_rests_reduced=0,
-                   overlong_rest_bars=()):
+                   overlong_rest_bars=(), whole_measure_rests_separated=0,
+                   whole_measure_rest_bars=()):
     """Derive the document's rhythm warnings and confidence string from the
     collected per-staff provenances - the single place that decides both, so
     they cannot drift out of step with each other or with the measure loop.
@@ -4593,6 +4668,12 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
     could hold, and the numbers of the bars they were in (issue #163, see
     _reduce_overlong_rests). Reported like the padded-bars warning: the count
     says how much, the bar numbers say where.
+
+    `whole_measure_rests_separated` / `whole_measure_rest_bars` are how many
+    whole-measure rests were lifted out of a voice the sounding notes already
+    filled into a silent voice of their own, and where (issue #180, see
+    _separate_whole_measure_rest). Disclosed the same way: the count says how
+    much, the bar numbers say which bars to check against the page.
     """
     conformance = conformance or _BarConformance(0, 0, 0, 0)
     prov_bars = prov_bars or {}
@@ -4776,6 +4857,23 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
             "the bar had room for beside the other events in their voice. The rest was engraved, "
             "so it is kept; its duration is inferred from the time signature rather than read from "
             f"the glyph, and may not be what the score printed.{where}"
+        )
+
+    # A whole-measure rest moved out of a voice the sounding notes already
+    # filled into a silent voice of its own (issue #180). Disclosed like the
+    # reductions above: the rest WAS engraved, as a whole rest meaning "this
+    # voice is silent for the bar", and this decoder read it as a second voice
+    # the tab staff drew no stems for - a reading a viewer of the page may want
+    # to confirm, especially where the melody and accompaniment interleave.
+    if whole_measure_rests_separated:
+        where = (f" The bars are: {_bar_list(sorted(whole_measure_rest_bars))}."
+                 if whole_measure_rest_bars else "")
+        warnings.append(
+            f"{whole_measure_rests_separated} whole-measure rest(s) shared a bar with a voice that "
+            "already fills it, and were read as a separate voice silent for the whole bar rather "
+            "than stacked onto the sounding one. The rest was engraved as a whole rest; that it "
+            "belongs to a second voice the tablature drew no stems for is this decoder's reading of "
+            f"the page.{where}"
         )
 
     # Bars that don't add up outrank how the durations were obtained: a
@@ -5703,6 +5801,12 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None,
     # names its own.
     overlong_rests_reduced_total = 0
     overlong_rest_bars = []
+    # Whole-measure rests lifted out of a voice the sounding notes already
+    # filled into a silent voice of their own (issue #180, see
+    # _separate_whole_measure_rest). A count and the bar numbers, disclosed the
+    # same way the overlong reductions above are.
+    whole_measure_rests_separated_total = 0
+    whole_measure_rest_bars = []
     # Augmentation-dot glyphs that bound to no note - a genuine anomaly (see
     # glyph.decode_note_events, dots_unassigned), summed the same way and
     # over the same de-duplicated decodes as no_stem_notes above.
@@ -5903,7 +6007,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None,
                 bar_ts = _ts_at(ts_timeline, page_idx, anchor_y, m_lo) or ts
                 measure_quarter_len = _measure_quarter_length(bar_ts)
                 if source.uses_glyphs:
-                    voices, unmatched_cols, unmatched_notes, shared_digits, overlong_reduced = (
+                    (voices, unmatched_cols, unmatched_notes, shared_digits,
+                     overlong_reduced, wm_rests_separated) = (
                         _build_measure_beats_glyph(
                             m_cols, m_lo, m_hi, source.note_events, source.note_xs,
                             x_tol, std_staff.spacing, measure_quarter_len,
@@ -5915,6 +6020,9 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None,
                     overlong_rests_reduced_total += overlong_reduced
                     if overlong_reduced:
                         overlong_rest_bars.append(staff_first_bar + i)
+                    whole_measure_rests_separated_total += wm_rests_separated
+                    if wm_rests_separated:
+                        whole_measure_rest_bars.append(staff_first_bar + i)
                     if len(voices) > 1:
                         multivoice_bars += 1
                     if not voices:
@@ -6032,6 +6140,8 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None,
         unison_digits_shared=unison_digits_shared_total,
         overlong_rests_reduced=overlong_rests_reduced_total,
         overlong_rest_bars=tuple(sorted(overlong_rest_bars)),
+        whole_measure_rests_separated=whole_measure_rests_separated_total,
+        whole_measure_rest_bars=tuple(sorted(whole_measure_rest_bars)),
     )
     warnings.extend(rhythm_warnings)
     # Font-level problems that weren't already the reason a staff degraded

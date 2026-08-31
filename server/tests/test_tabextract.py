@@ -4930,16 +4930,20 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
 
     The RESTS the same issue calls out as an adjacent class are counted
     separately here, because a rest longer than its bar is a rest fault, not a
-    note one. One remains:
+    note one. The list is now empty; both rests once here have been worked:
 
-      Classical-Guitar-Method-Vol1-2020, bar 16 - a whole rest that reads as
-      four quarters in a 3/4 bar. Read against the page it is a LEGITIMATE
-      whole-measure rest: the melody voice is silent for the bar while the
-      tablature plays a six-eighth arpeggio. The fault is that the two are
-      flattened into one voice, where the arpeggio already fills the 3/4 bar,
-      so #163's over-read reduction (below) has no room to shrink the rest into
-      and leaves it - this is a voice-separation defect awaiting its own issue,
-      not the confident duration over-read #163 fixes. See the assertion below.
+      Classical-Guitar-Method-Vol1-2020, bar 16 held a whole rest that read as
+      four quarters in a 3/4 bar. Read against the page (the Scarborough Fair
+      setting, "She once was a true love of mine" - the last system on PDF page
+      84) it is a LEGITIMATE whole-measure rest: the melody voice is silent for
+      the bar while the tablature plays a six-eighth arpeggio. The fault was
+      that the two were flattened into one voice, where the arpeggio already
+      fills the 3/4 bar, so #163's over-read reduction (below) had no room to
+      shrink the rest into and left it. #180 recognises it as its own silent
+      voice - a whole-measure rest against the arpeggio - so the bar now reads
+      as two voices of 3.0 each rather than one of 7.0, and it leaves this list.
+      See test_bar16_whole_measure_rest_reads_as_its_own_voice for the two-voice
+      pin.
 
       My Star (Final Fantasy XVI), bar 5 held a DOTTED whole rest - six quarters
       in a 4/4 bar, never the whole-measure convention (a plain undotted whole
@@ -4995,8 +4999,9 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
         "note(s) written longer than the bar they sit in (score, bar, meter, "
         f"type, dots): {impossible[:10]}"
         + (f" and {len(impossible) - 10} more" if len(impossible) > 10 else ""))
-    # One disclosed rest remains, pinned so it can neither multiply unnoticed
-    # nor be quietly fixed without this sentence going with it.
+    # The list is empty, and none may come back: a rest longer than its bar is
+    # impossible whatever the page says, so an exact empty list makes any new
+    # site name itself in the failure. Two rests were once here:
     #
     # My Star (Final Fantasy XVI) bar 5 held a DOTTED whole rest - six quarters
     # in a 4/4 bar, never the whole-measure convention (which is a plain whole
@@ -5005,19 +5010,88 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
     # quarters the bar has room for beside the chord, disclosed as an inferred
     # length. It is gone from this list as a result.
     #
-    # Classical-Guitar-Method-Vol1-2020 bar 16 stays. Read against the printed
-    # page (the Scarborough Fair setting, "She once was a true love of mine" -
-    # the last system on PDF page 84) its whole rest is a LEGITIMATE
-    # whole-measure rest: the melody voice is silent for the bar while the
-    # tablature plays a six-eighth arpeggio. The defect is that the two were flattened into one
-    # voice, where the arpeggio already fills the 3/4 bar and leaves the rest no
-    # room - a voice-separation fault, not the duration over-read #163 fixes, so
-    # #163's reduction correctly does not fire on it (shrinking it to the zero
-    # room left would drop a written beat rather than shorten one). Carried here
-    # until that separation is done under its own issue.
-    assert impossible_rests == [
-        ("Classical-Guitar-Method-Vol1-2020.pdf", "16", (3, 4), "whole", 0),
-    ], impossible_rests
+    # Classical-Guitar-Method-Vol1-2020 bar 16 held a whole rest that read as
+    # four quarters in a 3/4 bar. Read against the printed page (the Scarborough
+    # Fair setting, "She once was a true love of mine" - the last system on PDF
+    # page 84) it is a LEGITIMATE whole-measure rest: the melody voice is silent
+    # for the bar while the tablature plays a six-eighth arpeggio. The two were
+    # flattened into one voice, where the arpeggio already fills the 3/4 bar and
+    # left the rest no room - a voice-separation fault, not the duration
+    # over-read #163 fixes, so #163's reduction correctly did not fire on it
+    # (shrinking it to the zero room left would drop a written beat rather than
+    # shorten one). #180 lifts it into its own silent voice - a whole-measure
+    # rest against the arpeggio, spelled as the dotted-half the 3/4 bar holds -
+    # so the bar reads as two voices of 3.0 rather than one of 7.0, and it is
+    # gone from this list. See test_bar16_whole_measure_rest_reads_as_its_own_voice.
+    assert impossible_rests == [], impossible_rests
+
+
+def test_bar16_whole_measure_rest_reads_as_its_own_voice(
+        classical_guitar_method_vol1_pdf):
+    """Issue #180: a whole-measure rest sharing a bar with a voice that already
+    fills it is a second, silent voice - not a beat stacked onto the sounding
+    one.
+
+    Classical-Guitar-Method-Vol1 bar 16 (the Scarborough Fair setting, "She
+    once was a true love of mine" - the last system on PDF page 84) prints a
+    whole rest in the melody staff, hanging below the fourth line: the melody is
+    silent for the whole bar. The tablature underneath plays a six-eighth
+    arpeggio that fills the 3/4 bar on its own. Because the tab staff draws no
+    stems for the silent melody, the stem-based voice split (_assign_group_voices)
+    never makes a voice for it, and the whole rest was placed in the ONE voice
+    the arpeggio makes - stacking a four-quarter rest onto a bar the six eighths
+    already fill, so the bar read as 7.0 quarters in 3/4.
+
+    The fix separates it: the arpeggio keeps its own 3.0-quarter bar, and the
+    whole-measure rest becomes a voice of its own, silent for the bar, spelled
+    as the 3.0 quarters the meter holds (a dotted-half rest in 3/4 - a whole
+    rest means "the whole measure" in any meter, never four quarters in 3/4).
+    Neither voice exceeds the bar, and both sum to 3.0.
+    """
+    result = tabextract.extract(classical_guitar_method_vol1_pdf)
+    assert result.extractable and result.musicxml
+
+    type_quarters = {"breve": 8.0, "whole": 4.0, "half": 2.0, "quarter": 1.0,
+                     "eighth": 0.5, "16th": 0.25, "32nd": 0.125}
+    root = ET.fromstring(result.musicxml)
+    bar16 = None
+    for part in root.findall("part"):
+        for measure in part.findall("measure"):
+            if measure.get("number") == "16":
+                bar16 = measure
+                break
+        if bar16 is not None:
+            break
+    assert bar16 is not None, "bar 16 was not emitted"
+
+    # Sum each voice's WRITTEN durations (what _bar_conformance and any MusicXML
+    # tool reads), split by voice, and record the rest types each voice holds.
+    voice_quarters = {}
+    voice_rest_types = {}
+    for note in bar16.findall("note"):
+        written = type_quarters.get(note.findtext("type"))
+        if written is None:
+            continue
+        written *= 2 - 0.5 ** len(note.findall("dot"))
+        voice = note.findtext("voice") or "1"
+        voice_quarters[voice] = voice_quarters.get(voice, 0.0) + written
+        if note.find("rest") is not None:
+            voice_rest_types.setdefault(voice, []).append(
+                (note.findtext("type"), len(note.findall("dot"))))
+
+    # Two voices, each holding a full 3/4 bar - not one voice of 7.0.
+    assert len(voice_quarters) == 2, voice_quarters
+    for voice, q in voice_quarters.items():
+        assert abs(q - 3.0) < 1e-9, (voice, q, voice_quarters)
+
+    # One voice is the six-eighth arpeggio (no rests); the other is the
+    # whole-measure rest, spelled as the dotted-half the 3/4 bar holds rather
+    # than a whole rest that would read as four quarters again.
+    rests = [types for types in voice_rest_types.values() if types]
+    assert rests == [[("half", 1)]], voice_rest_types
+
+    # And it is disclosed, the same way #163's reductions are.
+    assert any("whole-measure rest" in w for w in result.warnings), result.warnings
 
 
 # ---------------------------------------------------------------------------
