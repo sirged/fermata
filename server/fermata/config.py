@@ -6,6 +6,21 @@ LIBRARY_DIR = Path(os.environ.get("FERMATA_LIBRARY", "./library")).resolve()
 CONFIG_DIR = Path(os.environ.get("FERMATA_CONFIG", "./config")).resolve()
 WEB_DIST = os.environ.get("FERMATA_WEB_DIST", "")
 
+# A local copy of the real MusicXML 4.0 schema (issue #188) - belt-and-
+# suspenders validation of a hand edit PUT to /scores/{id}/transcription,
+# on top of the note editor's own client-side Rule 11 guard. The schema is
+# not something Fermata can carry in the repository or fetch for itself: its
+# own xs:import elements name remote URLs, and a server that fetched them on
+# every save would be a network dependency nobody asked for. So this is empty
+# by default, which is a no-op - PUT accepts an edit exactly as it always
+# has - and only takes effect when it is pointed at a LOCAL file whose own
+# imports were already repointed to resolve locally too. See
+# tests/test_musicxml.py's test_validates_against_xsd, which validates the
+# emitter's own output against the same schema this names, and the "Fetch the
+# MusicXML schema" step in .github/workflows/ci.yml, which is how CI obtains
+# one without committing it.
+MUSICXML_XSD = os.environ.get("FERMATA_MUSICXML_XSD", "")
+
 CACHE_DIR = CONFIG_DIR / "cache"
 DB_PATH = CONFIG_DIR / "fermata.db"
 
