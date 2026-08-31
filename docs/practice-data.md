@@ -356,34 +356,87 @@ There is no down direction. A database written by a newer release is refused
 outright at startup rather than written to blind; restoring a backup is the way
 back. See the Backups section of [deployment.md](deployment.md).
 
+## Trainer attempts
+
+The per-attempt table this section spent a long time refusing to guess at.
+*Hear a note, name it* (issue #61) was the first trainer and deliberately did
+not get one - one exercise was not enough to know whether the unit was a
+position, an interval, or a pitch, and designing a table around the first
+would have been the same guess this section was written against. *Fret to
+note* (issue #27) is the second, and it decided: the unit is one QUESTION, and
+every question - whichever direction a fretboard drill asks it in - reduces to
+two facts, a note being tested and a note the answer named.
+
+One table, `trainer_attempts`, independent of `practice_sessions`:
+
+| Column | Meaning |
+| --- | --- |
+| `id` | Stable for the life of the row. |
+| `owner` | `'local'`, same as everywhere else. |
+| `session_id` | The `practice_sessions` row logging the surrounding drill's TIME, when there is one yet - `NULL` otherwise. See below for why that is the ordinary case, not an edge one. |
+| `drill` | Which exercise asked it. `'fret_to_note'` today; a second fretboard drill (#26, #29) widens this, not a migration. |
+| `direction` | `position_to_note` (shown a position, asked for its note) or `note_to_position` (shown a note, asked to find a position). |
+| `target_string`, `target_fret` | The position a question NAMED - set only on `position_to_note`, where there is one. A note prompt has no single expected position (most notes sound in several places), so these stay `NULL` on `note_to_position`. |
+| `target_note` | The note being tested, always set. |
+| `given_string`, `given_fret` | The position a TAP answered with - set only on `note_to_position`. `NULL` on `position_to_note`, where the answer was a note choice and no position was touched. |
+| `given_note` | The note the answer actually named, always set. On `note_to_position` this is the note that SOUNDS at the tapped position, worked out from the instrument's own tuning by the client that drew the neck - never from what the player meant to tap, the same rule ear_training's question-from-what-sounded already applies one layer up. |
+| `correct` | `given_note = target_note`. Computed server-side from the two note fields, unconditionally, the same rule for both directions - never accepted from a client. |
+| `response_ms` | How long the question took, informational. |
+| `created_at` | When the row was written. |
+
+**Why exactly one of the two position pairs is ever populated, decided by
+`direction`.** A position-to-note question has a target position and a chosen
+note for an answer; a note-to-position question has a target note and a
+tapped position for an answer. Trying to force both directions into the same
+"target position, given position" shape would leave a `note_to_position` row
+inventing a target position it never had, or a `position_to_note` row
+inventing a tapped position that was never touched.
+
+**Why `session_id` is usually `NULL`, and that is not a gap.** An attempt is
+written the moment a question is answered - mid-drill, typically well before
+the practice_sessions row that will carry the drill's total TIME even exists
+(that one is written when the drill stops, the same as every other activity).
+Linking every attempt to a session was never the point; querying "which
+positions get missed" is, and that needs no session_id at all - see the
+endpoints below. `ON DELETE SET NULL`, for the same reason `score_id` is on
+`practice_sessions`: deleting the session that logged a drill's time is not a
+reason to forget that a question was asked and answered.
+
+**Structured and queryable (issue #32), not a JSON blob and not a free-text
+note.** "Which positions am I weak on" is `WHERE correct = 0 GROUP BY
+target_string, target_fret`, not something parsed out of a sentence. The
+drill's own `practice_sessions` row still carries a human-readable summary in
+its `note` - the same as every other activity - so a reader of the practice
+page is not left with a blank line; the structured record lives here instead
+of being the only place the time was spent.
+
+**Counts, never a rate.** There is no accuracy percentage anywhere a query
+over `trainer_attempts` could produce one, and no column or view counts a
+run of consecutive `correct` rows - the same rule the rest of this document
+holds to (no streaks, no best week, no average rating). A `correct = 0` row
+is a fact worth finding, not a mark against anyone; a query is free to count
+right and wrong separately and never free to divide one by the other.
+
+### Asking questions
+
+- `POST /api/trainer/attempts` - log one answered question.
+- `GET /api/trainer/attempts?drill=&direction=&correct=&session_id=&limit=` -
+  the raw, queryable record, newest first, with `total` and `truncated`
+  beside it like every other list here. A client asking "which positions am I
+  weak on" filters `correct=false` and groups the results itself, rather than
+  this API keeping a bespoke aggregate endpoint in step with every future
+  drill's own idea of what a weak spot is.
+
 ## What is not here yet
 
-- **Per-attempt trainer results** - which positions or intervals were missed,
-  and response times. That belongs beside the trainer that produces it, and
-  inventing its shape before one exists would be guessing. What the `activity`
-  vocabulary guarantees is that when a trainer arrives, the time it accounts
-  for lands in the same history and the same goals as everything else.
-
-  One now has. *Hear a note, name it* (`web/src/lib/EarTraining.svelte`) writes
-  one ordinary session with `activity = 'ear_training'`, and everything it knows
-  beyond the time goes in the `note`: how many notes were asked, how many were
-  named as heard, and the range they were drawn from. Nothing about the drill is
-  special-cased anywhere - it shows on the practice page and counts towards a
-  goal exactly as a piece does, which was the whole point of there being one
-  session table.
-
-  That is deliberately still not a per-attempt schema. One exercise is not
-  enough to know what such a table needs: the second and third - fret-to-note,
-  chord recognition - are what should decide whether the unit is a position, an
-  interval, or a pitch, and designing it around the first would be the same
-  guess this section was written to avoid. What the note already proves is that
-  a drill's time and a drill's counts can live here without one.
-
-  Note that a drill records **counts and never a rate**. There is no accuracy
-  percentage in the note, on the page, or anywhere a query could produce one,
-  for the same reason there is no best week: a number out of a hundred is a mark
-  rather than a fact, and it invites a colour. Nothing counts consecutive
-  correct answers either.
+- **Interval or chord-recognition attempt shapes.** `trainer_attempts` is
+  drill-agnostic in its schema (a `drill` column, not a table per exercise),
+  but a chord drill's own idea of "which chord, which voicing" has not been
+  built against it yet, and inventing that shape before that trainer exists
+  would be the same guess this section spent a long time avoiding for
+  fret-to-note. Fret-to-note's `position_to_note`/`note_to_position` split is
+  a real answer for a single-note drill; a chord is a different unit, and #26
+  or #29 gets to decide whether it fits the same table or needs its own.
 - **Key, tempo and difficulty per score** - musical metadata about the piece
   rather than about the practice.
 - **Achievements** - looking back at what has been accomplished, where a goal

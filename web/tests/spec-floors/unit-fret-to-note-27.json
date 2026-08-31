@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/fret-to-note.spec.js",
+  "count": 18,
+  "reason": "issue #27: scoping a drill to particular strings and a fret range including the degenerate empty case, picking a question in both directions with no immediate repeat, grading each direction (a tap's SOUNDED note deciding note-to-position, mirroring ear-training.js's own rule), the structured attempt payload posted per question (#32), and the drill's wording never carrying a grading word, a streak, or a percentage."
+}

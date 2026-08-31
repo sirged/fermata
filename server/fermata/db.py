@@ -176,6 +176,87 @@ _PRACTICE_SCHEMA = (
     + "".join(f"{statement};\n" for statement in _PRACTICE_GOALS_INDEXES)
 )
 
+# One row per QUESTION a fretboard drill asked - the per-attempt detail
+# docs/practice-data.md's "What is not here yet" section always said would
+# wait for a second trainer to decide its shape (issue #32). Issue #27, fret
+# to note, is that second trainer, and this is the shape it decided on: not a
+# JSON blob and not a free-text note, because "which positions are missed" has
+# to be a WHERE clause, not a thing a client parses out of a sentence.
+#
+# WHY ONE 'correct' RULE COVERS BOTH DIRECTIONS OF THE DRILL. A question is
+# asked one of two ways - shown a position and asked for its note, or shown a
+# note and asked to find a position that sounds it - and the two look like
+# they would need two different ways of grading. They do not: every attempt
+# stores `target_note` (the note being tested) and `given_note` (the note the
+# answer actually named), and `correct` is `given_note = target_note`,
+# unconditionally, computed here rather than trusted from the client. For the
+# position-to-note direction `given_note` is literally the note the player
+# picked. For the note-to-position direction `given_note` is the note that
+# SOUNDS at the position they tapped, worked out from the instrument's tuning
+# by the same client that drew the neck - see web/src/lib/trainer/neck.js's
+# noteAt. That mirrors ear-training.js's own rule ("the question is built from
+# what was SOUNDED, never from what was asked for"): the server does not need
+# to know a tuning to grade an attempt, only to compare two notes it was told.
+#
+# target_string/target_fret are the position a question NAMED, and are NULL
+# on the note-to-position direction: a note prompt has no single expected
+# position, since most notes sound in several places, so there is nothing
+# there to record as "the" target position - only which note was asked for.
+# given_string/given_fret are the position a TAP answered with, and are NULL
+# on the position-to-note direction, where the answer was a note choice and no
+# position was ever touched. Exactly one of the two position pairs is
+# populated, decided by `direction`.
+#
+# `drill` is a free second axis on purpose, alongside `direction`: fret to
+# note is the first trainer to write here, and is not assumed to be the last
+# fretboard exercise this table will ever hold (#26, #29). Widening the
+# CHECK in trainer.py's DRILLS is how a second one arrives; the table itself
+# needs no migration for that.
+#
+# ON DELETE SET NULL on session_id, for the same reason score_id is on
+# practice_sessions: an attempt is a fact about a question that was answered,
+# and deleting the practice_sessions row that logged the surrounding drill's
+# TIME (see api.log_session, activity='fretboard') does not undo the
+# answering. session_id is nullable in the other direction too - an attempt is
+# written the moment it is answered, mid-drill, before the session row that
+# will eventually carry the drill's total time even exists, so most attempts
+# are never linked to one at all. Querying "how did this session go" was
+# never the point; querying "which positions get missed" is, and that needs
+# no session_id at all.
+_TRAINER_ATTEMPTS_COLUMNS = """(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL DEFAULT 'local',
+    session_id INTEGER REFERENCES practice_sessions(id) ON DELETE SET NULL,
+    drill TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    target_string INTEGER,
+    target_fret INTEGER,
+    target_note TEXT NOT NULL,
+    given_string INTEGER,
+    given_fret INTEGER,
+    given_note TEXT NOT NULL,
+    correct INTEGER NOT NULL,
+    response_ms INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)"""
+
+_TRAINER_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS trainer_attempts " + _TRAINER_ATTEMPTS_COLUMNS + ";\n"
+    + "CREATE INDEX IF NOT EXISTS idx_trainer_attempts_owner_drill"
+    " ON trainer_attempts(owner, drill, created_at);\n"
+    + "CREATE INDEX IF NOT EXISTS idx_trainer_attempts_session"
+    " ON trainer_attempts(session_id);\n"
+    # The index a "which positions get missed" query actually needs: every
+    # attempt this drill's position-to-note direction wrote, grouped by the
+    # position it was about. Left off target_note/correct because SQLite can
+    # apply those as a filter over this index's own rows without a second
+    # lookup - narrowing the indexed columns to what the WHERE and GROUP BY
+    # need is what keeps this from scanning a whole drill's history to find
+    # one string's weak frets.
+    + "CREATE INDEX IF NOT EXISTS idx_trainer_attempts_target"
+    " ON trainer_attempts(owner, drill, target_string, target_fret);\n"
+)
+
 
 # The scores table's columns, written once, for the same reason
 # _PRACTICE_SESSIONS_COLUMNS is: SCHEMA builds the table from it, and any future
@@ -394,7 +475,7 @@ CREATE TABLE IF NOT EXISTS instruments (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_instruments_owner ON instruments(owner);
-""" + _PRACTICE_SCHEMA
+""" + _PRACTICE_SCHEMA + _TRAINER_SCHEMA
 
 # The schema this code expects. Stamped into PRAGMA user_version once a startup
 # has finished bringing a database up to date.

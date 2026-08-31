@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/neck.spec.js",
+  "count": 15,
+  "reason": "issue #25: the neck's note-at-position arithmetic for standard tuning (open strings, the fifth-fret relationship, the twelfth-fret octave), reading tuning from an instrument definition rather than a hardcoded six strings (including a capo and an unfretted fallback), pitch-class spelling kept in step with pitch.js, position listing/scoping, and inlay dot placement."
+}
