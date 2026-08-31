@@ -10,12 +10,17 @@ import {
   DURATION_TYPES,
   MAX_WRITABLE_MIDI,
   MIN_WRITABLE_MIDI,
+  accidentalName,
   durationForDots,
   durationForType,
+  enharmonicSpellings,
   isWritablePitch,
+  keyAlter,
   midiForStringFret,
   midiOfPitch,
   pitchFromMidi,
+  spellPitch,
+  spellWithAlter,
   stringToTuningLine,
 } from "../../src/lib/editor/notes.js";
 
@@ -52,9 +57,78 @@ test("pitchFromMidi round-trips every MIDI number back to the same number", () =
   }
 });
 
-test("pitchFromMidi spells a black key as a sharp", () => {
-  expect(pitchFromMidi(61)).toEqual({ step: "C", octave: 4, alter: 1 });
-  expect(pitchFromMidi(66)).toEqual({ step: "F", octave: 4, alter: 1 });
+test("pitchFromMidi is the C-major spelling (sharp sharps, flat flats)", () => {
+  // C major (fifths 0) is exactly spell_pitch at fifths 0 on the server:
+  // C C# D Eb E F F# G Ab A Bb B - the sharp side spelled sharp, the flat side
+  // flat, not sharps throughout.
+  expect(pitchFromMidi(61)).toEqual({ step: "C", octave: 4, alter: 1 }); // C#
+  expect(pitchFromMidi(66)).toEqual({ step: "F", octave: 4, alter: 1 }); // F#
+  expect(pitchFromMidi(63)).toEqual({ step: "E", octave: 4, alter: -1 }); // Eb
+  expect(pitchFromMidi(68)).toEqual({ step: "A", octave: 4, alter: -1 }); // Ab
+  expect(pitchFromMidi(70)).toEqual({ step: "B", octave: 4, alter: -1 }); // Bb
+});
+
+// ---------------------------------------------------------- key-aware spelling (#185)
+
+test("spellPitch preserves the sounding pitch in every key", () => {
+  for (let f = -8; f <= 8; f++) {
+    for (let m = MIN_WRITABLE_MIDI; m <= MAX_WRITABLE_MIDI; m++) {
+      const p = spellPitch(m, f);
+      expect(midiOfPitch(p.step, p.octave, p.alter)).toBe(m);
+    }
+  }
+});
+
+test("a flat key spells a black key flat and a sharp key sharp - same sound", () => {
+  // MIDI 66 is one key on the instrument; the key signature decides its name.
+  expect(spellPitch(66, -4)).toEqual({ step: "G", alter: -1, octave: 4 }); // Ab major -> Gb
+  expect(spellPitch(66, 0)).toEqual({ step: "F", alter: 1, octave: 4 }); // C major -> F#
+  // Both spellings sound the same note.
+  expect(midiOfPitch("G", 4, -1)).toBe(66);
+  expect(midiOfPitch("F", 4, 1)).toBe(66);
+});
+
+test("the octave follows the spelling, not the MIDI number alone", () => {
+  // MIDI 60 is middle C; spelled B sharp it is octave 3, not 4.
+  expect(spellPitch(60, 0)).toEqual({ step: "C", alter: 0, octave: 4 });
+  expect(spellWithAlter(60, 1)).toEqual({ step: "B", alter: 1, octave: 3 });
+});
+
+test("keyAlter is what the key signature already puts on a letter", () => {
+  expect(keyAlter("F", 1)).toBe(1); // G major sharps F
+  expect(keyAlter("F", 0)).toBe(0); // C major does not
+  expect(keyAlter("B", -1)).toBe(-1); // F major flats B
+  expect(keyAlter("G", -4)).toBe(0); // Ab major leaves G natural
+});
+
+test("spellWithAlter fixes the accidental and solves for the letter, same sound", () => {
+  expect(spellWithAlter(66, -1)).toEqual({ step: "G", alter: -1, octave: 4 }); // Gb
+  expect(spellWithAlter(66, 1)).toEqual({ step: "F", alter: 1, octave: 4 }); // F#
+  // A black key has no natural spelling.
+  expect(spellWithAlter(66, 0)).toBeNull();
+});
+
+test("enharmonicSpellings are the flat/natural/sharp alternatives, same MIDI", () => {
+  // F sharp <-> G flat.
+  expect(enharmonicSpellings(66)).toEqual([
+    { step: "G", alter: -1, octave: 4 },
+    { step: "F", alter: 1, octave: 4 },
+  ]);
+  // C natural and B sharp (the octave moving with the spelling).
+  expect(enharmonicSpellings(60)).toEqual([
+    { step: "C", alter: 0, octave: 4 },
+    { step: "B", alter: 1, octave: 3 },
+  ]);
+  for (let m = MIN_WRITABLE_MIDI; m <= MAX_WRITABLE_MIDI; m++) {
+    for (const p of enharmonicSpellings(m)) expect(midiOfPitch(p.step, p.octave, p.alter)).toBe(m);
+  }
+});
+
+test("accidentalName maps an alter to its printed accidental", () => {
+  expect(accidentalName(-1)).toBe("flat");
+  expect(accidentalName(0)).toBe("natural");
+  expect(accidentalName(1)).toBe("sharp");
+  expect(accidentalName(3)).toBeNull();
 });
 
 // ---------------------------------------------------------------- the Rule 5 mirror

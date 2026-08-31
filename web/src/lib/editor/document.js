@@ -16,12 +16,16 @@
 // unit-tested on its own.
 import {
   DURATION_TYPES,
+  accidentalName,
   durationForDots,
   durationForType,
+  enharmonicSpellings,
   isWritablePitch,
+  keyAlter,
   midiForStringFret,
   midiOfPitch,
-  pitchFromMidi,
+  spellPitch,
+  spellWithAlter,
   stringToTuningLine,
 } from "./notes.js";
 
@@ -134,6 +138,31 @@ export function createDocument(xml) {
   const divisionsText = doc.getElementsByTagName("divisions")[0]?.textContent;
   const divisions = Number(divisionsText);
 
+  // The key signature (`<key><fifths>`) in force at each measure, so a
+  // recomputed pitch is spelled against it (Rules 12-13). This profile declares
+  // the key once in the first measure (Rule 4), but a general reader tracks a
+  // later change too: walk measures in document order, carrying the last
+  // `<fifths>` seen forward. An absent or unreadable key is C major (fifths 0),
+  // which MusicXML means by no key signature (Rule 13's stated default). The
+  // <key> is read from the measure's OWN attributes, not a descendant walk, so a
+  // measure with no key of its own inherits rather than resets.
+  const fifthsByMeasure = new Map();
+  let fifthsInForce = 0;
+  for (const measureEl of doc.getElementsByTagName("measure")) {
+    const attrs = firstChildTag(measureEl, "attributes");
+    const keyEl = attrs ? firstChildTag(attrs, "key") : null;
+    const f = keyEl ? Number(tagText(keyEl, "fifths")) : NaN;
+    if (Number.isFinite(f)) fifthsInForce = f;
+    fifthsByMeasure.set(measureEl, fifthsInForce);
+  }
+  // The document's opening key, for a caller that shows or tests it.
+  const documentFifths = fifthsByMeasure.values().next().value ?? 0;
+
+  function fifthsOf(el) {
+    const measureEl = el?.closest ? el.closest("measure") : null;
+    return (measureEl && fifthsByMeasure.get(measureEl)) ?? 0;
+  }
+
   // The sounding notes, in document order (measure -> voice's onset -> chord
   // member), each paired with its <note> element. This is exactly the order
   // score-render.js walks the alphaTab model in to build the positional map,
@@ -218,9 +247,14 @@ export function createDocument(xml) {
     const type = tagText(el, "type");
     const dots = [...el.children].filter((c) => c.tagName === "dot").length;
     const pitchEl = firstChildTag(el, "pitch");
-    const midi = pitchEl
-      ? midiOfPitch(tagText(pitchEl, "step"), Number(tagText(pitchEl, "octave")), Number(tagText(pitchEl, "alter") ?? 0))
-      : null;
+    const step = pitchEl ? tagText(pitchEl, "step") : null;
+    const alter = pitchEl ? Number(tagText(pitchEl, "alter") ?? 0) : null;
+    const midi = pitchEl ? midiOfPitch(step, Number(tagText(pitchEl, "octave")), alter) : null;
+    // The printed <accidental>, verbatim, or null when the note carries none -
+    // so the panel can show which accidental is in force and a test can assert
+    // <alter> and <accidental> stay mutually consistent (Rule 10).
+    const accEl = firstChildTag(el, "accidental");
+    const accidental = accEl ? accEl.textContent.trim() : null;
     const measureEl = el.closest ? el.closest("measure") : null;
     const voices = measureEl ? voicesByMeasure.get(measureEl) : null;
     return {
@@ -231,6 +265,12 @@ export function createDocument(xml) {
       type,
       dots,
       midi,
+      // The spelling as written: the letter, its alteration, and the printed
+      // accidental if any. Same sounding pitch (midi) regardless of how these
+      // read (Rules 12-13).
+      step,
+      alter,
+      accidental,
       measure: measureNums[ordinal] ?? null,
       // The note's own voice, its onset within that voice (both #182's proof
       // that a moved note keeps its onset), and how many voices its measure
@@ -292,13 +332,11 @@ export function createDocument(xml) {
     return el ? describe(el, ordinal) : null;
   }
 
-  // Rewrite a sounding note's <pitch> to match a MIDI number, keeping the
-  // schema's child order (step, alter?, octave). Called whenever a fret or a
-  // string changes, so Rule 10's <pitch> never disagrees with the Rule 9
-  // position that determines it.
-  function writePitch(el, midi) {
-    const spelled = pitchFromMidi(midi);
-    if (!spelled) return;
+  // Write a `{ step, alter, octave }` into a note's <pitch>, keeping the schema's
+  // child order (step, alter?, octave). The <alter> is omitted for a natural, as
+  // the emitter does. This touches ONLY the sound element; the printed
+  // <accidental> is a separate child handled by writeAccidental.
+  function putPitch(el, spelled) {
     let pitch = firstChildTag(el, "pitch");
     if (!pitch) {
       pitch = doc.createElement("pitch");
@@ -316,6 +354,93 @@ export function createDocument(xml) {
     const octave = doc.createElement("octave");
     octave.textContent = String(spelled.octave);
     pitch.appendChild(octave);
+  }
+
+  // Set (alter a number) or clear (alter null) a note's printed <accidental>.
+  // The schema puts <accidental> after <dot>* and before <time-modification> /
+  // <stem> / <notations>, so it is inserted before the first of those and
+  // appended only when the note has none of them.
+  function writeAccidental(el, alter) {
+    const existing = firstChildTag(el, "accidental");
+    if (existing) el.removeChild(existing);
+    if (alter == null) return;
+    const name = accidentalName(alter);
+    if (!name) return;
+    const acc = doc.createElement("accidental");
+    acc.textContent = name;
+    const anchor =
+      firstChildTag(el, "time-modification") || firstChildTag(el, "stem") || firstChildTag(el, "notations");
+    if (anchor) el.insertBefore(acc, anchor);
+    else el.appendChild(acc);
+  }
+
+  // The explicit accidentals printed EARLIER in a note's measure, as a map
+  // "STEP|OCTAVE" -> alter. Only a note carrying an <accidental> element changes
+  // the running state (that is what a printed accidental IS); a note without one
+  // simply conforms to whatever is already in force. Document order within the
+  // measure is time order for this profile, so the walk stops at the target note.
+  // This is the "accidental in force in the bar" of standard notation: it carries
+  // to a later same-step/octave note until the barline, which resets it (a fresh
+  // measure starts this walk over).
+  function accidentalsInForce(measureEl, targetEl) {
+    const map = new Map();
+    if (!measureEl) return map;
+    for (const note of measureEl.getElementsByTagName("note")) {
+      if (note === targetEl) break;
+      const acc = firstChildTag(note, "accidental");
+      const pitchEl = firstChildTag(note, "pitch");
+      if (!acc || !pitchEl) continue;
+      const step = tagText(pitchEl, "step");
+      const octave = Number(tagText(pitchEl, "octave"));
+      if (step == null || !Number.isFinite(octave)) continue;
+      map.set(`${step}|${octave}`, Number(tagText(pitchEl, "alter") ?? 0));
+    }
+    return map;
+  }
+
+  // The spelling to write for a recomputed sounding pitch, honouring both the key
+  // signature and any accidental already in force in the bar (Rules 12-13):
+  //
+  // - If an accidental printed earlier in the bar, on some step+octave, already
+  //   sounds this exact MIDI, that spelling is reused - the accidental carries,
+  //   and no fresh <accidental> is printed. (A bar that spelled a note G flat
+  //   spells the same sounding pitch G flat again, not F sharp.)
+  // - Otherwise the key signature decides, via spellPitch.
+  //
+  // The printed <accidental> is then whatever the note's own alter needs to
+  // override what is in force for its step+octave - the earlier printed
+  // accidental if there was one, else the key signature. A natural that cancels a
+  // key sharp/flat, or a prior accidental, is written as a natural; a note that
+  // matches what is already in force prints nothing.
+  function spellForEdit(el, midi) {
+    const measureEl = el.closest ? el.closest("measure") : null;
+    const fifths = fifthsOf(el);
+    const inForce = accidentalsInForce(measureEl, el);
+    let spelled = null;
+    for (const [key, alter] of inForce) {
+      const [step, octave] = key.split("|");
+      if (midiOfPitch(step, Number(octave), alter) === midi) {
+        spelled = { step, alter, octave: Number(octave) };
+        break;
+      }
+    }
+    if (!spelled) spelled = spellPitch(midi, fifths);
+    const held = inForce.get(`${spelled.step}|${spelled.octave}`);
+    const priorAlter = held != null ? held : keyAlter(spelled.step, fifths);
+    const accidental = spelled.alter !== priorAlter ? spelled.alter : null;
+    return { spelled, accidental };
+  }
+
+  // Recompute a note's <pitch> and printed <accidental> from a sounding MIDI
+  // number, key-aware (Rules 12-13). Called whenever a fret or string changes, so
+  // Rule 10's <pitch> never disagrees with the Rule 9 position that determines
+  // it - and now spells that pitch against the key and the bar rather than always
+  // as a sharp.
+  function writePitch(el, midi) {
+    const { spelled, accidental } = spellForEdit(el, midi);
+    if (!spelled) return;
+    putPitch(el, spelled);
+    writeAccidental(el, accidental);
   }
 
   function setTechText(el, tag, value) {
@@ -361,6 +486,72 @@ export function createDocument(xml) {
     if (midi == null || !isWritablePitch(midi)) return false;
     if (!setTechText(el, "string", string)) return false;
     writePitch(el, midi);
+    return true;
+  }
+
+  // Rewrite a note's <pitch>+<accidental> to a specific spelling of the SAME
+  // sounding pitch, leaving <string>/<fret> and the MIDI untouched. The shared
+  // engine behind the explicit-accidental control and the enharmonic cycle: both
+  // are a musical choice of how to spell one sound, not a change to the sound.
+  // `spelled` is a { step, alter, octave } whose midiOfPitch equals the note's
+  // current MIDI (the callers guarantee this); its printed <accidental> always
+  // names its own alter, so <alter> and <accidental> stay mutually consistent
+  // (Rule 10) and the chosen spelling is shown rather than left for the renderer
+  // to re-derive.
+  function respell(el, spelled) {
+    putPitch(el, spelled);
+    writeAccidental(el, spelled.alter);
+  }
+
+  /**
+   * Spell the sounding note at `ordinal` with a specific accidental - flat
+   * (-1), natural (0), sharp (+1), or the double variants (-2/+2) - keeping the
+   * SAME sounding pitch (#185). The letter and octave follow from the pitch and
+   * the chosen accidental (spellWithAlter): asking for a natural spelling of a
+   * black key, or an accidental that would push the octave out of MusicXML's
+   * range, is refused with the note untouched. Returns true when the document
+   * changed.
+   *
+   * This is where a note's accidental is a musical CHOICE rather than a
+   * derivation: the sounding pitch is fixed, and the player says how to write it.
+   */
+  function setAccidental(ordinal, alter) {
+    const el = noteEls[ordinal];
+    if (!el || isRest(el)) return false;
+    const midi = describe(el, ordinal).midi;
+    if (midi == null) return false;
+    const spelled = spellWithAlter(midi, alter);
+    if (!spelled) return false;
+    respell(el, spelled);
+    return true;
+  }
+
+  /**
+   * Cycle the sounding note at `ordinal` through its enharmonic spellings -
+   * F sharp <-> G flat, and so on - one step forward (direction > 0) or back
+   * (< 0), keeping the SAME sounding pitch at every step (#185). The alternatives
+   * are the single-accidental spellings of the pitch (flat, natural, sharp) that
+   * exist for it, in that order; the octave moves with the spelling where it must
+   * (B sharp 3 is the same key as C natural 4). Returns true when the document
+   * changed, false when the pitch has fewer than two such spellings (nothing to
+   * cycle between).
+   *
+   * The sounding pitch is invariant by construction: every option is a spelling
+   * of the note's own MIDI, so the Rule 10 mirror stays green across a cycle.
+   */
+  function cycleSpelling(ordinal, direction) {
+    const el = noteEls[ordinal];
+    if (!el || isRest(el)) return false;
+    const here = describe(el, ordinal);
+    if (here.midi == null) return false;
+    const options = enharmonicSpellings(here.midi);
+    if (options.length < 2) return false;
+    let idx = options.findIndex((o) => o.step === here.step && o.alter === here.alter);
+    if (idx < 0) idx = 0;
+    const step = direction > 0 ? 1 : -1;
+    const next = options[(idx + step + options.length) % options.length];
+    if (next.step === here.step && next.alter === here.alter) return false;
+    respell(el, next);
     return true;
   }
 
@@ -865,6 +1056,7 @@ export function createDocument(xml) {
   return {
     stringCount,
     divisions,
+    fifths: documentFifths,
     soundingNotes,
     noteAt,
     count: () => noteEls.length,
@@ -872,6 +1064,8 @@ export function createDocument(xml) {
     stepMeasure,
     setFret,
     setString,
+    setAccidental,
+    cycleSpelling,
     setDurationType,
     setDots,
     setTie,

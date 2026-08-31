@@ -64,7 +64,15 @@ function note(id, step, alter, octave, string, fret) {
       </note>`;
 }
 
-export const EDITOR_MUSICXML = `<?xml version="1.0" encoding="UTF-8"?>
+// The two-measure monophonic score above, parametrised by key signature
+// (<fifths>) so the key-aware spelling work (#185) can be exercised in a flat
+// key, a sharp key and C major from one shape. The notes, frets and strings are
+// identical across keys - only <fifths> changes, and every note starts spelled
+// as it is in C major; the tests recompute a pitch (a fret edit, an accidental,
+// an enharmonic cycle) and assert how the new key spells it. Measure 1 sits on
+// string 1 (open E4), measure 2 on string 2 (open B3), the same as EDITOR_MUSICXML.
+export function keyedEditorScore(fifths) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <score-partwise version="4.0">
   <part-list>
     <score-part id="P1"><part-name>Guitar</part-name></score-part>
@@ -73,7 +81,7 @@ export const EDITOR_MUSICXML = `<?xml version="1.0" encoding="UTF-8"?>
     <measure number="1">
       <attributes>
         <divisions>480</divisions>
-        <key><fifths>0</fifths></key>
+        <key><fifths>${fifths}</fifths></key>
         <time><beats>4</beats><beat-type>4</beat-type></time>
         <clef><sign>TAB</sign><line>5</line></clef>${STAFF_DETAILS}
       </attributes>
@@ -90,6 +98,9 @@ ${note("n2-1-3-0", "E", 0, 4, 2, 5)}
     </measure>
   </part>
 </score-partwise>`;
+}
+
+export const EDITOR_MUSICXML = keyedEditorScore(0);
 
 // A one-measure score whose first beat is a two-note CHORD (Rule 7: the first
 // note carries no <chord>, the second carries <chord/>, both share one onset and
