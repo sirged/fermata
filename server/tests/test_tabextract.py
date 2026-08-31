@@ -2661,6 +2661,49 @@ def test_a_printed_tuning_instruction_is_recognised_without_being_applied():
         assert found(text) == [], text
 
 
+def test_read_tuning_recognises_named_tunings_by_their_printed_name():
+    """The widening issue #80 asks for past the single Drop D branch: a small
+    table of distinctive tuning NAMES, each read as the strings it means. A name
+    is a LABEL, not a reading of the strings - the returned label says which one
+    was seen so a reader is told what was recognised."""
+    from fermata.tabextract import read_tuning
+
+    assert read_tuning("Drop D") == (["D2", "A2", "D3", "G3", "B3", "E4"], "Drop D")
+    assert read_tuning("DADGAD") == (["D2", "A2", "D3", "G3", "A3", "D4"], "DADGAD")
+    # Spelled out with spaces, the way some editions print it.
+    assert read_tuning("Tuning: D A D G A D") == (
+        ["D2", "A2", "D3", "G3", "A3", "D4"], "DADGAD")
+    assert read_tuning("Open G")[1] == "Open G"
+    # Nothing recognised is None, never a standard-tuning claim - a page that
+    # names no tuning has not been read, it has been assumed (see the extractor).
+    assert read_tuning("just some prose about the piece") is None
+    assert read_tuning("") is None
+
+
+def test_a_named_tuning_beside_an_unread_capo_is_read_low_and_says_why(zanarkand_pdf):
+    """A tuning read from a NAME caps at medium; a name whose page ALSO prints an
+    instruction nobody applied is lower still, because the sounding pitches are
+    then wrong by whatever that instruction asks for (issue #80). Exercised on a
+    real library page rather than a constructed one, because the label branch
+    needs a PDF - "To Zanarkand" prints "Drop D" and this checks the recognised
+    name arrives as a label read low when an unread instruction rides with it."""
+    import fermata.tabextract as tabextract
+
+    result = tabextract.extract(zanarkand_pdf)
+    assert result.extractable
+    assert result.tuning_label == "Drop D"
+    assert result.tuning_source == tabextract.TUNING_FROM_LABEL
+    # A plain recognised name (no unread instruction) is medium; one WITH an
+    # unread instruction is low and names it. Whichever "To Zanarkand" is, the
+    # word matches its tuning_unread state - the two cannot disagree.
+    if result.tuning_unread:
+        assert result.confidence["tuning"].startswith("low")
+        for instruction in result.tuning_unread:
+            assert instruction in result.confidence["tuning"]
+    else:
+        assert result.confidence["tuning"].startswith("medium")
+
+
 # ---------------------------------------------------------------------------
 # Repeat barlines and volta brackets (issue #134, phase 1)
 # ---------------------------------------------------------------------------

@@ -1899,6 +1899,92 @@ def test_the_dropped_string_changes_the_pitch_that_sounds(engraved):
     assert lowest.findtext("tuning-octave") == "2"
 
 
+def test_a_non_standard_tuning_that_is_not_drop_d_is_read_from_its_name(engraved):
+    """The defect issue #80 leads with: a score in DADGAD, its name printed the
+    way a real edition prints it, and no "Drop D" anywhere - read as standard
+    six-string on `main`, which knew only the one Drop D branch. DADGAD is
+    D A D G A D, differing from standard on the 6th, 2nd and 1st strings, so
+    reading it wrong is wrong on half the strings, not one."""
+    result = tabextract.extract(engraved("dadgad"))
+    assert result.extractable
+    assert result.tuning_label == "DADGAD"
+    assert result.tuning == ["D2", "A2", "D3", "G3", "A3", "D4"]
+    assert result.tuning != tabextract.DEFAULT_TUNING
+    # A recognised NAME is a label, not a reading of the strings - so this is
+    # recorded as read-from-a-label, never presented as verified (issue #80).
+    assert result.tuning_source == tabextract.TUNING_FROM_LABEL
+    assert result.confidence["tuning"].startswith("medium")
+    # alphaTex binds the first \tuning entry to string 1 (the top tab line), so
+    # the emitted line is result.tuning reversed and the low D lands at the end.
+    assert "\\tuning D4 A3 G3 D3 A2 D2" in result.alphatex
+
+
+def test_the_dadgad_tuning_changes_the_pitches_that_sound_not_only_the_label(engraved):
+    """The point of reading the tuning rather than just labelling it: the open
+    6th string sounds D2, not E2, and the emitted MusicXML says so on both the
+    staff-tuning AND the note. Read as standard - what `main` does - this same
+    fret 0 on string 6 comes out a whole tone sharp at E2."""
+    result = tabextract.extract(engraved("dadgad"))
+    root = ET.fromstring(result.musicxml)
+
+    tunings = root.findall("./part/measure/attributes/staff-details/staff-tuning")
+    assert len(tunings) == 6
+    # Lowest string (line 1) is a D2, and the 2nd string (line 5) an A3 - the
+    # two DADGAD moves that this fixture's notes actually land on.
+    assert (tunings[0].findtext("tuning-step"), tunings[0].findtext("tuning-octave")) == ("D", "2")
+    assert (tunings[4].findtext("tuning-step"), tunings[4].findtext("tuning-octave")) == ("A", "3")
+
+    # The first note of the piece is the open 6th string (fret 0), which in
+    # DADGAD sounds D2. Under the standard tuning main assumes it would be E2.
+    first = root.find("./part/measure/note")
+    assert first.findtext("./notations/technical/string") == "6"
+    assert first.findtext("./notations/technical/fret") == "0"
+    assert first.findtext("./pitch/step") == "D"
+    assert first.findtext("./pitch/octave") == "2"
+
+
+def test_no_instrument_and_no_name_is_assumed_standard_and_says_so(engraved):
+    """The honest default (issue #80's "say so"): a plain score with no printed
+    tuning name and no assigned instrument is the standard six strings BY
+    ASSUMPTION, and the transcription records that it was assumed rather than
+    presenting it as a reading."""
+    result = tabextract.extract(engraved("notation_and_tab"))
+    assert result.extractable
+    assert result.tuning == tabextract.DEFAULT_TUNING
+    assert result.tuning_label is None
+    assert result.tuning_source == tabextract.TUNING_ASSUMED_STANDARD
+    assert result.confidence["tuning"].startswith("low")
+    assert "assumed" in result.confidence["tuning"]
+
+
+def test_an_assigned_instrument_tuning_overrides_the_page_and_sounds_the_frets(engraved):
+    """Issue #72: the tuning of the instrument a score is assigned is what the
+    frets are sounded against, ahead of anything the page says. Here a DADGAD
+    instrument is applied to the drop_d fixture - the instrument wins, the
+    printed Drop D name does not, and the disagreement is reported."""
+    dadgad = ["D2", "A2", "D3", "G3", "A3", "D4"]
+    result = tabextract.extract(engraved("drop_d"), instrument_tuning=dadgad)
+    assert result.extractable
+    assert result.tuning == dadgad
+    assert result.tuning_source == tabextract.TUNING_FROM_INSTRUMENT
+    assert result.confidence["tuning"].startswith("high")
+    # The instrument won, but the page's own name is not silently dropped.
+    assert any("instrument" in w and "Drop D" in w for w in result.warnings)
+
+
+def test_an_instrument_with_the_wrong_string_count_is_reported_not_applied(engraved):
+    """Issue #72: a six-line tab staff is not read as a seven-string instrument
+    just because one was assigned. The conflict is reported and the instrument
+    left unapplied, falling back to the page-read-or-assumed tuning."""
+    seven = ["B1", "E2", "A2", "D3", "G3", "B3", "E4"]
+    result = tabextract.extract(engraved("notation_and_tab"), instrument_tuning=seven)
+    assert result.extractable
+    # Not applied: the tab staff has six lines, so the tuning stays six strings.
+    assert result.tuning == tabextract.DEFAULT_TUNING
+    assert result.tuning_source == tabextract.TUNING_ASSUMED_STANDARD
+    assert any("7-string" in w and "6 lines" in w for w in result.warnings)
+
+
 # ---------------------------------------------------------------------------
 # Bars that genuinely do not add up
 # ---------------------------------------------------------------------------
@@ -2247,7 +2333,7 @@ def test_no_meter_change_is_invented_where_none_is_printed(name, engraved):
 ENGRAVED_NAMES = (
     "notation_and_tab", "rests_and_flags", "tab_only", "tab_only_short_last_system",
     "two_voices", "unison_voices", "unison_in_chord", "three_voices", "tuplet_and_tie",
-    "drop_d", "defective_bars", "volta",
+    "drop_d", "dadgad", "defective_bars", "volta",
     "harmonics_dense", "notation_only", "four_sharps_in_three_four",
     "hidden_opening_meter", "hidden_opening_meter_matches_the_default",
     "mid_system_meter_change", "mid_system_key_and_meter_change",
