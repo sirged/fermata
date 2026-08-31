@@ -360,7 +360,20 @@ test("a finished week asks whether the goal was realistic, and remembers the ans
 
   await card.locator('[data-answer="no"]').click();
   await card.locator(".reflection-text").fill("away for three days");
+  // Barrier: the PATCH this dispatches has to have landed before the reload
+  // below asks the server what it kept. `.save-reflection`'s click only
+  // dispatches the click - saveReflection() then awaits the PATCH and a
+  // refetch before `saving` goes back to false - so `toHaveCount(0)` on
+  // `.notice` right after the click is not a wait for any of that: it is
+  // true before the click as well, so it was never ordered against the save.
+  // This is #110's pattern (see #82/#83, #100): read out of band, unordered
+  // against the write. Waiting on the response the save itself makes is the
+  // barrier - it cannot resolve until the server has answered.
+  const saved = page.waitForResponse(
+    (res) => res.request().method() === "PATCH" && res.url().includes("/api/practice/goals/"),
+  );
   await card.locator(".save-reflection").click();
+  await saved;
 
   await expect(notices(page)).toHaveCount(0);
   await page.reload();
