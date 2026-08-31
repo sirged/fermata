@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/editor.spec.js",
+  "count": 12,
+  "reason": "issue #10: the note editor's pure arithmetic - pitch<->MIDI round-trip and sharp spelling, the Rule 5 string/staff-tuning mirror, sounding pitch from string+fret with out-of-range strings and negative frets refused, the Rule 11 writable-pitch range (MIDI 12-131 / octaves 0-9), and duration-from-type including a divisions value that cannot express the type."
+}

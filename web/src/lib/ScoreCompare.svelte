@@ -413,6 +413,20 @@
     }
   }
 
+  // The note editor's save (#10). Goes through the SAME edited-transcription
+  // path the source editor above uses - PUT stores the client's MusicXML
+  // verbatim as source='edited', which is never re-extracted (an existing
+  // server test guards that). Updating `transcription.content` here re-flows it
+  // to TabViewer, so the badge flips to "edited" and "Revert to extracted"
+  // appears, exactly as a source-editor save does. `res` states the cleared
+  // bar/warning figures for an edited row, same reason saveEdit spreads it.
+  async function saveNoteEdit(content) {
+    const res = await api.saveTranscription(score.id, content);
+    transcription = { ...transcription, ...res, content, source: "edited" };
+    draft = content;
+    refreshWarningsDisplay(score.id);
+  }
+
   async function revertToExtracted() {
     reverting = true;
     fetchError = "";
@@ -626,6 +640,8 @@
           {practiceLabel}
           {onStopPractice}
           active={activeLayout === "staff"}
+          editable={!gigMode}
+          onSaveEdit={saveNoteEdit}
         />
       </div>
     {/if}
