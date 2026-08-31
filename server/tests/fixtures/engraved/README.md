@@ -65,6 +65,7 @@ transcription bytes to feed the real alphaTab importer through.
 | `three_voices` | a melody, an arpeggiated accompaniment and a sustained whole-note bass, all three attacking together on beat one (issue #133) |
 | `tuplet_and_tie` | a triplet (not detected, so its bar is reported overfull) and two ties across a barline — one inside a system, which is matched and written at both ends, and one at a system break, which is engraved as two partial curves on different staves and is not matched at all (issue #81) |
 | `drop_d` | a non-standard tuning named in the score's text, and a metronome mark |
+| `dadgad` | a non-standard tuning that is **not** Drop D (DADGAD, differing from standard on three strings), named the way an edition prints it — read as standard on `main`, which knew only the one Drop D branch, and whose open 6th string then sounds E2 instead of D2 (issue #80) |
 | `defective_bars` | bars over their meter, bars under it, and a bar wrong in both directions at once |
 | `volta` | a repeat with "1." / "2." ending brackets close under the staff |
 | `repeat_structure` | a forward repeat opening the span, three numbered endings (one two bars long, one closed with an open hook), a mid-score double barline, and a closing final barline |

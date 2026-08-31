@@ -83,6 +83,11 @@ def divisions(per_quarter):
 
 STANDARD_TUNING = [("E", 3), ("A", 3), ("D", 4), ("G", 4), ("B", 4), ("E", 5)]
 DROP_D_TUNING = [("D", 3), ("A", 3), ("D", 4), ("G", 4), ("B", 4), ("E", 5)]
+# DADGAD - real strings D2 A2 D3 G3 A3 D4 - written an octave up like the two
+# above, for the same reason (the octave-change clef). A tuning that differs
+# from standard on THREE strings (6, 2 and 1), so a score read as standard is
+# wrong on half its strings, not one - the case issue #80 leads with.
+DADGAD_TUNING = [("D", 3), ("A", 3), ("D", 4), ("G", 4), ("A", 4), ("D", 5)]
 # Both are written an octave above the strings they engrave. MuseScore reads
 # a part whose clef carries an octave change as notated rather than sounding
 # pitch, tuning included, so a staff-tuning of E3 A3 D4 G4 B4 E5 is what
@@ -445,6 +450,33 @@ def fixture_drop_d():
     bar = _bar([note(("D", 4), "quarter"), note(("E", 4), "quarter"),
                 note(("F", 4), "quarter"), note(("G", 4), "quarter")], 4.0)
     first = attributes(tuning=DROP_D_TUNING) + metronome + words + bar
+    return score("Guitar", [first] + [bar] * 7)
+
+
+def fixture_dadgad():
+    """A non-standard tuning that is NOT Drop D, named on the page the way a
+    real edition names it (issue #80). Drop D differs from standard on one
+    string; DADGAD differs on three (the 6th, 2nd and 1st), so a score read as
+    standard sounds wrong on half its strings - which is exactly why "reads the
+    name off the page" has to mean more than the one Drop D branch.
+
+    The strings ARE DADGAD in the engraving source, so MuseScore assigns the tab
+    frets against DADGAD and a decoder that reads the printed name back sounds
+    the same pitches the notation does; a decoder that assumes standard puts the
+    6th, 2nd and 1st strings a whole tone out.
+
+    The four notes are DADGAD's own open 6th, 5th, 4th and 2nd strings (written
+    an octave up: D3 A3 D4 A4 sound D2 A2 D3 A3), so MuseScore engraves them as
+    fret 0 on strings 6, 5, 4 and 2. That is chosen so the PITCHES, not only the
+    printed tuning, disagree between the two readings: read as standard the same
+    open strings sound E2 A2 D3 B3, so the 6th and 2nd come out a whole tone
+    sharp. A fixture whose notes sat on the 3rd and 4th strings - the two DADGAD
+    shares with standard - would move its staff-tuning and not one pitch."""
+    words = ('<direction placement="above"><direction-type>'
+             "<words>DADGAD</words></direction-type></direction>")
+    bar = _bar([note(("D", 3), "quarter"), note(("A", 3), "quarter"),
+                note(("D", 4), "quarter"), note(("A", 4), "quarter")], 4.0)
+    first = attributes(tuning=DADGAD_TUNING) + words + bar
     return score("Guitar", [first] + [bar] * 7)
 
 
@@ -1068,6 +1100,7 @@ FIXTURES = {
     "three_voices": fixture_three_voices,
     "tuplet_and_tie": fixture_tuplet_and_tie,
     "drop_d": fixture_drop_d,
+    "dadgad": fixture_dadgad,
     "defective_bars": fixture_defective_bars,
     "volta": fixture_volta,
     "repeat_structure": fixture_repeat_structure,
