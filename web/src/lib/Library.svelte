@@ -79,6 +79,7 @@
     selected = [];
     moveOpen = false;
     deleteOpen = false;
+    transcribeOpen = false;
   }
 
   async function loadFolders() {
@@ -332,6 +333,98 @@
     setTimeout(poll, 800);
   }
 
+  // --- Bulk transcription (issue #55) -----------------------------------
+  //
+  // The scan's own pattern, reused rather than reinvented: start a pass,
+  // poll its status. Two ways in - select scores in Organise mode, or point
+  // at a whole folder from the sidebar - both open the same dialog and share
+  // the same progress/results view, because what happens after starting is
+  // identical either way.
+  //
+  // EVERY SCORE IN THE RESPONSE IS SHOWN, never filtered down to only the
+  // successes: the server's own promise is no silent skip, and a UI that
+  // then hid the skipped and failed lines would throw that promise away one
+  // layer up.
+  let transcribeOpen = $state(false);
+  let transcribeTarget = $state(null); // { kind: "ids", ids } | { kind: "collection", collection }
+  let transcribeReconvert = $state(false);
+  let transcribeError = $state("");
+  let transcribeStatus = $state(null);
+  let transcribePollTimer;
+
+  const OUTCOME_LABEL = {
+    already_transcribed: "already had one",
+    non_extractable: "not extractable",
+    errored: "error",
+    transcribed: "transcribed",
+  };
+
+  function transcribeLineDetail(line) {
+    if (line.outcome === "transcribed") {
+      return line.bars_defective
+        ? `${line.bars_defective} bar${line.bars_defective === 1 ? "" : "s"} do not add up`
+        : "";
+    }
+    return line.reason ?? "";
+  }
+
+  function openTranscribeSelected() {
+    transcribeTarget = { kind: "ids", ids: [...selected] };
+    transcribeError = "";
+    transcribeStatus = null;
+    transcribeReconvert = false;
+    transcribeOpen = true;
+  }
+
+  function openTranscribeCollection(name) {
+    transcribeTarget = { kind: "collection", collection: name };
+    transcribeError = "";
+    transcribeStatus = null;
+    transcribeReconvert = false;
+    transcribeOpen = true;
+  }
+
+  function pollTranscribeBatch() {
+    const poll = async () => {
+      transcribeStatus = await api.transcribeBatchStatus();
+      if (transcribeStatus.running) {
+        transcribePollTimer = setTimeout(poll, 800);
+      } else {
+        refresh();
+      }
+    };
+    transcribePollTimer = setTimeout(poll, 500);
+  }
+
+  async function startTranscribeBatch() {
+    if (!transcribeTarget) return;
+    busy = true;
+    transcribeError = "";
+    try {
+      const opts = { reconvert: transcribeReconvert };
+      if (transcribeTarget.kind === "collection") opts.collection = transcribeTarget.collection;
+      const ids = transcribeTarget.kind === "ids" ? transcribeTarget.ids : null;
+      transcribeStatus = await api.transcribeBatch(ids, opts);
+      pollTranscribeBatch();
+    } catch (err) {
+      transcribeError = err?.message ?? "Fermata could not start that.";
+    } finally {
+      busy = false;
+    }
+  }
+
+  function closeTranscribe() {
+    clearTimeout(transcribePollTimer);
+    if (transcribeStatus && !transcribeStatus.running) {
+      notice =
+        `${transcribeStatus.transcribed} transcribed, ${transcribeStatus.already_transcribed} ` +
+        `already had one, ${transcribeStatus.non_extractable} not extractable, ` +
+        `${transcribeStatus.errored} errored.`;
+    }
+    transcribeOpen = false;
+    if (organising) leaveOrganising();
+  }
+
   // A refused scan is the one thing here that needs a person, so it is the one
   // thing that gets a button. Fermata will not mark scores missing when the
   // evidence looks like a mount problem rather than like somebody tidying up -
@@ -433,22 +526,35 @@
 
       <div class="side-label">Collections</div>
       {#each collections as c}
-        <button
-          class="side-item"
-          class:active={collection === c.collection}
-          onclick={() => { collection = collection === c.collection ? "" : c.collection; showDuplicates = false; showTrash = false; }}
-        >
-          {c.collection}
-          <span class="count">{c.count}</span>
-          {#if c.missing}
-            <!-- Files this collection has on record that are not on disk. Shown
-                 because a folder that has partly gone used to be counted as
-                 though it were whole. -->
-            <span class="count missing-count" title="{c.missing} file(s) not found in your library folder">
-              {c.missing} missing
-            </span>
-          {/if}
-        </button>
+        <div class="side-row">
+          <button
+            class="side-item"
+            class:active={collection === c.collection}
+            onclick={() => { collection = collection === c.collection ? "" : c.collection; showDuplicates = false; showTrash = false; }}
+          >
+            {c.collection}
+            <span class="count">{c.count}</span>
+            {#if c.missing}
+              <!-- Files this collection has on record that are not on disk. Shown
+                   because a folder that has partly gone used to be counted as
+                   though it were whole. -->
+              <span class="count missing-count" title="{c.missing} file(s) not found in your library folder">
+                {c.missing} missing
+              </span>
+            {/if}
+          </button>
+          <!-- The "point at a folder" half of issue #55 - the other half is
+               selecting particular scores in Organise mode. Its own button
+               rather than folded into the row's click, because the row's
+               click already means "filter to this folder". -->
+          <button
+            class="side-transcribe"
+            title="Transcribe every un-transcribed score in {c.collection}"
+            onclick={() => openTranscribeCollection(c.collection)}
+          >
+            ♪
+          </button>
+        </div>
       {/each}
 
       {#if tags.length}
@@ -667,6 +773,9 @@
           <button class="move-open" disabled={!selected.length} onclick={openMove}>
             Move to folder…
           </button>
+          <button class="transcribe-open" disabled={!selected.length} onclick={openTranscribeSelected}>
+            Transcribe…
+          </button>
           <button class="delete-open" disabled={!selected.length} onclick={() => { deleteError = ""; deleteOpen = true; }}>
             Delete…
           </button>
@@ -870,6 +979,72 @@
             </button>
             <button class="dialog-cancel" onclick={() => (deleteOpen = false)}>Cancel</button>
           </div>
+        </div>
+      </div>
+    {/if}
+
+    {#if transcribeOpen}
+      <div class="dialog-scrim">
+        <div class="dialog transcribe" role="dialog" aria-label="Transcribe scores">
+          <div class="dialog-head">
+            {#if transcribeTarget?.kind === "collection"}
+              Transcribe {transcribeTarget.collection}
+            {:else}
+              Transcribe {transcribeTarget?.ids?.length ?? 0} score{(transcribeTarget?.ids?.length ?? 0) === 1 ? "" : "s"}
+            {/if}
+          </div>
+
+          {#if !transcribeStatus}
+            <!-- Said before the button that starts it, not after - the same
+                 habit as the delete dialog's own note. -->
+            <p class="transcribe-note">
+              Runs in the background - progress shows here, and every score gets its own
+              outcome. A hand-edited transcription is never replaced.
+            </p>
+            <label class="reconvert-option">
+              <input type="checkbox" bind:checked={transcribeReconvert} />
+              Also redo scores that already have an extracted transcription
+            </label>
+            {#if transcribeError}
+              <p class="alert-error">{transcribeError}</p>
+            {/if}
+            <div class="dialog-actions">
+              <button class="transcribe-apply" disabled={busy} onclick={startTranscribeBatch}>
+                Start
+              </button>
+              <button class="dialog-cancel" onclick={() => (transcribeOpen = false)}>Cancel</button>
+            </div>
+          {:else}
+            <p class="transcribe-progress">
+              {transcribeStatus.running
+                ? `Transcribing… ${transcribeStatus.processed}/${transcribeStatus.total}`
+                : `${transcribeStatus.transcribed} transcribed, ${transcribeStatus.already_transcribed} ` +
+                  `already had one, ${transcribeStatus.non_extractable} not extractable, ` +
+                  `${transcribeStatus.errored} errored.`}
+            </p>
+            {#if !transcribeStatus.running && transcribeStatus.with_defective_bars}
+              <p class="transcribe-progress">
+                {transcribeStatus.with_defective_bars} of those transcribed with bars that do not
+                add up - open the score to see which.
+              </p>
+            {/if}
+            <ul class="transcribe-results">
+              {#each transcribeStatus.results as line (line.score_id)}
+                <li class="transcribe-line outcome-{line.outcome}">
+                  <span class="transcribe-title">{line.title ?? `Score #${line.score_id}`}</span>
+                  <span class="transcribe-outcome">
+                    {OUTCOME_LABEL[line.outcome] ?? line.outcome}{#if transcribeLineDetail(line)}
+                      &nbsp;— {transcribeLineDetail(line)}{/if}
+                  </span>
+                </li>
+              {/each}
+            </ul>
+            {#if !transcribeStatus.running}
+              <div class="dialog-actions">
+                <button class="dialog-cancel" onclick={closeTranscribe}>Close</button>
+              </div>
+            {/if}
+          {/if}
         </div>
       </div>
     {/if}
@@ -1435,6 +1610,96 @@
     color: var(--ink-dim);
     font-size: 13px;
     line-height: 1.5;
+  }
+
+  /* ---- Bulk transcription (issue #55) ------------------------------------ */
+
+  .side-row {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .side-row .side-item {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .side-transcribe {
+    flex: none;
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    background: none;
+    border: none;
+    border-radius: 8px;
+    color: var(--ink-dim);
+    font-size: 14px;
+  }
+
+  .side-transcribe:hover {
+    background: var(--surface);
+    color: var(--brass-bright);
+  }
+
+  .transcribe-note {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .reconvert-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+  }
+
+  .transcribe-progress {
+    margin: 0;
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .transcribe-results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 320px;
+    overflow-y: auto;
+    border-top: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .transcribe-line {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 2px;
+    border-bottom: 1px solid var(--line);
+    font-size: 13px;
+  }
+
+  .transcribe-title {
+    color: var(--ink);
+  }
+
+  .transcribe-outcome {
+    color: var(--ink-dim);
+    text-align: right;
+  }
+
+  .transcribe-line.outcome-transcribed .transcribe-outcome {
+    color: var(--brass-bright);
+  }
+
+  .transcribe-line.outcome-errored .transcribe-outcome,
+  .transcribe-line.outcome-non_extractable .transcribe-outcome {
+    color: #e8b45c;
   }
 
   .trash-intro {

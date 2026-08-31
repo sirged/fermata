@@ -24,7 +24,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, StrictInt
 
-from . import instruments, practice, scanner, trainer
+from . import instruments, practice, scanner, trainer, transcribe_batch
 from . import version as version_info
 from .api_models import (
     ByActivityOut,
@@ -65,6 +65,8 @@ from .api_models import (
     TagOut,
     TrainerAttemptListOut,
     TrainerAttemptOut,
+    TranscribeBatchStatusOut,
+    TranscribeBatchTriggerOut,
     TranscribeResultOut,
     TranscriptionAnalysisOut,
     TranscriptionOut,
@@ -1860,10 +1862,26 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
     result = extract_pdf(path, time_signature=ts)
     if not result.extractable:
         raise HTTPException(422, result.reason or "pdf is not extractable")
+    return _store_extraction_result(score_id, result)
 
-    # Only ever writes the source='extracted' row (see unique index on
-    # (score_id, source) in db.py) - a source='edited' row is untouched.
-    #
+
+def _store_extraction_result(score_id: int, result) -> dict:
+    """Write an EXTRACTABLE ExtractionResult as this score's extracted
+    transcription and return the same dict transcribe() has always handed
+    back - the confidence blob, read back from the row just written, plus
+    bars/beats/notes/tempo from `result` itself (see the closing comment
+    below for why those four are not re-read from the row).
+
+    THE ONE PLACE THIS IS BUILT. transcribe_batch's bulk pass calls this too
+    (through api._batch_process_one), rather than each caller building its
+    own confidence dict - two copies of the ~50-field mapping below are two
+    chances for a bulk-transcribed row to end up missing a figure a
+    single-transcribed one has, which is exactly the class of bug #137,
+    #143 and #146 each shipped once over this same dict.
+
+    Only ever writes the source='extracted' row (see unique index on
+    (score_id, source) in db.py) - a source='edited' row is untouched.
+    """
     # MusicXML REPLACES alphaTex as the stored format rather than sitting
     # beside it: the unique index is (score_id, source) with no format in it,
     # so two extracted rows in different formats could not coexist anyway, and
@@ -2072,6 +2090,181 @@ def delete_transcription(score_id: RowId):
     if not row:
         raise HTTPException(404, "no transcription for this score")
     return _transcription_dict(row)
+
+
+# ---------------------------------------------------------------------------
+# Bulk transcription (issue #55): many scores in one background pass, rather
+# than a client looping single POST /transcribe calls itself - the planned
+# MCP layer wraps THIS, not a loop (#32). Follows the library scan's own
+# pattern (start it, poll a status endpoint) rather than adding a queue -
+# see transcribe_batch.py for the state machine and the reasoning behind
+# every choice below; this section is only what needs api.py's own helpers.
+# ---------------------------------------------------------------------------
+
+
+def _batch_process_one(score_id: int, reconvert: bool) -> dict:
+    """One score's outcome for POST /transcribe/batch. Never raises for an
+    ordinary refusal - not found, deleted, not a pdf, already transcribed,
+    file missing, not extractable - because a silent skip is exactly what
+    issue #55 asks not to have; every one of those comes back as a dict
+    naming the outcome instead. transcribe_batch.start_batch/_run_batch call
+    this back (see transcribe_batch.py's own comment for why the dependency
+    runs this direction and not the other), and still catch anything this
+    raises regardless, so a genuine bug in one score cannot cost every score
+    after it its result.
+
+    Reads the score's row FRESH, not from a list snapshotted when the batch
+    started - a scan running at the same time (deliberately not held against
+    this, see start_batch's docstring) may mark a score missing or relink it
+    between the batch starting and this score's own turn, and this is what
+    makes that read as of NOW rather than raced against.
+    """
+    conn = connect()
+    row = conn.execute("SELECT * FROM scores WHERE id = ?", (score_id,)).fetchone()
+    if not row:
+        return {
+            "score_id": score_id, "title": None, "outcome": "errored",
+            "reason": "score not found", "bars_defective": None, "bars_measured": None,
+        }
+    title = row["title"]
+    if row["deleted_at"] is not None:
+        return {
+            "score_id": score_id, "title": title, "outcome": "errored",
+            "reason": f"{title} is in the trash, so bulk transcription skipped it",
+            "bars_defective": None, "bars_measured": None,
+        }
+    if row["file_type"] != "pdf":
+        return {
+            "score_id": score_id, "title": title, "outcome": "errored",
+            "reason": "transcription is only supported for pdf scores",
+            "bars_defective": None, "bars_measured": None,
+        }
+
+    # Never overwrites an edited transcription, `reconvert` or not (#10) -
+    # checked before anything else about "already transcribed" so that
+    # protection reads as its own, unconditional rule rather than a special
+    # case of the reconvert branch below.
+    sources = {
+        r["source"]
+        for r in conn.execute(
+            "SELECT source FROM transcriptions WHERE score_id = ?", (score_id,)
+        )
+    }
+    if "edited" in sources:
+        return {
+            "score_id": score_id, "title": title, "outcome": "already_transcribed",
+            "reason": "has a hand-edited transcription, which bulk transcription never "
+                      "overwrites",
+            "bars_defective": None, "bars_measured": None,
+        }
+    if "extracted" in sources and not reconvert:
+        return {
+            "score_id": score_id, "title": title, "outcome": "already_transcribed",
+            "reason": "already has an extracted transcription - pass reconvert to redo it",
+            "bars_defective": None, "bars_measured": None,
+        }
+
+    path = LIBRARY_DIR / row["path"]
+    if not path.is_file():
+        return {
+            "score_id": score_id, "title": title, "outcome": "errored",
+            "reason": "file missing from library", "bars_defective": None, "bars_measured": None,
+        }
+
+    result = extract_pdf(path)
+    if not result.extractable:
+        return {
+            "score_id": score_id, "title": title, "outcome": "non_extractable",
+            "reason": result.reason or "pdf is not extractable",
+            "bars_defective": None, "bars_measured": None,
+        }
+
+    stored = _store_extraction_result(score_id, result)
+    return {
+        "score_id": score_id, "title": title, "outcome": "transcribed", "reason": None,
+        "bars_defective": stored.get("bars_defective"), "bars_measured": stored.get("bars_measured"),
+    }
+
+
+class TranscribeBatchIn(BaseModel):
+    """What to bulk-transcribe (issue #55).
+
+    Give EITHER `score_ids` (a person selecting particular scores) OR
+    `collection` (a person pointing at a folder) - not both, since a caller
+    that meant one and typed the other deserves to be told rather than have
+    one silently win. Omitting both selects every eligible score in the
+    whole library.
+
+    `score_ids`, when given, is honoured EXACTLY - every id in it gets an
+    outcome, including one that turns out not to be a pdf or to already be
+    deleted, because a person who explicitly chose a score is exactly the
+    caller a silent omission would mislead. Omitted, the selection is built
+    from the library itself and is already narrowed to live pdf scores -
+    nothing here filters a folder's non-pdf or deleted scores in loudly,
+    because nobody named them.
+    """
+
+    score_ids: list[Count] | None = Field(default=None, min_length=1, max_length=500)
+    collection: str | None = None
+    # False by default: an extracted row already on a score is real work an
+    # earlier pass did, and the extractor keeps improving - see transcribe()'s
+    # own note on why a re-run replaces the extracted row and never the
+    # edited one. reconvert=True asks for exactly that replacement, in bulk.
+    # An EDITED row is never replaced regardless of this flag - see
+    # _batch_process_one.
+    reconvert: bool = False
+
+
+@router.post(
+    "/transcribe/batch", tags=[TAG_TRANSCRIPTION], response_model=TranscribeBatchTriggerOut
+)
+def start_transcribe_batch(body: TranscribeBatchIn):
+    """Start transcribing many scores in one background pass and return the
+    status left behind by whichever pass (this one, or one already running)
+    is now current - poll GET /transcribe/batch/status for progress, the
+    same pattern POST /scan uses (issue #55).
+
+    Selects every live pdf score named by `score_ids`, or every live pdf
+    score under `collection`, or every live pdf score in the whole library
+    if neither is given - see TranscribeBatchIn. Reports what happened to
+    EVERY one of them: transcribed, already had a transcription (and why
+    that was not replaced - an edited one never is), not extractable (with
+    the extractor's own reason), or errored (with its own reason) - never a
+    silent skip.
+
+    Refuses (`started: false`, nothing changed) only if a batch is already
+    running. A library scan running at the same time is not held against
+    this in either direction - see transcribe_batch.start_batch's docstring
+    for why the two may run together safely.
+    """
+    if body.score_ids and body.collection is not None:
+        raise HTTPException(422, "give score_ids or collection, not both")
+    conn = connect()
+    if body.score_ids:
+        # De-duplicated, order preserved, and NOT filtered to live pdf scores
+        # here - every id given gets its own outcome, including "not a pdf"
+        # or "in the trash", from _batch_process_one. See TranscribeBatchIn.
+        score_ids = list(dict.fromkeys(body.score_ids))
+    else:
+        where, params = ["deleted_at IS NULL", "file_type = 'pdf'"], []
+        if body.collection is not None:
+            where.append("collection = ?")
+            params.append(body.collection)
+        rows = conn.execute(
+            f"SELECT id FROM scores WHERE {' AND '.join(where)} ORDER BY id", params
+        ).fetchall()
+        score_ids = [r["id"] for r in rows]
+    started = transcribe_batch.start_batch(_batch_process_one, score_ids, body.reconvert)
+    return {"started": started, **transcribe_batch.batch_status()}
+
+
+@router.get(
+    "/transcribe/batch/status", tags=[TAG_TRANSCRIPTION], response_model=TranscribeBatchStatusOut
+)
+def get_transcribe_batch_status():
+    """Where the most recent (or currently running) bulk transcription pass
+    stands - see transcribe_batch.batch_status()."""
+    return transcribe_batch.batch_status()
 
 
 @router.post("/scan", tags=[TAG_SCAN], response_model=ScanTriggerOut)

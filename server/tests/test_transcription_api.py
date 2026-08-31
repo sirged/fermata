@@ -673,21 +673,26 @@ def test_an_unpaired_tie_end_survives_a_reload(app_env, courage_pdf, monkeypatch
 
 
 def _confidence_json_keys() -> set:
-    """The set of keys `transcribe()` actually writes into the stored blob -
-    found by parsing the function's own source rather than duplicating the
-    dict by hand, which would be exactly the kind of second copy that could
-    drift from the first the way _BAR_KEYS and this dict already have three
-    times (#134's fields, #116's pair via #143, #137's counter via #146).
+    """The set of keys `_store_extraction_result()` actually writes into the
+    stored blob - found by parsing the function's own source rather than
+    duplicating the dict by hand, which would be exactly the kind of second
+    copy that could drift from the first the way _BAR_KEYS and this dict
+    already have three times (#134's fields, #116's pair via #143, #137's
+    counter via #146).
 
     Locates the `confidence_json = json.dumps({...})` assignment inside
-    transcribe() and returns the literal string keys of that dict."""
-    source = inspect.getsource(api.transcribe)
+    _store_extraction_result() - the one place BOTH transcribe() and the
+    issue #55 bulk pass write a transcription's confidence blob, see that
+    function's own docstring - and returns the literal string keys of that
+    dict."""
+    source = inspect.getsource(api._store_extraction_result)
     # inspect.getsource returns the function starting at its own indentation
     # (possibly non-zero, e.g. if decorated or nested); dedent so ast.parse,
     # which requires a module-level indent of zero, does not choke on it.
     tree = ast.parse(textwrap.dedent(source))
     func_def = tree.body[0]
-    assert isinstance(func_def, ast.FunctionDef), "expected transcribe() to parse as one function"
+    assert isinstance(func_def, ast.FunctionDef), (
+        "expected _store_extraction_result() to parse as one function")
 
     for node in ast.walk(func_def):
         if not (isinstance(node, ast.Assign)
@@ -697,8 +702,9 @@ def _confidence_json_keys() -> set:
             continue
         call = node.value
         assert isinstance(call, ast.Call) and call.args, (
-            "transcribe() no longer assigns confidence_json = json.dumps({...}) - "
-            "update _confidence_json_keys to match its new shape")
+            "_store_extraction_result() no longer assigns "
+            "confidence_json = json.dumps({...}) - update _confidence_json_keys to match "
+            "its new shape")
         dict_node = call.args[0]
         assert isinstance(dict_node, ast.Dict), (
             "confidence_json's argument is no longer a dict literal - "
@@ -712,7 +718,7 @@ def _confidence_json_keys() -> set:
         return keys
 
     raise AssertionError(
-        "transcribe() no longer assigns a local named confidence_json - "
+        "_store_extraction_result() no longer assigns a local named confidence_json - "
         "update _confidence_json_keys to match its new shape")
 
 

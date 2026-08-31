@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/zzzz-library-transcribe-batch.spec.js",
+  "count": 2,
+  "reason": "issue #55: a bulk pass over a mixed selection shows live progress and every score's real outcome (transcribed, already-had-one with why, not-extractable, and an edited transcription explicitly never overwritten), and the sidebar's per-folder button selects only that folder."
+}
