@@ -17,8 +17,10 @@ const TUPLET_WARNING =
   "tuplets (triplets and similar) are not detected - a note written inside a tuplet " +
   "will show its plain written duration rather than the shortened tuplet duration";
 const TIE_WARNING =
-  "tie detection is low confidence - some tied notes may show up as separately " +
-  "re-struck notes instead of one held note";
+  "a tie is written only where the curve joining its two notes was matched on one " +
+  "staff (issue #81) - a tie drawn across a system break is engraved as two partial " +
+  "curves with its notes on different staves, is not matched, and its second note is " +
+  "transcribed as a separate re-struck note rather than as one held note";
 const OVERFULL_BARS_SENTENCE =
   "3 of 50 bar(s) hold more than their time signature allows. Music written in two " +
   "voices (a melody over a separate bass line) is separated into concurrent voices " +

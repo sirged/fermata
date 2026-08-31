@@ -619,10 +619,13 @@ or its notes play early — the transcription names the bars that happened in,
 counts that silence as missing rather than as read, and marks it in the
 MusicXML so another program can tell it from a rest that was printed.
 
-**Harmonics are not carried into a transcription.** Natural and artificial
-harmonics on a fretted instrument are dropped entirely when Fermata converts
-a PDF into an editable score — the note simply isn't written into the result.
-This is a known, current gap in what gets extracted, not a display setting.
+**A harmonic is marked but not sounded as one.** A note the engraving marks
+as a harmonic — a diamond notehead, or a fret number in guillemets — is
+written into the transcription and carries `<harmonic>` in the MusicXML. What
+does not follow it is the sound: the built-in player discards that element,
+so it plays the fretted pitch rather than the harmonic, and a harmonic
+engraved as a half note is still read at a quarter's length. This is a known,
+current gap in what gets extracted and rendered, not a display setting.
 
 **There is one user, and no login.** Fermata does not have accounts, a
 sign-in screen, or any way to separate what a teacher sees from what a

@@ -414,7 +414,14 @@ BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
             "staves_spacing_rhythm", "staves_degraded_rhythm",
             # meter_digits_unreadable (issue #129): printed meters refused
             # because a glyph with no category sat among their digits.
-            "meter_digits_unreadable")
+            "meter_digits_unreadable",
+            # tie_ends_unpaired (issue #81): an end of a tie whose other end
+            # was not found, so the tie is not written. Added to _BAR_KEYS,
+            # to the confidence_json write, to TranscriptionOut, to the
+            # vendored key list and to DISCLOSURE_ROWS in the same change as
+            # this line, rather than left for a later review to find missing
+            # in one of the five.
+            "tie_ends_unpaired")
 # Which bars, and how much silence - the figures that only exist as data. The
 # warning prose caps its bar list, and the profile document promises a consumer
 # that `inferred_rest_quarters` is the sum of the `<forward>` durations in the
@@ -430,7 +437,10 @@ BAR_DETAIL_KEYS = ("padded_bars", "unread_bars", "inferred_rest_quarters",
                    "nav_marks_unresolved_bars",
                    # Pages, not bars - a system that was never read has no
                    # bar numbers to report (issue #152).
-                   "systems_unread_pages")
+                   "systems_unread_pages",
+                   # Which bars hold an end of a tie whose other end was not
+                   # found (issue #81).
+                   "tie_ends_unpaired_bars")
 
 
 def test_bar_conformance_survives_a_reload(app_env, engraved, monkeypatch, insert_score):
@@ -626,6 +636,39 @@ def test_a_refused_meter_digit_survives_a_reload(app_env, engraved, monkeypatch,
     assert fetched["time_signature"] != [1, 8], "the mis-read issue #129 is about"
     assert fetched["time_signature_source"].startswith("not detected")
     assert any("unrecognised glyph sits among the time-signature digits" in w
+               for w in fetched["warnings"]), fetched["warnings"]
+
+
+def test_an_unpaired_tie_end_survives_a_reload(app_env, courage_pdf, monkeypatch,
+                                               insert_score):
+    """`tie_ends_unpaired` (issue #81) round trips as a LITERAL non-zero, for
+    the reason the two tests above give: a `posted[key] == fetched[key]` loop
+    over a field nothing wrote compares None == None and passes.
+
+    It needs a real score because nothing engraved in this repository has a
+    HALF-matched tie - `tuplet_and_tie`'s split one is matched at neither end,
+    which counts nothing - so every committed fixture reports zero, and a
+    counter only ever asserted at zero cannot tell a working round trip from a
+    dropped field. Courage (FF XVI) writes 6 complete ties and leaves 4 ends
+    it could not close, in bars this asserts by number, and marks 19 harmonics
+    beside them."""
+    monkeypatch.setattr(api, "LIBRARY_DIR", courage_pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, courage_pdf.name)
+
+    posted = api.transcribe(score_id, body=None)
+    fetched = api.get_transcription(score_id)
+
+    assert posted["tie_ends_unpaired"] == 4, posted["tie_ends_unpaired"]
+    assert fetched["tie_ends_unpaired"] == 4
+    assert fetched["tie_ends_unpaired_bars"] == [19, 22, 24, 28]
+    # The ties that WERE written are in the file itself, which is where a
+    # reader gets them from - there is no counter for those and there should
+    # not be one.
+    assert fetched["content"].count("<tied ") == 12, "six ties, two ends each"
+    assert fetched["content"].count("<tie ") == 12
+    assert fetched["content"].count("<harmonic") == 19
+    assert any("end(s) of a tie were found in the engraving" in w
                for w in fetched["warnings"]), fetched["warnings"]
 
 

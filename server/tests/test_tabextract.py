@@ -67,7 +67,8 @@ def _parse_with_alphatab(tex: str) -> dict:
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def _load_musicxml_with_alphatab(xml: str, onsets: bool = False, repeats: bool = False) -> dict:
+def _load_musicxml_with_alphatab(xml: str, onsets: bool = False,
+                                 repeats: bool = False, ties: bool = False) -> dict:
     """Load `xml` with the real alphaTab MusicXML importer the web player uses,
     via tools/tab_extract/verify_musicxml.mjs.
 
@@ -85,6 +86,13 @@ def _load_musicxml_with_alphatab(xml: str, onsets: bool = False, repeats: bool =
     1-based, repeats and all) - read from alphaTab's own MidiFileGenerator,
     the only thing that proves a repeat/ending file PLAYS right rather than
     merely parses right (issue #134 S4.2 / docs Rule 15).
+
+    `ties=True` adds `ties` (per sounding note: bar, voice, string, fret,
+    isTieOrigin, isTieDestination, harmonicType) and `noteOns` (the MIDI
+    note-on stream). Rule 18's whole claim is that the second note of a tie is
+    NOT struck, which nothing but that stream can show: alphaTab reads the
+    `<tied>` half of a tie and ignores the `<tie>` half, so a file carrying
+    only the latter loads and validates and plays the note twice.
     """
     if shutil.which("node") is None:
         skip_without_node_modules("node not available")
@@ -104,6 +112,8 @@ def _load_musicxml_with_alphatab(xml: str, onsets: bool = False, repeats: bool =
             args.append("--onsets")
         if repeats:
             args.append("--repeats")
+        if ties:
+            args.append("--ties")
         proc = subprocess.run(args + [xml_path], capture_output=True, text=True, timeout=60)
     finally:
         Path(xml_path).unlink(missing_ok=True)
@@ -4507,3 +4517,289 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
         ("Classical-Guitar-Method-Vol1-2020.pdf", "16", (3, 4), "whole", 0),
         ("My Star (Final Fantasy XVI).pdf", "5", (4, 4), "whole", 1),
     ], impossible_rests
+
+
+# ---------------------------------------------------------------------------
+# Rules 18 and 19 through the real renderer: what a tie and a harmonic
+# actually DO once alphaTab has read them
+# ---------------------------------------------------------------------------
+
+
+def _tie_sample(with_tie: bool) -> str:
+    """Two bars, a half note held (or not) into the next bar's half note."""
+    first = musicxml.MarkedNote(1, 5, tie_start=True) if with_tie else (1, 5)
+    second = musicxml.MarkedNote(1, 5, tie_stop=True) if with_tie else (1, 5)
+    return musicxml.build(
+        "Tie", None, tabextract.DEFAULT_TUNING, (4, 4),
+        [([[(2, 0, [(2, 3)]), (2, 0, [first])]], (4, 4)),
+         ([[(2, 0, [second]), (2, 0, [(2, 3)])]], (4, 4))])
+
+
+def test_a_written_tie_is_heard_as_one_note_and_not_two():
+    """Rule 18, through alphaTab's own MIDI generation rather than through
+    this project's opinion of its own file.
+
+    A tie's whole point is that the second note is not struck. The emitted
+    file is loaded with the real importer and its note-on stream compared
+    against the identical file with the tie taken out: the untied version
+    strikes the pitch twice and the tied one once. Nothing short of the
+    note-on stream can tell the two apart - both files load, both validate,
+    and both hold the same four notes."""
+    tied = _load_musicxml_with_alphatab(_tie_sample(True), ties=True)
+    struck = _load_musicxml_with_alphatab(_tie_sample(False), ties=True)
+
+    assert tied["notes"] == struck["notes"] == 4, (
+        "the tie changes nothing about how many notes are WRITTEN")
+    assert tied["beats"] == struck["beats"]
+
+    # The importer saw the tie, at both ends and on the right notes.
+    assert [(origin, destination)
+            for _b, _v, _s, _f, origin, destination, _h in tied["ties"]] == [
+        (False, False), (True, False), (False, True), (False, False)]
+    assert all(not origin and not destination
+               for _b, _v, _s, _f, origin, destination, _h in struck["ties"])
+
+    def strikes(parsed, key):
+        return [tick for tick, note_key in parsed["noteOns"] if note_key == key]
+
+    pitch = musicxml.open_string_midi(tabextract.DEFAULT_TUNING, 1) + 5
+    assert len(strikes(struck, pitch)) == 2, "untied: struck in both bars"
+    assert len(strikes(tied, pitch)) == 1, (
+        "tied: struck once and held - a 2 here means the renderer did not "
+        "read the tie and the transcription re-strikes a note the page holds")
+    other = musicxml.open_string_midi(tabextract.DEFAULT_TUNING, 2) + 3
+    assert strikes(tied, other) == strikes(struck, other), (
+        "the rest of the bar is untouched")
+
+
+# ---------------------------------------------------------------------------
+# Reading a harmonic off the page (issue #63)
+# ---------------------------------------------------------------------------
+
+
+class _FakeStaff:
+    """Just the two things _mark_harmonic_digits asks a staff for."""
+    spacing = 8.0
+
+
+def _digit(text, x0, yc, size=9.0, width=5.0, height=10.0):
+    return tabextract._DigitToken(
+        text, (x0, yc - height / 2, x0 + width, yc + height / 2), "Arial-BoldMT", size)
+
+
+def _brackets(*specs):
+    """(char, x0, yc) each, as _harmonic_bracket_marks returns them. The marks
+    are drawn at nearly twice the digits' size, so their boxes are taller."""
+    return [(char, (x0, yc - 8.5, x0 + 5.1, yc + 8.5)) for char, x0, yc in specs]
+
+
+def test_a_fret_number_between_two_guillemets_is_a_harmonic():
+    """Issue #63's tablature convention, at the level it is read. The marks
+    sit hard against the digit - measured over the library, a median 0.06 tab
+    line spacings to its left and 0.12 to its right - and both are required."""
+    digit = _digit("12", 100.0, 200.0)
+    marks = _brackets(("‹", 94.4, 199.0), ("›", 106.0, 199.0))
+    assert tabextract._mark_harmonic_digits([digit], _FakeStaff(), marks) == 1
+    assert digit.harmonic
+
+
+def test_one_guillemet_alone_is_not_the_convention():
+    """A single mark is not a harmonic. It would let a stray character - or
+    one belonging to the note before or after - claim a note the page says
+    nothing about, and for a harmonic that is a claim about how the note is
+    played, not a decoration."""
+    for spec in (("‹", 94.4, 199.0), ("›", 106.0, 199.0)):
+        digit = _digit("12", 100.0, 200.0)
+        assert tabextract._mark_harmonic_digits(
+            [digit], _FakeStaff(), _brackets(spec)) == 0
+        assert not digit.harmonic
+
+
+def test_a_chords_other_strings_are_not_swept_up_with_a_bracketed_one():
+    """The marks are set at nearly twice the digits' point size, so a mark's
+    box is TALLER than the one line spacing a chord stacks its fret numbers
+    at - given a fixed vertical window, the digit on the string below a
+    bracketed one was marked a harmonic too. Each mark goes to its nearest
+    digit and to only one, which needs no threshold to get this right."""
+    on_line = _digit("12", 100.0, 200.0)
+    below = _digit("7", 100.0, 208.0)
+    above = _digit("5", 100.0, 192.0)
+    marks = _brackets(("‹", 94.4, 199.0), ("›", 106.0, 199.0))
+    assert tabextract._mark_harmonic_digits(
+        [above, on_line, below], _FakeStaff(), marks) == 1
+    assert on_line.harmonic
+    assert not below.harmonic and not above.harmonic
+
+
+def test_a_bracket_belonging_to_the_next_note_does_not_reach_this_one():
+    """The window is 0.9 tab line spacings, against a measured worst case of
+    0.62 - wide enough for every real pair and nowhere near the gap between
+    two fret numbers."""
+    digit = _digit("12", 100.0, 200.0)
+    far = _brackets(("‹", 60.0, 199.0), ("›", 140.0, 199.0))
+    assert tabextract._mark_harmonic_digits([digit], _FakeStaff(), far) == 0
+    assert not digit.harmonic
+
+
+def test_a_diamond_notehead_marks_its_tab_digit_as_a_harmonic():
+    """Issue #63's notation-side convention. The tab digit is what gets
+    emitted and the notehead is what carries the mark, so the mark has to
+    travel from one to the other - and a diamond says only THAT the note is a
+    harmonic, never which kind, because a natural and an artificial one are
+    drawn with the same head."""
+    diamond = glyph_rhythm.NoteEvent(100.0, 90.0, 1.0, 0, 0, False,
+                                     "notehead_diamond",
+                                     notehead_kind="notehead_diamond")
+    plain = glyph_rhythm.NoteEvent(100.0, 90.0, 1.0, 0, 0, False,
+                                   "notehead_filled",
+                                   notehead_kind="notehead_filled")
+    marked = tabextract._mark_from_notehead((1, "12"), diamond)
+    assert marked == (1, "12"), "still the same note"
+    assert musicxml.note_harmonic(marked) == musicxml.HARMONIC_UNSPECIFIED
+    assert musicxml.note_harmonic(
+        tabextract._mark_from_notehead((1, "12"), plain)) is None
+    # A bracket already read from the tablature is not overwritten by an
+    # ordinary notehead above it - the two conventions travel together on 120
+    # of the library's 121 harmonic scores, and either alone is enough.
+    already = musicxml.MarkedNote(1, "12", harmonic=musicxml.HARMONIC_UNSPECIFIED)
+    assert musicxml.note_harmonic(
+        tabextract._mark_from_notehead(already, plain)) == musicxml.HARMONIC_UNSPECIFIED
+
+
+# ---------------------------------------------------------------------------
+# _resolve_ties: closing a tie over the whole part (issue #81)
+# ---------------------------------------------------------------------------
+
+
+def _tie_beats(*voices_per_measure):
+    """measures, in the shape _extract builds: [(voices, meter), ...]."""
+    return [([list(v) for v in voices], (4, 4)) for voices in voices_per_measure]
+
+
+def test_a_tie_is_closed_across_a_barline_and_takes_the_struck_notes_fret():
+    """The whole of Rule 18's producer half, on literal beats.
+
+    The held note arrives here carrying whatever digit the notehead-to-digit
+    match found nearest it - on the library that is usually a NEIGHBOUR's,
+    because the tablature prints nothing under a note that is not struck - and
+    leaves carrying the struck note's own string and fret."""
+    struck = musicxml.MarkedNote(2, 5, tie_start=True)
+    held = musicxml.MarkedNote(5, 0, tie_stop=True)   # a digit from elsewhere
+    measures = _tie_beats(
+        ([(4, 0, [(1, 3)]), (2, 0, [struck])],),
+        ([(2, 0, [held]), (4, 0, [(1, 3)])],),
+    )
+    report = tabextract._resolve_ties(measures)
+    assert (report.written, report.unpaired, report.bars) == (1, 0, [])
+    landing = measures[1][0][0][0][2][0]
+    assert tuple(landing) == (2, 5), "the struck note's string and fret"
+    assert musicxml.note_tie_stop(landing)
+    assert musicxml.note_tie_start(measures[0][0][0][1][2][0])
+
+
+def test_a_tie_start_with_no_partner_is_erased_and_counted():
+    """A start with no stop is not half a tie, it is a mark the emitters must
+    not see: alphaTab keeps an unclosed start pending for the rest of the
+    part and lets a distant note of the same pitch close it."""
+    measures = _tie_beats(
+        ([(4, 0, [musicxml.MarkedNote(2, 5, tie_start=True)]), (4, 0, [(1, 3)])],),
+    )
+    report = tabextract._resolve_ties(measures)
+    assert (report.written, report.unpaired, report.bars) == (0, 1, [1])
+    assert not musicxml.note_tie_start(measures[0][0][0][0][2][0])
+
+
+def test_a_tie_stop_no_start_reached_is_erased_and_counted():
+    """And the other half. A stop whose origin was never matched - the far
+    side of a system break - is erased for the same reason."""
+    measures = _tie_beats(
+        ([(4, 0, [(1, 3)]), (4, 0, [musicxml.MarkedNote(2, 5, tie_stop=True)])],),
+    )
+    report = tabextract._resolve_ties(measures)
+    assert (report.written, report.unpaired, report.bars) == (0, 1, [1])
+    assert not musicxml.note_tie_stop(measures[0][0][0][1][2][0])
+
+
+def test_a_tie_does_not_reach_across_a_printed_rest():
+    """A tie joins two ADJACENT notes. A rest the page prints between them
+    means they are not adjacent, so nothing is written - and the mark is
+    erased rather than left to be closed by whatever comes later."""
+    measures = _tie_beats(
+        ([(4, 0, [musicxml.MarkedNote(2, 5, tie_start=True)]),
+          (4, 0, []),
+          (2, 0, [musicxml.MarkedNote(2, 5, tie_stop=True)])],),
+    )
+    report = tabextract._resolve_ties(measures)
+    assert (report.written, report.unpaired) == (0, 2)
+
+
+def test_a_tie_does_reach_across_silence_the_producer_invented():
+    """Inferred silence is not a printed rest - it was never on the page, and
+    only exists because something else in that bar was read short (Rule 14).
+    A note tied across a barline is still adjacent to its partner."""
+    measures = _tie_beats(
+        ([(4, 0, [musicxml.MarkedNote(2, 5, tie_start=True)]),
+          (2, 0, musicxml.inferred_rest())],),
+        ([(4, 0, [musicxml.MarkedNote(2, 5, tie_stop=True)])],),
+    )
+    report = tabextract._resolve_ties(measures)
+    assert (report.written, report.unpaired) == (1, 0)
+
+
+def test_a_chain_of_three_ties_is_closed_link_by_link():
+    """A note held on twice carries both marks, and each link is counted
+    once."""
+    measures = _tie_beats(
+        ([(4, 0, [musicxml.MarkedNote(2, 5, tie_start=True)]),
+          (4, 0, [musicxml.MarkedNote(2, 5, tie_start=True, tie_stop=True)]),
+          (2, 0, [musicxml.MarkedNote(2, 5, tie_stop=True)])],),
+    )
+    report = tabextract._resolve_ties(measures)
+    assert (report.written, report.unpaired) == (2, 0)
+    voice = measures[0][0][0]
+    marks = [(musicxml.note_tie_stop(b[2][0]), musicxml.note_tie_start(b[2][0]))
+             for b in voice]
+    assert marks == [(False, True), (True, True), (True, False)]
+
+
+def test_ties_are_followed_per_voice_and_not_across_them():
+    """Voice 1 of one measure and voice 1 of the next are one voice to a
+    consumer, and voice 2's notes are not in between them."""
+    measures = _tie_beats(
+        ([(2, 0, [(1, 3)]), (2, 0, [musicxml.MarkedNote(2, 5, tie_start=True)])],
+         [(1, 0, [(6, 0)])]),
+        ([(2, 0, [musicxml.MarkedNote(2, 5, tie_stop=True)]), (2, 0, [(1, 3)])],
+         [(1, 0, [(6, 0)])]),
+    )
+    report = tabextract._resolve_ties(measures)
+    assert (report.written, report.unpaired) == (1, 0)
+
+
+def test_a_written_harmonic_is_carried_by_the_file_and_dropped_by_the_renderer():
+    """Rule 19's honesty clause, asserted rather than merely written down.
+
+    alphaTab's MusicXML importer consumes `<harmonic>` and does nothing with
+    it - its `<technical>` child switch has `case "harmonic": break;` and
+    never descends into the element - so the mark reaches the canonical file
+    and does not reach the renderer. Rule 19 says exactly that in prose;
+    pinning it here means the day the importer changes, the profile's claim
+    is what fails, rather than quietly going stale."""
+    xml = musicxml.build(
+        "Harmonic", None, tabextract.DEFAULT_TUNING, (4, 4),
+        [([[(4, 0, [musicxml.MarkedNote(
+                1, 12, harmonic=musicxml.HARMONIC_UNSPECIFIED)]),
+            (4, 0, [musicxml.MarkedNote(
+                2, 7, harmonic=musicxml.HARMONIC_NATURAL)]),
+            (2, 0, [(3, 0)])]], (4, 4))])
+    assert xml.count("<harmonic") == 2, "the file carries the mark"
+
+    parsed = _load_musicxml_with_alphatab(xml, ties=True)
+    assert [entry[6] for entry in parsed["ties"]] == [0, 0, 0], (
+        "alphaTab's HarmonicType.None on every note - a non-zero here means "
+        "its importer has started reading <harmonic>, and Rule 19's "
+        "statement about the renderer needs rewriting")
+    # And the note sounds at the FRETTED pitch, which is what Rule 19 says
+    # <pitch>/<fret> mean on a harmonic: fret 12 on the first string, not the
+    # harmonic an octave above it.
+    fretted = musicxml.open_string_midi(tabextract.DEFAULT_TUNING, 1) + 12
+    assert fretted in [key for _tick, key in parsed["noteOns"]]

@@ -409,10 +409,18 @@ def fixture_three_voices():
 
 
 def fixture_tuplet_and_tie():
-    """A triplet and a tie across a barline. Both are known gaps - a tuplet
-    is not detected at all and a tie is low confidence - so what this pins
-    is that the score SAYS so, and that the triplet's bar is reported as
-    holding more than its meter rather than quietly reading as correct."""
+    """A triplet and a tie across a barline, engraved twice so the second
+    copy's tie falls at a system break.
+
+    The tuplet is still a gap - not detected at all - and what this pins for
+    it is that the score SAYS so, and that the triplet's bar is reported as
+    holding more than its meter rather than quietly reading as correct.
+
+    The tie is no longer a gap (issue #81): the one inside a system is
+    matched and written at both ends, in both of MusicXML's spellings and as
+    alphaTex's `{t}`. The one at the system break is engraved as two partial
+    curves with its notes on different staves and is matched at neither end,
+    which is what this fixture's second half exists to keep visible."""
     trip = [note(("E", 4), "eighth", tuplet=(3, 2),
                  notations=('<tuplet type="start"/>',)),
             note(("F", 4), "eighth", tuplet=(3, 2)),
@@ -1110,6 +1118,58 @@ FAKE_FONT_LETTERS = "ABCDEFGH"
 # block and deliberately not in glyph_rhythm.SMUFL_CODE_MAP; if it is ever
 # calibrated, this fixture stops reproducing the defect and must be re-cut
 # against another uncalibrated codepoint.
+# Derived from an engraved fixture for the third time, and for the plainest
+# reason of the three: MuseScore cannot draw this convention at all.
+#
+# WHAT IT IS. A guitar harmonic is marked in tablature by wrapping the fret
+# number in single guillemets - `<12>` drawn with U+2039 and U+203A - which is
+# what the Finale exports in the maintainer's library do: 983 bracket pairs
+# around a fret number across 121 of its 297 scores, and no other paired
+# punctuation anywhere near a fret number in any of them. It is one of the two
+# conventions Rule 19 reads.
+#
+# WHY IT IS DERIVED. MuseScore engraves nothing of the sort. Asked to draw
+# `<notations><technical><harmonic><natural/></harmonic></technical>` on a tab
+# staff it emits an ordinary notehead and an ordinary fret number - measured,
+# by engraving exactly that and reading the page back: four plain U+E0A4
+# noteheads and four plain FreeSans digits, no bracket and no diamond. Its
+# importer discards the element, the same way alphaTab's does. So the
+# convention cannot be reached by engraving a score here, and the honest thing
+# is to take a real engraved page and add the two characters to it at the
+# offsets the real pages use, rather than to test the reader against a
+# convention nothing draws.
+#
+# The offsets are MEASURED, not chosen: over the 896 unambiguous bracket pairs
+# in that library the gap from the opening mark to the digit runs -0.14 to
+# 0.58 tab-staff line spacings (median 0.06) and from the digit to the closing
+# mark -0.14 to 0.62 (median 0.12), and the marks are set at 1.64 times the
+# digits' point size. The medians are what this draws.
+HARMONIC_BRACKETS_FROM = "notation_and_tab"
+HARMONIC_BRACKETS_NAME = "harmonic_brackets"
+HARMONIC_BRACKETS_CHARS = ("‹", "›")
+HARMONIC_BRACKETS_SIZE_RATIO = 1.64
+HARMONIC_BRACKETS_GAP_LEFT = 0.06     # tab-staff line spacings
+HARMONIC_BRACKETS_GAP_RIGHT = 0.12
+# And how far ABOVE the digit's own centre the mark's box centre sits, in the
+# same spacings: measured on "Hymn of the Fayth (Final Fantasy X)" page 1,
+# where a 15.38pt mark's box spans y 494.72-511.74 (centre 503.23) beside a
+# 9.4pt digit's 500.34-510.84 (centre 505.59) on a 7.7pt staff. A bigger glyph
+# set against a smaller one does not share its baseline.
+HARMONIC_BRACKETS_RISE = 0.31
+# WHICH fret numbers get brackets, as (page index, 0-based index of the digit
+# in that page's reading order - left to right across every tab staff on it,
+# and top to bottom where several share a column). Chosen to cover the shapes
+# that behave differently downstream: a digit standing alone at the start of a
+# bar, one in the middle of a bar, one INSIDE A CHORD where its neighbours a
+# single line spacing away are not harmonics, and one on the SECOND page so a
+# pass that forgot to carry the marks past page one would show up.
+#
+# notation_and_tab's first page reads, by column: 2.4 4.4 0.3 2.3 | 0.2 2.3 |
+# 0.3 4.4 2.4 0.4 2.4 4.4 | (3.2 2.3 0.4). So index 0 is bar 1's opening 2 on
+# the fourth string, index 5 is bar 2's 2 on the third, and 12/13/14 are the
+# closing chord read downwards - 13 being its middle member.
+HARMONIC_BRACKETS_AT = ((0, 0), (0, 5), (0, 13), (1, 0))
+
 UNMAPPED_DIGIT_FROM = "multidigit_meter"
 UNMAPPED_DIGIT_NAME = "unmapped_meter_digit"
 UNMAPPED_DIGIT_FONT = "Leland"
@@ -1123,7 +1183,8 @@ UNMAPPED_DIGIT_CODE = 0xE09E
 # stronger guard: it is regenerated and compared byte for byte.
 ENGRAVER_CREATOR = "MuseScore Studio Version: 4.6.3"
 SYNTHESISED_CREATOR = "fermata engrave_fixtures.py"
-SYNTHESISED = (RASTER_NAME, FAKE_FONT_NAME, UNMAPPED_DIGIT_NAME)
+SYNTHESISED = (RASTER_NAME, FAKE_FONT_NAME, UNMAPPED_DIGIT_NAME,
+               HARMONIC_BRACKETS_NAME)
 
 
 # ---------------------------------------------------------------------------
@@ -1326,6 +1387,95 @@ def unmap_a_meter_digit():
     print(f"  re-cut {path.name} ({path.stat().st_size} bytes)")
 
 
+def bracket_some_fret_numbers():
+    """Re-cut one engraved fixture so some of its fret numbers are wrapped in
+    the guillemets that mark a harmonic - see HARMONIC_BRACKETS_FROM above.
+
+    The digits are located the same way the extractor locates them, through
+    tabextract's own staff detection and digit extraction, so the fixture
+    cannot drift out of step with what it is testing: if the reader stops
+    finding a digit, this stops bracketing it and the test that counts the
+    harmonics fails, rather than the two quietly disagreeing about which
+    number is where.
+    """
+    import fitz
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from fermata import tabextract
+
+    opening, closing = HARMONIC_BRACKETS_CHARS
+    src = FIXTURE_DIR / f"{HARMONIC_BRACKETS_FROM}.pdf"
+    doc = fitz.open(src)
+    # A TextWriter rather than insert_text: the guillemets are outside
+    # Latin-1, which is what insert_text encodes into, and a base-14 Times
+    # asked for one through that path silently draws a middle dot instead.
+    # The font is one of the PDF base 14, so nothing outside PyMuPDF is
+    # needed to regenerate this.
+    font = fitz.Font("tiro")
+    wanted = {}
+    for page_index, digit_index in HARMONIC_BRACKETS_AT:
+        wanted.setdefault(page_index, []).append(digit_index)
+    drawn = 0
+    for page_index, indexes in sorted(wanted.items()):
+        page = doc[page_index]
+        # The engraved page's own content stream leaves a scaling transform
+        # in force at its end, and anything appended after it inherits that:
+        # written unwrapped, the two marks landed at a fifth of their asked-for
+        # size in the top-left corner of the page. Balancing the existing
+        # stream with q/Q first is what puts the appended text in page
+        # coordinates.
+        page.wrap_contents()
+        writer = fitz.TextWriter(page.rect)
+        staves, _anomalies = tabextract._detect_staves(page)
+        tabs = [s for s in staves if s.kind == "tab"]
+        tokens = tabextract._extract_digit_tokens(page)
+        by_staff, _unmatched = tabextract._assign_tokens_to_tab_staves(tokens, tabs)
+        ordered = []
+        for index in sorted(by_staff):
+            # By x, then by y: the members of a chord share a column, and
+            # "whichever the extractor happened to list first" is not an
+            # index a fixture can name.
+            for token in sorted(by_staff[index], key=lambda t: (t.bbox[0], t.bbox[1])):
+                ordered.append((tabs[index], token))
+        for digit_index in sorted(indexes):
+            if digit_index >= len(ordered):
+                raise SystemExit(
+                    f"{HARMONIC_BRACKETS_FROM} page {page_index + 1} has only "
+                    f"{len(ordered)} fret numbers; asked to bracket #{digit_index}")
+            staff, token = ordered[digit_index]
+            x0, _y0, x1, _y1 = token.bbox
+            size = (token.size or 9.0) * HARMONIC_BRACKETS_SIZE_RATIO
+            # The insertion point is a BASELINE and the offsets above are
+            # about the BOX, so the font's own metrics convert between them:
+            # a box runs from baseline - ascender*size to baseline -
+            # descender*size (descender is negative), so its centre sits
+            # size*(ascender + descender)/2 above the baseline.
+            centre = token.yc - staff.spacing * HARMONIC_BRACKETS_RISE
+            baseline = centre + size * (font.ascender + font.descender) / 2
+            # The measured gaps are between the marks' INNER edges and the
+            # digit, so the opening mark's own width comes off its insertion
+            # point (which is its left edge) and the closing one's does not.
+            left = (x0 - staff.spacing * HARMONIC_BRACKETS_GAP_LEFT
+                    - font.text_length(opening, fontsize=size))
+            right = x1 + staff.spacing * HARMONIC_BRACKETS_GAP_RIGHT
+            writer.append((left, baseline), opening, font=font, fontsize=size)
+            writer.append((right, baseline), closing, font=font, fontsize=size)
+            drawn += 1
+        writer.write_text(page)
+    if drawn != len(HARMONIC_BRACKETS_AT):
+        raise SystemExit(
+            f"expected to bracket {len(HARMONIC_BRACKETS_AT)} fret numbers, drew {drawn}")
+    path = FIXTURE_DIR / f"{HARMONIC_BRACKETS_NAME}.pdf"
+    doc.set_metadata({
+        "creator": SYNTHESISED_CREATOR,
+        "title": (f"{HARMONIC_BRACKETS_FROM} with {drawn} fret numbers wrapped in "
+                  "the guillemets that mark a harmonic"),
+    })
+    doc.save(path)
+    doc.close()
+    print(f"  re-cut {path.name} ({path.stat().st_size} bytes)")
+
+
 def rasterise():
     """Flatten one engraved fixture to a page-sized image in a PDF wrapper."""
     import fitz
@@ -1401,6 +1551,7 @@ def main():
     print("transcriptions:")
     write_transcriptions()
     unmap_a_meter_digit()
+    bracket_some_fret_numbers()
     if args.report:
         report()
 

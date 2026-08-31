@@ -1325,6 +1325,69 @@ def test_an_unrecognised_notehead_is_reported_however_few_there_are(engraved):
     assert degraded == 1
 
 
+def test_a_bracketed_fret_number_is_written_as_a_harmonic_and_nothing_else_is(engraved):
+    """Issue #63's tablature-side convention, on a real engraved page.
+
+    `harmonic_brackets` is `notation_and_tab` with four of its fret numbers
+    wrapped in the guillemets a Finale export draws round a harmonic - the
+    convention on 121 of the maintainer's 297 scores, and one MuseScore
+    cannot be made to engrave (asked for a `<harmonic>` on a tab staff it
+    emits a plain notehead and a plain digit). Everything else on the page is
+    the engraved original.
+
+    Four things are asserted, and the last two are the ones that could go
+    wrong quietly:
+
+      - exactly the four bracketed notes carry `<harmonic>`, named by the
+        note ids Rule 17 makes stable, and no other note does;
+      - the element is written with an EMPTY body, because the convention
+        marks a natural and an artificial harmonic identically and this
+        producer does not guess which (Rule 19);
+      - one of the four is a single member of a three-note CHORD, whose
+        neighbours sit one string spacing away and must not be swept up - the
+        marks are set at nearly twice the digits' size, so their boxes are
+        taller than the gap between two strings;
+      - not one duration figure moves. A harmonic says how a note is played,
+        so `bars`, `beats`, `notes` and all three conformance counts have to
+        come out identical to the fixture this was cut from, and the alphaTex
+        identical apart from its title.
+    """
+    marked = tabextract.extract(engraved("harmonic_brackets"))
+    plain = tabextract.extract(engraved("notation_and_tab"))
+
+    root = ET.fromstring(marked.musicxml)
+    harmonics = [
+        (note.get("id"),
+         note.find("notations/technical/string").text,
+         note.find("notations/technical/fret").text,
+         [child.tag for child in note.find("notations/technical/harmonic")])
+        for note in root.findall(".//note")
+        if note.find("notations/technical/harmonic") is not None
+    ]
+    assert harmonics == [
+        ("n1-1-0-0", "4", "2", []),
+        ("n2-1-1-0", "3", "2", []),
+        ("n4-1-0-1", "3", "2", []),   # the chord's middle member, alone
+        ("n5-1-0-0", "4", "2", []),
+    ], harmonics
+    chord = root.findall("./part/measure[@number='4']/note")
+    assert len(chord) == 3, "the whole chord is still written"
+    assert [n.find("notations/technical/harmonic") is None for n in chord] == \
+        [True, False, True], "only the bracketed member of the chord"
+
+    assert marked.musicxml.count("<harmonic") == 4
+    assert plain.musicxml.count("<harmonic") == 0, (
+        "the fixture this was cut from marks nothing")
+
+    for field in ("bars", "beats", "notes", "bars_overfull", "bars_short",
+                  "bars_defective", "bars_padded", "inferred_rest_quarters"):
+        assert getattr(marked, field) == getattr(plain, field), field
+    assert marked.warnings == plain.warnings
+    assert marked.alphatex.split("\n", 1)[1] == plain.alphatex.split("\n", 1)[1], (
+        "alphaTex does not carry a harmonic - every one of its harmonic "
+        "tokens names a KIND and re-pitches the note (Rule 19)")
+
+
 def test_expression_marks_are_not_read_as_incomprehension():
     """The same ratio failed in the other direction too. An accent, a
     fermata, a dynamic or a repeat dot says nothing about a note's duration,
@@ -1716,9 +1779,10 @@ def test_a_triplet_is_not_shortened_and_its_bar_is_reported_overfull(engraved):
 
 def test_a_tie_across_a_barline_is_seen_by_the_decoder(engraved):
     """The tie is found in the engraving - it is a vector curve, not a glyph -
-    even though nothing downstream spends it yet, which is what the "tie
-    detection is low confidence" caveat is about. Pinning the decode keeps
-    the curve matching alive while the emitter catches up.
+    and BOTH of its ends are flagged, which is what the emitters spend (issue
+    #81). The two ends are not interchangeable downstream: the second note of
+    a tie is not struck, so the tablature usually prints no fret number under
+    it at all.
 
     This score engraves the same four-bar phrase twice, so it has two ties,
     and only ONE of them is matched: the second falls at a system break,
@@ -1736,20 +1800,68 @@ def test_a_tie_across_a_barline_is_seen_by_the_decoder(engraved):
             notes, stats = glyph_rhythm.decode_note_events(
                 page, staff.top, staff.bottom, staff.x0, staff.x1,
                 staff.line_ys, staff.spacing)
-            per_staff.append((sum(1 for n in notes if n.tied_next), stats["curve_count"]))
+            per_staff.append((sum(1 for n in notes if n.tied_next),
+                              sum(1 for n in notes if n.tied_prev),
+                              stats["curve_count"]))
 
     assert len(per_staff) == 2, "two systems"
-    assert per_staff[0][0] == 1, "the tie inside the first system is matched"
-    assert per_staff[1][0] == 0, "the one split across the break is not"
-    assert all(curves > 0 for _tied, curves in per_staff), (
+    assert per_staff[0][:2] == (1, 1), (
+        "the tie inside the first system is matched at both of its ends")
+    assert per_staff[1][:2] == (0, 0), "the one split across the break is not"
+    assert all(curves > 0 for _next, _prev, curves in per_staff), (
         "the split tie's partial curves are still found on both staves")
 
+
+def test_a_tie_is_written_at_both_ends_and_leaves_the_beats_alone(engraved):
+    """The matched tie reaches both emitted formats, changing the STRUCTURE of
+    what is written and nothing about how long anything is (issue #81).
+
+    A tie is two written notes sounding as one, so the arithmetic is
+    untouched: the two bars it joins still hold four quarters each. What
+    changes is that the second note now says it is held.
+
+    BOTH MusicXML spellings are asserted, because different consumers read
+    different ones: `<tie>` is the sound and `<tied>` is the printed mark, and
+    the renderer this project embeds reads only `<tied>` - a file carrying
+    just the other one re-strikes the note it should hold. See
+    docs/musicxml-tab-profile.md, Rule 18."""
     result = tabextract.extract(engraved("tuplet_and_tie"))
     bars = emitted_bars(result.alphatex)
     for index in (1, 2, 5, 6):
         assert sum(q for q, _n in bars[index][0]) == 4.0, (
             f"bar {index + 1} is one of the tied pair and still adds up")
-    assert any("tie detection is low confidence" in w for w in result.warnings)
+
+    lines = [line for line in result.alphatex.splitlines() if line.endswith("|")]
+    assert lines[1] == ":2 2.4 :2 0.3 |", lines[1]
+    assert lines[2] == ":2 0.3{t} :2 2.3 |", lines[2]
+    assert result.alphatex.count("{t}") == 1, "one tie, one destination marked"
+    # The split tie is NOT written, so the same phrase engraved again over a
+    # system break comes out as two struck notes.
+    assert lines[5] == ":2 2.4 :2 0.3 |", lines[5]
+    assert lines[6] == ":2 0.3 :2 2.3 |", lines[6]
+
+    root = ET.fromstring(result.musicxml)
+    measures = root.findall("./part/measure")
+    assert len(measures[1].findall("./note/tie[@type='start']")) == 1
+    assert len(measures[2].findall("./note/tie[@type='stop']")) == 1
+    assert len(measures[1].findall("./note/notations/tied[@type='start']")) == 1
+    assert len(measures[2].findall("./note/notations/tied[@type='stop']")) == 1
+    assert len(root.findall(".//tie")) == 2, "one tie in the whole score"
+    assert len(root.findall(".//tied")) == 2
+
+    # The two notes are ONE sounding note, so they have to carry the same
+    # pitch, string and fret: alphaTab matches an unnumbered <tied> on pitch
+    # alone and silently drops a tie whose ends disagree.
+    first = measures[1].findall("./note")[-1]
+    second = measures[2].findall("./note")[0]
+    for path in ("pitch/step", "pitch/octave",
+                 "notations/technical/string", "notations/technical/fret"):
+        assert first.find(path).text == second.find(path).text, path
+
+    assert result.tie_ends_unpaired == 0, (
+        "the split tie is not matched by the decoder at either end, so there "
+        "is no half of one here to erase")
+    assert any("across a system break" in w for w in result.warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -2163,6 +2275,13 @@ SYNTHESISED_NAMES = (
     # in all 297 scores is mapped after issue #84 - so the condition has to
     # be cut rather than found. See engrave_fixtures.unmap_a_meter_digit.
     "unmapped_meter_digit",
+    # notation_and_tab re-cut with four of its fret numbers wrapped in the
+    # guillemets that mark a harmonic (issue #63). Synthesised because
+    # MuseScore draws nothing of the sort - asked for a `<harmonic>` on a tab
+    # staff it emits a plain notehead and a plain fret number - while the
+    # convention is on 121 of the maintainer's 297 scores. See
+    # engrave_fixtures.bracket_some_fret_numbers.
+    "harmonic_brackets",
 )
 
 

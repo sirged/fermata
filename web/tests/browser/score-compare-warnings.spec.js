@@ -207,7 +207,7 @@ test.describe("ScoreCompare warnings summary", () => {
     await page.waitForSelector(".staff-render");
     await expect(page.locator(".warnings")).toHaveCount(0);
     await expect(page.locator(".standing-footnote")).toHaveText(
-      "Standing limits: tuplets aren't detected; tie detection is approximate.",
+      "Standing limits: tuplets aren't detected; a tie across a system break isn't matched.",
     );
   });
 
