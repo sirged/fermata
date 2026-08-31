@@ -3116,6 +3116,65 @@ def test_lennas_theme_reads_a_volta_that_opens_a_system(lenna_theme_pdf):
     assert loaded["tickLookup"] == expected_order
 
 
+def test_sorrows_of_parting_reads_its_side_by_side_systems(sorrows_of_parting_pdf):
+    """Issue #87 on the score it names. The report reads its page 1 as two
+    staves each drawn with every line stroked twice:
+
+        anomaly lines=10  ys=[663.4, 664.1, 668.6, 669.2, 673.7, 674.3,
+                               678.8, 679.5, 683.9, 684.6]
+                          gaps=[0.7, 4.5, 0.6, 4.5, 0.6, 4.5, 0.7, 4.4, 0.7]
+        anomaly lines=12  gaps=[0.4, 7.3, 0.4, 7.2, 0.5, 7.2, 0.5, 7.2,
+                                0.4, 7.3, 0.4]
+
+    The lines are not doubled. Those ten y values are TWO five-line systems
+    printed side by side on one band - a left system at x 54.0-306.0 (y
+    663.4, 668.6, 673.7, 678.8, 683.9) and a right one at x 348.3-575.5 (y
+    664.1, 669.2, 674.3, 679.5, 684.6), ruled 0.6-0.7pt lower. Interleaved by
+    y alone they read as one 10-line group; the twelve are the same shape one
+    band down, a pair of side-by-side SIX-line tab systems at ~7.7pt spacing.
+    So #87 is the same bug as #152, and _band_columns (which splits a band
+    into its x-overlapping columns before the lines are counted) is what
+    already fixes it - reverting that split returns the two anomalies above,
+    gaps and all. This pins that the named score is read, so #87 cannot
+    silently regress behind #152's coverage on Lenna's Theme (a sibling in
+    the same folder and exporter - see
+    test_lennas_theme_reads_a_volta_that_opens_a_system).
+    """
+    page = fitz.open(sorrows_of_parting_pdf)[0]
+    staves, anomalies = tabextract._detect_staves(page)
+    # Every band is read; nothing is thrown away as an unexpected line count.
+    assert anomalies == []
+    assert len(staves) == 12
+
+    # The two bands the issue reports are the last standard band and the last
+    # tab band, each split into a left and a right column rather than counted
+    # as one doubled group. Grouped by band, the page's last standard band
+    # holds two 5-line staves and its last tab band two 6-line staves.
+    by_band = collections.defaultdict(list)
+    for s in staves:
+        by_band[s.band].append(s)
+    standard_bands = [b for b, ss in by_band.items()
+                      if all(s.kind == "standard" for s in ss)]
+    tab_bands = [b for b, ss in by_band.items()
+                 if all(s.kind == "tab" for s in ss)]
+    last_std = by_band[max(standard_bands)]
+    last_tab = by_band[max(tab_bands)]
+    assert [s.kind for s in last_std] == ["standard", "standard"]
+    assert [len(s.line_ys) for s in last_std] == [5, 5]
+    assert [s.kind for s in last_tab] == ["tab", "tab"]
+    assert [len(s.line_ys) for s in last_tab] == [6, 6]
+    # The left column ends before the right one begins - the tell that they
+    # are two systems, not one line drawn twice (a doubled line shares its x).
+    left_std, right_std = sorted(last_std, key=lambda s: s.x0)
+    assert left_std.x1 < right_std.x0
+
+    # And the music of those recovered systems decodes rather than being lost.
+    result = tabextract.extract(sorrows_of_parting_pdf)
+    assert result.extractable
+    assert result.bars == 20
+    assert result.systems_unread == 0
+
+
 def test_an_incomplete_ending_run_alone_downgrades_structure_confidence(victory_fanfare_pdf):
     """Blocker 2 (issue #134 adversarial review): `structure_issues` (~the
     confidence sum near musicxml build in tabextract.py) used to omit
