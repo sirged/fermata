@@ -101,6 +101,14 @@ them.
   goal can still change it; afterwards it states plainly what happened and asks
   whether the goal was realistic. No streaks, no comparison with a better week,
   and nothing that grades you for a week that did not go to plan.
+- **Setlists** — ordered collections of pieces to work through: a gig set, a
+  lesson plan, a practice rotation. Name one, add scores, and arrange the order
+  by hand — the order is kept, not left to chance — then work through it in the
+  ordinary viewer, with each piece's own practice progress shown beside it. A
+  piece can be in several setlists at once; removing it from one, or deleting a
+  setlist outright, never deletes the piece or its history. A piece you have
+  sent to the trash stays in its setlists, marked, rather than becoming a dead
+  link.
 - **Gig mode** — fullscreen, screen kept awake, oversized tap targets and
   half-page turns for a tablet on a music stand.
 - **Organize** — collections (from your folder layout), free-form tags,
@@ -232,7 +240,7 @@ demo*) if your library is PDF-only so far.
   accompany most freely-licensed sheet music you can download
 - **A fretboard trainer** — note finding, chord flash cards and reach drills,
   scoped to the strings and frets you are working on
-- Setlists, and recognition for what you have accomplished over time
+- Recognition for what you have accomplished over time
 - Annotations on PDFs (fingerings, markings)
 - Multi-user accounts (reverse proxy authentication - trusting a login a
   proxy in front of Fermata already did - shipped; see

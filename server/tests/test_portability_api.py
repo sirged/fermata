@@ -180,6 +180,22 @@ def test_export_import_round_trip_is_lossless(client, library, add_score, tmp_pa
 
     client.put("/api/settings", json={"staff_theme": "noir", "week_starts_on": "sunday"})
 
+    # A setlist arranged by hand (#6), including the score that is about to be
+    # trashed. Hand-arranged order is non-regenerable data, so #58 must carry
+    # it: this proves it does, and that a trashed member survives marked rather
+    # than being silently dropped from the backup.
+    setlist = client.post("/api/setlists", json={"name": "Recital order"}).json()
+    for member in (prelude_id, etude_id, doomed_id):
+        added = client.post(f"/api/setlists/{setlist['id']}/scores", json={"score_id": member})
+        assert added.status_code == 200, added.text
+    # Reorder so the STORED order is not the insertion order - what travels must
+    # be the arrangement, not the sequence rows happened to be added in.
+    reordered = client.put(
+        f"/api/setlists/{setlist['id']}/order",
+        json={"score_ids": [etude_id, doomed_id, prelude_id]},
+    )
+    assert reordered.status_code == 200, reordered.text
+
     # A score in the trash, with practice history attached, deliberately kept
     # in the export (include_trash defaults to true).
     delete_result = client.delete(f"/api/scores/{doomed_id}")
@@ -220,6 +236,8 @@ def test_export_import_round_trip_is_lossless(client, library, add_score, tmp_pa
     assert summary["practice_goals_imported"] == 1
     assert summary["instruments_imported"] == 1
     assert summary["tags_imported"] == 2
+    assert summary["setlists_imported"] == 1
+    assert summary["setlist_scores_imported"] == 3
 
     # --- Every field, read back through the API, equal by literal value. ---
     actual_scores = _by_title(client.get("/api/scores").json())
@@ -278,6 +296,31 @@ def test_export_import_round_trip_is_lossless(client, library, add_score, tmp_pa
         assert actual_goals[0][field] == expected_goals[0][field]
 
     assert client.get("/api/settings").json() == expected_settings
+
+    # --- The setlist and its ORDERED membership survived (#6 through #58). ---
+    actual_setlists = client.get("/api/setlists").json()
+    assert len(actual_setlists) == 1
+    assert actual_setlists[0]["name"] == "Recital order"
+    # All three members are counted, the trashed one included - it is still in
+    # the setlist.
+    assert actual_setlists[0]["score_count"] == 3
+    actual_setlist = client.get(f"/api/setlists/{actual_setlists[0]['id']}").json()
+    # The reordered order travelled by literal value, not insertion order, and
+    # the positions are contiguous 1..3.
+    assert [m["score"]["title"] for m in actual_setlist["scores"]] == ["Etude", "Doomed", "Prelude"]
+    assert [m["position"] for m in actual_setlist["scores"]] == [1, 2, 3]
+    # The trashed member came back marked, not dropped and not a broken link -
+    # exactly what #6 requires of a deleted score in a setlist.
+    doomed_member = next(
+        m for m in actual_setlist["scores"] if m["score"]["title"] == "Doomed"
+    )
+    assert doomed_member["score"]["deleted_at"] is not None
+    # And membership follows the id remap: every member points at a score that
+    # is really in this target library, not at a source-side id.
+    target_score_ids = {s["id"] for s in client.get("/api/scores").json()} | {
+        s["id"] for s in client.get("/api/trash").json()
+    }
+    assert all(m["score"]["id"] in target_score_ids for m in actual_setlist["scores"])
 
 
 def test_export_can_leave_the_trash_out(client, add_score):

@@ -205,7 +205,7 @@ that ties them together.
 
 | Endpoint | What it does |
 | --- | --- |
-| `GET /api/export` | Every score row, transcription, practice session, goal, tag, instrument and setting, plus the score files themselves, as one zip. |
+| `GET /api/export` | Every score row, transcription, practice session, goal, tag, instrument, setting and setlist (with its ordered membership), plus the score files themselves, as one zip. |
 | `POST /api/import` | Restores an archive `GET /api/export` produced. **Dry run by default.** |
 
 **The archive.** A zip with `manifest.json` at its root - a JSON object naming
@@ -252,6 +252,49 @@ leaves the library exactly as it was.
 **`dry_run` defaults to true**, the same default every bulk operation in this
 API uses (see the five rules above). It validates the archive completely and
 reports what it found without opening a transaction or writing a file.
+
+## Setlists (issue #6)
+
+A setlist is an ordered collection of scores a player works through — a gig
+set, a lesson plan, a practice rotation. The order is the server's: it is a
+stored `position`, not the order rows happen to come back in, so a reorder is a
+real write and not something a client arranges and a reload forgets.
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /api/setlists` | Every setlist, newest first, each with its `score_count`. |
+| `POST /api/setlists` | Create a new, empty setlist with a name. |
+| `GET /api/setlists/{id}` | One setlist and its scores, in order. |
+| `PATCH /api/setlists/{id}` | Rename it. |
+| `DELETE /api/setlists/{id}` | Delete the setlist. Its scores are **not** touched — `scores_untouched` counts them. |
+| `POST /api/setlists/{id}/scores` | Add a score, appended at the end. |
+| `DELETE /api/setlists/{id}/scores/{score_id}` | Remove a score from the setlist. The score is **not** deleted. |
+| `PUT /api/setlists/{id}/order` | Set the whole order — `score_ids` must be exactly the current members, each once. |
+
+**What removing and deleting do not do.** Removing a score from a setlist
+removes one membership row and nothing else — the score, its file, its practice
+history, its tags and its transcription stay, and it stays in every other
+setlist it is in. Deleting a setlist reaches only its membership rows; the
+scores are untouched. A score can be in any number of setlists at once.
+
+**A deleted score in a setlist (issue #56).** A member whose score is in the
+trash is still listed, carrying its `score.deleted_at` — a client marks it as
+deleted rather than showing a broken link, and it keeps its place in the order.
+It cannot be newly added while trashed, the same way every other write against a
+trashed score is refused. A score **purged** from the trash leaves its setlists
+on its own, because the membership row is removed with the score row.
+
+**Practising a setlist reuses the ordinary viewer** — there is no separate
+"gig session" row. Each member carries the same practice totals the library and
+progress views show (issue #32's one-source-of-truth rule), so a client shows
+per-piece progress within a setlist without counting anything itself.
+
+Setlists **travel in the portable archive** (issue #58's export / import): a
+backup carries each setlist and its ordered membership, and a restore repoints
+both foreign keys at the new setlist and score rows so the arrangement survives
+intact. A membership row for a score the export leaves out (a trashed one, when
+`include_trash=false`) is dropped from the archive rather than carried as a
+dangling reference — the setlist itself still travels, just without that member.
 
 ## Who else reads this contract
 

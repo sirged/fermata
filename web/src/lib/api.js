@@ -327,4 +327,42 @@ export const api = {
     fd.append("file", file);
     return fetch(`/api/import?dry_run=${dryRun}`, { method: "POST", body: fd }).then(j);
   },
+  // --- Setlists (issue #6) --------------------------------------------------
+  // A setlist is an ordered collection of scores. The server owns the order (a
+  // stored position), so the client never sorts members itself - it renders
+  // them as they arrive - and every mutation returns the whole setlist as it
+  // now stands, so nothing here re-fetches to learn the new state. Removing a
+  // score from a setlist, or deleting a setlist, never deletes a score.
+  setlists: () => fetch("/api/setlists").then(j),
+  setlist: (id) => fetch(`/api/setlists/${id}`).then(j),
+  createSetlist: (name) =>
+    fetch("/api/setlists", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }).then(j),
+  renameSetlist: (id, name) =>
+    fetch(`/api/setlists/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }).then(j),
+  deleteSetlist: (id) => fetch(`/api/setlists/${id}`, { method: "DELETE" }).then(j),
+  addToSetlist: (id, scoreId) =>
+    fetch(`/api/setlists/${id}/scores`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ score_id: scoreId }),
+    }).then(j),
+  removeFromSetlist: (id, scoreId) =>
+    fetch(`/api/setlists/${id}/scores/${scoreId}`, { method: "DELETE" }).then(j),
+  // The whole order at once, a permutation of the current members - the server
+  // rejects anything that is not exactly that (see the reorder endpoint), which
+  // is what makes "move this up one" safe to express as the new full order.
+  reorderSetlist: (id, scoreIds) =>
+    fetch(`/api/setlists/${id}/order`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ score_ids: scoreIds }),
+    }).then(j),
 };

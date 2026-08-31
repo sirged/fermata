@@ -1022,6 +1022,12 @@ class ImportOut(BaseModel):
     practice_sessions_imported: int
     practice_goals_imported: int
     settings_imported: int
+    # #6's two: how many setlists, and how many membership rows across them,
+    # the archive carried (or would restore). A membership row for a score the
+    # export left out was already dropped on the way out, so this counts what
+    # actually travels, not what the setlists held before export.
+    setlists_imported: int
+    setlist_scores_imported: int
 
 
 # ---------------------------------------------------------------------------
@@ -1116,3 +1122,81 @@ class TrainerChordAttemptListOut(BaseModel):
     attempts: list[TrainerChordAttemptOut]
     total: int
     truncated: bool
+
+
+# ---------------------------------------------------------------------------
+# Setlists (#6)
+#
+# A setlist is an ordered collection of scores a player works through. The
+# shapes here mirror api.setlist_dict / api.setlist_summary exactly, the same
+# discipline the rest of this module keeps: every key those helpers put on the
+# wire has a field here, typed to admit every value it can actually hold.
+#
+# A MEMBER CARRIES ITS WHOLE SCORE, not a thinned-down reference. That is
+# issue #32's rule - every field readable through the documented API, one
+# source of truth - and it is what lets the setlist view show per-piece
+# practice progress (each ScoreOut carries practice_seconds and last_practiced)
+# without a second round of calls. A member whose score is in the trash (#56)
+# is still listed, with `score.deleted_at` set: the setlist marks it deleted
+# rather than dropping it or showing a broken link. A member whose score has
+# been PURGED is not here at all - the membership row cascaded away with the
+# score row - so there is no such thing as a member with a null score.
+# ---------------------------------------------------------------------------
+
+
+class SetlistOut(BaseModel):
+    """A setlist as api.setlist_summary presents it, for the list view and as
+    the echo returned by create and rename: the row's own columns plus
+    `score_count`, how many scores it holds (trashed members included - they
+    are still in the setlist). The ordered members themselves are on
+    SetlistDetailOut, fetched one setlist at a time."""
+
+    id: int
+    owner: str
+    name: str
+    created_at: str
+    updated_at: str
+    score_count: int
+
+
+class SetlistMemberOut(BaseModel):
+    """One entry in a setlist: a whole score at its position in the order.
+
+    `position` is the stored order key (see db.py's setlist_scores) - members
+    arrive already sorted by it, so a client renders them in list order without
+    sorting, and it is exposed rather than left implicit so the order is a fact
+    of the API and not of one client's rendering. `score` is the same ScoreOut
+    every library and trash view returns; a member in the trash carries its
+    `deleted_at`, which is how the setlist marks it deleted rather than
+    linking to something that is not in the library."""
+
+    position: int
+    score: ScoreOut
+
+
+class SetlistDetailOut(BaseModel):
+    """One setlist with its ordered members - the shape GET /api/setlists/{id}
+    returns, and the shape every mutation that changes membership or order
+    (add, remove, reorder) echoes back so a client never has to re-fetch to
+    learn the new state."""
+
+    id: int
+    owner: str
+    name: str
+    created_at: str
+    updated_at: str
+    scores: list[SetlistMemberOut]
+
+
+class SetlistDeleteOut(BaseModel):
+    """DELETE /api/setlists/{id}: the setlist is gone; the scores are not.
+
+    `scores_untouched` is counted before the delete so a caller can say how
+    many scores were in the setlist and every one of them - with its file,
+    practice history, tags and transcription - is still exactly where it was.
+    Deleting a setlist reaches nothing but the membership rows (see db.py's
+    setlist_scores note on why setlist_id is ON DELETE CASCADE and what that
+    does and does not remove)."""
+
+    deleted: int
+    scores_untouched: int
