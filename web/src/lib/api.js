@@ -220,6 +220,21 @@ export const api = {
   deleteTranscription: (id) =>
     fetch(`/api/scores/${id}/transcription`, { method: "DELETE" }).then(j),
   transcriptionAnalysis: (id) => fetch(`/api/scores/${id}/transcription/analysis`).then(j),
+  // Bulk transcription (issue #55) - the scan's own pattern: start it, poll
+  // its status. `scoreIds` and `collection` are mutually exclusive (the
+  // server 422s if both are given); omitting both selects every eligible
+  // score in the whole library.
+  transcribeBatch: (scoreIds, { collection, reconvert = false } = {}) =>
+    fetch("/api/transcribe/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...(scoreIds ? { score_ids: scoreIds } : {}),
+        ...(collection !== undefined ? { collection } : {}),
+        reconvert,
+      }),
+    }).then(j),
+  transcribeBatchStatus: () => fetch("/api/transcribe/batch/status").then(j),
   instruments: () => fetch("/api/instruments").then(j),
   instrumentPresets: () => fetch("/api/instruments/presets").then(j),
   // A whole definition, not a patch: string_count and string_pitches have to

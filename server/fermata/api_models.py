@@ -718,6 +718,55 @@ class TranscribeResultOut(TranscriptionOut):
     tempo: int | None
 
 
+class TranscribeBatchResultLineOut(BaseModel):
+    """One score's outcome from a bulk transcription pass - see
+    api._batch_process_one for what earns each `outcome`. `reason` is set
+    for every outcome except "transcribed"; never a silent skip is the
+    whole point of this shape (issue #55). `bars_defective` /
+    `bars_measured` are only ever set for "transcribed" - see
+    api._store_extraction_result's own comment on why a bar count cannot be
+    inherited from anything but a measurement of the content that produced
+    it."""
+
+    score_id: int
+    # None only when the id named no score at all - every other outcome has
+    # the title of a real row, even a deleted or non-pdf one, because "which
+    # score" is the first thing a person reading this list needs.
+    title: str | None
+    outcome: str
+    reason: str | None
+    bars_defective: int | None
+    bars_measured: int | None
+
+
+class TranscribeBatchStatusOut(BaseModel):
+    """transcribe_batch.batch_status()'s shape - see transcribe_batch._state
+    for what each running total means, and TranscribeBatchResultLineOut for
+    one line of `results`."""
+
+    running: bool
+    total: int
+    processed: int
+    transcribed: int
+    already_transcribed: int
+    non_extractable: int
+    errored: int
+    with_defective_bars: int
+    reconvert: bool
+    results: list[TranscribeBatchResultLineOut]
+    started_at: float | None
+    finished_at: float | None
+
+
+class TranscribeBatchTriggerOut(TranscribeBatchStatusOut):
+    """POST /api/transcribe/batch: whether this call actually started a
+    pass, plus the status left behind by whichever pass (this one, or one
+    already running) is current - mirrors ScanTriggerOut for the same
+    reason POST /transcribe/batch mirrors POST /scan."""
+
+    started: bool
+
+
 # ---------------------------------------------------------------------------
 # Scan / upload
 # ---------------------------------------------------------------------------

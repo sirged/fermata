@@ -299,8 +299,9 @@ def test_every_route_has_exactly_the_expected_operation_count(openapi_schema):
     # restore from it, and destroy from it. Plus issue #57's one: how one
     # piece is going. Plus issue #16's one: GET /api/me. Plus issue #58's two:
     # export the library to an archive, import one back. Plus issue #27's
-    # two: log a fretboard drill attempt, and list them.
-    assert count == 56
+    # two: log a fretboard drill attempt, and list them. Plus issue #55's
+    # two: start a bulk transcription pass, poll its status.
+    assert count == 58
 
 
 def test_binary_routes_do_not_advertise_a_json_content_type(openapi_schema):
@@ -627,6 +628,39 @@ def test_trainer_responses_match_their_models(client):
     api_models.TrainerAttemptListOut.model_validate(
         client.get("/api/trainer/attempts").json()
     )
+
+
+def test_transcribe_batch_responses_match_their_models(
+    client, insert_score, extractable_pdf, monkeypatch
+):
+    """POST /transcribe/batch and GET /transcribe/batch/status (issue #55).
+    Routed through `client`, so this also exercises claim 5's drift guard -
+    a field _batch_process_one/_run_batch computes but
+    TranscribeBatchStatusOut/TranscribeBatchResultLineOut do not declare
+    would fail here by name rather than silently reaching the wire
+    narrower than what was actually returned."""
+    monkeypatch.setattr(api, "LIBRARY_DIR", extractable_pdf.parent)
+    from fermata import db
+
+    conn = db.connect()
+    score_id = insert_score(conn, extractable_pdf.name)
+    conn.commit()
+
+    triggered = client.post("/api/transcribe/batch", json={"score_ids": [score_id]})
+    api_models.TranscribeBatchTriggerOut.model_validate(triggered.json())
+
+    import time as _time
+
+    deadline = _time.monotonic() + 10
+    while True:
+        status = client.get("/api/transcribe/batch/status")
+        api_models.TranscribeBatchStatusOut.model_validate(status.json())
+        if not status.json()["running"]:
+            break
+        if _time.monotonic() > deadline:
+            raise AssertionError("the bulk transcription pass did not finish")
+        _time.sleep(0.02)
+    assert status.json()["results"][0]["outcome"] == "transcribed"
 
 
 def test_scan_and_upload_responses_match_their_models(client, monkeypatch):
