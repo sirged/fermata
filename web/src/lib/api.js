@@ -269,6 +269,22 @@ export const api = {
     );
     return fetch(`/api/trainer/attempts?${q}`).then(j);
   },
+  // Structured, per-question chord flash card results (issue #28, #32) - the
+  // same idea as logTrainerAttempt, in a table of its own (see
+  // server/fermata/trainer.py's module docstring for why a chord does not
+  // fit trainer_attempts' single-note columns).
+  logChordAttempt: (body) =>
+    fetch("/api/trainer/chord-attempts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(j),
+  chordAttempts: (params = {}) => {
+    const q = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== "")),
+    );
+    return fetch(`/api/trainer/chord-attempts?${q}`).then(j);
+  },
   version: () => fetch("/api/version").then(j),
   settings: () => fetch("/api/settings").then(j),
   putSettings: (values) =>

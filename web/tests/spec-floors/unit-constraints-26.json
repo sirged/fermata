@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/constraints.spec.js",
+  "count": 14,
+  "reason": "issue #26: the string-set/fret-range scoping factored out of fret-to-note.js, plus the key/note-set filter that is new here (a key's own diatonic notes for every root and both qualities, an unknown root or quality refused, a key narrowing the position pool and reaching the same degenerate 'nothing to ask' state a narrow fret range does), the single positionInScope test every dimension reduces to, scope labelling with and without a key, and groupInScope - the whole-shape-must-fit rule the chord drill (#28) scopes its shapes with."
+}

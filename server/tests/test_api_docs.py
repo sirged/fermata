@@ -300,8 +300,9 @@ def test_every_route_has_exactly_the_expected_operation_count(openapi_schema):
     # piece is going. Plus issue #16's one: GET /api/me. Plus issue #58's two:
     # export the library to an archive, import one back. Plus issue #27's
     # two: log a fretboard drill attempt, and list them. Plus issue #55's
-    # two: start a bulk transcription pass, poll its status.
-    assert count == 58
+    # two: start a bulk transcription pass, poll its status. Plus issue #28's
+    # two: log a chord flash card attempt, and list them.
+    assert count == 60
 
 
 def test_binary_routes_do_not_advertise_a_json_content_type(openapi_schema):

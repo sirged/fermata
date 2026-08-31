@@ -17,6 +17,7 @@ that sits beside it. See api.py's /trainer/attempts routes for where the two
 meet.
 """
 
+import json
 from typing import Any
 
 # The one drill that writes here today. A widened tuple, not a migration, is
@@ -179,4 +180,201 @@ def attempt_dict(row) -> dict:
     turned back into a real bool (SQLite hands integers back)."""
     d = dict(row)
     d["correct"] = bool(d["correct"])
+    return d
+
+
+# ---------------------------------------------------------------------------
+# Chord flash cards (issue #28) - its own attempt shape, in
+# trainer_chord_attempts rather than trainer_attempts. See db.py's comment
+# on that table for why a chord (a SET of notes) does not fit the single
+# pitch-class columns above, which the first paragraph of this module's own
+# docstring already commits target_note/given_note to.
+# ---------------------------------------------------------------------------
+
+# A widened tuple, the same way DRILLS above is meant to widen (see that
+# constant's own comment) - just in this table instead, since a chord drill
+# is not a fret-to-note-shaped one.
+CHORD_DRILLS = ("chord_flashcards",)
+
+# shape_to_name: a fingering was shown, a chord name was chosen.
+# name_to_shape: a chord was named, a shape was tapped.
+CHORD_DIRECTIONS = ("shape_to_name", "name_to_shape")
+
+# Interval steps from the root, in semitones - a triad for major and minor,
+# a tetrad for the one seventh chord this drill names ("majors and minors
+# first, then sevenths, then barre chords" - issue #28's own ordering).
+# MIRRORED, CHARACTER FOR CHARACTER, in web/src/lib/trainer/chord-
+# theory.js's QUALITIES - the same discipline PITCH_CLASSES above is held
+# to against neck.js's table of the same name. server/tests/
+# test_chord_theory.py and web/tests/unit/chord-theory.spec.js each check
+# every one of the 36 (root, quality) chords this can build; a drift
+# between the two would otherwise show up as a shape and its label
+# disagreeing about what chord is on screen, not as a failing test.
+CHORD_QUALITIES = {
+    "major": (0, 4, 7),
+    "minor": (0, 3, 7),
+    "dominant7": (0, 4, 7, 10),
+}
+
+
+def chord_tones(root: str, quality: str) -> tuple[str, ...] | None:
+    """The pitch classes a chord is built from, or None for an unknown root
+    or quality - the server's own copy of chord-theory.js's chordTones,
+    used to grade an attempt independently of whatever a client claims a
+    shape or a chosen name sounds like."""
+    if root not in PITCH_CLASSES or quality not in CHORD_QUALITIES:
+        return None
+    i = PITCH_CLASSES.index(root)
+    return tuple(PITCH_CLASSES[(i + step) % 12] for step in CHORD_QUALITIES[quality])
+
+
+def _chord_quality(value, field: str) -> str:
+    if value not in CHORD_QUALITIES:
+        raise ValueError(f"{field} must be one of {list(CHORD_QUALITIES)}")
+    return value
+
+
+def _shape(value, field: str, *, allow_empty: bool = True):
+    """A list of {string, fret} positions - a fingering shown, or one
+    tapped - validated the same bounds `_position` above checks a single
+    position against. None passes through as None (the field was not
+    given); anything else must be a (possibly empty, unless `allow_empty`
+    is False) list of whole-number positions within bounds."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be a list of positions")
+    if not value and not allow_empty:
+        raise ValueError(f"{field} must not be empty")
+    out = []
+    for entry in value:
+        string_value = entry.get("string") if isinstance(entry, dict) else getattr(entry, "string", None)
+        fret_value = entry.get("fret") if isinstance(entry, dict) else getattr(entry, "fret", None)
+        if isinstance(string_value, bool) or not isinstance(string_value, int):
+            raise ValueError(f"{field} entries need a whole-number string")
+        if isinstance(fret_value, bool) or not isinstance(fret_value, int):
+            raise ValueError(f"{field} entries need a whole-number fret")
+        if not MIN_STRING_NUMBER <= string_value <= MAX_STRING_NUMBER:
+            raise ValueError(f"{field} string must be between {MIN_STRING_NUMBER} and {MAX_STRING_NUMBER}")
+        if not MIN_FRET <= fret_value <= MAX_FRET:
+            raise ValueError(f"{field} fret must be between {MIN_FRET} and {MAX_FRET}")
+        out.append({"string": string_value, "fret": fret_value})
+    return out
+
+
+def _notes_list(value, field: str):
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be a list of pitch classes")
+    return [_note(n, field) for n in value]
+
+
+def normalise_chord_attempt(
+    *,
+    drill,
+    direction,
+    target_root,
+    target_quality,
+    target_shape=None,
+    given_root=None,
+    given_quality=None,
+    given_notes=None,
+    given_shape=None,
+    response_ms=None,
+) -> dict[str, Any]:
+    """Check one chord attempt and return the row to store, `correct`
+    included.
+
+    Raises ValueError with a message meant for a person. `correct` is
+    computed here, from TONE SETS - never accepted from a caller, and never
+    decided by comparing root/quality strings, so two different (root,
+    quality) pairs that happened to name the same notes would still grade
+    as the same chord (see chord-theory.js's chordsMatch for why that
+    matters more than it looks like it should).
+    """
+    if drill not in CHORD_DRILLS:
+        raise ValueError(f"drill must be one of {list(CHORD_DRILLS)}")
+    if direction not in CHORD_DIRECTIONS:
+        raise ValueError(f"direction must be one of {list(CHORD_DIRECTIONS)}")
+
+    target_root = _note(target_root, "target_root")
+    target_quality = _chord_quality(target_quality, "target_quality")
+    target_tones = set(chord_tones(target_root, target_quality) or ())
+
+    target_shape = _shape(target_shape, "target_shape", allow_empty=False)
+    given_shape = _shape(given_shape, "given_shape")
+
+    if direction == "shape_to_name":
+        # The question NAMED a shape (shown a real fingering); the answer
+        # named a chord. Tapping a shape answers the OTHER direction.
+        if target_shape is None:
+            raise ValueError("shape_to_name needs target_shape - the fingering that was shown")
+        if given_shape is not None or given_notes is not None:
+            raise ValueError(
+                "shape_to_name is answered with a chord name, not a shape - "
+                "given_notes/given_shape must be omitted"
+            )
+        if given_root is None or given_quality is None:
+            raise ValueError(
+                "shape_to_name needs given_root and given_quality - the chord that was chosen"
+            )
+        given_root = _note(given_root, "given_root")
+        given_quality = _chord_quality(given_quality, "given_quality")
+        given_tones = set(chord_tones(given_root, given_quality) or ())
+        correct = bool(target_tones) and given_tones == target_tones
+        given_notes_json = None
+        given_shape_json = None
+    else:
+        # name_to_shape: the question named a chord only - there is no
+        # shape to show, and the answer must be an actual tap, not a
+        # chosen name.
+        if target_shape is not None:
+            raise ValueError("name_to_shape has no shape to show - target_shape must be omitted")
+        if given_root is not None or given_quality is not None:
+            raise ValueError(
+                "name_to_shape is answered by tapping a shape, not choosing a name - "
+                "given_root/given_quality must be omitted"
+            )
+        if given_notes is None or given_shape is None:
+            raise ValueError(
+                "name_to_shape needs given_notes and given_shape - what was tapped and what it sounded"
+            )
+        given_notes = _notes_list(given_notes, "given_notes")
+        correct = bool(target_tones) and set(given_notes) == target_tones
+        given_notes_json = json.dumps(given_notes)
+        given_shape_json = json.dumps(given_shape)
+        given_root = None
+        given_quality = None
+
+    if response_ms is not None:
+        if isinstance(response_ms, bool) or not isinstance(response_ms, int):
+            raise ValueError("response_ms must be a whole number")
+        if not 0 <= response_ms <= MAX_RESPONSE_MS:
+            raise ValueError(f"response_ms must be between 0 and {MAX_RESPONSE_MS}")
+
+    return {
+        "drill": drill,
+        "direction": direction,
+        "target_root": target_root,
+        "target_quality": target_quality,
+        "target_shape": json.dumps(target_shape) if target_shape is not None else None,
+        "given_root": given_root,
+        "given_quality": given_quality,
+        "given_notes": given_notes_json,
+        "given_shape": given_shape_json,
+        # The one place this row's verdict is decided. Not stored from
+        # anywhere else and not trusted from a request body.
+        "correct": correct,
+        "response_ms": response_ms,
+    }
+
+
+def chord_attempt_dict(row) -> dict:
+    """One chord attempt as the API presents it - the stored row, with
+    `correct` turned back into a real bool and the JSON-encoded shape/notes
+    columns turned back into lists (SQLite, and this table, only ever hold
+    the text)."""
+    d = dict(row)
+    d["correct"] = bool(d["correct"])
+    for field in ("target_shape", "given_shape", "given_notes"):
+        d[field] = json.loads(d[field]) if d[field] is not None else None
     return d

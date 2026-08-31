@@ -65,6 +65,8 @@ from .api_models import (
     TagOut,
     TrainerAttemptListOut,
     TrainerAttemptOut,
+    TrainerChordAttemptListOut,
+    TrainerChordAttemptOut,
     TranscribeBatchStatusOut,
     TranscribeBatchTriggerOut,
     TranscribeResultOut,
@@ -4472,6 +4474,151 @@ def list_trainer_attempts(
     ).fetchone()["n"]
     return {
         "attempts": [trainer.attempt_dict(r) for r in rows],
+        "total": total,
+        "truncated": total > len(rows),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Trainer: per-attempt chord flash card results (issue #28)
+# ---------------------------------------------------------------------------
+
+
+class ChordShapePositionIn(BaseModel):
+    string: int
+    fret: int
+
+
+class TrainerChordAttemptIn(BaseModel):
+    """One question from the chord flash card drill, as answered - see
+    trainer.normalise_chord_attempt for the pairing rules `direction`
+    decides (a shown shape and a chosen chord name for `shape_to_name`, a
+    tapped shape's resolved notes for `name_to_shape`).
+
+    `correct` is deliberately not a field here at all, the same rule
+    TrainerAttemptIn follows and for the same reason: it is always computed
+    from tone sets, server-side, never accepted from a caller.
+    """
+
+    session_id: Count | None = Field(default=None, ge=1, le=SQLITE_MAX_INTEGER)
+    drill: str
+    direction: str
+    target_root: str
+    target_quality: str
+    target_shape: list[ChordShapePositionIn] | None = None
+    given_root: str | None = None
+    given_quality: str | None = None
+    given_notes: list[str] | None = None
+    given_shape: list[ChordShapePositionIn] | None = None
+    response_ms: Count | None = None
+
+
+_CHORD_ATTEMPT_COLUMNS = (
+    "session_id",
+    "drill",
+    "direction",
+    "target_root",
+    "target_quality",
+    "target_shape",
+    "given_root",
+    "given_quality",
+    "given_notes",
+    "given_shape",
+    "correct",
+    "response_ms",
+)
+
+
+@router.post("/trainer/chord-attempts", tags=[TAG_TRAINER], response_model=TrainerChordAttemptOut)
+def log_trainer_chord_attempt(body: TrainerChordAttemptIn):
+    """Record one question from the chord flash card drill: what chord was
+    asked, what was answered, and whether the two name the same notes.
+
+    Structured, not a free-text note (issue #32) - so "which chords get
+    missed" is a query over this table rather than something parsed out of
+    a session's note. `correct` in the response is what this endpoint
+    computed, never what the request claimed.
+    """
+    with write_tx() as conn:
+        if body.session_id is not None:
+            _session_row(conn, body.session_id)
+        try:
+            values = trainer.normalise_chord_attempt(**{
+                k: v for k, v in body.model_dump().items() if k != "session_id"
+            })
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
+        values["session_id"] = body.session_id
+        columns = ", ".join(_CHORD_ATTEMPT_COLUMNS)
+        placeholders = ", ".join("?" * len(_CHORD_ATTEMPT_COLUMNS))
+        row = conn.execute(
+            f"""INSERT INTO trainer_chord_attempts(owner, {columns})
+                VALUES (?, {placeholders})
+                RETURNING *""",
+            [DEFAULT_OWNER, *(values[c] for c in _CHORD_ATTEMPT_COLUMNS)],
+        ).fetchone()
+        return trainer.chord_attempt_dict(row)
+
+
+@router.get("/trainer/chord-attempts", tags=[TAG_TRAINER], response_model=TrainerChordAttemptListOut)
+def list_trainer_chord_attempts(
+    drill: str = "",
+    direction: str = "",
+    correct: bool | None = None,
+    root: str = "",
+    quality: str = "",
+    session_id: Annotated[int | None, Query(ge=1, le=SQLITE_MAX_INTEGER)] = None,
+    limit: int = practice.DEFAULT_SESSION_LIMIT,
+):
+    """The raw record of every question the chord flash card drill has
+    asked, newest first - filterable by drill, direction, whether it was
+    answered correctly, which chord was asked (root and/or quality), or
+    which session it belongs to. The queryable half of issue #32's promise
+    for this drill, the same shape GET /trainer/attempts offers fret to
+    note.
+    """
+    if not 1 <= limit <= practice.MAX_SESSION_LIMIT:
+        raise HTTPException(422, f"limit must be between 1 and {practice.MAX_SESSION_LIMIT}")
+    if drill and drill not in trainer.CHORD_DRILLS:
+        raise HTTPException(422, f"drill must be one of {list(trainer.CHORD_DRILLS)}")
+    if direction and direction not in trainer.CHORD_DIRECTIONS:
+        raise HTTPException(422, f"direction must be one of {list(trainer.CHORD_DIRECTIONS)}")
+    if root and root not in trainer.PITCH_CLASSES:
+        raise HTTPException(422, f"root must be one of {list(trainer.PITCH_CLASSES)}")
+    if quality and quality not in trainer.CHORD_QUALITIES:
+        raise HTTPException(422, f"quality must be one of {list(trainer.CHORD_QUALITIES)}")
+    where = ["owner = ?"]
+    params: list = [DEFAULT_OWNER]
+    if drill:
+        where.append("drill = ?")
+        params.append(drill)
+    if direction:
+        where.append("direction = ?")
+        params.append(direction)
+    if correct is not None:
+        where.append("correct = ?")
+        params.append(1 if correct else 0)
+    if root:
+        where.append("target_root = ?")
+        params.append(root)
+    if quality:
+        where.append("target_quality = ?")
+        params.append(quality)
+    if session_id is not None:
+        where.append("session_id = ?")
+        params.append(session_id)
+    filters = " AND ".join(where)
+    conn = connect()
+    rows = conn.execute(
+        f"""SELECT * FROM trainer_chord_attempts WHERE {filters}
+             ORDER BY created_at DESC, id DESC LIMIT ?""",
+        [*params, limit],
+    ).fetchall()
+    total = conn.execute(
+        f"SELECT COUNT(*) AS n FROM trainer_chord_attempts WHERE {filters}", params
+    ).fetchone()["n"]
+    return {
+        "attempts": [trainer.chord_attempt_dict(r) for r in rows],
         "total": total,
         "truncated": total > len(rows),
     }

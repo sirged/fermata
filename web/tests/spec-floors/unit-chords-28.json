@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/chords.spec.js",
+  "count": 24,
+  "reason": "issue #28: the chord flash card drill - the three family presets, the pool obeying a narrowed fret range and string set (a shape needing a fret or string outside the scope dropped, and every shape actually returned checked to genuinely fit), a key scope keeping only fully-diatonic chords, the degenerate unaskable pool, both directions of pickQuestion never repeating the same chord, grading a named chord and a tapped shape (correct, missing a required tone, an extra non-chord tone, and nothing tapped at all), both directions' structured attempt payloads, and the drill's wording never carrying a grading word, a streak, or a percentage."
+}
