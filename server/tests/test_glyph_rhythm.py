@@ -2072,3 +2072,64 @@ def test_glyph_positions_land_on_the_staffs_own_grid(zanarkand_pdf):
     # everywhere. (0.39 of a space, folded onto a grid whose step is half a
     # space, is 0.11 - the bias is bigger than this number, not smaller.)
     assert min(metrics) > 0.09, f"metrics centres were on the grid after all: {min(metrics)}"
+
+
+# ---------------------------------------------------------------------------
+# page_drawings memoises SUCCESSES only (issue #91)
+# ---------------------------------------------------------------------------
+
+
+class _FlakyPage:
+    """A page whose get_drawings() raises once, then returns real drawings -
+    a transient content-stream parse error followed by a clean read."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def get_drawings(self):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("transient content-stream parse error")
+        return [{"stem": "here"}, {"beam": "here"}]
+
+
+def test_a_transient_drawing_failure_is_not_cached_forever():
+    """A failure reading the vector primitives must not be remembered as "this
+    page has no drawings": every later stem/beam/barline scan would then see an
+    empty list and report no stems, no beams and no barlines - at the same full
+    confidence a genuinely blank page earns. Successes are cached; failures are
+    retried."""
+    page = _FlakyPage()
+    G._DRAWINGS_CACHE.pop(page, None)
+
+    first = G.page_drawings(page)   # the transient failure
+    assert first == [], "a failed read yields an empty list to this caller"
+
+    second = G.page_drawings(page)  # must try again, not serve the cached failure
+    assert second == [{"stem": "here"}, {"beam": "here"}], (
+        "the failure was cached and the real drawings were never seen"
+    )
+
+    third = G.page_drawings(page)   # the success IS cached - no third get_drawings
+    assert third == second
+    assert page.calls == 2, "the success should be memoised, the failure should not"
+
+
+def test_a_successful_empty_drawing_read_is_still_cached():
+    """A page that genuinely has no drawings returns [] from get_drawings()
+    without raising, and THAT empty list is a real answer worth memoising - the
+    fix must not turn every blank page into a re-parse on each staff."""
+
+    class _BlankPage:
+        def __init__(self):
+            self.calls = 0
+
+        def get_drawings(self):
+            self.calls += 1
+            return []
+
+    page = _BlankPage()
+    G._DRAWINGS_CACHE.pop(page, None)
+    assert G.page_drawings(page) == []
+    assert G.page_drawings(page) == []
+    assert page.calls == 1, "a genuine empty read is memoised, not repeated"

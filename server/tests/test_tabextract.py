@@ -1541,6 +1541,46 @@ def test_a_staff_whose_heads_all_found_a_stem_is_still_fully_read(monkeypatch):
     assert src.provenance == tabextract.PROV_GLYPHS
 
 
+def test_a_staff_with_stem_bearing_heads_but_no_stems_at_all_is_degraded(monkeypatch):
+    """Issue #91: a staff that decoded stem-bearing noteheads (a half, filled,
+    x or diamond head) yet found ZERO stems anywhere is physically impossible
+    in standard notation - every one of those heads is drawn with a stem, so
+    the stem/beam vector pass failed for the whole staff and nothing on it was
+    read from a stem, flag or beam. no_stem_noteheads cannot see this when the
+    heads are half notes (it counts only the quarter-or-shorter heads whose
+    value needs a stem), so such a staff used to report "high - decoded
+    directly from the notehead/stem/flag/beam/dot glyphs" at full confidence.
+    It is now degraded."""
+    src = _resolve_with_stats(monkeypatch, _stats(
+        stem_count=0, stem_bearing_noteheads=40, no_stem_noteheads=0))
+    assert src.provenance == tabextract.PROV_GLYPHS_DEGRADED
+    assert src.uses_glyphs, "the notehead shapes were still read - not thrown back to spacing"
+    assert "40 stem-bearing notehead(s)" in src.detail
+    assert "no stems on it at all" in src.detail
+
+
+def test_a_stemless_staff_of_only_whole_notes_stays_fully_read(monkeypatch):
+    """A whole note carries no stem by definition, so a staff of nothing but
+    whole notes legitimately finds zero stems and must NOT be degraded - the
+    gate keys on stem-BEARING heads, not on stem_count alone, or every
+    whole-note staff in the library would degrade for a stem it never had."""
+    src = _resolve_with_stats(monkeypatch, _stats(
+        stem_count=0, stem_bearing_noteheads=0, no_stem_noteheads=0))
+    assert src.provenance == tabextract.PROV_GLYPHS
+
+
+def test_the_stemless_staff_gate_sits_after_the_no_stem_gate(monkeypatch):
+    """A staff with FILLED stemless heads is reported through the
+    no_stem_noteheads branch (which names the affected note count), not the
+    whole-staff stemless one, even when it also happens to have zero stems -
+    the more specific reason wins. Pinned so a reordering is caught here."""
+    src = _resolve_with_stats(monkeypatch, _stats(
+        stem_count=0, stem_bearing_noteheads=5, no_stem_noteheads=5))
+    assert src.provenance == tabextract.PROV_GLYPHS_DEGRADED
+    assert "no stem this" in src.detail  # the no_stem_noteheads wording
+    assert "no stems on it at all" not in src.detail
+
+
 def test_the_no_stem_gate_sits_at_the_end_of_the_resolution_ladder(monkeypatch):
     """`no_stem_noteheads` is checked LAST, after every unknown-vocabulary
     branch, and that ordering is deliberate rather than incidental: a staff
@@ -1600,6 +1640,54 @@ def test_overfull_bars_are_reported_and_cap_the_confidence():
     assert any("1 of 50 bar(s) hold more" in x for x in w2)
     assert c2.startswith("medium"), c2
     assert not c2.startswith("low"), "one bar in fifty is not a condemned score"
+
+
+def test_overfull_on_a_spacing_only_document_does_not_blame_merged_voices():
+    """Issue #91: the overfull-bar warning used to explain every overfull bar
+    the same way - two voices the stems did not separate, or a missed flag -
+    regardless of how the durations were obtained. A document read ENTIRELY
+    from the spacing heuristic never read a stem, a voice or a flag, so that
+    explanation is false for it: its overflow is the heuristic rounding each
+    normalised column to a notatable duration on its own. The warning must say
+    THAT, not blame voices that were never separated."""
+    spacing_only = collections.Counter({tabextract.PROV_SPACING: 5})
+    w, _c = tabextract._rhythm_report(
+        spacing_only, {}, tabextract._BarConformance(14, 0, 14, 16))
+    overfull = [x for x in w if "hold more than their time signature" in x]
+    assert len(overfull) == 1, w
+    assert "two voices" not in overfull[0]
+    assert "concurrent voices" not in overfull[0]
+    assert "flattened into one" not in overfull[0]
+    assert "spacing between note columns" in overfull[0]
+    assert "rounded to a notatable duration" in overfull[0]
+
+
+def test_overfull_on_a_glyph_decoded_document_still_names_merged_voices():
+    """The converse of the test above: where a staff WAS glyph-decoded, merged
+    voices and missed flags are the real causes, and the warning must keep
+    saying so. Only the pure-spacing case swaps the explanation."""
+    glyph = collections.Counter({tabextract.PROV_GLYPHS: 5})
+    w, _c = tabextract._rhythm_report(
+        glyph, {}, tabextract._BarConformance(3, 0, 3, 16))
+    overfull = [x for x in w if "hold more than their time signature" in x]
+    assert len(overfull) == 1, w
+    assert "two voices" in overfull[0]
+    assert "spacing between note columns" not in overfull[0]
+
+
+def test_a_whole_staff_with_no_stems_found_is_disclosed(monkeypatch):
+    """Issue #91: staves_stemless reaches the warning prose so a reader is told
+    a whole notation staff's stem layer came up empty, distinct from the
+    per-note no_stem count."""
+    glyph = collections.Counter({tabextract.PROV_GLYPHS: 4,
+                                 tabextract.PROV_GLYPHS_DEGRADED: 1})
+    w, _c = tabextract._rhythm_report(glyph, {}, staves_stemless=2)
+    hits = [x for x in w if "no stem was found anywhere on the staff" in x]
+    assert len(hits) == 1, w
+    assert "2 notation staff system(s)" in hits[0]
+    # And nothing when there are none.
+    w2, _c2 = tabextract._rhythm_report(glyph, {}, staves_stemless=0)
+    assert not any("no stem was found anywhere on the staff" in x for x in w2)
 
 
 def test_bar_quarters_accounts_for_dots():

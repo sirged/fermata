@@ -1578,6 +1578,14 @@ def _transcription_row(conn, score_id: int):
 # tabextract._rhythm_report / glyph._assign_dots).
 _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
              "bars_padded", "bars_unread", "notes_no_stem", "staves_no_stem",
+             # `staves_stemless` (issue #91): a notation staff whose stem/beam
+             # vector pass found NO stems at all, though it decoded noteheads
+             # that must carry one. A different, stronger fact than
+             # `staves_no_stem`, which counts a staff with one FILLED head
+             # whose own stem was missing - here the whole stem layer is
+             # empty, so nothing on the staff was read from a stem, flag or
+             # beam, and it is recoverable from nothing else stored here.
+             "staves_stemless",
              "dots_unassigned", "dots_unassigned_no_candidate",
              "dots_unassigned_eliminated", "staves_dots_unassigned",
              # Repeat barlines and volta brackets read only partly, and so
@@ -1953,6 +1961,7 @@ def _store_extraction_result(score_id: int, result) -> dict:
             "inferred_rest_quarters": result.inferred_rest_quarters,
             "notes_no_stem": result.notes_no_stem,
             "staves_no_stem": result.staves_no_stem,
+            "staves_stemless": result.staves_stemless,
             "dots_unassigned": result.dots_unassigned,
             "dots_unassigned_no_candidate": result.dots_unassigned_no_candidate,
             "dots_unassigned_eliminated": result.dots_unassigned_eliminated,

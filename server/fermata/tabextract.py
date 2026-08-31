@@ -374,6 +374,17 @@ class ExtractionResult:
     # harmonic's stemless head is, instead of asserting a confident whole note.
     notes_no_stem: int = 0
     staves_no_stem: int = 0
+    # Notation staves whose stem/beam vector pass found NO stems at all, though
+    # they decoded noteheads that must carry one (a half, filled, x or diamond
+    # head - everything but a whole note). The whole-staff self-check issue #91
+    # asks for, and distinct from `staves_no_stem`: that counts staves with at
+    # least one FILLED head whose own stem was missing; this counts staves
+    # where the entire stem layer is empty, which no_stem_noteheads cannot see
+    # when the heads are half notes (their value comes from the head shape, so
+    # they are excluded there). Such a staff is degraded rather than reported
+    # as read directly from its glyphs, because nothing on it was read from a
+    # stem, flag or beam. See _resolve_rhythm_source and glyph.decode_note_events.
+    staves_stemless: int = 0
     # Augmentation-dot glyphs that bound to no note, and how many notation
     # staves carried at least one. Left unattached rather than bound to the
     # nearest notehead - see glyph._assign_dots - so this is reported but
@@ -535,6 +546,7 @@ class ExtractionResult:
             "meter_digits_unreadable": self.meter_digits_unreadable,
             "notes_no_stem": self.notes_no_stem,
             "staves_no_stem": self.staves_no_stem,
+            "staves_stemless": self.staves_stemless,
             "dots_unassigned": self.dots_unassigned,
             "dots_unassigned_no_candidate": self.dots_unassigned_no_candidate,
             "dots_unassigned_eliminated": self.dots_unassigned_eliminated,
@@ -3496,9 +3508,11 @@ def _single_notatable_rest(quarters):
     is written with, or None when no single plain-or-dotted value equals it.
 
     Only a value a lone rest can actually carry is returned: 3.0 is a dotted
-    half, 3.5 is not any single rest and comes back None. The caller wants ONE
-    written rest, not a decomposition (which would change the bar's beat count),
-    so a length that needs two beats is declined rather than split here.
+    half and 3.5 a double-dotted half (dots go up to two here). A length no
+    single plain-or-dotted rest equals - 2.5, say, which is a half plus an
+    eighth - comes back None: the caller wants ONE written rest, not a
+    decomposition (which would change the bar's beat count), so a length that
+    needs two beats is declined rather than split here.
     """
     for code in (1, 2, 4, 8, 16, 32):
         for dots in (0, 1, 2):
@@ -4002,6 +4016,32 @@ def _resolve_rhythm_source(page, std_staff, pair_reason, decoded):
                 "shorter"
             ),
         )
+    stem_bearing = stats.get("stem_bearing_noteheads", 0)
+    if stats.get("stem_count", 0) == 0 and stem_bearing:
+        # The whole-staff self-check issue #91 asks for. This staff decoded
+        # stem-bearing noteheads (half, filled, x or diamond - everything but
+        # a whole note) yet the vector pass found ZERO stems anywhere on it,
+        # which is physically impossible in standard notation: every one of
+        # those heads is drawn with a stem. So the stem/beam vector pass failed
+        # for this staff entirely, and nothing on it was read from a stem, flag
+        # or beam - the very evidence "decoded directly from the
+        # notehead/stem/flag/beam/dot glyphs" claims. The notehead SHAPES were
+        # still read, so the durations they alone fix (a whole note, a half
+        # note) stand and the decode is kept rather than thrown back to
+        # spacing; but it is degraded, because no note here carries the voice
+        # its stem would have said, and any shorter head would have been
+        # floored. no_stem_noteheads does not catch this: it counts only the
+        # filled/x/diamond heads whose value needs a stem, so a staff whose
+        # heads are all half notes reaches here with no_stem_noteheads == 0.
+        return _RhythmSource(
+            PROV_GLYPHS_DEGRADED, note_events, stats=stats,
+            detail=(
+                f"the paired notation staff decoded {stem_bearing} stem-bearing notehead(s) "
+                "but the stem/beam vector pass found no stems on it at all - so no note's "
+                "flags, beams or voice could be read, and any duration shorter than the "
+                "notehead shape alone fixes would have been floored to a quarter"
+            ),
+        )
     return _RhythmSource(PROV_GLYPHS, note_events, stats=stats)
 
 
@@ -4419,6 +4459,7 @@ def _overfull_bars(measures) -> tuple[int, int]:
 
 def _rhythm_report(counts, details, conformance=None, unread_bars=(),
                    prov_bars=None, no_stem_notes=0, no_stem_staves=0,
+                   staves_stemless=0,
                    dots_unassigned=0, dots_unassigned_no_candidate=0,
                    dots_unassigned_eliminated=0, dots_unassigned_staves=0,
                    coincident_unsplit_pairs=0, coincident_unsplit_staves=0,
@@ -4446,6 +4487,12 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
     how many notation staves came out of the decode with no stem, and so with
     their duration floored at a quarter rather than read - see
     glyph.decode_note_events.
+
+    `staves_stemless` is how many notation staves decoded noteheads that must
+    carry a stem yet found no stem anywhere on the staff (issue #91) - the
+    stem/beam vector pass failed for them entirely, so nothing on them was read
+    from a stem, flag or beam. The whole-staff version of the fault above, and
+    a stronger claim; see _resolve_rhythm_source.
 
     `dots_unassigned` / `dots_unassigned_staves` are how many augmentation-dot
     glyphs across how many notation staves bound to no note - see
@@ -4573,6 +4620,23 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
             "notehead on its own allows"
         )
 
+    # A whole notation staff whose stem/beam vector pass found NO stems at all,
+    # even though it decoded noteheads that must carry one (issue #91). This is
+    # the whole-staff version of the fault above and is stated separately
+    # because it is a different, stronger claim: not "some heads on this staff
+    # lost their stem" but "no stem, flag or beam anywhere on this staff was
+    # read", so the durations came from the notehead shapes alone. Such a staff
+    # is degraded rather than reported as read directly from its glyphs.
+    if staves_stemless:
+        warnings.append(
+            f"{staves_stemless} notation staff system(s) decoded noteheads that must carry a "
+            "stem but no stem was found anywhere on the staff - the stem/beam vector pass "
+            "failed for them, so nothing on them was read from a stem, flag or beam. Their "
+            "durations come from the notehead shapes alone: a whole or half note is still its "
+            "own value, but no note carries the voice its stem would have said and any shorter "
+            "note would have been floored to a quarter"
+        )
+
     # A dot that bound to nothing, stated with its own count for the same
     # reason no_stem_notes is: a count of affected staves cannot say whether
     # one score has one stray dot or forty. The two are not the same claim
@@ -4646,15 +4710,38 @@ def _rhythm_report(counts, details, conformance=None, unread_bars=(),
     # Bars that don't add up outrank how the durations were obtained: a
     # confident reading of every notehead still produces a wrong bar when its
     # voices don't come apart, and playback follows the bar.
+    #
+    # WHY the bars overflowed depends on how the durations were read, so the
+    # explanation is conditional (issue #91). Where a staff was glyph-decoded,
+    # the cause is voice separation: two voices the stems did not come apart,
+    # or a missed flag or an undetected tuplet. But a document read ENTIRELY
+    # from the spacing heuristic - no glyph-decoded staff at all - never read a
+    # stem, a voice or a flag to begin with, so blaming merged voices is
+    # simply false. There the overflow is the heuristic's own arithmetic: it
+    # normalises the gaps between note columns to the bar and rounds each
+    # column to a notatable duration independently, so five evenly spaced
+    # columns in 4/4 each round to a quarter and sum to five.
     if bars and overfull:
-        warnings.append(
-            f"{overfull} of {bars} bar(s) hold more than their time signature allows. Music "
-            "written in two voices (a melody over a separate bass line) is separated into "
-            "concurrent voices where the stems say so, but a bar whose voices the stems do not "
-            "separate is still flattened into one, and an undetected tuplet or a missed flag "
-            "lands here too - the notes and their individual durations can still be right while "
-            "the bar as a whole is not, so playback timing will drift in those bars"
-        )
+        if not glyphs and not degraded:
+            warnings.append(
+                f"{overfull} of {bars} bar(s) hold more than their time signature allows. These "
+                "durations were estimated from the horizontal spacing between note columns, not "
+                "read from the score's engraving: the spacing between columns is normalised to "
+                "the bar and each column is then rounded to a notatable duration on its own, so a "
+                "bar's rounded durations can sum to more than it holds (five evenly spaced "
+                "columns in 4/4 each round to a quarter and sum to five). The notes are present "
+                "but their durations are a rough estimate, so playback timing will drift in those "
+                "bars"
+            )
+        else:
+            warnings.append(
+                f"{overfull} of {bars} bar(s) hold more than their time signature allows. Music "
+                "written in two voices (a melody over a separate bass line) is separated into "
+                "concurrent voices where the stems say so, but a bar whose voices the stems do not "
+                "separate is still flattened into one, and an undetected tuplet or a missed flag "
+                "lands here too - the notes and their individual durations can still be right while "
+                "the bar as a whole is not, so playback timing will drift in those bars"
+            )
     if bars and short:
         warnings.append(
             f"{short} of {bars} bar(s) hold less than their time signature allows - a note whose "
@@ -5533,6 +5620,12 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None,
     no_stem_notes = 0
     no_stem_staves = 0
     no_stem_seen = set()
+    # Notation staves that decoded stem-bearing noteheads but found ZERO stems
+    # on the whole staff - the vector pass failed for them entirely, so nothing
+    # was read from a stem, flag or beam (issue #91). Counted over the same
+    # de-duplicated decodes as no_stem_notes above, and distinct from it: this
+    # is the WHOLE-staff failure no_stem_noteheads structurally cannot see.
+    staves_stemless = 0
     # Rests read longer than their bar and trimmed to what it can hold (issue
     # #163, see _reduce_overlong_rests). A count, and the bar numbers so a
     # reader can carry each back to the PDF the way the padded-bars warning
@@ -5686,6 +5779,9 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None,
                     if staff_no_stem:
                         no_stem_notes += staff_no_stem
                         no_stem_staves += 1
+                    if (source.stats.get("stem_count", 0) == 0
+                            and source.stats.get("stem_bearing_noteheads", 0)):
+                        staves_stemless += 1
                     staff_dots_unassigned = source.stats.get("dots_unassigned", 0)
                     if staff_dots_unassigned:
                         dots_unassigned_total += staff_dots_unassigned
@@ -5855,6 +5951,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None,
         prov_counts, prov_details, conformance, tuple(unread_bars),
         prov_bars=prov_bars, no_stem_notes=no_stem_notes,
         no_stem_staves=no_stem_staves,
+        staves_stemless=staves_stemless,
         dots_unassigned=dots_unassigned_total,
         dots_unassigned_no_candidate=dots_unassigned_no_candidate_total,
         dots_unassigned_eliminated=dots_unassigned_eliminated_total,
@@ -6209,6 +6306,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None,
         meter_digits_unreadable=meter_digits_unreadable,
         notes_no_stem=no_stem_notes,
         staves_no_stem=no_stem_staves,
+        staves_stemless=staves_stemless,
         dots_unassigned=dots_unassigned_total,
         dots_unassigned_no_candidate=dots_unassigned_no_candidate_total,
         dots_unassigned_eliminated=dots_unassigned_eliminated_total,

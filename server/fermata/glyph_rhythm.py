@@ -1338,7 +1338,14 @@ def page_drawings(page):
         try:
             cached = page.get_drawings()
         except Exception:
-            cached = []
+            # Cache SUCCESSES only (issue #91). A transient failure reading a
+            # malformed content stream must not be remembered as "this page
+            # has no drawings" for the rest of the process: every later stem/
+            # beam/barline scan would then see an empty list and report no
+            # stems, no beams and no barlines - at the same full confidence a
+            # genuinely blank page earns. Returning [] without storing it
+            # lets a subsequent call try the content stream again.
+            return []
         _DRAWINGS_CACHE[page] = cached
     return cached
 
@@ -3067,6 +3074,20 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         "band_glyphs": 0,
         "note_events": 0,
         "stem_count": 0,
+        # How many decoded noteheads carry a stem in standard notation - every
+        # notehead shape EXCEPT the whole note (a whole note is drawn without
+        # a stem by definition; a rest carries none either). Paired with
+        # stem_count, this is the staff-level self-check issue #91 asks for: a
+        # staff that decoded stem-bearing noteheads yet found ZERO stems on the
+        # whole staff had its entire stem/beam vector pass fail, so nothing on
+        # it was actually read from a stem, flag or beam - which is exactly
+        # what the "decoded directly from the notehead/stem/flag/beam/dot
+        # glyphs" confidence claims was. no_stem_noteheads cannot see this: it
+        # counts only the filled/x/diamond heads (a half note is excluded there
+        # because its value comes from the head shape), so a staff of half
+        # notes with no stems slips past it at full confidence. See
+        # tabextract._resolve_rhythm_source.
+        "stem_bearing_noteheads": 0,
         "beam_segment_count": 0,
         "curve_count": 0,
         # One-glyph rests whose half-or-whole reading the geometry could not
@@ -3433,6 +3454,10 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         "band_glyphs": len(staff_events),
         "note_events": len(notes),
         "stem_count": len(stems),
+        "stem_bearing_noteheads": sum(
+            1 for n in notes
+            if not n.is_rest and n.notehead_kind in NOTEHEAD_CATS
+            and n.notehead_kind != "notehead_whole"),
         "beam_segment_count": len(beams),
         "curve_count": len(curves),
         "undecided_rests": undecided_rests,
