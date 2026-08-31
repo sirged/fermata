@@ -159,6 +159,43 @@ was nothing to move. Restoring it (or any score whose trashed file has since
 been removed by hand) answers `file_restored: false` and puts the score back in
 the library flagged `missing_since`, which is the state it was in before.
 
+## Transcribing many scores at once (issue #55)
+
+`POST /api/transcribe/batch` starts a background pass over many scores and
+`GET /api/transcribe/batch/status` polls it - the same start/poll shape
+`POST /api/scan` and `GET /api/scan/status` use, rather than a client looping
+single `POST /api/scores/{id}/transcribe` calls itself. The planned MCP
+layer (see below) wraps this endpoint for exactly that reason.
+
+**Selection.** Give `score_ids` (an explicit list, honoured exactly - even an
+id that turns out not to be a pdf or to be in the trash gets its own outcome
+rather than vanishing), or `collection` (every live pdf score under one
+folder), or neither (every live pdf score in the whole library). Giving both
+is a `422`.
+
+**Every score gets an outcome - never a silent skip.** `results` on the
+status response carries one line per score: `transcribed`,
+`already_transcribed` (with why - already extracted, or hand-edited and
+therefore protected), `non_extractable` (with the extractor's own reason), or
+`errored` (with its own reason, e.g. a missing file). `reconvert: true` asks
+an already-EXTRACTED score to be re-run; an EDITED transcription is never
+replaced, `reconvert` or not (issue #10's protection, applied in bulk).
+
+**Not a dry run, and not held against a running scan, in either direction.**
+Unlike the library-management endpoints above, this never moves, renames or
+deletes a file - it only reads a score's PDF and writes to the
+`transcriptions` table - so there is nothing here for a scan's directory
+listing to be invalidated by, and no destructive action needing a preview
+first. A scan may start while a batch is running and a batch may start while
+a scan is running; each score's row is read fresh at its own turn rather than
+from a snapshot taken when the batch started.
+
+**No job state persists across a restart.** A killed pass leaves only
+complete, already-committed rows behind - nothing half-written - so
+"resuming" is simply starting a fresh pass over the same selection: the
+scores already done come back `already_transcribed` and the rest are
+attempted for the first time.
+
 ## Getting everything in and out (issue #58)
 
 Two endpoints, one archive format, and one rule that holds for both directions:
