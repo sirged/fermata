@@ -445,23 +445,27 @@ def test_the_cosmic_wheel_chord_unison_stops_costing_it_twelve_bars(cosmic_wheel
     score read BEFORE #116's stem split, but with the shared note in only
     one of its two voices.
 
-    The 8 OVERFULL bars are deliberately still 8 and are not this defect.
-    One of them, bar 13, is the whole note issue #137 named in its text
-    (`:16 3.1 :1 5.1`, 4.25 quarters in 4/4): a harmonic's hollow notehead
-    read as a whole note. It predates #116 entirely - the same string is
-    emitted at d07387d - and is tracked as issue #140.
+    The OVERFULL bars are not this defect. One of them was bar 13, the whole
+    note issue #137 named in its text (`:16 3.1 :1 5.1`, 4.25 quarters in
+    4/4): a harmonic's hollow notehead read as a whole note. Issue #140 fixed
+    it - the head is now recognised as a natural harmonic's sounding pitch and
+    floored rather than emitted at 4.0 (see the harmonic test below) - so the
+    overfull count is 7 here, one fewer than the 8 this test pinned before
+    #140. Bar 13 does not vanish from the defective count: floored to a
+    quarter its voice 1 reads short of the meter instead of over it, so it
+    moves from overfull to SHORT (18 -> 19) and stays defective.
 
     One further bar left short-and-defective here until #111/#112: a seconds
     interval whose lower member's dot sat a whole notehead width outside its
-    own reach, so 18/22 rather than 19/23 now. The note count does NOT move
-    with it - a dot changes a duration, not how many notes there are - which
-    is what keeps this test about #137."""
+    own reach. The note count does NOT move with any of it - a dot changes a
+    duration, and a floored harmonic is still one note - which is what keeps
+    this test about #137."""
     result = tabextract.extract(cosmic_wheel_pdf)
     assert result.extractable
     assert result.bars == 78
     assert result.notes == 914
-    assert result.bars_overfull == 8
-    assert result.bars_short == 18               # 19 - 1 (issue #112)
+    assert result.bars_overfull == 7             # 8 - 1 (issue #140, bar 13)
+    assert result.bars_short == 19               # 18 + 1 (issue #140, bar 13)
     assert result.bars_defective == 22           # 23 - 1 (issue #112)
     # The twelve recovered notes are an INFERENCE about which string they are
     # on - the tablature printed no number for those noteheads - so they are
@@ -469,6 +473,52 @@ def test_the_cosmic_wheel_chord_unison_stops_costing_it_twelve_bars(cosmic_wheel
     # count has to be exactly the twelve.
     assert result.unison_digits_shared == 12
     assert any("coincident notehead at the same position" in w for w in result.warnings)
+
+
+def test_the_cosmic_wheel_harmonic_is_not_read_as_a_whole_note(cosmic_wheel_pdf):
+    """Issue #140, on the score it was filed for. Page 1, bar 13, voice 1 was
+    emitted `:16 3.1 :1 5.1` - a sixteenth grace note plus a WHOLE note, 4.25
+    quarters in a 4/4 bar. What is engraved there is a natural harmonic: a
+    small slashed grace note flicked up into a hollow round notehead on a
+    ledger line above the staff (the sounding pitch), with `5` on string 1
+    below it - fret 5 is the two-octave harmonic. Nothing there is held four
+    beats.
+
+    The hollow head is the very glyph a whole note uses - gid 84 in this
+    score's Maestro subset, the identical gid at the identical size as the two
+    REAL whole notes this score prints (bars 29 and 78). Nothing in the outline
+    separates the two; what does is the attack, a grace note's flag flicked into
+    the head, which a real whole note never carries (see
+    glyph_rhythm._harmonic_attack_flag). Recognised as a harmonic, the head no
+    longer asserts a confident 4.0: it is floored and disclosed as
+    no_stem_noteheads, exactly as a diamond harmonic's stemless head already is.
+
+    Decoded off the staff that carries it (page 1, the third standard staff,
+    ruled at y 464.9), so the assertion is on the head's own duration rather
+    than on the bar sum a dozen other readings also feed."""
+    page = fitz.open(cosmic_wheel_pdf)[0]
+    staff = next(s for s in tabextract._detect_staves(page)[0]
+                 if s.kind == "standard" and abs(s.top - 464.9) < 1.0)
+    notes, stats = glyph_rhythm.decode_note_events(
+        page, staff.top, staff.bottom, staff.x0, staff.x1, staff.line_ys, staff.spacing)
+    heads = [n for n in notes if not n.is_rest and n.notehead_kind == "notehead_whole"]
+    assert len(heads) == 1, "the one hollow head on this staff"
+    harmonic = heads[0]
+    assert abs(harmonic.x - 465.1) < 1.5 and abs(harmonic.y - 459.7) < 1.5
+    # The whole point: floored to a quarter, NOT emitted at a whole note's 4.0.
+    assert harmonic.base_units == 1.0, "the harmonic is floored, not read as a whole note"
+    assert stats["no_stem_noteheads"] >= 1, "and it is disclosed, not asserted silently"
+
+    # End to end: the overfull count drops by exactly the one bar, the harmonic
+    # bar 13 stops printing a whole note, and the score's two genuine whole
+    # notes are untouched.
+    result = tabextract.extract(cosmic_wheel_pdf)
+    bar13 = result.alphatex.split("|")[12]
+    assert ":1 5.1" not in bar13, "no whole note is emitted for the harmonic"
+    assert ":4 5.1" in bar13, "it is a floored quarter instead"
+    # `:1 ` is a whole note; two remain (bars 29 and 78), the harmonic's is gone.
+    assert result.alphatex.count(":1 ") == 2
+    assert result.bars_overfull == 7
 
 
 def test_a_deep_chords_pushed_down_dots_all_find_their_own_note(storms_past_pdf):
@@ -4219,6 +4269,31 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # Gentle Wind bars 8 and 26 together (net +1 across the two). Midnight
     # Harmony is not named anywhere else in this change - it is named here
     # because this pin is the only place its own fix shows up.
+    #
+    # AND A SIXTH TIME, by issue #140's harmonic notehead. The sounding pitch
+    # of a natural harmonic is engraved as an open round notehead - the very
+    # glyph a whole note uses - so a harmonic flicked into by a grace note was
+    # emitted at a confident 4.0 and overfilled its bar. #140 recognises that
+    # attack (glyph_rhythm._harmonic_attack_flag) and floors the head, disclosed
+    # as no_stem_noteheads, instead of asserting a whole note. FOUR scores carry
+    # this exact figure, all engraved by the same hand (John Oeth's Patreon
+    # arrangements): The Cosmic Wheel (FF XI), the one #140 was filed for, plus
+    # Jessie's Theme (FF VII Remake), Enveloped in Kindness (Octopath Traveler)
+    # and Main Theme (Suikoden) - each verified against its printed page as the
+    # same grace-note-into-hollow-head harmonic, not a whole note. Measured
+    # score by score against this change's parent, exactly these four files move
+    # and the other 289 come out byte-for-byte identical.
+    #
+    # Every one of the four loses one overfull bar and gains NO defective bar:
+    # each floored harmonic sat in a bar that was already overfull, so the bar
+    # stays defective (its other voice or the freed budget leaves it short) and
+    # only its DIRECTION changes. So bars_overfull falls by 4 while
+    # bars_defective does not move at all. bars_short and bars_padded each rise
+    # by 2 (Cosmic Wheel and Enveloped in Kindness; the harmonic bars in
+    # Jessie's Theme and Main Theme were overfull AND short already, so their
+    # short verdict does not flip). inferred_rest_quarters rises by 10.75 - the
+    # silence that pads each freed bar out to its meter. NOTES, BEATS AND BARS
+    # DO NOT MOVE: a floored harmonic is still one note at one onset in one bar.
     assert extractable == 293
     assert totals["bars"] == 10762               # 10632 + 130 (issue #152)
     assert totals["bars_unread"] == 20           # 23 - 3 (issue #152)
@@ -4234,10 +4309,10 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # defective) because its OTHER voice was already short of the meter before
     # this change, which is why only bars_overfull moves and bars_short /
     # bars_defective do not. No note, beat or bar moves: a rest is neither.
-    assert totals["bars_overfull"] == 1540               # 1600 -> 1541 (#113) -> 1540 (#163)
-    assert totals["bars_short"] == 4190                  # 4188
-    assert totals["bars_defective"] == 5300              # 5340
-    assert totals["bars_padded"] == 3603                 # 3602
+    assert totals["bars_overfull"] == 1536               # 1541 (#113) -> 1540 (#163) -> 1536 (#140, four harmonics)
+    assert totals["bars_short"] == 4192                  # 4190 -> 4192 (#140)
+    assert totals["bars_defective"] == 5300              # 5340; unmoved by #140
+    assert totals["bars_padded"] == 3605                 # 3603 -> 3605 (#140)
     # 4897.875 before #162, 4899.875 after: Answers (Final Fantasy XIV
     # Endwalker) bar 45 held one quarter in each of its two voices in a bar read
     # a system early as 3/4. #162 puts that bar back on the running 4/4 it is
@@ -4245,7 +4320,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # three - one extra quarter of meter-inferred silence per voice, +2.0 in
     # total. It is padding that grew, not a rest that was read: bars_padded is
     # unchanged because the same two voices were already being padded.
-    assert totals["inferred_rest_quarters"] == 4899.875  # 4892.125 -> 4897.875 (#113) -> 4899.875 (#162)
+    assert totals["inferred_rest_quarters"] == 4910.625  # 4899.875 (#162) -> 4910.625 (#140, +10.75)
     # The systems still lost, named. Both are 7-line groups - a 6-line tab
     # staff ruled at 7.7pt with ONE extra full-width rule below its last
     # line, close enough to fall inside the 15.0pt cluster gap: Dynamis p1 at

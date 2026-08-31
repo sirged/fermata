@@ -2970,6 +2970,49 @@ def _assign_dots(owners, dot_events, tol, stems=()):
     return counts, unassigned_no_candidate, unassigned_eliminated
 
 
+def _harmonic_attack_flag(head_ev, flag_events, tol):
+    """The grace-note flag that marks a hollow round notehead as the SOUNDING
+    PITCH OF A NATURAL HARMONIC rather than a whole note - or None if this head
+    is an ordinary whole note.
+
+    One codepoint draws both. A natural harmonic's sounding pitch is engraved
+    as an open (hollow) round notehead, usually on a ledger line off the staff,
+    and that is the very glyph a whole note uses - `notehead_whole`, gid 84 in
+    Maestro. Nothing in the outline separates the two (measured on "The Cosmic
+    Wheel", where the harmonic's head and the score's two real whole notes are
+    the identical gid at the identical size), so a head taken for a whole note
+    is emitted at a confident 4.0 quarters, and a harmonic that is not held for
+    four beats overfills its bar. Its true duration is not carried by the head
+    the same way a diamond harmonic's is not (see NOTEHEAD_CATS and the diamond
+    note in MAESTRO_GID_MAP), so the honest reading floors it and discloses it
+    as no_stem_noteheads rather than asserting a whole note.
+
+    What context CAN tell the two apart is the attack. A natural harmonic is
+    struck as a small slashed GRACE note flicked up into the hollow head; a real
+    whole note never carries a flag anywhere near it. So the discriminator is a
+    flag glyph that is (a) drawn at GRACE SCALE - materially shorter than the
+    head it attacks, off the metrics-box height the font scales every glyph by -
+    and (b) sitting just to the head's left and within about a staff space
+    vertically, where the grace note that owns it is engraved. A full-size flag
+    that near a hollow head would be a neighbouring voice's real eighth or
+    sixteenth and is deliberately ignored: it says nothing about this head.
+    """
+    for f in flag_events:
+        dx = head_ev.xc - f.xc
+        if dx <= 0 or dx > tol.spacing * 2.5:
+            continue
+        if abs(f.yc - head_ev.yc) > tol.spacing * 2.0:
+            continue
+        # Grace scale: the flag's font size (its metrics-box height) is well
+        # under the head's. Measured 0.60 on the one library instance; 0.80 is
+        # the ceiling, comfortably clear of the 1.0 a same-size neighbour flag
+        # would show.
+        if not (0 < head_ev.height) or f.height >= head_ev.height * 0.8:
+            continue
+        return f
+    return None
+
+
 def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_ys,
                        spacing=None):
     """Core decode for one standard-notation staff: returns (NoteEvent list
@@ -3068,7 +3111,11 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         # though its stem can be missing just as easily: neither shape can
         # carry a flag or a beam in any notation, so its value is fully
         # determined by the head and a missing stem costs only the voice
-        # signal, not the duration.
+        # signal, not the duration. The ONE exception is a hollow round head
+        # that is really a natural harmonic's sounding pitch, not a whole note
+        # (see _harmonic_attack_flag): that head does not carry its duration
+        # any more than a diamond harmonic does, so it IS counted here, floored
+        # like the diamond rather than emitted at a confident 4.0.
         "no_stem_noteheads": 0,
         # An augmentation-dot glyph that bound to no note (see _assign_dots) -
         # a genuine anomaly, reported rather than bound to whichever notehead
@@ -3249,11 +3296,24 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
             # Whether this head's DURATION depends on finding its stem. Set
             # only for the quarter-or-shorter shapes; see no_stem_noteheads.
             duration_needs_stem = False
-            if ev.category == "notehead_whole":
+            harmonic_head = (ev.category == "notehead_whole"
+                             and _harmonic_attack_flag(ev, flag_events, tol) is not None)
+            if ev.category == "notehead_whole" and not harmonic_head:
                 # whole notes never take a stem, flag or beam by definition -
                 # don't even look for one (a nearby unrelated stem in a dense
                 # chord/2-voice passage would otherwise be a false positive).
                 base, flags = 4.0, 0
+            elif harmonic_head:
+                # A hollow round head flicked into by a grace note is a natural
+                # harmonic's sounding pitch, not a whole note (see
+                # _harmonic_attack_flag). The head does not carry the duration -
+                # no more than a diamond harmonic's does - so it is floored and
+                # disclosed as no_stem_noteheads rather than emitted at a
+                # confident 4.0. No stem is looked up: a hollow head has none,
+                # and the only stem in reach is the grace note's own, whose flag
+                # would otherwise be miscounted onto this head.
+                base, flags = 1.0, 0
+                no_stem_noteheads += 1
             elif ev.category == "notehead_half":
                 # A half note has a stem but categorically cannot carry a
                 # flag or beam, so none is ever counted for one - any that

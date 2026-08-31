@@ -367,7 +367,11 @@ class ExtractionResult:
     # the stem that was not found, so it is emitted at its unflagged floor - a
     # duration that is a guess, and one that always errs LONG. Counted here for
     # the same reason `bars_padded` is: it is the size of what was invented,
-    # and it cannot be recovered from any other figure on this result.
+    # and it cannot be recovered from any other figure on this result. A hollow
+    # round head recognised as a natural harmonic's sounding pitch rather than a
+    # whole note (glyph._harmonic_attack_flag) is folded in here too: it carries
+    # no readable duration, so it is floored and disclosed exactly as a diamond
+    # harmonic's stemless head is, instead of asserting a confident whole note.
     notes_no_stem: int = 0
     staves_no_stem: int = 0
     # Notation staves whose stem/beam vector pass found NO stems at all, though
