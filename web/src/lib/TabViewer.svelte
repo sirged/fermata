@@ -166,6 +166,14 @@
   let selType = $state(null);
   let selMidi = $state(null);
   let selNoteId = $state(null);
+  // The selected note's voice, its onset within that voice (in the document's
+  // divisions), and the voices its move control offers (#182). selRenderVoice is
+  // the SAME fact read back from the renderer, the voice half of the divergence
+  // cross-check below.
+  let selVoice = $state(null);
+  let selOnset = $state(null);
+  let selRenderVoice = $state(null);
+  let selVoiceOptions = $state([]);
   // The cross-check the evaluation asks for: the renderer's own read of the
   // selected note (through the importer and the positional map) against the
   // document's read of the same note. In this single-source-of-truth design
@@ -217,6 +225,8 @@
   function clearSelection() {
     selectedOrdinal = null;
     selFret = selString = selType = selMidi = selNoteId = null;
+    selVoice = selOnset = selRenderVoice = null;
+    selVoiceOptions = [];
     divergenceOk = true;
     overlay = null;
     editWarn = "";
@@ -275,7 +285,25 @@
     selType = d.type;
     selNoteId = d.id;
     selMidi = v?.midi ?? d.midi;
-    divergenceOk = !!v && v.mxString === d.string && v.fret === d.fret && v.midi === d.midi;
+    selVoice = d.voice;
+    selOnset = d.onset;
+    selRenderVoice = v?.voice ?? null;
+    // The voices this note can move to (#182): its own, the others its measure
+    // already sounds, and the next one up (so a new voice can be created), kept
+    // consecutive from 1 (Rule 6). At least [1, 2] so a monophonic bar can gain
+    // a second voice; capped so the list never runs away.
+    const upto = Math.min(4, Math.max(2, (d.measureVoices ?? 1) + 1));
+    selVoiceOptions = Array.from({ length: upto }, (_, i) => i + 1);
+    // The divergence oracle now also spans the voice a note landed in: the
+    // renderer's own read (v.voice) against the document's <voice> (d.voice).
+    // Guarded on v.voice being known so a renderer that does not report it never
+    // forces a false negative - it only ever tightens the check.
+    divergenceOk =
+      !!v &&
+      v.mxString === d.string &&
+      v.fret === d.fret &&
+      v.midi === d.midi &&
+      (v.voice == null || v.voice === d.voice);
     updateOverlay();
   }
 
@@ -345,6 +373,40 @@
 
   function changeDuration(type) {
     applyEdit(() => doc.setDurationType(selectedOrdinal, type), "That duration can't be written for this note.");
+  }
+
+  // Move the selected note into another voice (#182). Unlike a fret/string/
+  // duration edit, this is STRUCTURAL - it introduces a <backup> and a second
+  // voice, and the moved note's ordinal changes (its voice block now sits after
+  // the one it left), so this follows deleteSelected's shape rather than
+  // applyEdit's: rebuild the model from the new text and re-select the note at
+  // its NEW ordinal (which doc.moveToVoice returns) rather than trusting the
+  // in-place ordinal map. The move keeps the note's onset, so the same
+  // correction can be heard the instant it is made (the transport stays live).
+  async function changeVoice(value) {
+    const v = Number(value);
+    if (!Number.isInteger(v) || v < 1) return;
+    if (selectedOrdinal == null || !doc || !view) return;
+    if (v === selVoice) return; // choosing the note's own voice is a no-op
+    fretEntry = null;
+    const before = doc.text();
+    const newOrdinal = doc.moveToVoice(selectedOrdinal, v);
+    if (newOrdinal == null) {
+      editWarn = "That note can't be moved to that voice.";
+      return;
+    }
+    const after = doc.text();
+    if (after === before) return;
+    editWarn = "";
+    undoStack = [...undoStack, before];
+    redoStack = [];
+    dirty = true;
+    doc = createDocument(after);
+    editStringCount = doc.stringCount;
+    selectedOrdinal = newOrdinal;
+    await view.editor.reload(after);
+    if (doc.noteAt(selectedOrdinal)) refreshSelection();
+    else clearSelection();
   }
 
   // ----------------------------------------------- the keyboard core loop (#186)
@@ -488,6 +550,7 @@
           headRect: (ordinal) => v.editor.headRect(ordinal),
           headPoint: (ordinal) => v.editor.headPoint(ordinal),
           hitTest: (x, y) => v.editor.hitTest(x, y),
+          viewInfo: (ordinal) => v.editor.viewInfo(ordinal),
           noteCount: () => v.editor.noteCount(),
           boundsCount: () => v.editor.boundsCount(),
         };
@@ -892,6 +955,9 @@
   data-editor-selected-type={selType}
   data-editor-selected-midi={selMidi}
   data-editor-selected-note-id={selNoteId}
+  data-editor-selected-voice={selVoice}
+  data-editor-selected-onset={selOnset}
+  data-editor-render-voice={selRenderVoice}
   data-editor-divergence-ok={editMode ? divergenceOk : null}
   data-editor-dirty={dirty}
   data-editor-can-undo={undoStack.length > 0}
@@ -1111,6 +1177,17 @@
               {/if}
               {#each DURATION_TYPES as t}
                 <option value={t}>{t}</option>
+              {/each}
+            </select>
+          </label>
+          <label title="Move this note to another voice — the second voice (and its backup) is created if it does not exist yet">
+            Voice
+            <select value={String(selVoice ?? "")} onchange={(e) => changeVoice(e.target.value)}>
+              {#if selVoice != null && !selVoiceOptions.includes(selVoice)}
+                <option value={String(selVoice)}>{selVoice}</option>
+              {/if}
+              {#each selVoiceOptions as vopt}
+                <option value={String(vopt)}>{vopt}</option>
               {/each}
             </select>
           </label>

@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-editor-voices-182.spec.js",
+  "count": 5,
+  "reason": "issue #182 moving a note between voices: the Voice control reassigns the selected note to another voice, introducing the <backup> and the second voice where needed and keeping the note's onset. A note moved from voice 1 to voice 2 re-imports in voice 2 at the SAME onset with the divergence guard (now spanning the landed voice) green and no note destroyed; the measure's arithmetic round-trips (both voices sum to the 4/4 bar, one whole-measure backup, a second parse identical); moving into a not-yet-existing voice introduces that voice and its backup with the moved note the one that sounds in it; a chord member moved out splits the chord (the member leaves as a lone note in the new voice at the same onset, the head keeps sounding at that onset in the source voice); and a #10 fret edit on a still-voice-1 note keeps working with the guard green over the now two-voice document."
+}

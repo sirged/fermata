@@ -51,6 +51,28 @@ function technicalOf(noteEl) {
   return notations ? firstChildTag(notations, "technical") : null;
 }
 
+// A chord member carries <chord/> as its first child (Rule 7); only the first
+// note of a chord advances the measure's time cursor.
+function hasChord(noteEl) {
+  return !!firstChildTag(noteEl, "chord");
+}
+
+// The integer <duration> of a <note>, <backup> or <forward> - what moves the
+// measure's time cursor. 0 when absent or unreadable, so the walk never adds a
+// NaN it can never recover from.
+function intDuration(el) {
+  const n = Number(tagText(el, "duration"));
+  return Number.isFinite(n) ? n : 0;
+}
+
+// A note's (or forward's) <voice> as a number, or null. This profile writes
+// voices as consecutive numeric strings from 1 (Rule 6), so a number is what
+// the model compares and orders them by.
+function voiceNumber(el) {
+  const n = Number(tagText(el, "voice"));
+  return Number.isFinite(n) ? n : null;
+}
+
 /**
  * Build the editable document from MusicXML text. Throws if the text is not
  * parseable XML or is not a score this profile writes (one part, a tab staff
@@ -122,6 +144,48 @@ export function createDocument(xml) {
   const measureOrder = [];
   for (const n of measureNums) if (n != null && !measureOrder.includes(n)) measureOrder.push(n);
 
+  // Each note's onset (in <divisions>) within its measure, and the set of
+  // voices its measure sounds - both read once here from a single per-measure
+  // time-cursor walk. MusicXML places notes on a per-measure cursor that each
+  // note's <duration> advances; a <backup> rewinds it and a <forward> advances
+  // it without a note. Because this profile returns the cursor to the measure
+  // start between voices (Rule 6), a note's onset counted from measure-start IS
+  // its onset within its own voice. The move-a-note-to-another-voice edit
+  // (#182) leans on exactly this arithmetic; describe() exposes onset so a
+  // moved note can be shown to keep the same onset in its new voice, and the
+  // voice set so the control knows which voices a note may move to.
+  const onsetByEl = new Map();
+  const voicesByMeasure = new Map(); // measureEl -> Set<voiceNum that sounds>
+  for (const measureEl of doc.getElementsByTagName("measure")) {
+    let cursor = 0;
+    let headOnset = 0;
+    const voices = new Set();
+    voicesByMeasure.set(measureEl, voices);
+    for (const child of measureEl.children) {
+      const tag = child.tagName;
+      if (tag === "backup") {
+        cursor -= intDuration(child);
+        continue;
+      }
+      if (tag === "forward") {
+        cursor += intDuration(child);
+        continue;
+      }
+      if (tag !== "note") continue;
+      const v = voiceNumber(child);
+      if (v != null && !isRest(child)) voices.add(v);
+      if (hasChord(child)) {
+        // A chord member shares the onset of its beat's first note and does not
+        // move the cursor (Rule 7).
+        onsetByEl.set(child, headOnset);
+      } else {
+        onsetByEl.set(child, cursor);
+        headOnset = cursor;
+        cursor += intDuration(child);
+      }
+    }
+  }
+
   function describe(el, ordinal) {
     const tech = technicalOf(el);
     const string = tech ? Number(tagText(tech, "string")) : null;
@@ -132,6 +196,8 @@ export function createDocument(xml) {
     const midi = pitchEl
       ? midiOfPitch(tagText(pitchEl, "step"), Number(tagText(pitchEl, "octave")), Number(tagText(pitchEl, "alter") ?? 0))
       : null;
+    const measureEl = el.closest ? el.closest("measure") : null;
+    const voices = measureEl ? voicesByMeasure.get(measureEl) : null;
     return {
       ordinal,
       id: el.getAttribute("id"),
@@ -141,6 +207,12 @@ export function createDocument(xml) {
       dots,
       midi,
       measure: measureNums[ordinal] ?? null,
+      // The note's own voice, its onset within that voice (both #182's proof
+      // that a moved note keeps its onset), and how many voices its measure
+      // already sounds (what the move control offers as targets).
+      voice: voiceNumber(el),
+      onset: onsetByEl.has(el) ? onsetByEl.get(el) : null,
+      measureVoices: voices ? voices.size : null,
     };
   }
 
@@ -318,6 +390,268 @@ export function createDocument(xml) {
     return true;
   }
 
+  // ------------------------------------------------ move a note to another voice (#182)
+  //
+  // Polyphonic tab is written one voice at a time, each voice after the first
+  // preceded by a <backup> that rewinds the cursor to the measure start (Rule
+  // 6), and every voice's notes and rests summing to the measure (Rule 8).
+  // Reassigning a note to another voice is therefore not a <voice> text swap: it
+  // moves the note out of one per-measure timeline and into another at the SAME
+  // onset, and both timelines have to stay full. The chosen mechanism rebuilds
+  // the measure's whole note stream from its voices' timelines, which keeps the
+  // backup arithmetic, Rule 8 and the onsets correct by construction rather than
+  // by patching. See moveToVoice for the per-case decisions.
+
+  // The plain type for a rest of `dur` divisions, or null when no undotted type
+  // expresses it exactly (a dotted-length gap) - in which case the rest is
+  // written with <duration> alone, which is valid and renders by its duration.
+  function typeForDuration(dur) {
+    for (const t of DURATION_TYPES) if (durationForType(t, divisions) === dur) return t;
+    return null;
+  }
+
+  // A fresh rest <note> filling `dur` divisions of silence in `voiceNum`. The
+  // schema's order for a rest note is (rest), duration, voice, type - the same
+  // order the emitter writes and the one this keeps.
+  function makeRest(dur, voiceNum) {
+    const note = doc.createElement("note");
+    note.appendChild(doc.createElement("rest"));
+    const d = doc.createElement("duration");
+    d.textContent = String(dur);
+    note.appendChild(d);
+    const v = doc.createElement("voice");
+    v.textContent = String(voiceNum);
+    note.appendChild(v);
+    const type = typeForDuration(dur);
+    if (type) {
+      const typeEl = doc.createElement("type");
+      typeEl.textContent = type;
+      note.appendChild(typeEl);
+    }
+    return note;
+  }
+
+  // Set a note's <voice> (Rule 6), creating it in its schema position (before
+  // <type>) if the note somehow lacked one.
+  function setVoiceEl(el, voiceNum) {
+    let v = firstChildTag(el, "voice");
+    if (!v) {
+      v = doc.createElement("voice");
+      const typeEl = firstChildTag(el, "type");
+      if (typeEl) el.insertBefore(v, typeEl);
+      else el.appendChild(v);
+    }
+    v.textContent = String(voiceNum);
+  }
+
+  // Add or drop a note's leading <chord/> (Rule 7): the first note of a beat
+  // carries none and every later member carries one, so a beat's noteheads are
+  // normalised by their position when the beat is written.
+  function setChordFlag(el, on) {
+    const existing = firstChildTag(el, "chord");
+    if (on && !existing) el.insertBefore(doc.createElement("chord"), el.firstChild);
+    if (!on && existing) el.removeChild(existing);
+  }
+
+  // Re-derive every note id in a measure from its position (Rule 17:
+  // n{measure}-{voice}-{onset}-{chord}, onset the 0-based beat index within the
+  // voice, chord the 0-based member index within the beat). Ids name a POSITION,
+  // not a note, so a structural edit that moves a note between voices has to
+  // recompute them for the whole measure - the profile makes this the editor's
+  // responsibility, not the emitter's.
+  function renumberMeasure(measureEl) {
+    const mnum = Number(measureEl.getAttribute("number"));
+    if (!Number.isFinite(mnum)) return;
+    const beatIdx = new Map();
+    const chordIdx = new Map();
+    for (const note of measureEl.getElementsByTagName("note")) {
+      const v = voiceNumber(note);
+      if (v == null) continue;
+      if (hasChord(note) && beatIdx.has(v)) {
+        chordIdx.set(v, (chordIdx.get(v) ?? 0) + 1);
+      } else {
+        beatIdx.set(v, beatIdx.has(v) ? beatIdx.get(v) + 1 : 0);
+        chordIdx.set(v, 0);
+      }
+      note.setAttribute("id", `n${mnum}-${v}-${beatIdx.get(v)}-${chordIdx.get(v)}`);
+    }
+  }
+
+  /**
+   * Move the sounding note at `ordinal` into voice `targetVoice`, keeping its
+   * onset. Returns the note's NEW ordinal (its voice block now sits after its
+   * old one, so the ordinal generally changes) or null when the move is refused
+   * or a no-op. The document is left untouched on a refusal.
+   *
+   * The decisions this makes, each stated so a reader need not reverse-engineer
+   * them from the arithmetic:
+   *
+   * - Onset is preserved. The note lands at the SAME onset in the new voice - a
+   *   note on beat 3 of voice 1 is on beat 3 of voice 2, not beat 1 - because
+   *   the whole measure is rebuilt from per-voice timelines and the note keeps
+   *   the onset its beat had.
+   * - A lone note leaves a rest behind. Removing it from its source voice would
+   *   leave a gap; that gap is filled with a rest of the same length, so the
+   *   source voice still spans the measure (Rule 8) and every later note keeps
+   *   its onset. The alternative - collapsing the gap - would move every note
+   *   after it earlier, which is not what "move THIS note" means.
+   * - A chord member splits off. Moving one notehead of a chord leaves the other
+   *   members sounding at that onset (no rest is inserted - the onset is still
+   *   occupied), and the moved note becomes a lone note at the same onset in the
+   *   target voice. If the moved note was the chord's written head, the next
+   *   member is promoted to head (its <chord/> dropped) so the source beat still
+   *   advances the cursor.
+   * - A new target voice is created full. When the target voice does not yet
+   *   exist in the measure it is introduced with its <backup> and filled with
+   *   rests around the moved note, so it too spans the measure. Voices stay
+   *   numbered consecutively from 1 (Rule 6): a target more than one past the
+   *   highest existing voice is refused.
+   * - An occupied target onset is refused. If the target voice already sounds
+   *   across the moved note's onset, the move is refused rather than guessing a
+   *   merge - the note is left where it was.
+   * - Inferred silence is not disturbed. A measure carrying a <forward> (Rule 14
+   *   deduced silence, which must not become a counted rest) is refused, since
+   *   the rest-filled rebuild cannot reproduce it faithfully.
+   */
+  function moveToVoice(ordinal, targetVoice) {
+    const mv = noteEls[ordinal];
+    if (!mv || isRest(mv)) return null;
+    if (!Number.isInteger(targetVoice) || targetVoice < 1) return null;
+    const measureEl = mv.closest ? mv.closest("measure") : null;
+    if (!measureEl) return null;
+    const srcVoice = voiceNumber(mv);
+    if (srcVoice == null || targetVoice === srcVoice) return null;
+    // Rule 14 inferred silence would be silently promoted to a counted rest by
+    // the rebuild below - refuse rather than corrupt the measure's arithmetic.
+    if (measureEl.getElementsByTagName("forward").length > 0) return null;
+
+    // The measure's note stream - its <note> and <backup> children, in order.
+    // A <direction>/<barline>/<print> before the first or after the last is left
+    // untouched; one INTERLEAVED between notes is refused, because the rebuild
+    // would not know where to put it back (a mid-voice mark is rare and this
+    // increment does not move it).
+    const kids = [...measureEl.children];
+    const streamIdx = [];
+    for (let i = 0; i < kids.length; i++) {
+      const t = kids[i].tagName;
+      if (t === "note" || t === "backup") streamIdx.push(i);
+    }
+    if (streamIdx.length === 0) return null;
+    const first = streamIdx[0];
+    const last = streamIdx[streamIdx.length - 1];
+    for (let i = first + 1; i < last; i++) {
+      const t = kids[i].tagName;
+      if (t !== "note" && t !== "backup") return null;
+    }
+
+    // Walk the stream into per-voice sounding beats and the measure's duration.
+    const soundingByVoice = new Map(); // vnum -> [{ onset, duration, notes: [el] }]
+    let cursor = 0;
+    let measureDur = 0;
+    let lastBeat = null;
+    for (let i = first; i <= last; i++) {
+      const el = kids[i];
+      if (el.tagName === "backup") {
+        cursor -= intDuration(el);
+        lastBeat = null;
+        continue;
+      }
+      const rest = isRest(el);
+      const dur = intDuration(el);
+      const v = voiceNumber(el);
+      if (hasChord(el) && lastBeat) {
+        if (!rest) lastBeat.notes.push(el);
+      } else {
+        const beat = { onset: cursor, duration: dur, notes: rest ? [] : [el] };
+        if (!rest && v != null) {
+          if (!soundingByVoice.has(v)) soundingByVoice.set(v, []);
+          soundingByVoice.get(v).push(beat);
+        }
+        cursor += dur;
+        if (cursor > measureDur) measureDur = cursor;
+        lastBeat = rest ? null : beat;
+      }
+    }
+    if (!(measureDur > 0)) return null;
+
+    // The moved note's beat in its source voice.
+    const srcBeats = soundingByVoice.get(srcVoice) || [];
+    const mvBeat = srcBeats.find((b) => b.notes.includes(mv));
+    if (!mvBeat) return null;
+    const onset = mvBeat.onset;
+    const duration = mvBeat.duration;
+
+    // Consecutive voice numbering (Rule 6): the target is at most one past the
+    // highest voice that sounds today.
+    let maxVoice = 0;
+    for (const v of soundingByVoice.keys()) if (v > maxVoice) maxVoice = v;
+    if (targetVoice > maxVoice + 1) return null;
+
+    // The target must be silent across the moved note's onset.
+    const tgtBeats = soundingByVoice.get(targetVoice) || [];
+    for (const b of tgtBeats) {
+      if (onset < b.onset + b.duration && b.onset < onset + duration) return null;
+    }
+
+    // Remove the note from its source beat; a beat left empty becomes silence
+    // (refilled as a rest below), a chord simply loses one member.
+    mvBeat.notes = mvBeat.notes.filter((n) => n !== mv);
+    if (mvBeat.notes.length === 0) {
+      soundingByVoice.set(
+        srcVoice,
+        srcBeats.filter((b) => b !== mvBeat),
+      );
+    }
+
+    // Add it to the target voice as a lone note at the same onset.
+    setChordFlag(mv, false);
+    tgtBeats.push({ onset, duration, notes: [mv] });
+    tgtBeats.sort((a, b) => a.onset - b.onset);
+    soundingByVoice.set(targetVoice, tgtBeats);
+
+    // Rebuild the whole note stream: every voice 1..max, each a full timeline of
+    // its sounding beats with the gaps between them (and before/after) filled by
+    // rests, and a <backup> to the measure start before every voice after the
+    // first.
+    const maxAfter = Math.max(maxVoice, targetVoice);
+    const newSeq = [];
+    for (let v = 1; v <= maxAfter; v++) {
+      if (v > 1) {
+        const backup = doc.createElement("backup");
+        const bd = doc.createElement("duration");
+        bd.textContent = String(measureDur);
+        backup.appendChild(bd);
+        newSeq.push(backup);
+      }
+      const beats = (soundingByVoice.get(v) || []).slice().sort((a, b) => a.onset - b.onset);
+      let pos = 0;
+      for (const beat of beats) {
+        if (beat.onset > pos) newSeq.push(makeRest(beat.onset - pos, v));
+        else if (beat.onset < pos) return null; // overlap - would corrupt the bar
+        beat.notes.forEach((n, idx) => {
+          setVoiceEl(n, v);
+          setChordFlag(n, idx > 0);
+        });
+        for (const n of beat.notes) newSeq.push(n);
+        pos = beat.onset + beat.duration;
+      }
+      if (pos < measureDur) newSeq.push(makeRest(measureDur - pos, v));
+    }
+
+    // Splice the rebuilt stream in where the old one was; leading/trailing
+    // non-stream siblings keep their place around it. The reused sounding notes
+    // are re-parented (detached then re-inserted) - insertBefore moves them.
+    const anchor = kids[last].nextSibling;
+    for (let i = first; i <= last; i++) measureEl.removeChild(kids[i]);
+    for (const el of newSeq) measureEl.insertBefore(el, anchor);
+
+    renumberMeasure(measureEl);
+
+    const nowSounding = [...doc.getElementsByTagName("note")].filter((n) => !isRest(n));
+    const newOrdinal = nowSounding.indexOf(mv);
+    return newOrdinal >= 0 ? newOrdinal : null;
+  }
+
   function text() {
     const body = new XMLSerializer().serializeToString(root);
     // DOMParser drops the XML declaration; the server sniffs "starts with <"
@@ -338,6 +672,7 @@ export function createDocument(xml) {
     setString,
     setDurationType,
     deleteNote,
+    moveToVoice,
     text,
   };
 }
