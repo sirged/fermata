@@ -410,6 +410,13 @@ its `note` - the same as every other activity - so a reader of the practice
 page is not left with a blank line; the structured record lives here instead
 of being the only place the time was spent.
 
+**Counts, never a rate.** There is no accuracy percentage anywhere a query
+over `trainer_attempts` could produce one, and no column or view counts a
+run of consecutive `correct` rows - the same rule the rest of this document
+holds to (no streaks, no best week, no average rating). A `correct = 0` row
+is a fact worth finding, not a mark against anyone; a query is free to count
+right and wrong separately and never free to divide one by the other.
+
 ### Asking questions
 
 - `POST /api/trainer/attempts` - log one answered question.
