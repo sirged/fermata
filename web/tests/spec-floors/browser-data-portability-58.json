@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/data-portability.spec.js",
+  "count": 3,
+  "reason": "issue #58: exporting the library downloads a real archive, a non-archive file is refused with a clear message, and a real exported archive previews what it actually holds through the same upload path."
+}

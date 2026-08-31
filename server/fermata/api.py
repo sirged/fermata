@@ -1,9 +1,13 @@
 import errno
+import hashlib
+import io
 import json
 import logging
 import os
 import re
 import shutil
+import sqlite3
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Annotated
@@ -17,7 +21,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field, StrictInt
 
 from . import instruments, practice, scanner
@@ -35,6 +39,7 @@ from .api_models import (
     GoalListOut,
     GoalOut,
     HealthOut,
+    ImportOut,
     InstrumentDeleteOut,
     InstrumentOut,
     InstrumentPresetOut,
@@ -66,7 +71,7 @@ from .api_models import (
 )
 from . import config
 from .config import FILE_TYPES, LIBRARY_DIR
-from .db import DEFAULT_OWNER, connect, tx, write_tx
+from .db import DEFAULT_OWNER, SCHEMA_VERSION, connect, tx, write_tx
 from .glyph_rhythm import VALID_TS_DENOMINATORS
 from .metadata import parse_path
 from .tabextract import analyze as analyze_pdf, extract as extract_pdf
@@ -92,6 +97,7 @@ TAG_LIBRARY = "library"
 TAG_PRACTICE = "practice"
 TAG_TRANSCRIPTION = "transcription"
 TAG_SCAN = "scan"
+TAG_PORTABILITY = "portability"
 
 # SQLite's INTEGER is 64-bit, and handing the driver anything wider raises
 # OverflowError from inside the query - a 500 for what is only ever a row that
@@ -3424,3 +3430,720 @@ def score_practice_progress(
         "session_total": listed["total"],
         "sessions_truncated": listed["truncated"],
     }
+
+
+# ---------------------------------------------------------------------------
+# GETTING EVERYTHING IN AND OUT (#58).
+#
+# Issue #32's design rule - structured, queryable, every field readable
+# through the documented API - is what makes the OTHER half of #32 possible:
+# a planned MCP server (#31) wraps this REST surface rather than reading
+# SQLite directly. That rule is also what makes THIS feature nearly free.
+# Nothing here invents a second notion of what a session or a goal is; export
+# reads the same tables every other endpoint reads, and import writes rows
+# through the same columns every other write does.
+#
+# THE FORMAT: one zip, always. `manifest.json` at its root is a JSON object
+# naming this file's `schema_version` (db.SCHEMA_VERSION - not this
+# application's own release number, which changes for reasons that have
+# nothing to do with what a database holds) and carrying every table's rows
+# verbatim, keyed by the table name under `tables`. `files/<hash><ext>` holds
+# the bytes of every score file the export could read from disk, named by
+# CONTENT HASH rather than by the score's library path - the same identity
+# scanner.hash_file already gives every score, so two scores that happen to
+# share content share one entry rather than two, and nothing about a
+# person's folder names ever has to survive as a zip entry name (which on
+# Windows has its own reserved characters - see the module comment above
+# _VALID_SEGMENT). A score row whose file could not be read at export time
+# (missing, or the archive was asked to leave files out with
+# `include_files=false`) still has its whole row in the manifest -
+# `file_included: false` says so - because the METADATA is not the same
+# thing as the bytes, and losing the practice history and tags a score
+# accumulated is not an acceptable price for a file that happened to be
+# offline that day.
+#
+# ROW VALUES TRAVEL VERBATIM, deliberately, rather than through the
+# normalising functions (practice.normalise_session, instruments.normalise,
+# ...) every ordinary write goes through. Those functions exist to validate
+# and default a REQUEST from a person typing into a form today; an archived
+# row already passed them once, when it was first written, and running it
+# through them again on the way back in would let today's defaults quietly
+# overwrite yesterday's actual values - the opposite of a lossless round
+# trip. `_dump_table` and `_insert_row` below are the only two functions
+# either direction needs, and neither one hand-picks which columns matter:
+# every column the live table has going out, every key an archived row
+# carries coming back in. That is what keeps this feature from becoming a
+# third hand-mirrored copy of the schema, alongside the bugs issues #143 and
+# #146 shipped from exactly that shape of mistake one layer up in the API
+# responses built from these same tables.
+#
+# WHAT IMPORT DOES NOT DO: replace, sync or merge-by-matching. Every row from
+# a validated archive is INSERTED as a new row with a fresh id - the only
+# exception is a tag whose NAME already exists in the target library, which
+# is reused rather than duplicated (a tag is purely a name; two rows with the
+# same name is not a second tag, it is the same tag counted twice). Importing
+# the same archive twice therefore creates two copies of every score, session
+# and goal - which is the same trade-off `POST /api/library/move` and
+# `POST /api/scores/{id}/move` make in the other direction (refuse to
+# overwrite, land beside it instead): a merge that could guess wrong about
+# which of two similarly-shaped rows is "the same one" would risk silently
+# discarding somebody's practice history, and this feature's one absolute
+# rule (see the module docstring on this section's own issue) is that it
+# never does that. The right library to import into is an empty one - a
+# fresh install, or one just scanned onto an empty database - and every test
+# of this feature below imports into exactly that.
+#
+# TRANSACTIONAL, AND WHAT THAT ACTUALLY COVERS. Validation - the archive is a
+# real zip, `manifest.json` parses, its schema_version matches, every table
+# is the right shape, every foreign key inside the archive resolves to a row
+# also in the archive, every archived file's bytes hash to what the archive
+# itself claims for them - all happens BEFORE anything is written, exactly
+# like _scan's "decide first, write second" (see scanner.py's module
+# comment for the bug that taught this codebase that lesson the first time).
+# So the ordinary rejection - a malformed archive, the wrong schema version -
+# never reaches write_tx() at all: nothing was touched, and there is nothing
+# to roll back. The rarer case is a validated archive that still fails
+# partway through being applied (a goal whose owner/period_start collides
+# with one already in the target library, say - the one uniqueness rule
+# validation cannot check without knowing what is already there). write_tx()
+# rolls the database back the same way every other write in this file relies
+# on it to; the only thing import adds is doing the same for the files it
+# had already written to the library before the failure - see
+# `written_paths` in import_library.
+# ---------------------------------------------------------------------------
+
+# The manifest's own name for what it is, checked on the way in so an
+# arbitrary zip someone renamed to .zip and uploaded here is refused with a
+# sentence about what it actually is, rather than an obscure KeyError several
+# steps into being treated as one of Fermata's own exports.
+EXPORT_FORMAT = "fermata-export"
+EXPORT_MANIFEST_NAME = "manifest.json"
+EXPORT_FILES_DIR = "files"
+
+# Every table this feature carries, and the only tables it carries - a
+# manifest with a different set of keys under `tables` is refused rather than
+# read partially. Order matters only for readability here; `_apply_import`
+# decides the real insert order (instruments and tags before the scores that
+# reference them, scores before everything that references A SCORE).
+EXPORT_TABLE_NAMES = (
+    "instruments",
+    "tags",
+    "scores",
+    "score_tags",
+    "transcriptions",
+    "practice_sessions",
+    "practice_goals",
+    "settings",
+)
+
+
+def _dump_table(conn, sql: str, params=()) -> list[dict]:
+    """Every row a query returns, as plain dicts - the shape both the
+    manifest's JSON and `_insert_row` want. Never SELECT * blindly filtered
+    down by hand afterwards: whatever columns the query names are exactly the
+    columns that travel, so a table's own SELECT * carries a column added to
+    it tomorrow with no edit needed here."""
+    return [dict(row) for row in conn.execute(sql, params)]
+
+
+def _build_export_manifest(conn, *, include_trash: bool) -> dict:
+    """Everything #32 says has to be readable through this API, read through
+    it in bulk. See the module comment above for what each table means here
+    and why practice_sessions/practice_goals are exported in full (never
+    filtered by trash) with only their `score_id` touched.
+
+    `file_included` is decided here, from the real filesystem, rather than
+    left for the caller to work out a second time when it actually writes the
+    zip - one place decides whether a score's bytes are coming along, and the
+    manifest and the archive's `files/` folder can never disagree about it.
+    """
+    root = _library_dir()
+    scores = _dump_table(
+        conn,
+        "SELECT * FROM scores" + ("" if include_trash else " WHERE deleted_at IS NULL")
+        + " ORDER BY id",
+    )
+    score_ids = {row["id"] for row in scores}
+    for row in scores:
+        path = root / row["path"] if root.is_dir() else None
+        row["file_included"] = bool(path and path.is_file())
+
+    score_tags = [
+        dict(row)
+        for row in conn.execute("SELECT * FROM score_tags ORDER BY score_id, tag_id")
+        if row["score_id"] in score_ids
+    ]
+    transcriptions = [
+        dict(row)
+        for row in conn.execute("SELECT * FROM transcriptions ORDER BY id")
+        if row["score_id"] in score_ids
+    ]
+
+    # A session or goal about a score this export is leaving out (a trashed
+    # one, with include_trash=False) keeps its row - the hours were still
+    # spent - but loses the reference, the same thing actually destroying
+    # that score (DELETE /api/trash/{id}) would do to it via ON DELETE SET
+    # NULL (see db.py's notes on that choice). Never filtered out entirely:
+    # that is the one thing this feature promises never to do to practice
+    # history.
+    practice_sessions = _dump_table(
+        conn, "SELECT * FROM practice_sessions WHERE owner = ? ORDER BY id", (DEFAULT_OWNER,)
+    )
+    practice_goals = _dump_table(
+        conn, "SELECT * FROM practice_goals WHERE owner = ? ORDER BY id", (DEFAULT_OWNER,)
+    )
+    for row in (*practice_sessions, *practice_goals):
+        if row["score_id"] is not None and row["score_id"] not in score_ids:
+            row["score_id"] = None
+
+    return {
+        "format": EXPORT_FORMAT,
+        "schema_version": SCHEMA_VERSION,
+        "fermata_version": version_info.version(),
+        "exported_at": _now(conn),
+        "owner": DEFAULT_OWNER,
+        "include_trash": include_trash,
+        "tables": {
+            "instruments": _dump_table(
+                conn, "SELECT * FROM instruments WHERE owner = ? ORDER BY id", (DEFAULT_OWNER,)
+            ),
+            "tags": _dump_table(conn, "SELECT * FROM tags ORDER BY id"),
+            "scores": scores,
+            "score_tags": score_tags,
+            "transcriptions": transcriptions,
+            "practice_sessions": practice_sessions,
+            "practice_goals": practice_goals,
+            "settings": _dump_table(conn, "SELECT * FROM settings ORDER BY owner, key"),
+        },
+    }
+
+
+@router.get(
+    "/export",
+    tags=[TAG_PORTABILITY],
+    response_class=Response,
+    responses={200: {"content": {"application/zip": {}}}},
+)
+def export_library(include_trash: bool = True, include_files: bool = True):
+    """Everything Fermata knows, as one zip archive: every score row,
+    transcription (content, source and every disclosure field), practice
+    session, goal, tag, favourite, instrument and setting, plus the score
+    files themselves - see the module comment above this section for the
+    archive's exact shape.
+
+    `include_trash` (default true) decides whether a score currently in the
+    trash - deleted but not yet destroyed, see #56 - travels too. Leaving it
+    true is what makes an export a real backup: a restorable score left out
+    of one is data loss the moment the original library is gone. Set it
+    false only to deliberately leave the trash behind; either way, every
+    session and goal ever logged travels regardless (see
+    `_build_export_manifest`).
+
+    `include_files` (default true) decides whether the score files' own
+    bytes are bundled alongside the database rows that describe them. Score
+    files are already ordinary files in a folder - the starting point issue
+    #58 itself names - so `include_files=false` is for someone who is going
+    to copy the library folder across by other means (rsync, a drive image)
+    and wants Fermata's own export to carry only the part that is not
+    already portable that way. `POST /api/import` still restores every
+    field either way; only the files themselves are what a false here
+    leaves for the person to bring across on their own.
+
+    No response_model: like GET .../file and .../thumb, this answers with
+    real bytes (a zip archive) rather than JSON - `response_class=Response`
+    is what keeps /openapi.json from advertising `application/json`
+    alongside it (see test_binary_routes_do_not_advertise_a_json_content_type).
+    """
+    conn = connect()
+    manifest = _build_export_manifest(conn, include_trash=include_trash)
+    root = _library_dir()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if include_files:
+            written_hashes: set[str] = set()
+            for row in manifest["tables"]["scores"]:
+                if not row["file_included"] or row["hash"] in written_hashes:
+                    continue
+                suffix = PurePosixPath(row["path"]).suffix.lower()
+                zf.write(root / row["path"], f"{EXPORT_FILES_DIR}/{row['hash']}{suffix}")
+                written_hashes.add(row["hash"])
+        else:
+            # Said outright in the manifest, not left to be inferred from an
+            # empty files/ folder - a reader of the archive alone (a person,
+            # or a future import from an older Fermata that a version bump
+            # has taught to accept this schema_version) must not conclude a
+            # file is missing from the LIBRARY when it was only ever left out
+            # of THIS ARCHIVE on purpose.
+            for row in manifest["tables"]["scores"]:
+                row["file_included"] = False
+        zf.writestr(EXPORT_MANIFEST_NAME, json.dumps(manifest, indent=2))
+    filename = "fermata-export-" + re.sub(r"[^0-9A-Za-z]+", "", manifest["exported_at"]) + ".zip"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _validate_import_score_path(path) -> None:
+    """Refuse an archived score path that is not a safe library-relative
+    location, before anything from the archive is written anywhere.
+
+    Deliberately NOT `_safe_parts`, which is the same segment rules applied
+    to where a MOVE may put a file - and refuses `scanner.TRASH_DIR_NAME` as
+    a destination on purpose, because nothing may be moved there except
+    through DELETE /api/scores/{id}. A trashed score's own archived path
+    legitimately starts there; this only has to keep every segment inside
+    the library, whatever it is named, so it borrows `_VALID_SEGMENT` and
+    `_reject_trailing` directly rather than the destination-only wrapper
+    around them. `_resolve_in_library`, called on this same path later, is
+    what actually enforces "inside the library" against the resolved
+    filesystem path (catching a symlink escape no amount of text inspection
+    could) - this is the check that produces a readable message for the
+    ordinary case of a bad character or a `..` before that lower-level check
+    ever runs.
+    """
+    if not isinstance(path, str) or not path:
+        raise HTTPException(422, "the archive names a score with no path")
+    normalised = path.replace("\\", "/")
+    if normalised.startswith("/") or re.match(r"^[A-Za-z]:", normalised):
+        raise HTTPException(
+            422, f"the archive names a score path outside the library: {path!r}"
+        )
+    parts = PurePosixPath(normalised).parts
+    if not parts:
+        raise HTTPException(422, "the archive names a score with no path")
+    for part in parts[:-1]:
+        if not _VALID_SEGMENT.match(part):
+            raise HTTPException(
+                422, f"the archive's score path segment {part!r} is not a usable name"
+            )
+        _reject_trailing(part, "archived score path")
+    _safe_filename(parts[-1])
+
+
+def _read_and_validate_manifest(zf: zipfile.ZipFile) -> dict:
+    """Everything about the archive that can be checked without writing
+    anything - see the module comment on why this runs to completion, naming
+    every problem it can find that matters, before import touches the
+    database or the library at all.
+    """
+    try:
+        raw = zf.read(EXPORT_MANIFEST_NAME)
+    except KeyError:
+        raise HTTPException(
+            422, f"the archive has no {EXPORT_MANIFEST_NAME} - this is not a Fermata export"
+        ) from None
+    try:
+        manifest = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            422, f"the archive's {EXPORT_MANIFEST_NAME} is not valid JSON: {exc}"
+        ) from None
+    if not isinstance(manifest, dict):
+        raise HTTPException(422, f"the archive's {EXPORT_MANIFEST_NAME} is not a JSON object")
+    if manifest.get("format") != EXPORT_FORMAT:
+        raise HTTPException(
+            422, "this archive was not produced by Fermata's own export (no recognised format "
+            "marker) - Fermata will not guess at what a foreign zip's contents mean"
+        )
+    version = manifest.get("schema_version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise HTTPException(422, "the archive's schema_version is missing or not a whole number")
+    if version != SCHEMA_VERSION:
+        raise HTTPException(
+            422,
+            f"this archive is at schema version {version}, but this Fermata understands "
+            f"{SCHEMA_VERSION}. Import only accepts an archive written by the exact version "
+            "of Fermata that is running now - restore it with that version, or export again "
+            "once this one has produced a database at the version it understands. Nothing "
+            "has been changed.",
+        )
+    tables = manifest.get("tables")
+    if not isinstance(tables, dict) or set(tables) != set(EXPORT_TABLE_NAMES):
+        raise HTTPException(
+            422,
+            "the archive's manifest does not carry exactly the tables Fermata's export "
+            f"writes ({', '.join(EXPORT_TABLE_NAMES)})",
+        )
+    for name in EXPORT_TABLE_NAMES:
+        if not isinstance(tables[name], list) or not all(isinstance(r, dict) for r in tables[name]):
+            raise HTTPException(422, f"the archive's {name!r} table is not a list of objects")
+
+    # Every row this import will ever index by `["id"]` (never `.get`, once
+    # apply actually runs) has to have one, and has to have it as a real
+    # int - checked here, once, rather than left for a missing key to
+    # surface as an unhandled KeyError three functions later, after
+    # write_tx() has already opened. A row failing this check is refused with
+    # everything else validation finds, before anything is written.
+    def _require_id(row, table_name: str) -> int:
+        rid = row.get("id")
+        if not isinstance(rid, int) or isinstance(rid, bool):
+            raise HTTPException(
+                422, f"a row in the archive's {table_name!r} table has no numeric id"
+            )
+        return rid
+
+    for row in tables["instruments"]:
+        _require_id(row, "instruments")
+    for row in tables["tags"]:
+        _require_id(row, "tags")
+        if not isinstance(row.get("name"), str) or not row["name"]:
+            raise HTTPException(422, "a row in the archive's 'tags' table has no name")
+
+    # Referential integrity WITHIN THE ARCHIVE, checked before anything is
+    # written - a row naming an id that is not also in the archive cannot be
+    # inserted without either dropping the reference silently (which this
+    # feature never does to somebody's history) or crashing partway through
+    # write_tx() on a foreign-key violation, which is exactly the
+    # half-applied import this whole design exists to avoid.
+    instrument_ids = {row["id"] for row in tables["instruments"]}
+    tag_ids = {row["id"] for row in tables["tags"]}
+    score_ids = {_require_id(row, "scores") for row in tables["scores"]}
+    for row in tables["scores"]:
+        if "deleted_at" not in row:
+            raise HTTPException(
+                422, f"score {row.get('path')!r} in the archive is missing 'deleted_at'"
+            )
+        _validate_import_score_path(row.get("path"))
+        if not isinstance(row.get("hash"), str) or not row["hash"]:
+            raise HTTPException(422, f"score {row.get('path')!r} in the archive has no hash")
+        iid = row.get("instrument_id")
+        if iid is not None and iid not in instrument_ids:
+            raise HTTPException(
+                422,
+                f"score {row['path']!r} in the archive names instrument {iid!r}, which is not "
+                "in the archive",
+            )
+    for row in tables["score_tags"]:
+        if row.get("score_id") not in score_ids or row.get("tag_id") not in tag_ids:
+            raise HTTPException(
+                422, "the archive's score_tags table names a score or tag that is not in the "
+                "archive"
+            )
+    for row in tables["transcriptions"]:
+        if row.get("score_id") not in score_ids:
+            raise HTTPException(
+                422, "the archive has a transcription for a score that is not in the archive"
+            )
+    for table_name in ("practice_sessions", "practice_goals"):
+        for row in tables[table_name]:
+            sid = row.get("score_id")
+            if sid is not None and sid not in score_ids:
+                raise HTTPException(
+                    422,
+                    f"the archive's {table_name} table names a score that is not in the archive",
+                )
+    for row in tables["settings"]:
+        if not isinstance(row.get("key"), str) or not row["key"] or "value" not in row:
+            raise HTTPException(422, "the archive's settings table has a malformed row")
+    return manifest
+
+
+def _referenced_files(manifest: dict) -> list[tuple[str, str]]:
+    """The (hash, extension) of every file the manifest's scores actually
+    need - one entry per distinct hash, which is what the archive itself
+    only ever wrote one of (see export_library)."""
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for row in manifest["tables"]["scores"]:
+        if not row.get("file_included"):
+            continue
+        h = row["hash"]
+        if h in seen:
+            continue
+        seen.add(h)
+        out.append((h, PurePosixPath(row["path"]).suffix.lower()))
+    return out
+
+
+def _insert_row(
+    conn, table: str, row: dict, *, overrides: dict | None = None, exclude: tuple[str, ...] = ()
+) -> int:
+    """Insert one archived row into `table`, letting SQLite assign a fresh
+    id. Every column the row carries travels across unchanged except `id`
+    (never reused - see the module comment on why import always adds rather
+    than trying to restore original rowids), whatever `exclude` names (a key
+    the manifest carries that is not a real column of `table` at all -
+    scores' own `file_included`, manifest bookkeeping rather than something
+    scanner._scan_file ever wrote), and whatever `overrides` names - a
+    foreign key repointed at this import's own newly-inserted parent, or
+    `owner` pinned to this instance's one owner regardless of what an
+    archive happens to carry for it.
+
+    Nothing here hand-picks which REAL columns matter, which is what keeps a
+    column added to a table tomorrow travelling through this path with no
+    matching edit here - the same discipline `_dump_table` takes on the way
+    out."""
+    data = {k: v for k, v in row.items() if k != "id" and k not in exclude}
+    if overrides:
+        data.update(overrides)
+    columns = ", ".join(data.keys())
+    placeholders = ", ".join("?" for _ in data)
+    cur = conn.execute(
+        f"INSERT INTO {table}({columns}) VALUES ({placeholders})", list(data.values())
+    )
+    return cur.lastrowid
+
+
+def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_paths: list) -> dict:
+    """Write a validated archive's rows and files into this library. Runs
+    entirely inside the caller's write_tx(), so a failure partway through -
+    the one thing `_read_and_validate_manifest` cannot rule out in advance,
+    a uniqueness collision against what is already in THIS library rather
+    than anything wrong with the archive itself - rolls every row back the
+    same way any other write in this file does. `written_paths` is filled as
+    each file lands, so the caller can undo the filesystem half of that same
+    failure; see import_library.
+    """
+    tables = manifest["tables"]
+
+    instrument_id_map: dict[int, int] = {}
+    for row in tables["instruments"]:
+        instrument_id_map[row["id"]] = _insert_row(
+            conn, "instruments", row, overrides={"owner": DEFAULT_OWNER}
+        )
+
+    tag_id_map: dict[int, int] = {}
+    tags_reused = 0
+    for row in tables["tags"]:
+        existing = conn.execute(
+            "SELECT id FROM tags WHERE name = ?", (row["name"],)
+        ).fetchone()
+        if existing is not None:
+            tag_id_map[row["id"]] = existing["id"]
+            tags_reused += 1
+        else:
+            tag_id_map[row["id"]] = _insert_row(conn, "tags", row)
+
+    score_id_map: dict[int, int] = {}
+    files_written = 0
+    scores_trashed = 0
+    for row in tables["scores"]:
+        target_rel = _free_path(row["path"], conn, exclude_id=0)
+        instrument_id = row.get("instrument_id")
+        new_id = _insert_row(
+            conn,
+            "scores",
+            row,
+            exclude=("file_included",),
+            overrides={
+                "path": target_rel,
+                "instrument_id": instrument_id_map.get(instrument_id)
+                if instrument_id is not None
+                else None,
+            },
+        )
+        score_id_map[row["id"]] = new_id
+        if row["deleted_at"] is not None:
+            scores_trashed += 1
+        data = file_bytes.get(row["hash"]) if row.get("file_included") else None
+        if data is None:
+            continue
+        dest = _resolve_in_library(target_rel)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            # _free_path already checked the database and the filesystem for
+            # this exact path moments ago - reachable only if something else
+            # wrote there in between, which the write_tx() this runs inside
+            # cannot prevent on the filesystem side. Treated as a hard stop
+            # rather than a silent overwrite, the same rule every other
+            # library-management route in this file holds.
+            raise HTTPException(409, f"there is already a file at {dest} - import stopped")
+        dest.write_bytes(data)
+        written_paths.append(dest)
+        # The same identity test _relink_moved_file makes for a move,
+        # applied here to a file this import just wrote: the hash is
+        # recomputed from what actually landed on disk and checked against
+        # what the archive claimed for it, with scanner.hash_file - the one
+        # function in this codebase that answers "is this the same score" -
+        # rather than trusting the copy succeeded silently.
+        if scanner.hash_file(dest) != row["hash"]:
+            raise HTTPException(
+                422,
+                f"the file written for {target_rel} does not match the hash the archive "
+                "recorded for it - import stopped, nothing else was written.",
+            )
+        files_written += 1
+
+    for row in tables["score_tags"]:
+        conn.execute(
+            "INSERT OR IGNORE INTO score_tags(score_id, tag_id) VALUES (?, ?)",
+            (score_id_map[row["score_id"]], tag_id_map[row["tag_id"]]),
+        )
+
+    for row in tables["transcriptions"]:
+        _insert_row(
+            conn, "transcriptions", row, overrides={"score_id": score_id_map[row["score_id"]]}
+        )
+
+    for row in tables["practice_sessions"]:
+        sid = row.get("score_id")
+        _insert_row(
+            conn,
+            "practice_sessions",
+            row,
+            overrides={
+                "owner": DEFAULT_OWNER,
+                "score_id": score_id_map.get(sid) if sid is not None else None,
+            },
+        )
+
+    for row in tables["practice_goals"]:
+        sid = row.get("score_id")
+        _insert_row(
+            conn,
+            "practice_goals",
+            row,
+            overrides={
+                "owner": DEFAULT_OWNER,
+                "score_id": score_id_map.get(sid) if sid is not None else None,
+            },
+        )
+
+    for row in tables["settings"]:
+        conn.execute(
+            """INSERT INTO settings(owner, key, value) VALUES (?, ?, ?)
+               ON CONFLICT(owner, key) DO UPDATE SET value = excluded.value""",
+            (DEFAULT_OWNER, row["key"], row["value"]),
+        )
+
+    # The library just grew - see scanner.record_deliberate_shrink, which
+    # (despite the name it was written under for #56's delete) only ever sets
+    # the high-water mark to the library's current size. Left unset here, an
+    # import's own new scores would not raise the mark themselves until the
+    # next scan happened to run, and a genuinely lossy scan landing in that
+    # gap would be measured against a mark that does not yet know about the
+    # scores this import just restored.
+    scanner.record_deliberate_shrink(conn)
+
+    return {
+        "schema_version": manifest["schema_version"],
+        "exported_at": manifest["exported_at"],
+        "fermata_version": manifest.get("fermata_version") or "unknown",
+        "scores_imported": len(tables["scores"]),
+        "scores_trashed_imported": scores_trashed,
+        "files_written": files_written,
+        "transcriptions_imported": len(tables["transcriptions"]),
+        "tags_imported": len(tables["tags"]),
+        "tags_reused": tags_reused,
+        "score_tags_imported": len(tables["score_tags"]),
+        "instruments_imported": len(tables["instruments"]),
+        "practice_sessions_imported": len(tables["practice_sessions"]),
+        "practice_goals_imported": len(tables["practice_goals"]),
+        "settings_imported": len(tables["settings"]),
+    }
+
+
+@router.post("/import", tags=[TAG_PORTABILITY], response_model=ImportOut)
+async def import_library(file: UploadFile, dry_run: bool = True):
+    """Restore an archive written by `GET /api/export` - every score row,
+    transcription, practice session, goal, tag, instrument and setting it
+    carries, added to this library. See the module comment above this
+    section for the archive's shape, exactly what "added" means (never a
+    replace or a merge-by-matching - see there for why), and what
+    transactional covers here.
+
+    `dry_run` (default true, the same default every bulk operation in this
+    API uses - see #56) validates the archive completely - it really is a
+    Fermata export, its schema_version matches this Fermata's, every row's
+    foreign keys resolve within the archive, every archived file's bytes
+    hash to what the archive itself claims for them - and reports what it
+    found, WITHOUT opening a database transaction or writing a single file.
+    Nothing is compared against what is already in this library on a dry
+    run, which is why `tags_reused` is always 0 there - see ImportOut.
+
+    A REJECTED IMPORT LEAVES NOTHING CHANGED, whether it was rejected by
+    validation (a malformed archive, the wrong schema version - nothing was
+    ever opened for writing) or partway through being applied (a real
+    validated archive that still collides with what this library already
+    holds - write_tx() rolls the database back, and every file this import
+    had already written is removed again). See _apply_import's docstring for
+    the one thing validation cannot catch in advance.
+    """
+    try:
+        zf = zipfile.ZipFile(file.file)
+    except zipfile.BadZipFile:
+        raise HTTPException(422, "that is not a valid zip archive") from None
+    manifest = _read_and_validate_manifest(zf)
+
+    file_bytes: dict[str, bytes] = {}
+    for file_hash, suffix in _referenced_files(manifest):
+        name = f"{EXPORT_FILES_DIR}/{file_hash}{suffix}"
+        try:
+            data = zf.read(name)
+        except KeyError:
+            raise HTTPException(
+                422, f"the archive is missing the file it names for {name}"
+            ) from None
+        # The same identity the rest of this feature relies on (sha1 of the
+        # bytes), applied here to bytes still only in the archive - nothing
+        # has been written yet, so there is no path to hand scanner.hash_file
+        # and no reason to invent a byte-string variant of it: this is the
+        # one place a mismatch has to be caught before anything is on disk
+        # to check with the real function.
+        if hashlib.sha1(data).hexdigest() != file_hash:
+            raise HTTPException(
+                422,
+                f"the file at {name} in the archive does not match the hash the archive "
+                "itself records for it - the archive is corrupt. Nothing has been imported.",
+            )
+        file_bytes[file_hash] = data
+
+    tables = manifest["tables"]
+    if dry_run:
+        return {
+            "dry_run": True,
+            "schema_version": manifest["schema_version"],
+            "exported_at": manifest["exported_at"],
+            "fermata_version": manifest.get("fermata_version") or "unknown",
+            "scores_imported": len(tables["scores"]),
+            "scores_trashed_imported": sum(
+                1 for row in tables["scores"] if row.get("deleted_at") is not None
+            ),
+            "files_written": len(file_bytes),
+            "transcriptions_imported": len(tables["transcriptions"]),
+            "tags_imported": len(tables["tags"]),
+            "tags_reused": 0,
+            "score_tags_imported": len(tables["score_tags"]),
+            "instruments_imported": len(tables["instruments"]),
+            "practice_sessions_imported": len(tables["practice_sessions"]),
+            "practice_goals_imported": len(tables["practice_goals"]),
+            "settings_imported": len(tables["settings"]),
+        }
+
+    _require_library()
+    written_paths: list[Path] = []
+    try:
+        with scanner.hold_library_still():
+            with write_tx() as conn:
+                result = _apply_import(conn, manifest, file_bytes, written_paths)
+    except scanner.LibraryBusy as exc:
+        raise _busy(exc) from None
+    except sqlite3.IntegrityError as exc:
+        # The one failure validation cannot rule out in advance - see
+        # _apply_import's docstring. A real, internally-consistent archive
+        # can still collide with something already in THIS library once
+        # apply starts writing (two goals for the same week, most likely -
+        # practice_goals' own UNIQUE(owner, period_start)). write_tx() has
+        # already rolled the database back by the time this runs; the
+        # except Exception below (which this is also caught by, were it not
+        # narrowed here first) is what undoes the files.
+        for path in written_paths:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise HTTPException(
+            409,
+            f"the archive could not be applied - it collides with something already in this "
+            f"library ({exc}). Nothing has been imported.",
+        ) from None
+    except Exception:
+        for path in written_paths:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise
+    return {"dry_run": False, **result}

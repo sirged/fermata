@@ -923,3 +923,49 @@ class ScorePurgeOut(BaseModel):
     transcriptions_destroyed: int
     practice_sessions_kept: int
     goals_kept: int
+
+
+# ---------------------------------------------------------------------------
+# Getting everything in and out (#58)
+#
+# GET /api/export has no response_model - it answers with the zip archive's
+# bytes, not JSON, the same reason GET .../file and .../thumb have none (see
+# _BINARY_ROUTES in test_api_docs.py). This model is for the other half:
+# POST /api/import, whose shape is the same whether it actually wrote
+# anything or only validated the archive and reported what it would do - see
+# ImportOut.dry_run, and api.import_library's own docstring for why that
+# symmetry (same shape, dry or applied) is deliberate rather than incidental,
+# the same reasoning ScoreMoveOut and LibraryMoveOut already state for #56's
+# bulk operations.
+# ---------------------------------------------------------------------------
+
+
+class ImportOut(BaseModel):
+    """POST /api/import: what an archive held, or what was actually written
+    from it - see `dry_run`. Every count is of ROWS (or, for `files_written`,
+    of files), not of "things that changed" - import never updates or
+    replaces anything already in the library, only adds, so a count here is
+    also a count of what is new since this call."""
+
+    dry_run: bool
+    schema_version: int
+    exported_at: str
+    fermata_version: str
+    scores_imported: int
+    scores_trashed_imported: int
+    files_written: int
+    transcriptions_imported: int
+    tags_imported: int
+    # How many of the archive's tags matched a tag already in this library by
+    # name, and were reused rather than duplicated - the one place import
+    # deduplicates against what is already here rather than only adding (see
+    # api._apply_import). Always 0 on a dry run: nothing has been compared
+    # against the live tags table without a transaction open to read it
+    # through, and reporting a real number here would claim a merge decision
+    # that has not actually been made yet.
+    tags_reused: int
+    score_tags_imported: int
+    instruments_imported: int
+    practice_sessions_imported: int
+    practice_goals_imported: int
+    settings_imported: int

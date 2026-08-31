@@ -246,4 +246,38 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(values),
     }).then(j),
+  // --- Getting everything in and out (issue #58) ----------------------------
+  // Everything Fermata knows, as one zip archive. Returns the response's own
+  // bytes and the filename the server chose (from Content-Disposition)
+  // rather than parsed JSON - `j()` assumes a JSON body, and export answers
+  // with a real archive instead.
+  exportLibrary: async ({ includeTrash = true, includeFiles = true } = {}) => {
+    const q = new URLSearchParams({
+      include_trash: String(includeTrash),
+      include_files: String(includeFiles),
+    });
+    const res = await fetch(`/api/export?${q}`);
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const body = await res.json();
+        if (typeof body?.detail === "string") detail = body.detail;
+      } catch {
+        // not JSON - nothing to extract
+      }
+      throw new ApiError(res.status, detail || res.statusText || `Request failed (${res.status})`);
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get("content-disposition") || "";
+    const match = disposition.match(/filename="([^"]+)"/);
+    return { blob, filename: match ? match[1] : "fermata-export.zip" };
+  },
+  // `dryRun` defaults true, the same default every bulk operation in this API
+  // uses (see moveScore/moveScores/renameFolder above) - a caller previews
+  // what an archive holds before writing anything from it.
+  importLibrary: (file, { dryRun = true } = {}) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return fetch(`/api/import?dry_run=${dryRun}`, { method: "POST", body: fd }).then(j);
+  },
 };

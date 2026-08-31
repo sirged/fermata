@@ -62,6 +62,10 @@ from fermata.main import app as full_app
 _BINARY_ROUTES = {
     ("GET", "/api/scores/{score_id}/file"),
     ("GET", "/api/scores/{score_id}/thumb"),
+    # Issue #58's export: a zip archive, not JSON - see api.export_library's
+    # docstring for why it has no response_model, the same reason the two
+    # routes above do not.
+    ("GET", "/api/export"),
 }
 
 
@@ -293,8 +297,9 @@ def test_every_route_has_exactly_the_expected_operation_count(openapi_schema):
     # 41 before issue #56, plus its nine: move one score, list/create folders,
     # rename a folder, move several scores, delete a score, list the trash,
     # restore from it, and destroy from it. Plus issue #57's one: how one
-    # piece is going. Plus issue #16's one: GET /api/me.
-    assert count == 52
+    # piece is going. Plus issue #16's one: GET /api/me. Plus issue #58's two:
+    # export the library to an archive, import one back.
+    assert count == 54
 
 
 def test_binary_routes_do_not_advertise_a_json_content_type(openapi_schema):
