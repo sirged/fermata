@@ -6,6 +6,7 @@
   import MetronomePage from "./lib/MetronomePage.svelte";
   import EarTraining from "./lib/EarTraining.svelte";
   import ScoreProgress from "./lib/ScoreProgress.svelte";
+  import FretToNote from "./lib/trainer/FretToNote.svelte";
 
   function parse(hash) {
     // Checked BEFORE the bare score route, which matches a prefix: without
@@ -20,6 +21,7 @@
     if (hash.startsWith("#/practice")) return { page: "practice" };
     if (hash.startsWith("#/metronome")) return { page: "metronome" };
     if (hash.startsWith("#/ear-training")) return { page: "ear-training" };
+    if (hash.startsWith("#/fretboard")) return { page: "fretboard" };
     return { page: "library" };
   }
 
@@ -46,6 +48,8 @@
   <MetronomePage />
 {:else if route.page === "ear-training"}
   <EarTraining />
+{:else if route.page === "fretboard"}
+  <FretToNote />
 {:else}
   <Library />
 {/if}

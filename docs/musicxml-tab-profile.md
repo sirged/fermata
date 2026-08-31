@@ -952,8 +952,10 @@ to tell which two dangling ends were meant to be one tie.
 of what is written — which notes are struck — and not how long anything is.
 Measured on the library this profile was developed against, adding ties left
 `bars`, `beats`, `notes`, `bars_overfull`, `bars_short` and `bars_defective`
-each exactly where they were: 10762, 83365, 99461, 1541, 4190, 5300 across
-the 293 extractable scores, unchanged to the unit.
+each exactly where they were: 10762, 83365, 99461, 1540, 4190, 5300 across
+the 293 extractable scores, unchanged to the unit. (`bars_overfull` was 1541
+when this rule landed; #163 later shortened one over-long rest, taking it to
+1540 without touching the other five, which is why it reads 1540 here.)
 
 The tie marks themselves account for as follows. The decoder matches 1534 tie
 curves across 171 of the 297 scores, which is 3068 marked ends; 2512 of those

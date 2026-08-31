@@ -298,8 +298,9 @@ def test_every_route_has_exactly_the_expected_operation_count(openapi_schema):
     # rename a folder, move several scores, delete a score, list the trash,
     # restore from it, and destroy from it. Plus issue #57's one: how one
     # piece is going. Plus issue #16's one: GET /api/me. Plus issue #58's two:
-    # export the library to an archive, import one back.
-    assert count == 54
+    # export the library to an archive, import one back. Plus issue #27's
+    # two: log a fretboard drill attempt, and list them.
+    assert count == 56
 
 
 def test_binary_routes_do_not_advertise_a_json_content_type(openapi_schema):
@@ -601,6 +602,31 @@ def test_transcription_model_stays_in_sync_with_api_pys_bar_key_tuples():
     extra = actual - expected
     assert not missing, f"api_models.TranscriptionOut is missing field(s) for: {sorted(missing)}"
     assert not extra, f"api_models.TranscriptionOut has field(s) no longer in api.py's tuples: {sorted(extra)}"
+
+
+def test_trainer_responses_match_their_models(client):
+    """Issue #27's two routes, through the drift-guarded client - proves both
+    that TrainerAttemptOut/TrainerAttemptListOut describe the real response
+    shape and (claim 5) that every key the handler actually computed reaches
+    the wire, which a bare model_validate() on the response alone could
+    never catch."""
+    logged = client.post(
+        "/api/trainer/attempts",
+        json={
+            "drill": "fret_to_note",
+            "direction": "position_to_note",
+            "target_string": 6,
+            "target_fret": 3,
+            "target_note": "G",
+            "given_note": "G",
+        },
+    )
+    assert logged.status_code == 200, logged.text
+    api_models.TrainerAttemptOut.model_validate(logged.json())
+
+    api_models.TrainerAttemptListOut.model_validate(
+        client.get("/api/trainer/attempts").json()
+    )
 
 
 def test_scan_and_upload_responses_match_their_models(client, monkeypatch):

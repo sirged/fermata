@@ -4077,11 +4077,25 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # needs it: a duration fix that moved this would not be a duration fix.
     assert totals["beats"] == 83365
     #                                        before #113 -> after
-    assert totals["bars_overfull"] == 1541               # 1600
+    # 1541 before #163, 1540 after: My Star (Final Fantasy XVI) bar 5 held a
+    # dotted whole rest read as six quarters in a 4/4 bar, which #163 shortens
+    # to the three quarters the bar had room for beside the quarter chord in its
+    # voice - so that voice stops being overfull. The bar stays SHORT (and so
+    # defective) because its OTHER voice was already short of the meter before
+    # this change, which is why only bars_overfull moves and bars_short /
+    # bars_defective do not. No note, beat or bar moves: a rest is neither.
+    assert totals["bars_overfull"] == 1540               # 1600 -> 1541 (#113) -> 1540 (#163)
     assert totals["bars_short"] == 4190                  # 4188
     assert totals["bars_defective"] == 5300              # 5340
     assert totals["bars_padded"] == 3603                 # 3602
-    assert totals["inferred_rest_quarters"] == 4897.875  # 4892.125
+    # 4897.875 before #162, 4899.875 after: Answers (Final Fantasy XIV
+    # Endwalker) bar 45 held one quarter in each of its two voices in a bar read
+    # a system early as 3/4. #162 puts that bar back on the running 4/4 it is
+    # printed in, so each short voice is now padded to four quarters instead of
+    # three - one extra quarter of meter-inferred silence per voice, +2.0 in
+    # total. It is padding that grew, not a rest that was read: bars_padded is
+    # unchanged because the same two voices were already being padded.
+    assert totals["inferred_rest_quarters"] == 4899.875  # 4892.125 -> 4897.875 (#113) -> 4899.875 (#162)
     # The systems still lost, named. Both are 7-line groups - a 6-line tab
     # staff ruled at 7.7pt with ONE extra full-width rule below its last
     # line, close enough to fall inside the 15.0pt cluster gap: Dynamis p1 at
@@ -4428,41 +4442,40 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
     written value rather than over dotted wholes alone, because the class is
     what matters - a whole note in a 3/4 bar would be the same defect.
 
-    TWO SITES ARE KNOWN AND NAMED rather than assumed away by a looser rule,
-    because the whole value of this check is that it does not need a page.
+    The notes of this shape are now ALL gone; one rest remains. Both were once
+    named here and both have been worked since:
 
-    Answers (Final Fantasy XIV Endwalker), bars 43 and 44: a whole note in a
-    bar read as 3/4. Read off the page, both bars are printed in 4/4 and hold
+    Answers (Final Fantasy XIV Endwalker), bars 43 and 44 held a whole note in
+    a bar read as 3/4. Read off the page, both bars are printed in 4/4 and hold
     exactly what the decoder says - a whole-note bass pedal under running
-    eighths. What is wrong is the meter, and for a reason with an owner: the
-    score's only 3/4 is a COURTESY meter, printed as the last thing on that
-    system for the Coda that follows it, and it is being applied from bar 43
-    instead of at the Coda. That is the hazard conftest's `kaine_salvation`
-    fixture already names, failing here on a different score, and it belongs
-    to the mid-system meter reader (#90/#104), not to any duration. Fixing it
-    from this side would mean loosening an arithmetic check to accommodate a
-    meter defect, which is backwards. Filed as #162; closing that one means
-    deleting these two entries from the list below.
+    eighths. What was wrong was the meter: the Coda that follows this system is
+    printed to its RIGHT in the same horizontal band, and its own opening 3/4
+    was being reached back across the band and applied from bar 43 (a courtesy
+    3/4 previewing that change also sits at the system's end, which is what made
+    it look like a mid-system change). #162 records a side-by-side block's
+    opening meter at its own left edge instead of at the band's start, so bars
+    43-45 keep the running 4/4 and only the Coda (bar 46) is 3/4 - and the whole
+    note fills its 4/4 bar exactly. That is why `impossible` is now empty.
 
-    And the RESTS, which the same issue calls out as an adjacent class and
-    which are counted separately here for exactly that reason. Two remain,
-    and they are different from each other:
+    The RESTS the same issue calls out as an adjacent class are counted
+    separately here, because a rest longer than its bar is a rest fault, not a
+    note one. One remains:
 
-      Classical-Guitar-Method-Vol1-2020, bar 16 - a whole rest alone in a 3/4
-      bar. This is #109's own named survivor, and it is LEGITIMATE
-      ENGRAVING: a whole-measure rest is drawn as a whole rest in any meter,
-      so the glyph means "this bar is silent", not "four quarters". Reading
-      it as four is a real remaining defect, with a real fix - a lone whole
-      rest should take its bar's length - which is filed as #163 and
-      deliberately not made here, because it would move the library's
-      conformance figures a second time in one change and leave neither
-      movement separable from the other.
+      Classical-Guitar-Method-Vol1-2020, bar 16 - a whole rest that reads as
+      four quarters in a 3/4 bar. Read against the page it is a LEGITIMATE
+      whole-measure rest: the melody voice is silent for the bar while the
+      tablature plays a six-eighth arpeggio. The fault is that the two are
+      flattened into one voice, where the arpeggio already fills the 3/4 bar,
+      so #163's over-read reduction (below) has no room to shrink the rest into
+      and leaves it - this is a voice-separation defect awaiting its own issue,
+      not the confident duration over-read #163 fixes. See the assertion below.
 
-      My Star (Final Fantasy XVI), bar 5 - a DOTTED whole rest, six quarters,
-      in a 4/4 bar. Not the whole-measure convention and not legitimate. It
-      predates #111/#112 (measured at #152's commit, where it is already
-      present), and is carried on #163 beside the one above so that deciding
-      whether they share a fix is somebody's job rather than nobody's.
+      My Star (Final Fantasy XVI), bar 5 held a DOTTED whole rest - six quarters
+      in a 4/4 bar, never the whole-measure convention (a plain undotted whole
+      rest) - beside a quarter chord in the same voice. That IS a confident
+      over-read of a partial rest, the family #140 also belongs to, and #163
+      shortens it to the three quarters the bar has room for, disclosed as an
+      inferred length. It is gone from the list below as a result.
     """
     type_quarters = {"breve": 8.0, "whole": 4.0, "half": 2.0, "quarter": 1.0,
                      "eighth": 0.5, "16th": 0.25, "32nd": 0.125}
@@ -4501,21 +4514,38 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
                         impossible_rests.append(where)
 
     assert scores_checked >= 250, f"only {scores_checked} scores were checked"
-    # The seventeen, and everything else of their shape. Pinned as an exact
-    # list rather than a count so a new site names itself in the failure.
-    assert impossible == [
-        ("Answers (Final Fantasy XIV Endwalker).pdf", "43", (3, 4), "whole", 0),
-        ("Answers (Final Fantasy XIV Endwalker).pdf", "44", (3, 4), "whole", 0),
-    ], (
-        "note(s) written longer than the bar they sit in, beyond the two "
-        f"disclosed in this test's docstring (score, bar, meter, type, dots): "
-        f"{impossible[:10]}"
+    # The seventeen went at #90/#104; the two on Answers went at #162, which
+    # moved that score's bars 43-44 off the courtesy 3/4 they were being read a
+    # system early in and back onto the running 4/4 a whole note fills exactly.
+    # Nothing of this shape remains, and none may come back: an emitted note
+    # longer than its bar is impossible whatever the page says, so an exact
+    # empty list here makes any new site name itself in the failure.
+    assert impossible == [], (
+        "note(s) written longer than the bar they sit in (score, bar, meter, "
+        f"type, dots): {impossible[:10]}"
         + (f" and {len(impossible) - 10} more" if len(impossible) > 10 else ""))
-    # The two disclosed rests, pinned so that they can neither multiply
-    # unnoticed nor be quietly fixed without these sentences going with them.
+    # One disclosed rest remains, pinned so it can neither multiply unnoticed
+    # nor be quietly fixed without this sentence going with it.
+    #
+    # My Star (Final Fantasy XVI) bar 5 held a DOTTED whole rest - six quarters
+    # in a 4/4 bar, never the whole-measure convention (which is a plain whole
+    # rest, undotted) - beside a quarter chord in the same voice. That is a
+    # genuine over-read of a partial rest, and #163 shortens it to the three
+    # quarters the bar has room for beside the chord, disclosed as an inferred
+    # length. It is gone from this list as a result.
+    #
+    # Classical-Guitar-Method-Vol1-2020 bar 16 stays. Read against the printed
+    # page (the Scarborough Fair setting, "She once was a true love of mine" -
+    # the last system on PDF page 84) its whole rest is a LEGITIMATE
+    # whole-measure rest: the melody voice is silent for the bar while the
+    # tablature plays a six-eighth arpeggio. The defect is that the two were flattened into one
+    # voice, where the arpeggio already fills the 3/4 bar and leaves the rest no
+    # room - a voice-separation fault, not the duration over-read #163 fixes, so
+    # #163's reduction correctly does not fire on it (shrinking it to the zero
+    # room left would drop a written beat rather than shorten one). Carried here
+    # until that separation is done under its own issue.
     assert impossible_rests == [
         ("Classical-Guitar-Method-Vol1-2020.pdf", "16", (3, 4), "whole", 0),
-        ("My Star (Final Fantasy XVI).pdf", "5", (4, 4), "whole", 1),
     ], impossible_rests
 
 

@@ -238,6 +238,22 @@ export const api = {
       body: JSON.stringify(body),
     }).then(j),
   deleteInstrument: (id) => fetch(`/api/instruments/${id}`, { method: "DELETE" }).then(j),
+  // Structured, per-question fretboard drill results (issue #27, #32) - one
+  // row per answered question, independent of the practice_sessions row the
+  // drill's own TIME is logged against (see fret-to-note.js's module
+  // docstring for why the two are separate calls).
+  logTrainerAttempt: (body) =>
+    fetch("/api/trainer/attempts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(j),
+  trainerAttempts: (params = {}) => {
+    const q = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== "")),
+    );
+    return fetch(`/api/trainer/attempts?${q}`).then(j);
+  },
   version: () => fetch("/api/version").then(j),
   settings: () => fetch("/api/settings").then(j),
   putSettings: (values) =>
