@@ -3177,6 +3177,88 @@ def test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws(
     assert result.nav_marks_unresolved == 0
 
 
+def test_melodies_of_life_numbers_its_two_segnos_and_their_two_ds_jumps(
+        melodies_of_life_pdf):
+    """Issue #167 on a real score. The page draws a segno printing a bold "1"
+    at bar 16 and one printing "2" at bar 32, and "D.S. 1"/"D.S. 2" send the
+    player to one each. Before #167 every segno sign emitted the single shared
+    id "segno" and every "D.S." emitted `dalsegno="segno"`, so both jumps
+    landed at whichever segno a reader found first - the segno side of the bug
+    the coda side (coda1/coda2, resolved here too) never had.
+
+    The number is read from the music-font digit drawn against the sign, not
+    from the text layer: the same digit reaches the text fused to the sign and
+    offset by one, so a text reading would mislabel."""
+    result = tabextract.extract(melodies_of_life_pdf)
+    assert result.extractable
+    from test_engraved_fixtures import _navigation_structure
+    assert _navigation_structure(result.musicxml) == {
+        16: [("before", "segno", {"segno": "segno1"})],
+        32: [("before", "segno", {"segno": "segno2"})],
+        40: [("after", "To Coda 1", {"tocoda": "coda1"})],
+        45: [("after", "To Coda 2", {"tocoda": "coda2"})],
+        54: [("after", "D.S. 1", {"dalsegno": "segno1"})],
+        55: [("before", "coda", {"coda": "coda1"}),
+             ("after", "D.S. 2", {"dalsegno": "segno2"})],
+        56: [("before", "coda", {"coda": "coda2"})],
+    }
+    assert result.nav_marks_unresolved == 0
+
+
+def test_agnea_numbers_its_segnos_by_the_printed_digit_not_reading_order(
+        agnea_the_dancer_pdf):
+    """The adversarial case for #167, and the reason the id must come from the
+    printed digit rather than from appearance order. This page draws its segno
+    printing "2" on the HIGHER system (bar 2) and its segno printing "1" LOWER
+    (bar 10), so numbering the signs top-to-bottom gets both backwards. The
+    bar-2 sign is segno2 and the bar-10 sign is segno1, and "D.S. 2"/"D.S. 1"
+    resolve to segno2/segno1 accordingly - by their own parsed number, not by
+    which sign the page draws first."""
+    result = tabextract.extract(agnea_the_dancer_pdf)
+    assert result.extractable
+    from test_engraved_fixtures import _navigation_structure
+    structure = _navigation_structure(result.musicxml)
+    assert structure[2] == [("before", "segno", {"segno": "segno2"})]
+    assert structure[10] == [("before", "segno", {"segno": "segno1"})]
+    assert structure[35] == [("after", "D.S. 2 al Coda", {"dalsegno": "segno2"})]
+    assert structure[51] == [("after", "D.S. 1", {"dalsegno": "segno1"})]
+    # The higher segno on the page reaches the LOWER id, which a by-appearance
+    # scheme could never produce - this is the whole point of the fixture.
+    assert structure[2][0][2]["segno"] == "segno2"
+    assert result.nav_marks_unresolved == 0
+
+
+def test_hinata_numbers_its_codas_from_the_sign_digit_and_discloses_the_two_target_to_coda(
+        hinata_vs_neji_pdf):
+    """Issue #167's coda shape. This page numbers its codas as a music-font
+    digit drawn to the LEFT of the sign ("1 (sign) Coda" at bar 19, "2 (sign)
+    Coda" at bar 27) rather than as the word "Coda 1", so the coda LABEL fold
+    - which reads a leading digit in a text line as the system's bar number -
+    left both as the shared id "coda". Read from the digit glyph they are
+    coda1 and coda2.
+
+    Its lone unnumbered "D.S." still resolves against its single unnumbered
+    segno (both plain "segno"), which is the fallback a numbered scheme must
+    keep. And its "To Coda 1 & 2" at bar 10 names BOTH codas from one mark,
+    which MusicXML's single-id `tocoda` cannot express: now that the two codas
+    are distinct rather than collapsed onto one, the instruction goes out as
+    the words the page prints with no playback jump, and its bar is disclosed
+    (nav_marks_unresolved) with a stated reason rather than silently pointed
+    at half of what the page says."""
+    result = tabextract.extract(hinata_vs_neji_pdf)
+    assert result.extractable
+    from test_engraved_fixtures import _navigation_structure
+    structure = _navigation_structure(result.musicxml)
+    assert structure[19] == [("before", "coda", {"coda": "coda1"})]
+    assert structure[27] == [("before", "coda", {"coda": "coda2"})]
+    assert structure[11] == [("before", "segno", {"segno": "segno"})]
+    assert structure[26] == [("after", "D.S.", {"dalsegno": "segno"})]
+    # The two-target "To Coda" is written as words with no sound, and disclosed.
+    assert structure[10] == [("after", "To Coda 1 & 2", None)]
+    assert result.nav_marks_unresolved == 1
+    assert result.nav_marks_unresolved_bars == [10]
+
+
 def test_two_thick_strokes_with_no_readable_dots_emit_heavy_heavy_not_nothing(
         tarrega_estudio_em_pdf):
     """Item 6 (issue #134 adversarial review): a barline group of two-or-more
@@ -3358,6 +3440,8 @@ def test_a_coda_label_gives_its_number_to_the_sign_it_labels_not_a_mark_of_its_o
     sign = tabextract._NavMark("coda", "", 392.3, 609.3, 402.2, 629.8)
     monkeypatch.setattr(tabextract.glyph, "navigation_glyph_events",
                         lambda page: [_FakeGlyph(sign)])
+    monkeypatch.setattr(tabextract.glyph, "navigation_digit_events",
+                        lambda page: [])
     monkeypatch.setattr(tabextract, "_text_lines", lambda page: [
         # The bar number, the sign and the label, in one line - the sign's
         # own box sits INSIDE this line's box.
@@ -3385,6 +3469,8 @@ def test_the_sign_printed_inside_a_to_coda_is_that_instructions_glyph_not_a_coda
     sign = tabextract._NavMark("coda", "", 244.29, 345.18, 254.17, 365.68)
     monkeypatch.setattr(tabextract.glyph, "navigation_glyph_events",
                         lambda page: [_FakeGlyph(sign)])
+    monkeypatch.setattr(tabextract.glyph, "navigation_digit_events",
+                        lambda page: [])
     monkeypatch.setattr(tabextract, "_text_lines", lambda page: [
         ("To Coda", 197.1, 327.58, 254.17, 377.51),
     ])
@@ -3401,6 +3487,8 @@ def test_a_coda_sign_beside_a_to_coda_rather_than_inside_it_is_still_a_coda(
     sign = tabextract._NavMark("coda", "", 417.9, 616.59, 427.78, 637.09)
     monkeypatch.setattr(tabextract.glyph, "navigation_glyph_events",
                         lambda page: [_FakeGlyph(sign)])
+    monkeypatch.setattr(tabextract.glyph, "navigation_digit_events",
+                        lambda page: [])
     monkeypatch.setattr(tabextract, "_text_lines", lambda page: [
         ("To Coda", 197.1, 327.58, 254.17, 377.51),
     ])
@@ -3416,10 +3504,20 @@ class _FakeGlyph:
         self.x0, self.y0, self.x1, self.y1 = mark.x0, mark.y0, mark.x1, mark.y1
 
 
+class _FakeDigit:
+    """A music-font digit glyph event, for the sign-number fold."""
+
+    def __init__(self, category, x0, y0, x1, y1):
+        self.category = category
+        self.x0, self.y0, self.x1, self.y1 = x0, y0, x1, y1
+
+
 def test_a_coda_label_with_no_sign_near_it_is_still_a_coda(monkeypatch):
     """One library file draws its coda in a font this decoder does not
     recognise and prints only the word, so the word alone has to be enough."""
     monkeypatch.setattr(tabextract.glyph, "navigation_glyph_events",
+                        lambda page: [])
+    monkeypatch.setattr(tabextract.glyph, "navigation_digit_events",
                         lambda page: [])
     monkeypatch.setattr(tabextract, "_text_lines", lambda page: [
         ("Coda", 76.0, 610.0, 104.0, 623.0),
@@ -4002,6 +4100,83 @@ def test_a_numbered_to_coda_names_the_coda_that_carries_the_same_number():
     assert unresolved == []
 
 
+def test_a_numbered_ds_names_the_segno_that_carries_the_same_number():
+    """The segno side of the same numbering (issue #167), mirroring the coda
+    test above. A "D.S. 1"/"D.S. 2" names the segno printing that same digit,
+    each resolving to `dalsegno="segno1"`/`"segno2"` and each segno sign
+    emitting the matching `segno="segno1"`/`"segno2"`.
+
+    The target is chosen by the JUMP's own parsed number, NOT by which segno
+    was anchored first: here segno2 is anchored (bar 2) BEFORE segno1 (bar 10),
+    the reverse-order shape Agnea draws, and "D.S. 1" still resolves to
+    segno1. Before #167 both signs and both jumps shared the single id
+    "segno", so a numbered D.S. could not name distinct places at all."""
+    segno2 = tabextract._NavMark("segno", "", 40.0, 0, 52.0, 5, number=2)
+    segno1 = tabextract._NavMark("segno", "", 40.0, 0, 52.0, 5, number=1)
+    ds1 = tabextract._NavMark("jump", "D.S. 1", 100.0, 0, 150.0, 5,
+                              back_to="segno", number=1)
+    ds2 = tabextract._NavMark("jump", "D.S. 2", 100.0, 0, 150.0, 5,
+                              back_to="segno", number=2)
+    directions, unresolved, _refused = tabextract._resolve_nav_marks(
+        [(2, segno2), (10, segno1), (54, ds1), (55, ds2)])
+    assert unresolved == []
+    assert directions[2]["before"] == [
+        {"symbol": "segno", "sound": {"segno": "segno2"}}]
+    assert directions[10]["before"] == [
+        {"symbol": "segno", "sound": {"segno": "segno1"}}]
+    assert directions[54]["after"] == [
+        {"words": "D.S. 1", "sound": {"dalsegno": "segno1"}}]
+    assert directions[55]["after"] == [
+        {"words": "D.S. 2", "sound": {"dalsegno": "segno2"}}]
+
+    # A lone unnumbered D.S. still names a single unnumbered segno - the
+    # fallback the numbered scheme must keep (Hinata's shape).
+    segno = tabextract._NavMark("segno", "", 40.0, 0, 52.0, 5)
+    plain = tabextract._NavMark("jump", "D.S.", 100.0, 0, 150.0, 5, back_to="segno")
+    directions, unresolved, _refused = tabextract._resolve_nav_marks(
+        [(1, segno), (11, plain)])
+    assert unresolved == []
+    assert directions[1]["before"] == [
+        {"symbol": "segno", "sound": {"segno": "segno"}}]
+    assert directions[11]["after"] == [
+        {"words": "D.S.", "sound": {"dalsegno": "segno"}}]
+
+    # A numbered D.S. whose numbered segno the page does not draw resolves to
+    # nothing and is disclosed, rather than guessing the other segno.
+    _d, unresolved, _refused = tabextract._resolve_nav_marks(
+        [(2, segno2), (54, ds1)])
+    assert unresolved == [54], "D.S. 1 with no segno1 on the page"
+    assert _d[54]["after"] == [{"words": "D.S. 1", "sound": None}]
+
+
+def test_a_signs_printed_number_is_read_from_the_music_font_digit_beside_it(monkeypatch):
+    """The digit fold in _read_navigation_marks (issue #167). A segno numbers
+    to its RIGHT and a coda numbers to its LEFT, each as a music-font digit on
+    the sign's own baseline, and the sign takes that digit's value as its
+    number. A page's OTHER music-font digits - a stacked time signature at the
+    system's start - sit well off the sign's baseline and must NOT be folded
+    in, which is what keeps this from reading a meter as a sign number."""
+    segno = tabextract._NavMark("segno", "", 74.0, 40.0, 85.0, 60.0)
+    coda = tabextract._NavMark("coda", "", 93.0, 620.0, 103.0, 640.0)
+    monkeypatch.setattr(tabextract.glyph, "navigation_glyph_events",
+                        lambda page: [_FakeGlyph(segno), _FakeGlyph(coda)])
+    monkeypatch.setattr(tabextract, "_text_lines", lambda page: [])
+    monkeypatch.setattr(tabextract.glyph, "navigation_digit_events", lambda page: [
+        # The segno's "1", just to its right on its baseline.
+        _FakeDigit("digit1", 87.0, 40.0, 97.0, 60.0),
+        # The coda's "2", just to its left on its baseline.
+        _FakeDigit("digit2", 82.0, 620.0, 92.0, 640.0),
+        # A stacked time signature "6"/"8" at the system's left edge - a whole
+        # sign-height off the coda's baseline, so neither is the coda's number.
+        _FakeDigit("digit6", 60.0, 596.0, 70.0, 610.0),
+        _FakeDigit("digit8", 60.0, 610.0, 70.0, 624.0),
+    ])
+    marks = {(m.kind, m.y0): m.number
+             for m in tabextract._read_navigation_marks(object())}
+    assert marks[("segno", 40.0)] == 1
+    assert marks[("coda", 620.0)] == 2
+
+
 def test_a_refused_coda_changes_the_disclosure_wording_and_not_a_single_count():
     """One root cause, two counters, one sentence that says which.
 
@@ -4463,10 +4638,22 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # issue #154 let its segno be read at all; between the two changes it
     # now both reads its segno and holds the bars its coda names.
     #
+    # 7 -> 8 (issue #167): Hinata vs Neji (Naruto) numbers its two codas as
+    # music-font digits drawn against the sign ("1 (sign) Coda" / "2 (sign)
+    # Coda"), which are now read as coda1 and coda2. Its "To Coda 1 & 2" @10
+    # names BOTH of them, which MusicXML's single-id `tocoda` cannot express,
+    # so - now that the two codas are distinct rather than collapsed onto one
+    # unnumbered "coda" - the instruction goes out as the words the page
+    # prints with no jump and its bar is disclosed, the same way every "To
+    # Coda <list>" already is on a score with more than one coda. Bar 10 is
+    # the 8th such bar. Measured score by score against this branch's parent,
+    # this file and the four numbered-segno files below are the only five
+    # whose navigation output moves at all; nothing else in the library does.
+    #
     # 0 unanchored. Not "near zero" - the library now holds no navigation
     # mark at all that was read off a page and has no bar to name, because
     # the systems those marks were drawn over are read.
-    assert totals["nav_marks_unresolved"] == 7
+    assert totals["nav_marks_unresolved"] == 8
     assert totals["nav_marks_unanchored"] == 0
     # What all of that costs the score a reader actually sees. On this
     # branch's parent the library reports 263 scores at `structure` high, 29

@@ -1850,6 +1850,14 @@ NAV_BAND_SPACES = 12.0
 # that draw the sign in the music font and the word in a text font a little
 # apart - measured at up to 1.6 sign-heights in the library.
 NAV_LABEL_GAP_HEIGHTS = 3.0
+# How far off a sign's own baseline a music-font digit may sit and still be
+# read as that sign's printed NUMBER (see the digit fold in
+# _read_navigation_marks), as a fraction of the sign's drawn height. The
+# number digit is drawn ON the baseline - measured at a vertical offset of 0.0
+# across every numbered segno and coda in the library - so this is deliberately
+# tight: a stacked time signature at the same system's start sits a whole sign
+# height or more off the baseline, and half a height cleanly separates the two.
+NAV_SIGN_DIGIT_BASELINE_HEIGHTS = 0.5
 # How close a bar boundary has to be to an instruction's own text before
 # that boundary is taken as the barline the instruction fires on, in TAB
 # staff spaces (the staff the bar grid belongs to). Measured over the
@@ -2067,6 +2075,52 @@ def _read_navigation_marks(page):
                for x0, y0, x1, y1 in tocoda_boxes):
             continue
         signs.append(_NavMark(ev.category, "", ev.x0, ev.y0, ev.x1, ev.y1))
+
+    # Fold a sign's printed NUMBER, drawn as a music-font digit beside it,
+    # into the sign. A numbered segno (𝄋) carries a bold digit at its lower
+    # right and a numbered "D.S. 1"/"D.S. 2" then names one segno or the
+    # other; some scores number their codas the same way, printing the digit
+    # to the sign's LEFT ("1 ⊕ Coda"). Both digits are drawn in the SAME music
+    # font as the sign, so each reaches us as a digit glyph event whose
+    # category is the printed number ITSELF - Maestro's '1' is GID 16 ->
+    # `digit1`, its '2' is GID 17 -> `digit2`, each read from the rendered
+    # outline (glyph.navigation_digit_events, DIGIT_CATS). No text-layer
+    # reading is trusted for this: the same digits reach the text layer fused
+    # to the sign glyph and offset by one ("1 ⊕ Coda" arrives as "1⊕Coda"
+    # whose leading char is a '1' for a printed 2), so a text digit would
+    # silently mislabel. The glyph carries the number with no offset.
+    #
+    # The digit sits against the sign on the sign's own baseline (measured
+    # across the five numbered files in the library at a gap of 0.0-0.09
+    # sign-heights, on either side). A page's OTHER music-font digits - a
+    # stacked time signature, chiefly - sit at the staff's left edge, well off
+    # the sign's baseline, so requiring the digit to share the baseline
+    # (within half the sign's height) discards them; the closest qualifying
+    # digit wins where more than one survives, and the side it sits on is not
+    # constrained because a segno numbers to its right and a coda to its left.
+    # Measured over the whole library this numbers exactly the segno and coda
+    # signs whose pages print a digit against them and no others - the FF
+    # codas that print "Coda 1"/"Coda 2" as words carry no adjacent digit
+    # glyph and are left for the coda LABEL fold below to number from the text.
+    #
+    # An unnumbered lone sign (the library's D.S.-with-one-segno scores) has
+    # no adjacent digit and keeps number=None, which _resolve_nav_marks reads
+    # as the single-sign case.
+    digit_events = glyph.navigation_digit_events(page)
+    for sign in signs:
+        height = max(sign.y1 - sign.y0, 1.0)
+        owner_digit = None
+        best_gap = None
+        for d in digit_events:
+            if abs(d.y0 - sign.y0) > height * NAV_SIGN_DIGIT_BASELINE_HEIGHTS:
+                continue
+            gap = max(d.x0 - sign.x1, sign.x0 - d.x1, 0.0)
+            if gap > height * NAV_LABEL_GAP_HEIGHTS:
+                continue
+            if best_gap is None or gap < best_gap:
+                owner_digit, best_gap = d, gap
+        if owner_digit is not None:
+            sign.number = glyph.DIGIT_CATS[owner_digit.category]
 
     # Fold a coda LABEL into the sign it labels. The label supplies the
     # NUMBER; the sign keeps the POSITION, which is the half that has to be
@@ -2349,18 +2403,21 @@ def _resolve_nav_marks(anchored, refused=()):
     there, so `dacapo` never needs a mark to point at.
     """
     codas = {}
-    segno = None
+    segnos = {}
     fine = None
     for bar, mark in anchored:
         if mark.kind == "coda":
             codas.setdefault(mark.number, bar)
-        elif mark.kind == "segno" and segno is None:
-            segno = bar
+        elif mark.kind == "segno":
+            segnos.setdefault(mark.number, bar)
         elif mark.kind == "fine" and fine is None:
             fine = bar
 
     def coda_id(number):
         return "coda" if number is None else f"coda{number}"
+
+    def segno_id(number):
+        return "segno" if number is None else f"segno{number}"
 
     directions = {}
     unresolved = []
@@ -2370,7 +2427,8 @@ def _resolve_nav_marks(anchored, refused=()):
 
     for bar, mark in sorted(anchored, key=lambda pair: (pair[0], pair[1].kind)):
         if mark.kind == "segno":
-            add(bar, "before", {"symbol": "segno", "sound": {"segno": "segno"}})
+            sid = segno_id(mark.number)
+            add(bar, "before", {"symbol": "segno", "sound": {"segno": sid}})
         elif mark.kind == "coda":
             cid = coda_id(mark.number)
             add(bar, "before", {"symbol": "coda", "sound": {"coda": cid}})
@@ -2394,8 +2452,21 @@ def _resolve_nav_marks(anchored, refused=()):
             sound = None
             if mark.back_to == "start":
                 sound = {"dacapo": "yes"}
-            elif segno is not None:
-                sound = {"dalsegno": "segno"}
+            elif mark.number in segnos:
+                # A numbered "D.S. 1"/"D.S. 2" names the segno printing that
+                # same digit (see the segno-number fold in
+                # _read_navigation_marks). Its own parsed number decides the
+                # target, NOT reading order: "Agnea, the Dancer" prints its
+                # segno "2" on the higher system and its segno "1" lower, so a
+                # by-appearance id would send both jumps to the wrong sign.
+                sound = {"dalsegno": segno_id(mark.number)}
+            elif mark.number is None and len(segnos) == 1:
+                # A lone unnumbered "D.S." on a score with one segno names it
+                # (numbered or not), the same fallback the unnumbered "To
+                # Coda" takes for a single coda. Two numbered segnos with an
+                # unnumbered D.S. name neither unambiguously, so no sound is
+                # attached and the bar is disclosed below.
+                sound = {"dalsegno": segno_id(next(iter(segnos)))}
             # The second half of the instruction ("al Coda", "al Fine")
             # names where to STOP, and MusicXML carries that on the Coda or
             # Fine mark itself rather than on the jump - so a jump whose
