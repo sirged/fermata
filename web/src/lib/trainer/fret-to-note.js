@@ -21,51 +21,25 @@
 // the same as every other activity, so a reader of the practice page is not
 // left with a blank line; the STRUCTURED, QUERYABLE record lives in
 // trainer_attempts instead of being the only place time was spent.
+//
+// SCOPING (string set, fret range - and now a key too) IS constraints.js's
+// (issue #26), NOT THIS FILE'S. This drill had the first version of that
+// arithmetic; it has been moved out so the chord flash cards (#28) can use
+// the identical rule rather than a second copy of it, and this module keeps
+// its own three names (scopePositions/scopeIsAskable/scopeLabel) as a
+// re-export so nothing that already imports them - FretToNote.svelte, this
+// file's own tests - has to change.
 import { countOrNone, formatDuration } from "../practice.js";
-import { DEFAULT_FRET_COUNT, noteAt, pitchClass, positions as neckPositions } from "./neck.js";
+import { scopeIsAskable, scopeLabel, scopePositions } from "./constraints.js";
+import { noteAt, pitchClass } from "./neck.js";
+
+export { scopeIsAskable, scopeLabel, scopePositions } from "./constraints.js";
 
 export const POSITION_TO_NOTE = "position_to_note";
 export const NOTE_TO_POSITION = "note_to_position";
 export const DIRECTIONS = [POSITION_TO_NOTE, NOTE_TO_POSITION];
 
 export const DRILL = "fret_to_note";
-
-/** Every position a scope actually allows: `strings` narrowed to
- * `scope.stringNumbers` (all of them when omitted or empty) and
- * `scope.startFret`..`scope.endFret`. The one place both pickQuestion and
- * the "can this even be asked" check draw positions from. */
-export function scopePositions(strings, scope = {}) {
-  const start = Math.max(0, Number(scope.startFret ?? 0));
-  const end = Number(scope.endFret ?? DEFAULT_FRET_COUNT);
-  const allowed = Array.isArray(scope.stringNumbers) && scope.stringNumbers.length
-    ? new Set(scope.stringNumbers)
-    : null;
-  return neckPositions(strings, start, end).filter((p) => !allowed || allowed.has(p.string));
-}
-
-/** Whether a scope has anything to ask about at all - reachable through the
- * ordinary interface the moment every string is deselected, or a fret range
- * is narrowed to nothing. */
-export function scopeIsAskable(strings, scope) {
-  return scopePositions(strings, scope).length > 0;
-}
-
-/** "Strings 1, 2, frets 0-5" - the scope, named. Every string is not stated
- * (it is the ordinary case); a narrowed set is. */
-export function scopeLabel(strings, scope = {}) {
-  const start = Math.max(0, Number(scope.startFret ?? 0));
-  const end = Number(scope.endFret ?? DEFAULT_FRET_COUNT);
-  const all = (strings ?? []).map((s) => s.number).sort((a, b) => a - b);
-  const selected = Array.isArray(scope.stringNumbers) && scope.stringNumbers.length
-    ? [...scope.stringNumbers].sort((a, b) => a - b)
-    : all;
-  const parts = [];
-  if (selected.length !== all.length) {
-    parts.push(`string${selected.length === 1 ? "" : "s"} ${selected.join(", ")}`);
-  }
-  parts.push(`frets ${start}-${end}`);
-  return parts.join(", ");
-}
 
 /** How the direction reads in a sentence. */
 export function directionLabel(direction) {

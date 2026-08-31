@@ -839,6 +839,60 @@ export async function playPitch(
   return noteOn ? noteOn.noteKey : null;
 }
 
+/**
+ * Sound several pitches AT ONCE, as MIDI note numbers - a chord, for the
+ * chord flash card drill (issue #28's "hear it, using the synthesiser
+ * already present"). The same one-shot MIDI file playPitch builds, widened
+ * to one NoteOnEvent per pitch at tick 0 rather than one note at all.
+ *
+ * Resolves with the MIDI notes actually handed to the synthesiser - same
+ * guarantee as playPitch's own, extended to a list: a pitch outside MIDI's
+ * range is simply left out (never substituted or rounded into range), and
+ * the array reports exactly what was queued, in the order given. An empty
+ * `midis` array, or one where every pitch was out of range, resolves with
+ * an empty array rather than null - the synthesiser loaded and nothing was
+ * wrong with it, there was simply nothing left to hand it. null is reserved
+ * for the synthesiser itself being unavailable, the same case playPitch
+ * reserves it for.
+ */
+export async function playChord(
+  midis,
+  { voice = AUDITION_PROGRAM, seconds = AUDITION_SECONDS } = {},
+) {
+  const keys = (midis ?? [])
+    .map((m) => Math.round(Number(m)))
+    .filter((key) => Number.isFinite(key) && key >= MIN_MIDI && key <= MAX_MIDI);
+  const player = await auditionPlayer();
+  if (!player) return null;
+  const {
+    MidiFile,
+    TempoChangeEvent,
+    ProgramChangeEvent,
+    ControlChangeEvent,
+    ControllerType,
+    NoteOnEvent,
+    NoteOffEvent,
+    EndOfTrackEvent,
+  } = alphaTab.midi;
+  const end = Math.round(Math.max(0.1, Number(seconds) || AUDITION_SECONDS) * TICKS_PER_SECOND);
+  const file = new MidiFile();
+  file.division = TICKS_PER_QUARTER;
+  file.addEvent(new TempoChangeEvent(0, MICROSECONDS_PER_QUARTER));
+  file.addEvent(new ProgramChangeEvent(0, 0, AUDITION_CHANNEL, Math.round(Number(voice)) || 0));
+  file.addEvent(
+    new ControlChangeEvent(0, 0, AUDITION_CHANNEL, ControllerType.VolumeCoarse, 127),
+  );
+  for (const key of keys) {
+    file.addEvent(new NoteOnEvent(0, 0, AUDITION_CHANNEL, key, AUDITION_VELOCITY));
+  }
+  for (const key of keys) {
+    file.addEvent(new NoteOffEvent(0, end, AUDITION_CHANNEL, key, 0));
+  }
+  file.addEvent(new EndOfTrackEvent(0, end + 1));
+  player.playOneTimeMidiFile(file);
+  return file.events.filter((e) => e instanceof NoteOnEvent).map((e) => e.noteKey);
+}
+
 // ------------------------------------------------- the practice metronome
 //
 // The click itself is NOT here. It lives in metronome-engine.js, as a general

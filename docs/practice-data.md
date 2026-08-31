@@ -427,16 +427,53 @@ right and wrong separately and never free to divide one by the other.
   this API keeping a bespoke aggregate endpoint in step with every future
   drill's own idea of what a weak spot is.
 
+## Trainer chord attempts
+
+The question this document's own "what is not here yet" section left open:
+whether a chord drill's attempts fit `trainer_attempts` or need a table of
+their own. *Chord flash cards* (issue #28) answered it - a chord does not
+fit. `trainer_attempts`' `target_note`/`given_note` are `NOT NULL` columns
+holding exactly one pitch class each, which is the right shape for a drill
+whose unit is one note; a chord is a SET of them, and forcing its tone set
+into a single-note column would either lose which chord was asked (keeping
+only its root) or store something that plainly is not a pitch class. So this
+is a sibling table, `trainer_chord_attempts`, built the same way
+`trainer_attempts` is: `correct` computed once, server-side, never trusted
+from a request body.
+
+| Column | Meaning |
+| --- | --- |
+| `id` | Stable for the life of the row. |
+| `owner` | `'local'`, same as everywhere else. |
+| `session_id` | The `practice_sessions` row logging the surrounding drill's TIME, when there is one yet - `NULL` otherwise, the same ordinary-not-edge case `trainer_attempts.session_id` is. |
+| `drill` | `'chord_flashcards'` today - a widened tuple, not a migration, is how a second chord-shaped drill would arrive, the same rule `trainer_attempts.drill` follows. |
+| `direction` | `shape_to_name` (shown a real fingering, asked to name the chord) or `name_to_shape` (named a chord, asked to place it on the neck). |
+| `target_root`, `target_quality` | The chord being tested, always set - a pitch class and one of `major`/`minor`/`dominant7`. |
+| `target_shape` | The fingering actually SHOWN - a JSON array of `{string, fret}` - set only on `shape_to_name`; `NULL` on `name_to_shape`, which shows no shape at all. |
+| `given_root`, `given_quality` | The chord chosen by name - set only on `shape_to_name`. |
+| `given_notes` | The pitch classes a TAPPED shape actually sounded, a JSON array worked out client-side from the instrument's own tuning - never from which shape the player meant to play, mirroring `given_note`'s rule above. Set only on `name_to_shape`. |
+| `given_shape` | The positions actually tapped, a JSON array of `{string, fret}` - set only on `name_to_shape`, kept beside `given_notes` so "which shapes get missed" stays a real question over this table. |
+| `correct` | Whether the given tone SET equals the target chord's own tones (`chord_tones(target_root, target_quality)`, mirrored character-for-character between `server/fermata/trainer.py` and `web/src/lib/trainer/chord-theory.js`) - the same rule either direction, computed here and only here. There is more than one right way to play a given chord, so this is never a check against one canonical fingering. |
+| `response_ms` | How long the question took, informational. |
+| `created_at` | When the row was written. |
+
+**One `correct` rule covers both directions, the same idea `trainer_attempts`
+already applies to a single note, widened to a set.** `shape_to_name`
+compares the CHOSEN chord's tones to the target's; `name_to_shape` compares
+what was actually TAPPED (resolved to pitch classes client-side, the same
+trust boundary `given_note` already crosses) to the target's. Tone-set
+equality, not label equality and not fingering equality, either way.
+
+### Asking questions
+
+- `POST /api/trainer/chord-attempts` - log one answered chord question.
+- `GET /api/trainer/chord-attempts?drill=&direction=&correct=&root=&quality=&session_id=&limit=` -
+  the raw, queryable record, newest first - the same shape
+  `GET /api/trainer/attempts` offers, with `root`/`quality` added so "which
+  chords am I weak on" is a filter rather than a client-side group-by.
+
 ## What is not here yet
 
-- **Interval or chord-recognition attempt shapes.** `trainer_attempts` is
-  drill-agnostic in its schema (a `drill` column, not a table per exercise),
-  but a chord drill's own idea of "which chord, which voicing" has not been
-  built against it yet, and inventing that shape before that trainer exists
-  would be the same guess this section spent a long time avoiding for
-  fret-to-note. Fret-to-note's `position_to_note`/`note_to_position` split is
-  a real answer for a single-note drill; a chord is a different unit, and #26
-  or #29 gets to decide whether it fits the same table or needs its own.
 - **Key, tempo and difficulty per score** - musical metadata about the piece
   rather than about the practice.
 - **Achievements** - looking back at what has been accomplished, where a goal

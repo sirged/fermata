@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/chord-shapes.spec.js",
+  "count": 11,
+  "reason": "issue #28: the guitar chord shape library is checked against chord-theory.js's own arithmetic rather than trusted by hand - the standard-tuning gate (including a capo, and refusing a dropped tuning or a missing string with no shapes at all rather than an invented one), every open shape's and every generated barre shape's ACTUAL sounded notes (worked out from neck.js's tuning arithmetic, independent of the shape's own label) matching its declared chord's tones exhaustively, a barre form naming all twelve roots across a fret range read straight off the neck, and shapeMatchesChord catching a shape doctored to drop a required tone."
+}

@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/chord-flashcards.spec.js",
+  "count": 11,
+  "reason": "issue #28: the chord flash card drill against the real backend and the real build - both directions' full prompt-answer-feedback-next cycle with a correct and an incorrect answer handled honestly (name_to_shape graded on independently-reimplemented chord math, not anything imported from the app), a narrowed region dropping a chord whose shape needs a higher fret while keeping one that fits (#26), the degenerate unaskable states (a fret range, and a key sharing no chord with the family preset), the structured per-question attempts (#32) posted correct and incorrect alike and queryable by correctness, the session log this drill's time is kept beside, and practice logged even when the page is left mid-drill."
+}

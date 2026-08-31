@@ -1059,3 +1059,56 @@ class TrainerAttemptListOut(BaseModel):
     attempts: list[TrainerAttemptOut]
     total: int
     truncated: bool
+
+
+# ---------------------------------------------------------------------------
+# Chord flash cards: per-attempt results (issue #28), in their own table -
+# see db.py's comment on trainer_chord_attempts for why a chord does not fit
+# TrainerAttemptOut's single-note columns above.
+# ---------------------------------------------------------------------------
+
+
+class ChordShapePosition(BaseModel):
+    """One fretted position of a shown or tapped chord shape - a string and
+    the fret held on it. A string simply absent from a shape's list is
+    muted, the same convention an "x" marks in a chord diagram."""
+
+    string: int
+    fret: int
+
+
+class TrainerChordAttemptOut(BaseModel):
+    """One question from the chord flash card drill, as trainer.
+    chord_attempt_dict presents it - the stored row verbatim, `correct` as a
+    real bool, and target_shape/given_shape/given_notes turned back into
+    lists rather than the JSON text they are stored as.
+
+    Exactly one of (given_root, given_quality) or (given_notes, given_shape)
+    is non-null, decided by `direction` - see trainer.py's module docstring
+    on why a chord name and a tapped shape are graded by the same rule even
+    so."""
+
+    id: int
+    owner: str
+    session_id: int | None
+    drill: str
+    direction: str
+    target_root: str
+    target_quality: str
+    target_shape: list[ChordShapePosition] | None
+    given_root: str | None
+    given_quality: str | None
+    given_notes: list[str] | None
+    given_shape: list[ChordShapePosition] | None
+    correct: bool
+    response_ms: int | None
+    created_at: str
+
+
+class TrainerChordAttemptListOut(BaseModel):
+    """GET /api/trainer/chord-attempts: the raw, queryable record - which
+    chords get missed is a WHERE clause over this."""
+
+    attempts: list[TrainerChordAttemptOut]
+    total: int
+    truncated: bool

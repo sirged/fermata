@@ -257,6 +257,75 @@ _TRAINER_SCHEMA = (
     " ON trainer_attempts(owner, drill, target_string, target_fret);\n"
 )
 
+# One row per QUESTION the chord flash card drill (issue #28) asked - a
+# SIBLING of trainer_attempts, not a widening of it. trainer_attempts'
+# target_note/given_note columns are NOT NULL and hold exactly one pitch
+# class each, which is the correct shape for a drill whose unit is one
+# note - see that table's own comment. A chord is not one note; it is a SET
+# of them, and forcing target_root/target_quality's tone set into a single
+# target_note column would either lose which chord was asked (storing only
+# its root) or store something that is not a pitch class at all. So a
+# chord attempt gets its own table, built the same way: `correct` computed
+# once, server-side (trainer.normalise_chord_attempt), never trusted from a
+# request body, and an index shaped for the query this drill's players
+# actually want to ask.
+#
+# WHY ONE 'correct' RULE COVERS BOTH DIRECTIONS, mirroring trainer_attempts'
+# own reasoning. A chord is its pitch-class SET (server/fermata/trainer.py's
+# chord_tones, mirrored character-for-character from web/src/lib/trainer/
+# chord-theory.js's chordTones), and every attempt reduces to comparing two
+# such sets: the question's own tones (from target_root/target_quality) and
+# what was actually given. For shape_to_name, "given" is a chosen chord
+# (given_root/given_quality) - a chord NAME was picked, and its tones are
+# compared directly. For name_to_shape, "given" is a JSON array of the
+# pitch classes a tapped shape actually sounded (given_notes), worked out
+# client-side from the instrument's own tuning the same way
+# trainer_attempts' given_note is for a tapped position (see fret-to-
+# note.js's checkTapAnswer) - the server does not need to know a tuning to
+# grade a chord attempt, only to compare the tone sets it was told.
+#
+# target_shape (shape_to_name only) is the fingering that was actually
+# SHOWN, and given_shape (name_to_shape only) is the positions actually
+# TAPPED - both JSON arrays of {string, fret}, kept beside the graded tone
+# sets so "which shapes get missed" stays a real question over this table
+# rather than something only the tone sets could answer. Both are NULL on
+# the direction that does not produce them, the same "exactly one side
+# populated, decided by direction" rule trainer_attempts' target/given
+# position pairs already follow.
+_TRAINER_CHORD_ATTEMPTS_COLUMNS = """(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL DEFAULT 'local',
+    session_id INTEGER REFERENCES practice_sessions(id) ON DELETE SET NULL,
+    drill TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    target_root TEXT NOT NULL,
+    target_quality TEXT NOT NULL,
+    target_shape TEXT,
+    given_root TEXT,
+    given_quality TEXT,
+    given_notes TEXT,
+    given_shape TEXT,
+    correct INTEGER NOT NULL,
+    response_ms INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)"""
+
+_TRAINER_CHORD_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS trainer_chord_attempts "
+    + _TRAINER_CHORD_ATTEMPTS_COLUMNS + ";\n"
+    + "CREATE INDEX IF NOT EXISTS idx_trainer_chord_attempts_owner_drill"
+    " ON trainer_chord_attempts(owner, drill, created_at);\n"
+    + "CREATE INDEX IF NOT EXISTS idx_trainer_chord_attempts_session"
+    " ON trainer_chord_attempts(session_id);\n"
+    # "Which chords get missed" - the query this table exists to answer -
+    # groups by the chord that was ASKED, so that is what the index leads
+    # with, correct left off for the same reason trainer_attempts' own
+    # target index leaves it off: SQLite applies it as a filter over these
+    # indexed rows rather than a second lookup.
+    + "CREATE INDEX IF NOT EXISTS idx_trainer_chord_attempts_target"
+    " ON trainer_chord_attempts(owner, drill, target_root, target_quality);\n"
+)
+
 
 # The scores table's columns, written once, for the same reason
 # _PRACTICE_SESSIONS_COLUMNS is: SCHEMA builds the table from it, and any future
@@ -475,7 +544,7 @@ CREATE TABLE IF NOT EXISTS instruments (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_instruments_owner ON instruments(owner);
-""" + _PRACTICE_SCHEMA + _TRAINER_SCHEMA
+""" + _PRACTICE_SCHEMA + _TRAINER_SCHEMA + _TRAINER_CHORD_SCHEMA
 
 # The schema this code expects. Stamped into PRAGMA user_version once a startup
 # has finished bringing a database up to date.

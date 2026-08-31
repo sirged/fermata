@@ -586,6 +586,7 @@
       <a class="demo-link" href="#/metronome">♩ Metronome</a>
       <a class="demo-link ear-training-link" href="#/ear-training">♪ Hear a note, name it</a>
       <a class="demo-link fretboard-link" href="#/fretboard">▤ Fret to note</a>
+      <a class="demo-link chords-link" href="#/chords">♫ Chord flash cards</a>
       <a class="demo-link" href="#/demo">Notation/tab demo →</a>
       <a class="demo-link" href="#/settings">⚙ Settings</a>
     </div>
