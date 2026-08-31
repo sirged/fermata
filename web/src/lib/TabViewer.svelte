@@ -4,6 +4,7 @@
   import { createScoreView, UNRENDERABLE_MESSAGE, tabWithheldMessage } from "./score-render.js";
   import { getSettings, setSetting, STAFF_THEMES, STAFF_THEME_LABELS } from "./settings.svelte.js";
   import Metronome from "./Metronome.svelte";
+  import { createDocument, DURATION_TYPES } from "./editor/document.js";
 
   const settings = getSettings();
 
@@ -55,6 +56,17 @@
     // have on main - see the comment on PdfViewer's `active` prop in
     // ScoreCompare for the other half of this.
     active = true,
+    // Whether this score can be edited note-by-note and saved (#10). Set by
+    // ScoreCompare when a transcription is loaded and there is a score id to
+    // save under; false for the demo and any read-only mount. Note editing
+    // only works on a MusicXML document (that is the model the edits are
+    // written to), so the affordance also depends on `format` below.
+    editable = false,
+    // Persist the edited MusicXML - `async (content) => void`. ScoreCompare
+    // wires this to the existing edited-transcription save path (PUT
+    // /api/scores/{id}/transcription, stored verbatim as source='edited',
+    // never re-extracted). null when not editable.
+    onSaveEdit = null,
   } = $props();
 
   let host;
@@ -130,6 +142,244 @@
   let ladderStart = $state(60);
   let ladderStep = $state(5);
   let ladderTarget = $state(100);
+
+  // ---------------------------------------------------------- the note editor (#10)
+  //
+  // The document is the source of truth. Every edit is written to `doc` (a
+  // MusicXML document model - see editor/document.js), and the alphaTab view is
+  // then handed the new document text and asked to redraw it. Nothing is
+  // written to the renderer's object graph and left for the document to catch
+  // up with; the screen is always a fresh view of the document, which is what
+  // makes the two impossible to diverge (the renderer evaluation on #10 names
+  // that divergence as the one bug class this design must not create).
+  //
+  // `doc` is a plain (non-reactive) handle: it is mutated in place and its text
+  // re-imported, and nothing renders FROM it directly - the derived, reactive
+  // facts a reader sees (the selected note's fret, string, duration) are pulled
+  // out into the $state below on each selection.
+  let editMode = $state(false);
+  let doc = null;
+  let editStringCount = $state(6);
+  let selectedOrdinal = $state(null);
+  let selFret = $state(null);
+  let selString = $state(null);
+  let selType = $state(null);
+  let selMidi = $state(null);
+  let selNoteId = $state(null);
+  // The cross-check the evaluation asks for: the renderer's own read of the
+  // selected note (through the importer and the positional map) against the
+  // document's read of the same note. In this single-source-of-truth design
+  // they must always agree; when they do not, the positional map, the string
+  // mirror or the pitch recompute is wrong, and this goes false loudly.
+  let divergenceOk = $state(true);
+  let editError = $state("");
+  let dirty = $state(false);
+  let saving = $state(false);
+  let saveError = $state("");
+  let undoStack = $state([]);
+  let redoStack = $state([]);
+  let overlay = $state(null);
+
+  function canEditNotes() {
+    return editable && format === "musicxml" && tex != null;
+  }
+
+  function initEditDoc(text) {
+    editError = "";
+    const source = text ?? tex;
+    try {
+      doc = createDocument(source);
+      editStringCount = doc.stringCount;
+      return true;
+    } catch (e) {
+      doc = null;
+      editError = String(e?.message ?? e);
+      return false;
+    }
+  }
+
+  function clearSelection() {
+    selectedOrdinal = null;
+    selFret = selString = selType = selMidi = selNoteId = null;
+    divergenceOk = true;
+    overlay = null;
+  }
+
+  function enterEdit() {
+    if (!canEditNotes()) return;
+    if (!initEditDoc()) return;
+    undoStack = [];
+    redoStack = [];
+    dirty = false;
+    saveError = "";
+    clearSelection();
+    editMode = true;
+    // notation + doc are (re)applied by the $effect below, which also covers a
+    // rebuild of the view underneath us after a save.
+  }
+
+  function exitEdit() {
+    editMode = false;
+    clearSelection();
+    doc = null;
+    editError = "";
+    view?.editor?.setNotationShown(false);
+    if (typeof window !== "undefined") window.__scoreEditor = null;
+  }
+
+  function toggleEdit() {
+    if (editMode) exitEdit();
+    else enterEdit();
+  }
+
+  function selectAt(clientX, clientY) {
+    if (!editMode || !view || !doc) return;
+    const ord = view.editor.hitTest(clientX, clientY);
+    if (ord == null) return;
+    selectedOrdinal = ord;
+    refreshSelection();
+  }
+
+  function refreshSelection() {
+    if (selectedOrdinal == null || !doc || !view) return;
+    const d = doc.noteAt(selectedOrdinal);
+    if (!d) {
+      clearSelection();
+      return;
+    }
+    const v = view.editor.viewInfo(selectedOrdinal);
+    selFret = d.fret;
+    selString = d.string;
+    selType = d.type;
+    selNoteId = d.id;
+    selMidi = v?.midi ?? d.midi;
+    divergenceOk = !!v && v.mxString === d.string && v.fret === d.fret && v.midi === d.midi;
+    updateOverlay();
+  }
+
+  function updateOverlay() {
+    if (selectedOrdinal == null || !view || !scroller) {
+      overlay = null;
+      return;
+    }
+    const r = view.editor.headRect(selectedOrdinal);
+    if (!r) {
+      overlay = null;
+      return;
+    }
+    // The overlay lives inside the scroller and is positioned in its scroll
+    // space, so it tracks the note when the staff is scrolled without any
+    // scroll listener. headRect is in client space; convert once.
+    const sr = scroller.getBoundingClientRect();
+    overlay = {
+      left: r.left - sr.left + scroller.scrollLeft,
+      top: r.top - sr.top + scroller.scrollTop,
+      width: r.width,
+      height: r.height,
+    };
+  }
+
+  async function applyEdit(mutate) {
+    if (selectedOrdinal == null || !doc || !view) return;
+    const before = doc.text();
+    if (!mutate()) return; // invalid or no-op - do not record an undo step
+    const after = doc.text();
+    if (after === before) return;
+    undoStack = [...undoStack, before];
+    redoStack = [];
+    dirty = true;
+    await view.editor.reload(after);
+    refreshSelection();
+  }
+
+  function changeFret(value) {
+    const v = Number(value);
+    if (!Number.isInteger(v)) return;
+    applyEdit(() => doc.setFret(selectedOrdinal, v));
+  }
+
+  function changeString(value) {
+    const v = Number(value);
+    if (!Number.isInteger(v)) return;
+    applyEdit(() => doc.setString(selectedOrdinal, v));
+  }
+
+  function changeDuration(type) {
+    applyEdit(() => doc.setDurationType(selectedOrdinal, type));
+  }
+
+  async function restore(text) {
+    // Undo and redo both work by re-importing a whole document snapshot - the
+    // cheapest correct thing when the model IS the document text. createDocument
+    // cannot fail here: the snapshot was produced by our own serializer.
+    doc = createDocument(text);
+    editStringCount = doc.stringCount;
+    dirty = true;
+    await view.editor.reload(text);
+    refreshSelection();
+  }
+
+  async function undo() {
+    if (!undoStack.length || !doc || !view) return;
+    const prev = undoStack[undoStack.length - 1];
+    undoStack = undoStack.slice(0, -1);
+    redoStack = [...redoStack, doc.text()];
+    await restore(prev);
+  }
+
+  async function redo() {
+    if (!redoStack.length || !doc || !view) return;
+    const next = redoStack[redoStack.length - 1];
+    redoStack = redoStack.slice(0, -1);
+    undoStack = [...undoStack, doc.text()];
+    await restore(next);
+  }
+
+  async function saveEdits() {
+    if (!doc || !onSaveEdit) return;
+    saving = true;
+    saveError = "";
+    try {
+      await onSaveEdit(doc.text());
+      dirty = false;
+    } catch (e) {
+      saveError = String(e?.message ?? e);
+    } finally {
+      saving = false;
+    }
+  }
+
+  // Keeps the edit session alive across a rebuild of the underlying view - a
+  // save changes the `tex` prop, which tears down and recreates the alphaTab
+  // view (see the load effect below); this re-applies the notation staff and
+  // rebuilds `doc` from the new text so edit mode survives it. Runs on entering
+  // edit mode too (that is what first turns the notation staff on).
+  $effect(() => {
+    if (!editMode) return;
+    const v = view;
+    const t = tex;
+    void t;
+    if (!v) return;
+    untrack(() => {
+      if (!doc) initEditDoc();
+      v.editor.setNotationShown(true);
+      if (selectedOrdinal != null) refreshSelection();
+      // Test instrumentation, in the same spirit as window.__audioPeak and
+      // window.__heartbeats elsewhere: the note-head geometry is the renderer's
+      // to know, so a browser test that wants to click a SPECIFIC note asks the
+      // live view where that note is rather than guessing at pixels. Read-only
+      // - it exposes no way to mutate the score.
+      if (typeof window !== "undefined") {
+        window.__scoreEditor = {
+          headRect: (ordinal) => v.editor.headRect(ordinal),
+          headPoint: (ordinal) => v.editor.headPoint(ordinal),
+          hitTest: (x, y) => v.editor.hitTest(x, y),
+          noteCount: () => v.editor.noteCount(),
+          boundsCount: () => v.editor.boundsCount(),
+        };
+      }
+    });
+  });
 
   const PROFILE_LABELS = [
     ["score", "Notation"],
@@ -476,7 +726,22 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="wrap">
+<div
+  class="wrap"
+  data-editor-available={canEditNotes()}
+  data-editor-active={editMode}
+  data-editor-error={editError || null}
+  data-editor-selected={selectedOrdinal}
+  data-editor-selected-fret={selFret}
+  data-editor-selected-string={selString}
+  data-editor-selected-type={selType}
+  data-editor-selected-midi={selMidi}
+  data-editor-selected-note-id={selNoteId}
+  data-editor-divergence-ok={editMode ? divergenceOk : null}
+  data-editor-dirty={dirty}
+  data-editor-can-undo={undoStack.length > 0}
+  data-editor-can-redo={redoStack.length > 0}
+>
   {#if gigMode}
     <!-- gig mode: hide the practice toolbar chrome, but playback and the way
     back out must stay reachable even with no keyboard (touch/tablet) -->
@@ -535,6 +800,16 @@
           <option value={t}>{STAFF_THEME_LABELS[t]}</option>
         {/each}
       </select>
+      {#if canEditNotes()}
+        <button
+          class="edit-toggle"
+          class:on={editMode}
+          onclick={toggleEdit}
+          title="Correct notes on the staff — click a note, then change its fret, string or duration"
+        >
+          {editMode ? "Done editing" : "Edit notes"}
+        </button>
+      {/if}
       <div class="player">
         <button class="primary" disabled={!playerReady} onclick={() => view?.playPause()}>
           {playing ? "❚❚ Pause ((Space))" : "▶ Play ((Space))"}
@@ -647,8 +922,86 @@
     </p>
   {/if}
 
-  <div class="score-scroll" class:hidden={profileOptions?.length === 0} bind:this={scroller}>
+  {#if editMode}
+    <div class="edit-panel">
+      {#if editError}
+        <p class="hint warn">{editError}</p>
+      {:else if selectedOrdinal == null}
+        <p class="edit-hint">Click a note on the staff to select it, then change its fret, string or duration.</p>
+      {:else}
+        <div class="edit-fields">
+          <label>
+            Fret
+            <input
+              type="number"
+              min="0"
+              max="36"
+              value={selFret}
+              onchange={(e) => changeFret(e.target.value)}
+            />
+          </label>
+          <label>
+            String
+            <select value={String(selString)} onchange={(e) => changeString(e.target.value)}>
+              {#each Array.from({ length: editStringCount }, (_, i) => i + 1) as s}
+                <option value={String(s)}>{s}</option>
+              {/each}
+            </select>
+          </label>
+          <label>
+            Duration
+            <select value={selType ?? ""} onchange={(e) => changeDuration(e.target.value)}>
+              {#if !DURATION_TYPES.includes(selType)}
+                <option value={selType ?? ""} disabled>{selType ?? "—"}</option>
+              {/if}
+              {#each DURATION_TYPES as t}
+                <option value={t}>{t}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
+      {/if}
+      <div class="edit-actions">
+        {#if editMode && selectedOrdinal != null && !divergenceOk}
+          <!-- The document and the rendered model disagree about the selected
+               note. In this single-source-of-truth design that must never
+               happen; it is surfaced rather than hidden (see divergenceOk). -->
+          <span class="hint warn" title="The staff and the saved document disagree about this note.">
+            ⚠ out of sync
+          </span>
+        {/if}
+        {#if saveError}<span class="hint warn">{saveError}</span>{/if}
+        <button class="ghost" disabled={!undoStack.length} onclick={undo} title="Undo">Undo</button>
+        <button class="ghost" disabled={!redoStack.length} onclick={redo} title="Redo">Redo</button>
+        <button class="primary" disabled={!dirty || saving} onclick={saveEdits}>
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Selecting a note is a spatial gesture: the click is hit-tested against
+       the rendered note-head positions, which have no keyboard analogue here.
+       Note-to-note keyboard navigation (arrow keys, digit-sets-fret) is the
+       note-entry work #10 defers to a follow-up; when it lands it belongs on
+       the window key handler beside the transport shortcuts, not as a keydown
+       twin of this container's click. The staff itself is not a control. -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="score-scroll"
+    class:hidden={profileOptions?.length === 0}
+    class:editing={editMode}
+    bind:this={scroller}
+    onclick={editMode ? (e) => selectAt(e.clientX, e.clientY) : undefined}
+  >
     <div class="at-host" bind:this={host}></div>
+    {#if editMode && overlay}
+      <div
+        class="note-selection"
+        style="left:{overlay.left}px; top:{overlay.top}px; width:{overlay.width}px; height:{overlay.height}px;"
+      ></div>
+    {/if}
   </div>
 </div>
 
@@ -837,6 +1190,100 @@
        sideways as well - page layout never overflows this way */
     overflow: auto;
     padding: 20px;
+    /* the note-selection overlay is an absolutely-positioned child in the
+       scroller's own scroll space (see updateOverlay), so it needs this as its
+       containing block to track the note when the staff is scrolled */
+    position: relative;
+  }
+
+  .score-scroll.editing {
+    cursor: pointer;
+  }
+
+  /* Drawn over the selected note's head(s) - a plain outline, positioned by
+     updateOverlay in the scroller's scroll space so it follows the note. It is
+     not interactive (clicks pass through to select another note). */
+  .note-selection {
+    position: absolute;
+    z-index: 1;
+    border: 2px solid var(--brass-bright);
+    border-radius: 4px;
+    background: rgba(200, 160, 70, 0.16);
+    pointer-events: none;
+    box-sizing: border-box;
+  }
+
+  .edit-toggle {
+    flex-shrink: 0;
+  }
+
+  .edit-toggle.on {
+    background: var(--brass);
+    color: #241d0f;
+    font-weight: 600;
+  }
+
+  .edit-panel {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px 16px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-raised);
+  }
+
+  .edit-hint {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: 13px;
+  }
+
+  .edit-fields {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .edit-fields label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    color: var(--ink-dim);
+  }
+
+  .edit-fields input {
+    width: 64px;
+  }
+
+  .edit-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+  }
+
+  .edit-panel .hint {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--ink-dim);
+  }
+
+  .edit-panel .hint.warn {
+    color: var(--danger);
+  }
+
+  .edit-panel .ghost {
+    background: none;
+    border-color: transparent;
+    color: var(--ink-dim);
+  }
+
+  .edit-panel .ghost:hover {
+    border-color: var(--line);
+    color: var(--ink);
   }
 
   /* Stays in the DOM (score-render.js's `host` binding has to stay stable)

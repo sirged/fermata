@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-editor.spec.js",
+  "count": 10,
+  "reason": "issue #10 first increment: the note editor over the MusicXML model - edit mode reachable from the score view with the linked notation staff drawn (16 note bounds, not 8), click-to-select the exact note via the app-side NoteBounds hit test, fret/string/duration edits written to the document and re-rendered with the sounding pitch following, undo/redo, save through the edited-transcription path with the edit surviving a reload, the divergence guard staying green across edits, the source PDF alongside for correcting an import, and an under-strung note not crashing paint."
+}

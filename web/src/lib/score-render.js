@@ -1913,6 +1913,65 @@ export function createScoreView(host, opts = {}) {
   // a queued resize render must not touch a torn-down renderer
   let destroyed = false;
 
+  // ------------------------------------------------------- the note editor (#10)
+  //
+  // Whether the linked notation staff is shown. The renderer evaluation on #10
+  // established that a Fermata tab-only file imports with
+  // Staff.showStandardNotation = false, and that flipping the MODEL flag (not
+  // the staveProfile display setting, which alone does nothing and whose
+  // "Score" value crashes on such a file) is what draws the notation staff the
+  // editor needs so a fret change can be seen to move the pitch. Applied in the
+  // scoreLoaded handler, before the load's own first render, the same way and
+  // for the same timing reason disqualifyUnstrungTabStaves is.
+  let editNotation = false;
+  // Note -> ordinal (its position among sounding notes in document order),
+  // rebuilt after every render. This is the positional map the renderer
+  // evaluation measured at 100% agreement with MusicXML document order: an
+  // ordinal here indexes exactly the same sounding note as the same ordinal
+  // into editor/document.js's soundingNotes(). A MusicXML @id does not reach
+  // alphaTab's model (also measured), so the handle between the two is this
+  // position, not the id - the id (Rule 17) is what makes it auditable.
+  let noteOrdinals = new Map();
+  let notesInOrder = [];
+  // Resolved by the next postRenderFinished, so reloadScore() can await the
+  // redraw the way an editor step needs to before re-reading bounds.
+  let pendingEditResolve = null;
+
+  // Walk the one rendered track's model in document order - bar, then each
+  // voice in turn, then each beat, then each chord member - skipping rests, so
+  // the ordinal assigned here matches document.js's sounding-note order beat
+  // for beat. One part, one staff is this profile's scope (Rule 17); a second
+  // staff or track would need an axis this walk does not name, exactly as
+  // Rule 17's own uniqueness note says of its id formula.
+  function buildNoteOrdinals() {
+    noteOrdinals = new Map();
+    notesInOrder = [];
+    const track = api.score?.tracks?.[0];
+    if (!track) return;
+    for (const staff of track.staves ?? []) {
+      for (const bar of staff.bars ?? []) {
+        for (const voice of bar.voices ?? []) {
+          for (const beat of voice.beats ?? []) {
+            if (beat.isRest) continue;
+            for (const note of beat.notes ?? []) {
+              noteOrdinals.set(note, notesInOrder.length);
+              notesInOrder.push(note);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // showStandardNotation is a per-Staff model flag the importer resets on every
+  // load, so it is re-applied here on the loaded score before its first render.
+  function applyEditStaffFlags(loadedScore) {
+    if (!editNotation) return;
+    for (const track of loadedScore?.tracks ?? []) {
+      for (const staff of track?.staves ?? []) staff.showStandardNotation = true;
+    }
+  }
+
   const api = new alphaTab.AlphaTabApi(host, {
     // worker/audio-worklet URLs are wired up by the @coderline/alphatab-vite
     // plugin (vite.config.js); fontDirectory/soundFont still need to match
@@ -1920,6 +1979,16 @@ export function createScoreView(host, opts = {}) {
     core: {
       fontDirectory: "/font/",
       useWorkers: RENDER_IN_WORKER,
+      // Every note gets its own rectangle in the bounds lookup, not just its
+      // beat. Off by default, and the practice-cursor work never needed it;
+      // the note editor (#10) does - its click-to-select is an app-side
+      // point-in-rectangle search over these note bounds, because alphaTab's
+      // own getBeatAtPos was measured resolving the wrong voice on polyphony.
+      // Measured cost of turning it on: below this harness's render-time noise
+      // (see the renderer evaluation on #10), so it is left on for every view
+      // rather than toggled with an edit mode - a mode switch that changed a
+      // core setting would force a reload, and this costs nothing to carry.
+      includeNoteBounds: true,
     },
     player: {
       enablePlayer: true,
@@ -2526,6 +2595,16 @@ export function createScoreView(host, opts = {}) {
     // generated, which is after every scoreLoaded listener has returned, so
     // the played bar order cannot be published from there.
     publishPlaybackBars();
+    // The bounds lookup and the model are both rebuilt by the render that just
+    // finished, so the positional map is rebuilt from them here - after which
+    // an edit step that awaited this render can re-read note bounds and
+    // re-select by ordinal.
+    buildNoteOrdinals();
+    if (pendingEditResolve) {
+      const resolve = pendingEditResolve;
+      pendingEditResolve = null;
+      resolve();
+    }
   });
 
   // A profile carried over from a previous score, or the "scoretab" default,
@@ -2616,6 +2695,10 @@ export function createScoreView(host, opts = {}) {
     // asked about it, or "tab"/"scoretab" would still be offered for a staff
     // whose paint throws (issue #165) - see disqualifyUnstrungTabStaves.
     const tabWithheld = disqualifyUnstrungTabStaves(loadedScore);
+    // Before supportedProfiles() reads the score: turning on the notation
+    // staff is what makes "score"/"scoretab" drawable for a tab-only file, so
+    // it has to happen before canDraw is asked (see applyEditStaffFlags).
+    applyEditStaffFlags(loadedScore);
     // Disclosed the same way applyLoadedNavigation discloses an unread
     // navigation mark a few lines above: a dataset attribute a test (or a
     // person with devtools open) can read, plus a console line, present only
@@ -2640,6 +2723,15 @@ export function createScoreView(host, opts = {}) {
     unrenderable = scoreProfiles.length === 0;
     if (!unrenderable && !scoreProfiles.includes(profile)) {
       profile = scoreProfiles[0];
+      api.settings.display.staveProfile = STAVE_PROFILE[profile];
+      api.updateSettings();
+    }
+    // In edit mode both staves are wanted (tab to click a fret on, notation to
+    // watch the pitch move) - "scoretab" draws both, and applyEditStaffFlags
+    // above just made it drawable. Preferred over whatever profile carried
+    // over, but only if the score actually supports it.
+    if (editNotation && scoreProfiles.includes("scoretab") && profile !== "scoretab") {
+      profile = "scoretab";
       api.settings.display.staveProfile = STAVE_PROFILE[profile];
       api.updateSettings();
     }
@@ -2842,6 +2934,179 @@ export function createScoreView(host, opts = {}) {
   }
 
   load(source);
+
+  // ------------------------------------------------- the note editor's seam
+  //
+  // Everything alphaTab-specific the editor needs lives here, behind the same
+  // seam the rest of this file is: the caller (TabViewer) deals in ordinals,
+  // MusicXML string numbers and document text, and never sees a Note, a
+  // BoundsLookup or alphaTab's own bottom-up string numbering. document.js owns
+  // the document; this owns the view of it.
+
+  // The element alphaTab draws into. Note bounds are absolute within it, so a
+  // client (mouse) coordinate maps to a bounds coordinate by subtracting this
+  // rectangle's own top-left - getBoundingClientRect already accounts for
+  // scroll, so nothing here has to.
+  function surfaceRect() {
+    const surface = host?.querySelector(".at-surface") ?? host;
+    return surface ? surface.getBoundingClientRect() : null;
+  }
+
+  // A few pixels of slack so a click just outside a tight note-head rectangle
+  // still lands on it - the fret digits especially are small targets.
+  const NOTE_HIT_PADDING = 3;
+
+  function boundsOf() {
+    return api.renderer?.boundsLookup ?? api.boundsLookup ?? null;
+  }
+
+  // The sounding-note ordinal at a client position, or null. A point-in-
+  // rectangle search over every note's head bounds - the renderer evaluation
+  // measured this resolving 100% where alphaTab's own getBeatAtPos returned a
+  // different voice's beat on polyphony. With the notation staff shown a note
+  // carries two head rectangles (one per staff); both belong to the same Note,
+  // so clicking either selects the same ordinal. On a genuine overlap the
+  // nearest head centre wins.
+  function hitTestNote(clientX, clientY) {
+    const lookup = boundsOf();
+    const rect = surfaceRect();
+    if (!lookup || !rect) return null;
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    let best = null;
+    let bestDist = Infinity;
+    for (const sys of lookup.staffSystems ?? []) {
+      for (const mb of sys.bars ?? []) {
+        for (const bar of mb.bars ?? []) {
+          for (const beat of bar.beats ?? []) {
+            for (const nb of beat.notes ?? []) {
+              const b = nb.noteHeadBounds;
+              if (!b) continue;
+              if (
+                x < b.x - NOTE_HIT_PADDING ||
+                x > b.x + b.w + NOTE_HIT_PADDING ||
+                y < b.y - NOTE_HIT_PADDING ||
+                y > b.y + b.h + NOTE_HIT_PADDING
+              )
+                continue;
+              const dx = x - (b.x + b.w / 2);
+              const dy = y - (b.y + b.h / 2);
+              const dist = dx * dx + dy * dy;
+              if (dist < bestDist) {
+                bestDist = dist;
+                best = nb.note;
+              }
+            }
+          }
+        }
+      }
+    }
+    if (!best) return null;
+    const ordinal = noteOrdinals.get(best);
+    return ordinal == null ? null : ordinal;
+  }
+
+  // What alphaTab itself makes of the sounding note at `ordinal` - read back
+  // through a completely different path from document.js's read of the same
+  // note (the importer plus this positional map, versus a DOM walk), which is
+  // exactly what lets TabViewer cross-check the two for the divergence the
+  // evaluation warns of. The string is mirrored back into MusicXML's
+  // convention here (alphaTab numbers strings from the lowest, MusicXML from
+  // the highest - Rule 5, and a measured trap), so the seam speaks the
+  // document's language and the trap has one home.
+  function noteViewInfo(ordinal) {
+    const note = notesInOrder[ordinal];
+    if (!note) return null;
+    const stringCount = note.beat?.voice?.bar?.staff?.tuning?.length ?? 0;
+    const mxString = stringCount > 0 && note.string >= 1 ? stringCount + 1 - note.string : null;
+    return {
+      mxString,
+      fret: note.fret ?? null,
+      midi: Number.isFinite(note.realValue) ? note.realValue : null,
+    };
+  }
+
+  // The client-space rectangle of a note's head, for a selection overlay the
+  // caller draws. Union of the note's (up to two) head rectangles, so the
+  // highlight covers both its tab digit and its notation head.
+  function noteHeadRect(ordinal) {
+    const note = notesInOrder[ordinal];
+    const lookup = boundsOf();
+    const rect = surfaceRect();
+    if (!note || !lookup || !rect) return null;
+    let box = null;
+    for (const sys of lookup.staffSystems ?? []) {
+      for (const mb of sys.bars ?? []) {
+        for (const bar of mb.bars ?? []) {
+          for (const beat of bar.beats ?? []) {
+            for (const nb of beat.notes ?? []) {
+              if (nb.note !== note) continue;
+              const b = nb.noteHeadBounds;
+              if (!b) continue;
+              if (!box) box = { x1: b.x, y1: b.y, x2: b.x + b.w, y2: b.y + b.h };
+              else {
+                box.x1 = Math.min(box.x1, b.x);
+                box.y1 = Math.min(box.y1, b.y);
+                box.x2 = Math.max(box.x2, b.x + b.w);
+                box.y2 = Math.max(box.y2, b.y + b.h);
+              }
+            }
+          }
+        }
+      }
+    }
+    if (!box) return null;
+    return {
+      left: rect.left + box.x1,
+      top: rect.top + box.y1,
+      width: box.x2 - box.x1,
+      height: box.y2 - box.y1,
+    };
+  }
+
+  // The client-space centre of ONE of a note's head rectangles (the first
+  // found) - a point guaranteed to be inside a real, clickable head, unlike
+  // the centre of noteHeadRect's union of the tab and notation heads, which
+  // with both staves shown falls in the empty space between them. Used to
+  // drive a click at a known note in tests; the union rect stays the overlay's.
+  function noteHeadPoint(ordinal) {
+    const note = notesInOrder[ordinal];
+    const lookup = boundsOf();
+    const rect = surfaceRect();
+    if (!note || !lookup || !rect) return null;
+    for (const sys of lookup.staffSystems ?? [])
+      for (const mb of sys.bars ?? [])
+        for (const bar of mb.bars ?? [])
+          for (const beat of bar.beats ?? [])
+            for (const nb of beat.notes ?? []) {
+              if (nb.note !== note) continue;
+              const b = nb.noteHeadBounds;
+              if (b) return { x: rect.left + b.x + b.w / 2, y: rect.top + b.y + b.h / 2 };
+            }
+    return null;
+  }
+
+  // Re-import the edited document and redraw, resolving once the redraw has
+  // finished so the caller can re-read bounds and re-select. This is the whole
+  // "apply an edit" path: the document is the source of truth, and the screen
+  // is a fresh view of it - there is no second write to the object graph to
+  // diverge from it. Measured cost of a reload is a few ms on a typical score
+  // (see the evaluation), which is what makes single-source-of-truth
+  // affordable here rather than only in principle.
+  function reloadScore(text) {
+    return new Promise((resolve, reject) => {
+      if (destroyed) return resolve();
+      pendingEditResolve = resolve;
+      pendingSourceText = text;
+      pendingUnreadReason = null;
+      try {
+        api.load(new TextEncoder().encode(text));
+      } catch (e) {
+        pendingEditResolve = null;
+        reject(e instanceof Error ? e : new Error(String(e)));
+      }
+    });
+  }
 
   return {
     get layout() {
@@ -3098,6 +3363,62 @@ export function createScoreView(host, opts = {}) {
       // is now (unchanged), not a value that predates either move.
       publishLoopRange();
       publishCursor();
+    },
+
+    /**
+     * The note editor's view surface (#10). All of it deals in ordinals
+     * (a sounding note's position in document order, the same index
+     * editor/document.js uses), MusicXML string numbers, and document text -
+     * never an alphaTab Note or its own string numbering. See the "note
+     * editor's seam" block above.
+     *
+     * - `setNotationShown(on)` turns the linked notation staff on or off,
+     *   re-rendering. Wanted on while editing so a fret change can be seen to
+     *   move the pitch.
+     * - `hitTest(clientX, clientY)` -> the ordinal of the note under a click,
+     *   or null.
+     * - `viewInfo(ordinal)` -> `{ mxString, fret, midi }` as the RENDERER sees
+     *   that note, for the divergence cross-check.
+     * - `headRect(ordinal)` -> a client-space `{ left, top, width, height }`
+     *   for a selection overlay, or null.
+     * - `reload(text)` -> Promise resolved once the edited document has been
+     *   re-imported and redrawn.
+     * - `noteCount()` -> how many sounding notes the rendered model holds, so
+     *   the caller can assert its positional map lines up with the document's.
+     */
+    editor: {
+      setNotationShown(on) {
+        const next = !!on;
+        if (next === editNotation) return;
+        editNotation = next;
+        for (const track of api.score?.tracks ?? []) {
+          for (const staff of track?.staves ?? []) staff.showStandardNotation = next;
+        }
+        if (next && scoreProfiles?.includes("scoretab")) {
+          profile = "scoretab";
+        }
+        reapply();
+      },
+      hitTest: hitTestNote,
+      viewInfo: noteViewInfo,
+      headRect: noteHeadRect,
+      headPoint: noteHeadPoint,
+      reload: reloadScore,
+      noteCount: () => notesInOrder.length,
+      // How many note-head rectangles the render produced across every staff.
+      // With the notation staff off this equals the sounding-note count (one
+      // tab digit each); with it on it doubles (a tab digit and a notation
+      // head per note) - so it is how a caller confirms the linked notation
+      // staff is actually drawn, not merely requested.
+      boundsCount() {
+        const lookup = boundsOf();
+        let n = 0;
+        for (const sys of lookup?.staffSystems ?? [])
+          for (const mb of sys.bars ?? [])
+            for (const bar of mb.bars ?? [])
+              for (const beat of bar.beats ?? []) n += (beat.notes ?? []).length;
+        return n;
+      },
     },
 
     destroy() {
