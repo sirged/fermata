@@ -98,17 +98,41 @@ TRASH_DIR_NAME = ".fermata-trash"
 #   inserts a row, or does not and the upload's own scan picks it up. Holding it
 #   would also break the ordinary case rather than protect it: every upload
 #   starts a scan, so uploading two files in a row would have the second refused
-#   for the first one's scan. The one interaction that matters is an upload
-#   landing on a move's destination, and that is caught where it has to be
-#   caught anyway (a person can drop a file into the library folder with no
-#   endpoint involved at all): _move_file_on_disk refuses a destination that
-#   exists, and its rename fails rather than overwriting if the file appears in
-#   the gap after that check.
+#   for the first one's scan - which is exactly why a decline queues
+#   `_rescan_pending` rather than dropping the request: without it, "the
+#   upload's own scan picks it up" was only true when that scan actually ran,
+#   and a scan already in flight when the second file landed had taken its
+#   listing before that file existed either (#110). The one interaction that
+#   matters is an upload landing on a move's destination, and that is caught
+#   where it has to be caught anyway (a person can drop a file into the
+#   library folder with no endpoint involved at all): _move_file_on_disk
+#   refuses a destination that exists, and its rename fails rather than
+#   overwriting if the file appears in the gap after that check.
 #
 #   CREATING A FOLDER IS NOT HELD either, and needs no argument beyond stating
 #   it: mkdir moves nothing and removes nothing, and a scan does not have an
 #   opinion about an empty directory.
 _mutating = False
+
+# Set when start_scan() is declined - because a scan is already running or
+# the library is mid-mutation - so the request it was declined for is not
+# silently lost (#110). The paragraph above claims "a scan either sees the
+# new file and inserts a row, or does not and the upload's own scan picks it
+# up" - that was only true when the upload's own scan actually runs. A scan
+# already in flight takes its directory listing before the new file exists,
+# so it does not see it either; if the upload's own start_scan() call is
+# THEN declined because that other scan is still going, nothing was left to
+# revisit the file at all. It stayed off the browser and out of every future
+# scan until something unrelated happened to ask again - seen as a browser
+# test's "the uploaded score never appeared" under CI load, where a scan
+# from a different test was still finishing when this one uploaded.
+#
+# The fix is not to make start_scan() block or queue every request - that
+# would turn "declined" into an ever-growing backlog under real load. One
+# flag is enough: the running pass (or mutation) is about to look at the
+# library fresh regardless, so anything that arrived while it was busy only
+# needs ONE more pass after it, not a pass of its own.
+_rescan_pending = False
 
 
 class LibraryBusy(RuntimeError):
@@ -149,6 +173,10 @@ def hold_library_still():
     finally:
         with _state_lock:
             _mutating = False
+        # If a scan was declined while this held the library (an upload
+        # landing mid-move, say), it does not get to fall through the gap
+        # the mutation just closed - see `_rescan_pending`.
+        _run_pending_rescan()
 
 
 def trash_dir(root: Path | None = None) -> Path:
@@ -790,12 +818,18 @@ def start_scan(acknowledge: str | None = None) -> bool:
     simply does not apply, and the scan refuses again with the new figures,
     which is the safe way for stale consent to fail.
     """
+    global _rescan_pending
     with _state_lock:
         if _state["scanning"] or _mutating:
             # `_mutating` for the same reason `scanning` is here: one thing
             # reconciles the library at a time. A scan starting in the middle of
             # a move would take its directory listing while the file is at
             # neither end of the move - see the comment on `_mutating`.
+            #
+            # Recorded rather than just refused - see `_rescan_pending` - so
+            # whatever asked for this scan is not left with no scan ever
+            # having looked for it.
+            _rescan_pending = True
             return False
         _state["scanning"] = True
         _state["started_at"] = time.time()
@@ -812,6 +846,24 @@ def start_scan(acknowledge: str | None = None) -> bool:
             with _state_lock:
                 _state["scanning"] = False
                 _state["finished_at"] = time.time()
+        _run_pending_rescan()
 
     threading.Thread(target=run, name="fermata-scan", daemon=True).start()
     return True
+
+
+def _run_pending_rescan() -> None:
+    """Start exactly one follow-up scan if something was declined while this
+    scan (or mutation) held the library - see `_rescan_pending`.
+
+    Plain start_scan(), never the acknowledge token a refused scan might have
+    been holding: that token is consent to one specific, named set of missing
+    files, and replaying it against whatever the library looks like now would
+    apply a person's "yes" to evidence they never saw.
+    """
+    global _rescan_pending
+    with _state_lock:
+        if not _rescan_pending:
+            return
+        _rescan_pending = False
+    start_scan()

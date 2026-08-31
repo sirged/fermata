@@ -1663,6 +1663,98 @@ def test_the_scan_survives_a_file_that_cannot_be_read_and_still_reconciles(libra
     assert rows()["Classical/Study 1.gp"]["missing_since"] is None
 
 
+# ---------------------------------------------------------------------------
+# A declined start_scan() must not be the last anybody hears of it (#110).
+# ---------------------------------------------------------------------------
+
+
+def test_a_scan_declined_while_one_is_running_gets_a_follow_up_by_itself(
+    library, monkeypatch
+):
+    """A file that lands mid-scan is not lost just because its own scan request
+    was declined.
+
+    Traced from a browser-test flake: `upload()` polls for a new score's row
+    for up to 30s and reports "the uploaded score never appeared" if it times
+    out. That happened under CI load because a scan already in flight took its
+    directory listing before the new file existed, and the upload's own
+    scanner.start_scan() call - the ONLY other thing that would have picked it
+    up - was declined because that other scan was still running. Nothing was
+    then left to look again; the file sat unindexed forever, not for 30s.
+
+    The listing is taken up front and is real - `_library_files` runs for
+    real, only made to take a while before returning - so this reproduces the
+    actual race rather than a state flag standing in for it.
+    """
+    real_library_files = scanner._library_files
+
+    def slow_library_files(root):
+        listing = real_library_files(root)
+        time.sleep(0.3)
+        return listing
+
+    monkeypatch.setattr(scanner, "_library_files", slow_library_files)
+
+    put(library, "Uploads/already-there.gp")
+    assert scanner.start_scan() is True
+
+    # Wait until that scan is past its (real) listing and into the delay -
+    # i.e. genuinely in flight, not merely "started".
+    deadline = time.monotonic() + 5
+    while scanner.scan_status()["started_at"] is None:
+        if time.monotonic() > deadline:
+            raise AssertionError("the first scan never started")
+        time.sleep(0.01)
+    time.sleep(0.05)
+    assert scanner.scan_status()["scanning"] is True
+
+    # An upload landing in that window: writes the file, then asks for a scan
+    # exactly as api.upload does - and is declined.
+    put(library, "Uploads/new-upload.gp")
+    assert scanner.start_scan() is False
+
+    # NOT asserted here: that the row is absent right after the first scan
+    # finishes. `_wait_for_scan` only waits for `scanning` to read false at
+    # whatever moment it polls, and the follow-up this test is about can
+    # start again inside that same instant - so "absent yet" is not something
+    # this can observe reliably. What is reliable, and is the actual
+    # contract, is that the row exists soon without anything else asking.
+    deadline = time.monotonic() + 5
+    while "Uploads/new-upload.gp" not in rows():
+        if time.monotonic() > deadline:
+            raise AssertionError(
+                "the declined scan request was silently dropped - nothing ever "
+                "revisited the new file"
+            )
+        time.sleep(0.02)
+    assert rows()["Uploads/new-upload.gp"]["missing_since"] is None
+
+
+def test_a_scan_declined_by_a_mutation_gets_a_follow_up_once_it_lifts(library):
+    """The other decline path - `_mutating` - owes the same guarantee.
+
+    A move or delete excludes a scan for its own duration (see
+    hold_library_still); a scan asked for while that is held must not be lost
+    once the exclusion lifts, for the same reason an in-flight scan's decline
+    must not be.
+    """
+    put(library, "Uploads/already-there.gp")
+    scanner._scan()
+
+    with scanner.hold_library_still():
+        put(library, "Uploads/new-upload.gp")
+        assert scanner.start_scan() is False
+
+    deadline = time.monotonic() + 5
+    while "Uploads/new-upload.gp" not in rows():
+        if time.monotonic() > deadline:
+            raise AssertionError(
+                "the scan declined during the mutation was silently dropped"
+            )
+        time.sleep(0.02)
+    assert rows()["Uploads/new-upload.gp"]["missing_since"] is None
+
+
 def test_a_score_row_written_before_the_column_existed_is_treated_as_present(
     library,
 ):

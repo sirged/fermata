@@ -59,6 +59,21 @@ if (filteredArgs.length !== passedArgs.length) {
   );
 }
 
+// #110: a static, approximate check for the "click, then read out of band"
+// race that has recurred three times (#82, #100, and a refused-scan test
+// written after that sweep) despite two prior sweeps. Run before Playwright
+// even starts, so a new instance of the pattern fails fast and cheaply
+// rather than waiting on a browser job to flake under load. See
+// check-out-of-band-reads.mjs for what it does and does not catch.
+const guard = spawnSync("node", ["scripts/check-out-of-band-reads.mjs"], {
+  cwd: webRoot,
+  stdio: "inherit",
+  shell: true,
+});
+if (guard.status !== 0) {
+  process.exit(guard.status ?? 1);
+}
+
 const summaryPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fermata-test-summary-")), "summary.json");
 const reporters = process.env.CI
   ? "list,github,html,./tests/minimum-tests.js,json"

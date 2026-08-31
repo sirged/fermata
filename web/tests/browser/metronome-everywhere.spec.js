@@ -552,9 +552,12 @@ test("the practice page has a click of its own, pre-filled from the tempo the la
   expect(changed, `measured ${changed}`).toBeGreaterThan(59);
   expect(changed, `measured ${changed}`).toBeLessThan(61);
 
-  for (const s of (await (await request.get("/api/practice/sessions?limit=1000")).json()).sessions) {
-    await request.delete(`/api/practice/sessions/${s.id}`);
-  }
+  // Cleanup, not a check - nothing above asserts anything about these rows,
+  // so there is nothing for either read below to race.
+  // out-of-band-ok: teardown
+  const leftover = (await (await request.get("/api/practice/sessions?limit=1000")).json()).sessions;
+  // out-of-band-ok: teardown
+  for (const s of leftover) await request.delete(`/api/practice/sessions/${s.id}`);
 });
 
 test("a tempo set up before stepping into gig mode is still set when stepping back out", async ({ page }) => {
