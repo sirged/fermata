@@ -3,9 +3,9 @@
 Fermata's own web frontend is one client of a REST API under `/api`, and that
 API is not private to it. Anything that can make an HTTP request can browse
 the library, log or query practice, manage instruments, read or write
-transcriptions, and trigger a scan - which is what makes a companion app, a
-script, or a scoreboard on a second screen possible without touching this
-codebase at all.
+transcriptions, trigger a scan, and export or import everything Fermata knows
+as one portable archive - which is what makes a companion app, a script, or a
+scoreboard on a second screen possible without touching this codebase at all.
 
 ## Where the contract actually lives
 
@@ -158,6 +158,63 @@ Deleting a score whose file has **already** gone is allowed and answers
 was nothing to move. Restoring it (or any score whose trashed file has since
 been removed by hand) answers `file_restored: false` and puts the score back in
 the library flagged `missing_since`, which is the state it was in before.
+
+## Getting everything in and out (issue #58)
+
+Two endpoints, one archive format, and one rule that holds for both directions:
+nothing here is a database file you cannot read. `GET /api/export` and
+`POST /api/import` are documented individually in `/docs`; this is the shape
+that ties them together.
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /api/export` | Every score row, transcription, practice session, goal, tag, instrument and setting, plus the score files themselves, as one zip. |
+| `POST /api/import` | Restores an archive `GET /api/export` produced. **Dry run by default.** |
+
+**The archive.** A zip with `manifest.json` at its root - a JSON object naming
+the exact `schema_version` (`fermata/db.py`'s `SCHEMA_VERSION`, not the
+application's own release number) the rest of it was written against, and
+carrying every table's rows verbatim under `tables`. Score files themselves
+live under `files/<content-hash><extension>`, named by the same identity the
+scanner already uses (`scanner.hash_file`) rather than by a person's folder
+names, which is what lets two scores that happen to share content share one
+entry instead of two. `include_trash` (default true) decides whether a score
+currently in the trash - deleted but not yet destroyed, see the
+library-management section above - travels too; leaving it true is what makes
+an export a real backup, since a restorable score left out of one is data
+loss the moment the original library is gone. `include_files` (default true)
+decides whether the score files' own bytes are bundled at all - score files
+are already ordinary files in a folder, so `include_files=false` is for
+someone moving the library folder across by other means and wanting the
+archive to carry only the part that is not already portable that way.
+
+**What import does, exactly: it ADDS.** Every row from a validated archive is
+inserted as a new row with a fresh id - the only exception is a tag whose
+NAME already matches one already in the target library, which is reused
+rather than duplicated. Import never replaces, and never merges by guessing
+which of two similarly-shaped rows is "the same one" - a wrong guess risks
+silently discarding practice history, which this feature's one absolute rule
+is that it never does. Importing the same archive twice therefore creates two
+copies of everything; the library to import into is an empty one - a fresh
+install, or one just scanned onto an empty database.
+
+**Validated completely before anything is written.** The archive is a real
+zip, its manifest parses, its `schema_version` matches this Fermata's exactly
+(cross-version migration is not implemented yet - restore an old archive with
+the Fermata version that wrote it), every foreign key inside the archive
+resolves to a row also in the archive, and every archived file's bytes hash
+to what the archive itself records for them. A malformed or
+incompatible archive is rejected with a clear message and changes nothing -
+no database transaction is even opened. The rarer failure - a valid archive
+that still collides with something already in the target library once
+writing starts (two goals for the same week, say) - rolls the database back
+the way every other write in this API does, and removes any files already
+written to the library before the failure, so a rejected import always
+leaves the library exactly as it was.
+
+**`dry_run` defaults to true**, the same default every bulk operation in this
+API uses (see the five rules above). It validates the archive completely and
+reports what it found without opening a transaction or writing a file.
 
 ## Who else reads this contract
 

@@ -1,4 +1,5 @@
 <script>
+  import DataPortability from "./DataPortability.svelte";
   import Instruments from "./Instruments.svelte";
   import {
     getSettings,
@@ -116,6 +117,8 @@
     </section>
 
     <Instruments />
+
+    <DataPortability />
   </main>
 </div>
 
