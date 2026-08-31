@@ -16,6 +16,7 @@
 // unit-tested on its own.
 import {
   DURATION_TYPES,
+  durationForDots,
   durationForType,
   isWritablePitch,
   midiForStringFret,
@@ -55,6 +56,21 @@ function technicalOf(noteEl) {
 // note of a chord advances the measure's time cursor.
 function hasChord(noteEl) {
   return !!firstChildTag(noteEl, "chord");
+}
+
+// The <tie type=> sound element of the given type on a note, or null (#183). A
+// note carries up to two: a note held into AND out of has both a stop (from the
+// previous note) and a start (into the next). This is the SOUND half of a tie;
+// the <tied> notation half lives in <notations>.
+function firstTie(noteEl, type) {
+  for (const child of noteEl.children) {
+    if (child.tagName === "tie" && child.getAttribute("type") === type) return child;
+  }
+  return null;
+}
+
+function hasTie(noteEl, type) {
+  return !!firstTie(noteEl, type);
 }
 
 // The integer <duration> of a <note>, <backup> or <forward> - what moves the
@@ -156,9 +172,15 @@ export function createDocument(xml) {
   // voice set so the control knows which voices a note may move to.
   const onsetByEl = new Map();
   const voicesByMeasure = new Map(); // measureEl -> Set<voiceNum that sounds>
+  // measureEl -> the measure's total duration (its highest cursor). A tie whose
+  // partner is the first note of the next measure (a cross-barline tie, #183)
+  // needs to know this note reaches its own measure's end; read once here from
+  // the same walk rather than re-derived per keypress.
+  const measureDurByEl = new Map();
   for (const measureEl of doc.getElementsByTagName("measure")) {
     let cursor = 0;
     let headOnset = 0;
+    let measureDur = 0;
     const voices = new Set();
     voicesByMeasure.set(measureEl, voices);
     for (const child of measureEl.children) {
@@ -169,6 +191,7 @@ export function createDocument(xml) {
       }
       if (tag === "forward") {
         cursor += intDuration(child);
+        if (cursor > measureDur) measureDur = cursor;
         continue;
       }
       if (tag !== "note") continue;
@@ -182,8 +205,10 @@ export function createDocument(xml) {
         onsetByEl.set(child, cursor);
         headOnset = cursor;
         cursor += intDuration(child);
+        if (cursor > measureDur) measureDur = cursor;
       }
     }
+    measureDurByEl.set(measureEl, measureDur);
   }
 
   function describe(el, ordinal) {
@@ -213,6 +238,11 @@ export function createDocument(xml) {
       voice: voiceNumber(el),
       onset: onsetByEl.has(el) ? onsetByEl.get(el) : null,
       measureVoices: voices ? voices.size : null,
+      // Whether this note is tied INTO the next note (a tie starts here) and/or
+      // OUT of the previous one (a tie stops here) - #183. The control reflects
+      // and toggles the start; the stop is shown so a tied pair reads as one.
+      tieStart: hasTie(el, "start"),
+      tieStop: hasTie(el, "stop"),
     };
   }
 
@@ -358,6 +388,178 @@ export function createDocument(xml) {
     }
     typeEl.textContent = type;
     for (const dot of [...el.children].filter((c) => c.tagName === "dot")) el.removeChild(dot);
+    return true;
+  }
+
+  /**
+   * Set a sounding note's augmentation dots to `dots` (0, 1 or 2), keeping its
+   * written `<type>` and recomputing `<duration>` so the two stay consistent
+   * (#183). A dot adds half the value again: a dotted quarter is 1.5x a quarter,
+   * a double-dotted quarter 1.75x (see durationForDots). Writes exactly `dots`
+   * `<dot/>` elements in their schema position (immediately after `<type>`,
+   * before `<accidental>`/`<notations>`) and the matching `<duration>`.
+   *
+   * Structural like setDurationType - it changes the bar's arithmetic, so the
+   * caller re-imports the whole document rather than trusting an in-place tweak.
+   * Returns true when the document changed. Refuses (leaving the note untouched)
+   * when the note has no `<type>` to scale, when the dotted value is not a whole
+   * number of divisions, or when the note carries a `<time-modification>`: a
+   * tuplet member's sounding duration is its written value scaled by the tuplet
+   * ratio too, and writing a dot-only duration over that would be inconsistent -
+   * tuplets are a stated follow-on (see the PR), so a dotted tuplet is refused
+   * here rather than written wrong.
+   */
+  function setDots(ordinal, dots) {
+    const el = noteEls[ordinal];
+    if (!el || !Number.isInteger(dots) || dots < 0 || dots > 2) return false;
+    if (firstChildTag(el, "time-modification")) return false;
+    const type = tagText(el, "type");
+    if (!type) return false;
+    const value = durationForDots(type, divisions, dots);
+    if (value == null) return false;
+    const durationEl = firstChildTag(el, "duration");
+    const typeEl = firstChildTag(el, "type");
+    if (!durationEl || !typeEl) return false;
+    // Drop whatever dots the note had, then write the new count immediately after
+    // <type> (the schema's home for <dot>), so a change from two dots to one, or
+    // to none, lands correctly rather than accreting.
+    for (const dot of [...el.children].filter((c) => c.tagName === "dot")) el.removeChild(dot);
+    let anchor = typeEl;
+    for (let i = 0; i < dots; i++) {
+      const dot = doc.createElement("dot");
+      anchor.insertAdjacentElement?.("afterend", dot) ?? el.appendChild(dot);
+      anchor = dot;
+    }
+    durationEl.textContent = String(value);
+    return true;
+  }
+
+  // ------------------------------------------------------------------- ties (#183)
+  //
+  // A tie makes two same-pitch notes read as ONE held note: the first carries a
+  // <tie type="start"/> (and <tied type="start"/> notation), the second a
+  // matching stop. This profile writes BOTH the sound element (<tie>, a child of
+  // <note>) and the notation (<tied>, in <notations>), start on the first note
+  // and stop on the second, so a validating consumer and the renderer agree.
+
+  // The sounding note this note would tie TO: the next note in document order in
+  // the SAME voice that is contiguous with it (its onset is exactly where this
+  // note ends) - either the immediately-following beat in the same measure, or
+  // the first beat of the next measure when this note reaches its own measure's
+  // end (a cross-barline tie). Chord beats are not offered (see setTie). Returns
+  // { el, ordinal } or null. Pitch is NOT checked here - setTie adds that only
+  // when starting a tie, so a tie can still be REMOVED after a fret edit spoils
+  // the match.
+  function tieNext(ordinal) {
+    const el = noteEls[ordinal];
+    if (!el || isRest(el) || hasChord(el)) return null;
+    const voice = voiceNumber(el);
+    const onset = onsetByEl.get(el);
+    const dur = intDuration(el);
+    const measureEl = el.closest ? el.closest("measure") : null;
+    if (voice == null || onset == null || !measureEl) return null;
+    for (let i = ordinal + 1; i < noteEls.length; i++) {
+      const cand = noteEls[i];
+      // Skip a chord member (it shares its head's onset); the head is what a tie
+      // would attach to, and it precedes its members in document order.
+      if (hasChord(cand)) continue;
+      if (voiceNumber(cand) !== voice) continue;
+      const candMeasure = cand.closest ? cand.closest("measure") : null;
+      const candOnset = onsetByEl.get(cand);
+      if (candMeasure === measureEl) {
+        // Same measure: the partner must start exactly where this note ends. A
+        // non-contiguous next note means a gap (a rest) sits between them, which
+        // a tie must not span.
+        return candOnset === onset + dur ? { el: cand, ordinal: i } : null;
+      }
+      // A later measure: only the first beat of it, and only when this note runs
+      // to its own measure's end, is contiguous across the barline.
+      if (candOnset === 0 && onset + dur === measureDurByEl.get(measureEl)) {
+        return { el: cand, ordinal: i };
+      }
+      return null;
+    }
+    return null;
+  }
+
+  // Write (or ensure) the <tie> sound element and <tied> notation of `type`
+  // ("start"/"stop") on a note. <tie> sits after <duration> (its schema home,
+  // before <voice>); <tied> goes in <notations> (created if absent), before the
+  // <technical> that carries string/fret.
+  function writeTie(el, type) {
+    if (!firstTie(el, type)) {
+      const tie = doc.createElement("tie");
+      tie.setAttribute("type", type);
+      const durationEl = firstChildTag(el, "duration");
+      if (durationEl) durationEl.insertAdjacentElement?.("afterend", tie) ?? el.appendChild(tie);
+      else el.appendChild(tie);
+    }
+    let notations = firstChildTag(el, "notations");
+    if (!notations) {
+      notations = doc.createElement("notations");
+      el.appendChild(notations);
+    }
+    const already = [...notations.children].some((c) => c.tagName === "tied" && c.getAttribute("type") === type);
+    if (!already) {
+      const tied = doc.createElement("tied");
+      tied.setAttribute("type", type);
+      notations.insertBefore(tied, notations.firstChild);
+    }
+  }
+
+  // Remove the <tie> sound element and <tied> notation of `type` from a note.
+  function removeTie(el, type) {
+    const tie = firstTie(el, type);
+    if (tie) el.removeChild(tie);
+    const notations = firstChildTag(el, "notations");
+    if (notations) {
+      for (const c of [...notations.children]) {
+        if (c.tagName === "tied" && c.getAttribute("type") === type) notations.removeChild(c);
+      }
+    }
+  }
+
+  /**
+   * Tie the sounding note at `ordinal` to the next note (`on` true), or remove
+   * that tie (`on` false). Returns true when the document changed (#183).
+   *
+   * The decisions, stated so a reader need not infer them:
+   * - A tie joins THIS note to the NEXT one. "Next" is the next sounding note in
+   *   the same voice that is contiguous with this one - the following beat in the
+   *   measure, or the first beat of the next measure when this note reaches the
+   *   barline. A gap (a rest) between them, or the next note being in another
+   *   voice, means there is nothing to tie to and the request is refused.
+   * - The two notes must be the SAME pitch. A tie sustains one pitch; joining two
+   *   different pitches is a slur, not a tie, and is refused with the document
+   *   untouched (so the field can be corrected).
+   * - Chord beats are not offered. A tie on a chord member (or from a chord) would
+   *   have to pair every voice of the chord; this increment refuses it.
+   * - It can be removed. Toggling a started tie off drops both the start on this
+   *   note and the stop on its partner, found structurally (by the tie, not by
+   *   re-matching the pitch), so a later fret edit cannot orphan the stop.
+   */
+  function setTie(ordinal, on) {
+    const el = noteEls[ordinal];
+    if (!el || isRest(el) || hasChord(el)) return false;
+    const startsHere = hasTie(el, "start");
+    if (on) {
+      if (startsHere) return false; // already tied to the next note - a no-op
+      const next = tieNext(ordinal);
+      if (!next) return false;
+      const here = describe(el, ordinal).midi;
+      const there = describe(next.el, next.ordinal).midi;
+      if (here == null || there == null || here !== there) return false;
+      writeTie(el, "start");
+      writeTie(next.el, "stop");
+      return true;
+    }
+    if (!startsHere) return false; // nothing to remove
+    const next = tieNext(ordinal);
+    removeTie(el, "start");
+    // Remove the partner's stop too. tieNext finds it structurally (contiguity,
+    // not pitch), so an edit that changed the note's pitch after it was tied
+    // still lets the pair be untied cleanly.
+    if (next) removeTie(next.el, "stop");
     return true;
   }
 
@@ -671,6 +873,8 @@ export function createDocument(xml) {
     setFret,
     setString,
     setDurationType,
+    setDots,
+    setTie,
     deleteNote,
     moveToVoice,
     text,

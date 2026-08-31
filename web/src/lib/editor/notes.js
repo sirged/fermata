@@ -149,3 +149,29 @@ export function durationForType(type, divisions) {
   const value = q * divisions;
   return Number.isInteger(value) ? value : null;
 }
+
+/**
+ * The `<duration>` value for a note of the given `<type>` carrying `dots`
+ * augmentation dots (#183). A dot adds half the value again, a second dot half
+ * of THAT again: one dot is 3/2 the plain value, two dots 7/4 - in general the
+ * multiplier is (2^(dots+1) - 1) / 2^dots. So a dotted quarter is 1.5x a
+ * quarter and a double-dotted quarter 1.75x, and the written `<dot/>`
+ * element(s) and this `<duration>` stay exactly consistent (the divergence the
+ * re-import round-trip checks for).
+ *
+ * `dots` is 0, 1 or 2 - the values this increment writes. Returns null when the
+ * plain type has no duration at this divisions (see durationForType), when the
+ * dotted value is not a whole number of units (a dotted 16th against a divisions
+ * too coarse to halve again), or when `dots` is outside 0..2 - in every such
+ * case the caller keeps the note as it was rather than writing a rounded,
+ * wrong duration.
+ */
+export function durationForDots(type, divisions, dots = 0) {
+  if (!Number.isInteger(dots) || dots < 0 || dots > 2) return null;
+  const base = durationForType(type, divisions);
+  if (base == null) return null;
+  const numerator = 2 ** (dots + 1) - 1; // 1, 3, 7
+  const denominator = 2 ** dots; //          1, 2, 4
+  const value = (base * numerator) / denominator;
+  return Number.isInteger(value) ? value : null;
+}
