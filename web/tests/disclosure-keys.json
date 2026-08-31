@@ -18,5 +18,6 @@
   "staves_no_stem",
   "staves_spacing_rhythm",
   "systems_unread",
+  "tie_ends_unpaired",
   "unison_digits_shared"
 ]

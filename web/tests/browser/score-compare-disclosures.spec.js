@@ -371,6 +371,60 @@ test.describe("ScoreCompare structural disclosures", () => {
     await expect(page.locator(".disclosure-row")).toHaveCount(1);
   });
 
+  test("a tie the engraving draws and this transcription could not write gets a row, with the bars it happened in", async ({
+    page,
+  }) => {
+    // Issue #81. Every tie that WAS written is in the transcription itself
+    // and needs no counter; these are the ones in neither the file nor any
+    // other figure - the bar still adds up and the note is still there, and
+    // it is struck twice where the score strikes it once. Nothing on this
+    // panel would say so without this row.
+    //
+    // Dropping tie_ends_unpaired from DISCLOSURE_ROWS turns this red, along
+    // with the vendored-key guard in tests/unit/disclosures.spec.js and, on
+    // the server side, test_disclosure_keys.py.
+    await stubScoreApi(
+      page,
+      transcriptionResponse({
+        warnings: [],
+        confidence: CLEAN_CONFIDENCE,
+        disclosures: {
+          ...zeroDisclosures(),
+          tie_ends_unpaired: 4,
+          tie_ends_unpaired_bars: [19, 22, 24, 28],
+        },
+      }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+
+    const row = page.locator('[data-disclosure="tie_ends_unpaired"]');
+    await expect(row).toBeVisible();
+    await expect(row).toContainText("Tie ends whose other end was not found");
+    await expect(row.locator(".disclosure-value")).toHaveText("4");
+    await expect(row.locator(".disclosure-bars")).toHaveText("bars 19, 22, 24, 28");
+  });
+
+  test("a transcription that wrote every tie it found shows no tie row at all", async ({
+    page,
+  }) => {
+    // The other half of the same rule, and the reason the row is worth
+    // having: a measured ZERO is hidden, so the row appearing means
+    // something happened rather than meaning the counter exists.
+    await stubScoreApi(
+      page,
+      transcriptionResponse({
+        warnings: [],
+        confidence: CLEAN_CONFIDENCE,
+        disclosures: { ...zeroDisclosures(), repeats_unread: 1, repeats_unread_bars: [3] },
+      }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+    await expect(page.locator(".disclosures")).toBeVisible();
+    await expect(page.locator('[data-disclosure="tie_ends_unpaired"]')).toHaveCount(0);
+  });
+
   test("gig mode drops the disclosures panel along with the rest of the review chrome", async ({
     page,
   }) => {

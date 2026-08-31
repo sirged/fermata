@@ -155,6 +155,117 @@ def is_inferred_rest(notes) -> bool:
     return isinstance(notes, InferredRest)
 
 
+# What `MarkedNote.harmonic` may say. A guitar harmonic is either NATURAL -
+# the open string touched at a node, so the fret number names the touch point
+# and the string sounds a fixed interval above its open pitch - or ARTIFICIAL,
+# where the string is stopped at one place and touched at another. The two
+# sound at different pitches and MusicXML spells them with different children
+# of `<harmonic>`, so they are not interchangeable.
+#
+# The engraving conventions this extractor reads (a diamond notehead, a fret
+# number in guillemets) say THAT a note is a harmonic and not WHICH KIND, so
+# `HARMONIC_UNSPECIFIED` exists to carry that gap rather than pick a side:
+# `<harmonic>` accepts an empty body (both of its choices are minOccurs="0"),
+# so a harmonic whose kind was not read is written as a harmonic that does not
+# claim one. See Rule 19.
+HARMONIC_NATURAL = "natural"
+HARMONIC_ARTIFICIAL = "artificial"
+HARMONIC_UNSPECIFIED = "unspecified"
+HARMONIC_KINDS = (HARMONIC_NATURAL, HARMONIC_ARTIFICIAL, HARMONIC_UNSPECIFIED)
+
+
+class MarkedNote(tuple):
+    """One sounding note - `(string, fret)` - and what the page said ABOUT it.
+
+    The beats model's note slot has always been a bare `(string, fret)` pair,
+    and everything that reads it - both emitters, the conformance sums, every
+    test - unpacks it as one. Two things the engraving carries are properties
+    of a NOTE rather than of its beat, though, and had nowhere to live: a tie
+    to the next note of the same pitch (issue #81) and a harmonic (issue #63).
+
+    So this rides on the TYPE, exactly as InferredRest does: it IS the
+    two-tuple, it compares equal to the plain pair, and it unpacks the same
+    way, so no existing reader has to know it exists. Anything that needs a
+    mark asks for it through the module functions below, which answer for a
+    plain tuple too.
+
+    - `harmonic` is None or one of HARMONIC_KINDS.
+    - `tie_start` says a tie is drawn from this note to the next note of the
+      same pitch; `tie_stop` says one arrives here. A note in the middle of a
+      chain carries both. Both ends are always present in a written tie - an
+      unpaired start is dropped rather than emitted, see
+      tabextract._resolve_ties - because a tie with one end is not a tie.
+
+    WHAT DESTROYS THE MARKS, the same list InferredRest carries and for the
+    same reason: they survive copy, deepcopy and pickle, and are lost by
+    slicing, by `tuple(note)`, by rebuilding the pair as `(string, fret)`, and
+    by any round trip through JSON. The beats model goes straight from the
+    extractor to the two emitters and nothing on that path does any of those -
+    but a caller that rebuilds a note tuple silently unmarks it, so code that
+    reorders or dedupes notes must move the OBJECT rather than its contents.
+    """
+
+    def __new__(cls, string, fret, harmonic=None, tie_start=False, tie_stop=False):
+        note = super().__new__(cls, (string, fret))
+        note.harmonic = harmonic
+        note.tie_start = bool(tie_start)
+        note.tie_stop = bool(tie_stop)
+        return note
+
+    def with_marks(self, harmonic=..., tie_start=..., tie_stop=...) -> "MarkedNote":
+        """A copy carrying the marks given, keeping the rest. `...` means
+        "leave this one alone", so None and False stay usable as values."""
+        string, fret = self
+        return MarkedNote(
+            string, fret,
+            harmonic=self.harmonic if harmonic is ... else harmonic,
+            tie_start=self.tie_start if tie_start is ... else tie_start,
+            tie_stop=self.tie_stop if tie_stop is ... else tie_stop,
+        )
+
+    def __repr__(self):
+        marks = []
+        if self.harmonic:
+            marks.append(self.harmonic)
+        if self.tie_stop:
+            marks.append("tie-stop")
+        if self.tie_start:
+            marks.append("tie-start")
+        string, fret = self
+        return f"<note {fret}.{string}{' ' + ' '.join(marks) if marks else ''}>"
+
+
+def mark_note(note, harmonic=..., tie_start=..., tie_stop=...) -> MarkedNote:
+    """`note` with the marks given, whether or not it was marked already.
+
+    Takes a plain `(string, fret)` as readily as a MarkedNote, so a caller
+    never has to know which it is holding."""
+    if isinstance(note, MarkedNote):
+        return note.with_marks(harmonic=harmonic, tie_start=tie_start, tie_stop=tie_stop)
+    string, fret = note
+    return MarkedNote(
+        string, fret,
+        harmonic=None if harmonic is ... else harmonic,
+        tie_start=False if tie_start is ... else tie_start,
+        tie_stop=False if tie_stop is ... else tie_stop,
+    )
+
+
+def note_harmonic(note):
+    """Which kind of harmonic this note is, or None for an ordinary note."""
+    return getattr(note, "harmonic", None)
+
+
+def note_tie_start(note) -> bool:
+    """Whether a tie is drawn from this note to the next of the same pitch."""
+    return bool(getattr(note, "tie_start", False))
+
+
+def note_tie_stop(note) -> bool:
+    """Whether a tie arrives at this note from the previous of the same pitch."""
+    return bool(getattr(note, "tie_stop", False))
+
+
 # What a `<forward>` written for inferred silence says about itself, in words,
 # beside the machine-readable fact of being a forward and not a rest. A
 # constant because it is part of the published profile (Rule 14), so a consumer
@@ -379,7 +490,8 @@ def _sub(parent, tag, text=None, **attrib):
 
 
 def _append_note(measure, duration, type_name, dots, voice, note_id, string=None,
-                 fret=None, midi=None, fifths=0, chord=False):
+                 fret=None, midi=None, fifths=0, chord=False, harmonic=None,
+                 tie_start=False, tie_stop=False):
     """One `<note>`. The schema's sequence for a normal note is: chord?,
     (pitch|unpitched|rest), duration, tie*, instrument*, footnote?, level?,
     voice?, type?, dot*, accidental?, ..., notations* - so voice comes BEFORE
@@ -393,6 +505,21 @@ def _append_note(measure, duration, type_name, dots, voice, note_id, string=None
     this note sits - measure, voice, onset, chord member - which is what makes
     it stable across re-emission of the same content, not an accident of
     iteration order.
+
+    A TIE IS WRITTEN TWICE, and both copies are required (Rule 18). `<tie>` is
+    the SOUND of a tie and sits directly under `<note>`; `<tied>` is the
+    printed SLUR-shaped mark and sits under `<notations>`. The specification
+    treats them as separate statements about the same event, and consumers
+    genuinely differ on which one they read - the renderer this project embeds
+    reads `<tied>` and ignores `<tie>` outright, so a file carrying only the
+    sound element re-strikes the note it should have held. Writing one without
+    the other would therefore be a file that is right for half its readers.
+    A note in the middle of a tie chain carries stop before start, which is
+    the order the two elements are in time.
+
+    A HARMONIC is `<harmonic>` inside `<technical>`, beside the string and
+    fret it is played at (Rule 19), and carries `<natural/>` only where the
+    kind was actually read - see HARMONIC_KINDS.
     """
     note = _sub(measure, "note", id=note_id)
     if string is None:
@@ -409,6 +536,10 @@ def _append_note(measure, duration, type_name, dots, voice, note_id, string=None
             _sub(pitch, "alter", alter)
         _sub(pitch, "octave", octave)
     _sub(note, "duration", duration)
+    if tie_stop:
+        _sub(note, "tie", type="stop")
+    if tie_start:
+        _sub(note, "tie", type="start")
     _sub(note, "voice", voice)
     if type_name:
         _sub(note, "type", type_name)
@@ -416,9 +547,19 @@ def _append_note(measure, duration, type_name, dots, voice, note_id, string=None
         _sub(note, "dot")
     if string is not None:
         notations = _sub(note, "notations")
+        if tie_stop:
+            _sub(notations, "tied", type="stop")
+        if tie_start:
+            _sub(notations, "tied", type="start")
         technical = _sub(notations, "technical")
         _sub(technical, "string", string)
         _sub(technical, "fret", fret)
+        if harmonic:
+            element = _sub(technical, "harmonic")
+            if harmonic == HARMONIC_NATURAL:
+                _sub(element, "natural")
+            elif harmonic == HARMONIC_ARTIFICIAL:
+                _sub(element, "artificial")
 
 
 def _append_forward(measure, duration, voice):
@@ -720,25 +861,29 @@ def build(title, tempo, tuning, ts, measures, fifths=0, capo=None,
                 # the whole measure, which turns one unwritable note into a
                 # measure that reads as defective.
                 writable = []
-                for string, fret in notes or ():
+                for note in notes or ():
+                    string, fret = note
                     string, fret = int(string), int(fret)
                     if not 1 <= string <= len(tuning):
                         continue
                     midi = open_string_midi(tuning, string, capo) + fret
                     if is_representable(midi, fifths):
-                        writable.append((string, fret, midi))
+                        writable.append((string, fret, midi, note))
                 if not writable:
                     note_id = f"n{measure_number}-{voice_number}-{onset_index}-0"
                     _append_note(measure, duration, type_name, dot_count, voice_number,
                                  note_id)
                 else:
-                    for position, (string, fret, midi) in enumerate(writable):
+                    for position, (string, fret, midi, note) in enumerate(writable):
                         note_id = (
                             f"n{measure_number}-{voice_number}-{onset_index}-{position}")
                         _append_note(
                             measure, duration, type_name, dot_count, voice_number,
                             note_id, string=string, fret=fret, midi=midi,
                             fifths=fifths, chord=position > 0,
+                            harmonic=note_harmonic(note),
+                            tie_start=note_tie_start(note),
+                            tie_stop=note_tie_stop(note),
                         )
                 written += duration
 

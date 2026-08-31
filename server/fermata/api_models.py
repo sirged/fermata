@@ -658,6 +658,12 @@ class TranscriptionOut(BaseModel):
     # reported, and cannot say that a different, unread one is printed on the
     # page.
     meter_digits_unreadable: int | None
+    # An end of a tie the decoder matched in the engraving whose other end it
+    # did not, so the tie is not written and its second note is transcribed as
+    # separately re-struck rather than held (issue #81). Every tie that WAS
+    # written is countable from the transcription itself; this is the only
+    # place the ones that were not appear at all.
+    tie_ends_unpaired: int | None
     # A system whose bars were not read at all (issue #152) - music ABSENT
     # from this transcription rather than imperfect in it. Every other figure
     # on this model describes only the systems that WERE read, which makes
@@ -681,6 +687,11 @@ class TranscriptionOut(BaseModel):
     # at all: a system that was never read has no bar numbers to report. The
     # page is the coordinate that survives (issue #152).
     systems_unread_pages: list[int] | None
+    # WHICH bars hold an end of a tie whose other end was not found (issue
+    # #81). The bar named is where the unmatched END is, which for a tie
+    # broken across a system break is as often the bar the phrase resumes in
+    # as the one it left.
+    tie_ends_unpaired_bars: list[int] | None
 
     # _BAR_AMOUNT_KEYS
     inferred_rest_quarters: float | None

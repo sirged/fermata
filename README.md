@@ -51,9 +51,10 @@ them.
   one voice of a bar has to be filled out with silence for the bar to play in
   time, that silence is marked in the MusicXML, counted as missing rather than
   as read, and the bars it happened in are named. Scanned PDFs have nothing to
-  read and are not transcribed. Harmonics are currently dropped rather than
-  read — a gap worth knowing about separately, because a missing note announces
-  itself only in the arithmetic of its bar, not in the note itself.
+  read and are not transcribed. A tie is written where the curve joining its
+  two notes was matched, and a note the engraving marks as a harmonic is
+  written as one; a tie drawn across a system break is not matched, and the
+  ends of it that were found are counted rather than half-written.
 - **Instruments** — define what you actually play: any number of strings, any
   tuning including reentrant ones, a capo, and a reference pitch other than
   A440. Each string shows the note and frequency it sounds and can be played,
@@ -214,12 +215,14 @@ demo*) if your library is PDF-only so far.
 
 ## Roadmap
 
-- **Harmonics when transcribing** — currently dropped entirely, which leaves a
-  hole in the music rather than a mistake in it, and shortens the bar they
-  belonged to
-- **Tuplets and ties when transcribing** — the largest remaining gap between a
+- **Tuplets when transcribing** — the largest remaining gap between a
   transcription and a score you could practise from, and the reason bars still
   overfill once voices have been separated
+- **Grace notes when transcribing** — currently read as ordinary notes and
+  given a duration they do not have, which overfills the bar they sit in
+- **A harmonic's DURATION** — the note is marked as a harmonic, but a diamond
+  notehead's own value is still not calibrated, so a harmonic engraved as a
+  half note reads as a quarter
 - **Instrument-aware transcription** — reading a score against the instrument it
   is written for, instead of assuming standard six-string tuning whatever the
   score says

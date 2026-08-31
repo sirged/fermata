@@ -12,7 +12,10 @@
 // per-score list and its count.
 export const STANDING_LIMITS = [
   { test: /tuplets? \(triplets and similar\) are not detected/i, label: "tuplets aren't detected" },
-  { test: /tie detection is low confidence/i, label: "tie detection is approximate" },
+  {
+    test: /a tie is written only where the curve joining its two notes was matched/i,
+    label: "a tie across a system break isn't matched",
+  },
 ];
 
 // Identifies (but does not total) _rhythm_report's bar-conformance
