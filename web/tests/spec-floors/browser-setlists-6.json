@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/zzzzz-setlists.spec.js",
+  "count": 6,
+  "reason": "issue #6: the setlist UI seam - a setlist created from the page appears; scores added from the page render in order and a reorder survives a reload (so it was written, not rearranged locally); removing a member leaves the score in the library; a trashed score renders marked and unlinked (#56); deleting a setlist removes it while its scores remain; and Start practising opens the first member in the real viewer."
+}

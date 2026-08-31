@@ -8,6 +8,7 @@
   import ScoreProgress from "./lib/ScoreProgress.svelte";
   import FretToNote from "./lib/trainer/FretToNote.svelte";
   import ChordFlashCards from "./lib/trainer/ChordFlashCards.svelte";
+  import Setlists from "./lib/Setlists.svelte";
 
   function parse(hash) {
     // Checked BEFORE the bare score route, which matches a prefix: without
@@ -17,6 +18,10 @@
     if (progress) return { page: "score-progress", id: Number(progress[1]) };
     const m = hash.match(/^#\/score\/(\d+)/);
     if (m) return { page: "score", id: Number(m[1]) };
+    // The setlist detail route before the bare list route, same prefix reason.
+    const setlist = hash.match(/^#\/setlists\/(\d+)/);
+    if (setlist) return { page: "setlist", id: Number(setlist[1]) };
+    if (hash.startsWith("#/setlists")) return { page: "setlists" };
     if (hash.startsWith("#/demo")) return { page: "demo" };
     if (hash.startsWith("#/settings")) return { page: "settings" };
     if (hash.startsWith("#/practice")) return { page: "practice" };
@@ -38,6 +43,10 @@
 
 {#if route.page === "score-progress"}
   <ScoreProgress id={route.id} />
+{:else if route.page === "setlist"}
+  <Setlists id={route.id} />
+{:else if route.page === "setlists"}
+  <Setlists />
 {:else if route.page === "score"}
   <Viewer id={route.id} />
 {:else if route.page === "demo"}
