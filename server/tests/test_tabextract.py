@@ -2680,6 +2680,25 @@ def test_read_tuning_recognises_named_tunings_by_their_printed_name():
     assert read_tuning("") is None
 
 
+def test_read_tuning_does_not_trip_on_a_tuning_name_that_only_begins_a_word():
+    """The false positive that matters: a tuning wrongly recognised transposes
+    the whole score silently, so the name has to stand as its OWN token, not
+    merely begin a longer word. A title or lyric is not a tuning instruction
+    (issue #80's own comments warn of exactly this). None of these is re-tuned."""
+    from fermata.tabextract import read_tuning
+
+    # "Open D" begins "Open Doors"; "Drop C" begins "Drop Ceiling"; "Open G"
+    # begins "Open Ground" - all ordinary text, none a tuning.
+    assert read_tuning("Open Doors (theme)") is None
+    assert read_tuning("Drop Ceiling Blues") is None
+    assert read_tuning("Open Ground") is None
+    # And the reverse boundary: a name that ends a longer word is not one either.
+    assert read_tuning("Teardrop D major study") is None
+    # The genuine article, standing on its own beside a tempo or a bar, still is.
+    assert read_tuning("q = 88  Open D")[1] == "Open D"
+    assert read_tuning("Drop C\ntune the sixth string")[1] == "Drop C"
+
+
 def test_a_named_tuning_beside_an_unread_capo_is_read_low_and_says_why(zanarkand_pdf):
     """A tuning read from a NAME caps at medium; a name whose page ALSO prints an
     instruction nobody applied is lower still, because the sounding pitches are

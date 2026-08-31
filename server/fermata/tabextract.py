@@ -145,19 +145,26 @@ TUNING_FROM_LABEL = "label"
 TUNING_ASSUMED_STANDARD = "assumed standard"
 
 # Tuning NAMES recognised in the page's text, each mapped to the strings it
-# means - ordered lowest string NUMBER first (string 6 -> string 1), the order
+# means - ordered highest string NUMBER first (string 6 -> string 1), the order
 # DEFAULT_TUNING and instruments.string_pitches already use. Recognising one is
 # reading a LABEL (TUNING_FROM_LABEL), never a reading of the strings against
 # the notation - deriving the tuning from notation-against-frets is issue #80's
 # part 2 and is not attempted here.
 #
-# `aliases` are matched as-is against the page text. "Drop D" is kept FIRST and
-# as a bare substring so its behaviour is byte-for-byte what it has always been
-# (the library's 100 Drop D scores are unchanged); the rest are distinctive
-# multi-letter names that appear nowhere in that library, so adding them moves
-# no existing transcription. A score naming two of these is read as the first in
-# this list that its text contains, in page order - the same "first match wins"
-# the single Drop D branch had.
+# `aliases` are the printed forms of each name. They are matched on WORD
+# BOUNDARIES, not as bare substrings, and that is load-bearing: a tuning name
+# wrongly recognised transposes the whole score silently, so "Open D" must be
+# the tuning and not the first six letters of "Open Doors", "Drop C" not the
+# start of "Drop Ceiling Blues", "Open G" not "Open Ground". A substring match
+# trips on all three (a real title, a real song, ordinary prose) - the exact
+# false positive #80's own comments warn about. Anchoring to \b costs nothing
+# the library needs: its 100 Drop D scores print "Drop D" as its own token
+# (followed by a tempo, a capo or a bar), so every one still matches, and the
+# byte-identity sweep confirms it. Case-sensitive, matching the printed forms.
+#
+# A score naming two of these is read as the first in this list that its text
+# contains, in page order - the same "first match wins" the single Drop D
+# branch had. "Drop D" is kept FIRST so its precedence is unchanged.
 _NAMED_TUNINGS = [
     ("Drop D", ["Drop D"], DROP_D_TUNING),
     ("DADGAD", ["DADGAD", "D A D G A D"], ["D2", "A2", "D3", "G3", "A3", "D4"]),
@@ -166,17 +173,26 @@ _NAMED_TUNINGS = [
     ("Drop C", ["Drop C"], ["C2", "G2", "C3", "F3", "A3", "D4"]),
 ]
 
+# Compiled once from the table above: each alias wrapped in \b so it is
+# recognised only where it stands as its own token - see the comment there.
+_NAMED_TUNING_MATCHERS = [
+    (label, [re.compile(r"\b" + re.escape(alias) + r"\b") for alias in aliases], tuning)
+    for label, aliases, tuning in _NAMED_TUNINGS
+]
+
 
 def read_tuning(text: str) -> tuple[list[str], str] | None:
     """A tuning recognised from a page's text by its printed NAME, as
     (tuning, label), or None if no recognised name is present.
 
     Reading a name is reading a LABEL, not a reading of the strings - see
-    _NAMED_TUNINGS. The returned `tuning` is a fresh list so a caller can hold
-    it without aliasing the table.
+    _NAMED_TUNINGS. The name is matched on word boundaries, so a title or lyric
+    that merely begins with a tuning's letters ("Open Doors") is not one. The
+    returned `tuning` is a fresh list so a caller can hold it without aliasing
+    the table.
     """
-    for label, aliases, tuning in _NAMED_TUNINGS:
-        if any(alias in text for alias in aliases):
+    for label, matchers, tuning in _NAMED_TUNING_MATCHERS:
+        if any(matcher.search(text) for matcher in matchers):
             return list(tuning), label
     return None
 
@@ -4957,7 +4973,7 @@ def extract(pdf_path, time_signature: tuple[int, int] | None = None,
     since auto-detection frequently fails (see module docstring).
 
     instrument_tuning is the tuning of the instrument this score has been
-    assigned (issue #72), ordered lowest string NUMBER first the way
+    assigned (issue #72), ordered highest string NUMBER first the way
     DEFAULT_TUNING and instruments.string_pitches are. When its string count
     matches the tab staff on the page it becomes the tuning used, ahead of any
     name printed on the page; when it does not it is a conflict, reported and

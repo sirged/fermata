@@ -163,16 +163,26 @@ export function tuningStatement(t) {
   // an explicit choice about the physical instrument, not something inferred
   // from the page - and it is worth confirming precisely because a player who
   // pointed a score at the wrong instrument would see the wrong strings here and
-  // catch it. Not an "incomplete" mark: nothing was assumed, so nothing is
-  // caveated.
+  // catch it.
   if (t.tuning_source === "instrument") {
     const strings = Array.isArray(t.tuning) ? t.tuning.join(" ") : "";
-    return {
-      kind: "recognised",
-      text:
-        `Tuning: from the instrument assigned to this score` +
-        (strings ? ` (${strings})` : "") + `.`,
-    };
+    const from = `from the instrument assigned to this score` + (strings ? ` (${strings})` : "");
+    // A capo or a half-step-down printed on the page is NOT applied by the
+    // instrument's open tuning either (the instrument decides the strings, the
+    // page's own instruction decides a shift nobody read), so the caveat still
+    // has to be surfaced - a strong source for the strings does not make an
+    // unread page instruction go away. Same "incomplete" mark the label branch
+    // below carries, for the same reason.
+    if (unread.length) {
+      return {
+        kind: "incomplete",
+        text:
+          `Tuning: ${from}, but the page also says ${unread.join(" and ")}, which Fermata ` +
+          `does not read — so the pitches sounded are not the pitches printed.`,
+      };
+    }
+    // Nothing unread: a definite source with nothing to caveat.
+    return { kind: "recognised", text: `Tuning: ${from}.` };
   }
 
   if (unread.length) {

@@ -138,6 +138,23 @@ test("a tuning that came from the assigned instrument is stated plainly, as the 
   });
   expect(overLabel.kind).toBe("recognised");
   expect(overLabel.text).toMatch(/from the instrument assigned to this score/);
+
+  // But an unread page instruction (a capo, a half-step down) is NOT resolved by
+  // the instrument's open tuning - it is a shift nobody read - so the caveat is
+  // still surfaced, as an incomplete mark, naming both the source and what the
+  // page said.
+  const withCapo = tuningStatement({
+    ...ASSUMED_EVERYTHING,
+    tuning_source: "instrument",
+    tuning: ["D2", "A2", "D3", "G3", "A3", "D4"],
+    tuning_unread: ["capo 2"],
+  });
+  expect(withCapo.kind).toBe("incomplete");
+  expect(withCapo.text).toBe(
+    "Tuning: from the instrument assigned to this score (D2 A2 D3 G3 A3 D4), but the page " +
+      "also says capo 2, which Fermata does not read — so the pitches sounded are not the " +
+      "pitches printed.",
+  );
 });
 
 test("a printed tuning instruction the extractor discards makes the tuning incomplete, and says which", () => {
