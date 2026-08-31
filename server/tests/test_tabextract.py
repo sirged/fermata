@@ -4543,9 +4543,19 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # defective) because its OTHER voice was already short of the meter before
     # this change, which is why only bars_overfull moves and bars_short /
     # bars_defective do not. No note, beat or bar moves: a rest is neither.
-    assert totals["bars_overfull"] == 1536               # 1541 (#113) -> 1540 (#163) -> 1536 (#140, four harmonics)
-    assert totals["bars_short"] == 4192                  # 4190 -> 4192 (#140)
-    assert totals["bars_defective"] == 5300              # 5340; unmoved by #140
+    #
+    # 1536 before #180, 1535 after: Classical-Guitar-Method-Vol1 bar 16 held a
+    # six-eighth arpeggio filling its 3/4 bar with a whole rest stacked onto the
+    # same voice (7.0 quarters). #180 lifts that whole rest into its own silent
+    # voice - a whole-measure rest of 3.0 - so the arpeggio voice stops being
+    # overfull and both voices now sum to the meter. The bar was overfull but
+    # NOT short (its one voice held too much, none too little), so putting it
+    # right takes it out of bars_defective as well: bars_defective falls by 1
+    # and bars_short does not move. Still no note, beat or bar moves - the rest
+    # is relocated, not dropped or added.
+    assert totals["bars_overfull"] == 1535               # 1541 (#113) -> 1540 (#163) -> 1536 (#140) -> 1535 (#180, bar 16)
+    assert totals["bars_short"] == 4192                  # 4190 -> 4192 (#140); unmoved by #180
+    assert totals["bars_defective"] == 5299              # 5340; -1 at #180 (bar 16 was overfull-only)
     assert totals["bars_padded"] == 3605                 # 3603 -> 3605 (#140)
     # 4897.875 before #162, 4899.875 after: Answers (Final Fantasy XIV
     # Endwalker) bar 45 held one quarter in each of its two voices in a bar read
@@ -4578,7 +4588,13 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # directions and the pair is what says a dot was BOUND rather than merely
     # stopped being reported.
     #                                        before #111/#112 -> after
-    assert totals["dots"] == 9182                          # 8884
+    # +1 at #180: the whole-measure rest lifted out of Classical-Guitar-Method
+    # bar 16 is spelled as the 3.0 quarters the 3/4 bar holds, which is a DOTTED
+    # half rest - one emitted <dot />. Spelling it dotless would take two rests
+    # (a half plus a quarter) and move BEATS instead, which must not move; the
+    # single dotted rest keeps the beat count and adds exactly this one dot. It
+    # is bound to the rest, so dots_unassigned below does not move.
+    assert totals["dots"] == 9183                          # 8884 -> 9182 (#111/#112) -> 9183 (#180)
     assert totals["dots_unassigned"] == 1154                # 1280
     assert totals["dots_unassigned_no_candidate"] == 1144   # 1226
     assert totals["dots_unassigned_eliminated"] == 10       # 54
