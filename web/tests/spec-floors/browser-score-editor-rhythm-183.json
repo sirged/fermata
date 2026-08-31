@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-editor-rhythm-183.spec.js",
+  "count": 6,
+  "reason": "issue #183 dotted durations and ties (tuplets are a stated follow-on). Dots: the Dots control sets a note's augmentation dots, writing the <dot/>(s) AND a <duration> that stays consistent - a dotted quarter is 720 against divisions 480 and a double-dotted quarter 840 - so a dotted quarter plus the eighth it borrows from still fills the 4/4 bar (720+240+480+480=1920), the re-import shows the dot count, the guard stays green, and setting the dots back to none restores the plain 480. Ties: the Tie control joins the selected note to the next same-pitch note, writing both the <tie> sound element and the <tied> notation with type=start on the first note and type=stop on the second; a tie to a different pitch is refused with the document untouched; the pair reads back as one held note on re-import (start on the first, stop on the second) with the bar arithmetic unchanged and no note destroyed; and the tie can be removed again, dropping both halves on both notes. A #10 fret edit and the divergence guard stay green over a document now carrying a dot and a tie."
+}

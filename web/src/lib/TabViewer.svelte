@@ -164,6 +164,12 @@
   let selFret = $state(null);
   let selString = $state(null);
   let selType = $state(null);
+  // The selected note's augmentation dots (0/1/2) and whether it is tied into
+  // the next note (#183). Both are read back from the document on each selection
+  // and drive the Dots select and the Tie toggle below.
+  let selDots = $state(0);
+  let selTieStart = $state(false);
+  let selTieStop = $state(false);
   let selMidi = $state(null);
   let selNoteId = $state(null);
   // The selected note's voice, its onset within that voice (in the document's
@@ -225,6 +231,8 @@
   function clearSelection() {
     selectedOrdinal = null;
     selFret = selString = selType = selMidi = selNoteId = null;
+    selDots = 0;
+    selTieStart = selTieStop = false;
     selVoice = selOnset = selRenderVoice = null;
     selVoiceOptions = [];
     divergenceOk = true;
@@ -283,6 +291,9 @@
     selFret = d.fret;
     selString = d.string;
     selType = d.type;
+    selDots = d.dots ?? 0;
+    selTieStart = !!d.tieStart;
+    selTieStop = !!d.tieStop;
     selNoteId = d.id;
     selMidi = v?.midi ?? d.midi;
     selVoice = d.voice;
@@ -373,6 +384,31 @@
 
   function changeDuration(type) {
     applyEdit(() => doc.setDurationType(selectedOrdinal, type), "That duration can't be written for this note.");
+  }
+
+  // Set the selected note's augmentation dots (#183). Non-structural in the same
+  // sense a duration change is - the ordinal is unchanged - so it goes through
+  // the same applyEdit that a fret/string/duration change does: mutate the
+  // document, re-import, re-render, re-read. setDots keeps <duration> exactly
+  // consistent with <type> + the <dot/>(s), which is what the re-import agrees
+  // with; a value that cannot be written as a whole number of divisions (or a
+  // tuplet member, whose sounding duration is scaled) is refused.
+  function changeDots(value) {
+    const v = Number(value);
+    if (!Number.isInteger(v) || v < 0 || v > 2) return;
+    applyEdit(() => doc.setDots(selectedOrdinal, v), "That dotted value can't be written for this note.");
+  }
+
+  // Toggle a tie from the selected note to the next one (#183). Both notes
+  // change (the start on this one, the stop on its partner) but neither is added
+  // or removed, so the ordinal is stable and applyEdit's re-import/re-render is
+  // enough. A tie to a different pitch, or across a gap, is refused (setTie
+  // returns false) with the stated message.
+  function toggleTie() {
+    applyEdit(
+      () => doc.setTie(selectedOrdinal, !selTieStart),
+      "A tie needs the next note to be the same pitch and directly follow this one.",
+    );
   }
 
   // Move the selected note into another voice (#182). Unlike a fret/string/
@@ -953,6 +989,9 @@
   data-editor-selected-fret={selFret}
   data-editor-selected-string={selString}
   data-editor-selected-type={selType}
+  data-editor-selected-dots={selectedOrdinal != null ? selDots : null}
+  data-editor-selected-tie-start={selectedOrdinal != null ? selTieStart : null}
+  data-editor-selected-tie-stop={selectedOrdinal != null ? selTieStop : null}
   data-editor-selected-midi={selMidi}
   data-editor-selected-note-id={selNoteId}
   data-editor-selected-voice={selVoice}
@@ -1180,6 +1219,22 @@
               {/each}
             </select>
           </label>
+          <label title="Augmentation dots — a dot adds half the note's value again (a dotted quarter is 1.5× a quarter)">
+            Dots
+            <select value={String(selDots)} onchange={(e) => changeDots(e.target.value)}>
+              <option value="0">none</option>
+              <option value="1">dotted</option>
+              <option value="2">double</option>
+            </select>
+          </label>
+          <button
+            class="tie-toggle"
+            class:on={selTieStart}
+            onclick={toggleTie}
+            title="Tie this note to the next — they must be the same pitch and directly follow one another, so the two read as one held note"
+          >
+            {selTieStart ? "Tied →" : "Tie →"}
+          </button>
           <label title="Move this note to another voice — the second voice (and its backup) is created if it does not exist yet">
             Voice
             <select value={String(selVoice ?? "")} onchange={(e) => changeVoice(e.target.value)}>
@@ -1489,6 +1544,17 @@
 
   .edit-fields input {
     width: 64px;
+  }
+
+  .edit-fields .tie-toggle {
+    align-self: center;
+    padding: 5px 12px;
+  }
+
+  .edit-fields .tie-toggle.on {
+    background: var(--brass);
+    color: #241d0f;
+    font-weight: 600;
   }
 
   .edit-actions {

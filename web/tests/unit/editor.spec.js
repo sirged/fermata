@@ -10,6 +10,7 @@ import {
   DURATION_TYPES,
   MAX_WRITABLE_MIDI,
   MIN_WRITABLE_MIDI,
+  durationForDots,
   durationForType,
   isWritablePitch,
   midiForStringFret,
@@ -123,4 +124,41 @@ test("a duration that cannot be expressed as a whole number of units is refused"
 test("an unknown type has no duration", () => {
   expect(durationForType("breve", 480)).toBeNull();
   expect(DURATION_TYPES).toContain("quarter");
+});
+
+// ---------------------------------------------------------------- dotted durations (#183)
+
+test("zero dots is the plain duration", () => {
+  // No dots is exactly durationForType, so the same control can ask for either.
+  expect(durationForDots("quarter", 480, 0)).toBe(480);
+  expect(durationForDots("eighth", 480, 0)).toBe(240);
+});
+
+test("a dot adds half the value again, a second dot half of that", () => {
+  // Dotted quarter = 480 * 3/2 = 720; double-dotted = 480 * 7/4 = 840.
+  expect(durationForDots("quarter", 480, 1)).toBe(720);
+  expect(durationForDots("quarter", 480, 2)).toBe(840);
+  // Dotted eighth = 240 * 3/2 = 360; double-dotted = 240 * 7/4 = 420.
+  expect(durationForDots("eighth", 480, 1)).toBe(360);
+  expect(durationForDots("eighth", 480, 2)).toBe(420);
+  // Dotted half = 960 * 3/2 = 1440 (three quarters, the classic 3/4-bar note).
+  expect(durationForDots("half", 480, 1)).toBe(1440);
+});
+
+test("a dotted value that is not a whole number of divisions is refused", () => {
+  // A dotted 16th at divisions 480 is 120 * 3/2 = 180 (fine); a double-dotted
+  // 16th is 120 * 7/4 = 210 (fine). But halve the divisions to where the plain
+  // type is already odd and the dot cannot land on a whole unit:
+  expect(durationForDots("16th", 480, 1)).toBe(180);
+  expect(durationForDots("16th", 480, 2)).toBe(210);
+  // divisions 1: a quarter is 1 unit, and 1 * 3/2 is not a whole number.
+  expect(durationForDots("quarter", 1, 1)).toBeNull();
+  // A plain type that already has no duration stays null with any dots.
+  expect(durationForDots("32nd", 1, 0)).toBeNull();
+});
+
+test("a dot count outside 0..2 is refused", () => {
+  expect(durationForDots("quarter", 480, 3)).toBeNull();
+  expect(durationForDots("quarter", 480, -1)).toBeNull();
+  expect(durationForDots("quarter", 480, 1.5)).toBeNull();
 });
