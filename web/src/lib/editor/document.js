@@ -103,6 +103,25 @@ export function createDocument(xml) {
   // are skipped by both, consistently.
   const noteEls = [...doc.getElementsByTagName("note")].filter((n) => !isRest(n));
 
+  // The `<measure number>` each sounding note sits in, indexed by ordinal - the
+  // model's coarse navigation unit. The keyboard core loop (#186) steps the
+  // selection note-to-note along this array (an ordinal +/- 1) and bar-to-bar
+  // across it (the next/previous measure), mirroring the transport's own two
+  // arrow granularities (a beat, and a whole bar - see score-render.js's
+  // moveCursorBeat / moveCursorBar). Read once here rather than walked on every
+  // keypress. `closest` is a DOM method the parsed elements carry.
+  const measureNums = noteEls.map((el) => {
+    const m = el.closest ? el.closest("measure") : null;
+    const n = m ? Number(m.getAttribute("number")) : NaN;
+    return Number.isFinite(n) ? n : null;
+  });
+  // The distinct measures in document order, so bar-to-bar stepping works even
+  // when measure numbers are not a contiguous 1..N run (a pickup numbered 0, a
+  // repeat that re-uses a number): the neighbour is the adjacent entry HERE,
+  // not measureNum +/- 1.
+  const measureOrder = [];
+  for (const n of measureNums) if (n != null && !measureOrder.includes(n)) measureOrder.push(n);
+
   function describe(el, ordinal) {
     const tech = technicalOf(el);
     const string = tech ? Number(tagText(tech, "string")) : null;
@@ -121,7 +140,45 @@ export function createDocument(xml) {
       type,
       dots,
       midi,
+      measure: measureNums[ordinal] ?? null,
     };
+  }
+
+  /**
+   * The ordinal of the sounding note one step forward (direction > 0) or back
+   * (direction < 0) in document order, or null at (or past) either end - the
+   * keyboard core loop's note-to-note move (#186). Pure: it reports where the
+   * caller's selection should go, it does not touch the document.
+   */
+  function stepNote(ordinal, direction) {
+    if (!Number.isInteger(ordinal)) return null;
+    const next = ordinal + (direction > 0 ? 1 : -1);
+    return next >= 0 && next < noteEls.length ? next : null;
+  }
+
+  /**
+   * The ordinal of the sounding note in the adjacent measure (direction > 0
+   * next, < 0 previous) at the same position within that measure - the
+   * keyboard core loop's bar-to-bar move (#186). When the target measure holds
+   * fewer notes, the last note in it; when there is no adjacent measure with a
+   * sounding note, null. Pure, like stepNote.
+   */
+  function stepMeasure(ordinal, direction) {
+    const here = measureNums[ordinal];
+    if (here == null) return null;
+    const at = measureOrder.indexOf(here);
+    const target = measureOrder[at + (direction > 0 ? 1 : -1)];
+    if (target == null) return null;
+    // The selected note's index within its own measure, and every ordinal in
+    // the target measure - so the move lands on the same-numbered note there.
+    let indexInMeasure = 0;
+    const inTarget = [];
+    for (let i = 0; i < noteEls.length; i++) {
+      if (measureNums[i] === here && i < ordinal) indexInMeasure += 1;
+      if (measureNums[i] === target) inTarget.push(i);
+    }
+    if (inTarget.length === 0) return null;
+    return inTarget[Math.min(indexInMeasure, inTarget.length - 1)];
   }
 
   function soundingNotes() {
@@ -232,6 +289,35 @@ export function createDocument(xml) {
     return true;
   }
 
+  /**
+   * Delete a sounding note by turning it into a rest (#186's Backspace) - the
+   * model's own notion of delete. This file's header pins rests as the notes
+   * that "keep their place in document order" and are "not offered as edit
+   * targets"; a deleted note becomes exactly that. Its `<duration>`, `<voice>`
+   * and `<type>` are kept and a `<rest/>` put where its `<pitch>` was, so the
+   * bar's arithmetic is unchanged - the note becomes the same length of silence
+   * in the same place, rather than the note being removed and the bar left
+   * short. On re-parse it drops out of `noteEls` (isRest filters it), so the
+   * ordinals after it close up by one - the caller rebuilds the model from the
+   * new text (as undo's restore does) rather than trust this in-place array.
+   * Returns true when the document changed.
+   */
+  function deleteNote(ordinal) {
+    const el = noteEls[ordinal];
+    if (!el || isRest(el)) return false;
+    // <rest> stands where <pitch>/<unpitched>/<rest> go in the schema: first,
+    // before <duration>. Drop the sounding-note-only children (<pitch>, the
+    // <notations> that carried <technical> string/fret, and any <accidental>)
+    // and insert <rest/> at the front.
+    for (const tag of ["pitch", "notations", "accidental"]) {
+      const child = firstChildTag(el, tag);
+      if (child) el.removeChild(child);
+    }
+    const rest = doc.createElement("rest");
+    el.insertBefore(rest, el.firstChild);
+    return true;
+  }
+
   function text() {
     const body = new XMLSerializer().serializeToString(root);
     // DOMParser drops the XML declaration; the server sniffs "starts with <"
@@ -246,9 +332,12 @@ export function createDocument(xml) {
     soundingNotes,
     noteAt,
     count: () => noteEls.length,
+    stepNote,
+    stepMeasure,
     setFret,
     setString,
     setDurationType,
+    deleteNote,
     text,
   };
 }
