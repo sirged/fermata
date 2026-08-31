@@ -468,6 +468,7 @@ export function createDocument(xml) {
     if (midi == null || !isWritablePitch(midi)) return false;
     if (!setTechText(el, "fret", fret)) return false;
     writePitch(el, midi);
+    dropBrokenTies(ordinal);
     return true;
   }
 
@@ -486,6 +487,7 @@ export function createDocument(xml) {
     if (midi == null || !isWritablePitch(midi)) return false;
     if (!setTechText(el, "string", string)) return false;
     writePitch(el, midi);
+    dropBrokenTies(ordinal);
     return true;
   }
 
@@ -698,6 +700,53 @@ export function createDocument(xml) {
     }
   }
 
+  // Break any tie on the note at `ordinal` whose two ends are no longer the SAME
+  // FRETBOARD POSITION (#189). setTie ties one fretted position (same string AND
+  // fret - see its contract); a fret or string edit MOVES the note to another
+  // position, so a tie it was part of would now span two positions - invalid, and
+  // the measured renderer trap alphaTab draws wrong (a tie-STOP note gets a fret
+  // derived from its start, so the written stop and the drawn one disagree).
+  // Rather than leave that broken tie, the edit drops it on BOTH ends,
+  // structurally (by contiguity, like setTie's removal), so the note simply stops
+  // being tied once it moves. Called from setFret/setString - the two ops that
+  // change position; the respell paths keep string+fret fixed and cannot break a
+  // tie.
+  function samePosition(a, b) {
+    return a.string != null && a.string === b.string && a.fret === b.fret;
+  }
+  function dropBrokenTies(ordinal) {
+    const el = noteEls[ordinal];
+    if (!el) return;
+    const mine = describe(el, ordinal);
+    // Forward: this note starts a tie into its contiguous same-voice successor.
+    if (hasTie(el, "start")) {
+      const partner = tieNext(ordinal);
+      if (!partner || !samePosition(mine, describe(partner.el, partner.ordinal))) {
+        removeTie(el, "start");
+        if (partner) removeTie(partner.el, "stop");
+      }
+    }
+    // Backward: this note stops a tie from its contiguous same-voice predecessor.
+    // The partner is the immediately-preceding non-chord note in the same voice;
+    // confirm it actually ties here (its tieNext is this note) before breaking.
+    if (hasTie(el, "stop")) {
+      const voice = voiceNumber(el);
+      for (let i = ordinal - 1; i >= 0; i--) {
+        const cand = noteEls[i];
+        if (hasChord(cand)) continue;
+        if (voiceNumber(cand) !== voice) continue;
+        if (hasTie(cand, "start")) {
+          const pn = tieNext(i);
+          if (pn && pn.ordinal === ordinal && !samePosition(mine, describe(cand, i))) {
+            removeTie(cand, "start");
+            removeTie(el, "stop");
+          }
+        }
+        break; // the contiguous predecessor is the only candidate
+      }
+    }
+  }
+
   // Remove the <tie> sound element and <tied> notation of `type` from a note.
   function removeTie(el, type) {
     const tie = firstTie(el, type);
@@ -720,9 +769,16 @@ export function createDocument(xml) {
    *   measure, or the first beat of the next measure when this note reaches the
    *   barline. A gap (a rest) between them, or the next note being in another
    *   voice, means there is nothing to tie to and the request is refused.
-   * - The two notes must be the SAME pitch. A tie sustains one pitch; joining two
-   *   different pitches is a slur, not a tie, and is refused with the document
-   *   untouched (so the field can be corrected).
+   * - The two notes must be the SAME FRETBOARD POSITION - the same <string> AND
+   *   <fret>, not merely the same sounding pitch. A tie sustains one fretted
+   *   note; on a fretboard that is one string held at one fret, so two positions
+   *   that only happen to SOUND alike (E4 as string 1 fret 0 and as string 2 fret
+   *   5) would still have to be re-fretted, which a tie cannot express. It is
+   *   also a measured renderer trap: alphaTab draws a tie-STOP note at a fret
+   *   derived from its tie-START partner, so a tie across two positions renders
+   *   one pitch while the document holds the other (the whole-model fuzz guard's
+   *   find, #189). Same string+fret implies same pitch, so this is the stricter,
+   *   correct reading of "the same note". A mismatch is refused, untouched.
    * - Chord beats are not offered. A tie on a chord member (or from a chord) would
    *   have to pair every voice of the chord; this increment refuses it.
    * - It can be removed. Toggling a started tie off drops both the start on this
@@ -737,9 +793,10 @@ export function createDocument(xml) {
       if (startsHere) return false; // already tied to the next note - a no-op
       const next = tieNext(ordinal);
       if (!next) return false;
-      const here = describe(el, ordinal).midi;
-      const there = describe(next.el, next.ordinal).midi;
-      if (here == null || there == null || here !== there) return false;
+      const here = describe(el, ordinal);
+      const there = describe(next.el, next.ordinal);
+      if (here.string == null || here.fret == null) return false;
+      if (here.string !== there.string || here.fret !== there.fret) return false;
       writeTie(el, "start");
       writeTie(next.el, "stop");
       return true;

@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-editor-poly-189.spec.js",
+  "count": 3,
+  "reason": "issue #189 polyphonic selection, including the genuinely-overlapping note heads the #10 evaluation flagged (~1.5%). Against the real two-voice fixture (fixtures/editor-poly.js): a note in each voice selects with the divergence guard green (the polyphonic baseline); two overlapping-voice note heads (a cross-voice unison, same pitch and onset drawing one head over the other) are EACH reachable by the stated disambiguation - click-cycling, where a repeat click at the same spot advances to the next note in the stack (score-render.js hitTestNote) - selecting BOTH distinct notes (two ordinals, two voices) with the guard green for each and wrapping back on a third click; and moving the click elsewhere resets the overlap cycle so a single click there again selects the nearest."
+}

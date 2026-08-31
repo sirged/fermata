@@ -1987,6 +1987,11 @@ export function createScoreView(host, opts = {}) {
   // position, not the id - the id (Rule 17) is what makes it auditable.
   let noteOrdinals = new Map();
   let notesInOrder = [];
+  // The last note-head hit and how far into its overlap stack the click landed,
+  // so a repeat click at the SAME spot cycles to the next overlapping note (see
+  // hitTestNote). Reset whenever the model is rebuilt - the ordinal it remembers
+  // names a note in the old model.
+  let lastHit = null;
   // Resolved by the next postRenderFinished, so reloadScore() can await the
   // redraw the way an editor step needs to before re-reading bounds.
   let pendingEditResolve = null;
@@ -2000,6 +2005,9 @@ export function createScoreView(host, opts = {}) {
   function buildNoteOrdinals() {
     noteOrdinals = new Map();
     notesInOrder = [];
+    // The click-cycle stack (hitTestNote) remembers ordinals of the OLD model;
+    // a rebuild retires them, so a click after a re-render starts a fresh stack.
+    lastHit = null;
     const track = api.score?.tracks?.[0];
     if (!track) return;
     for (const staff of track.staves ?? []) {
@@ -3010,6 +3018,11 @@ export function createScoreView(host, opts = {}) {
   // still lands on it - the fret digits especially are small targets.
   const NOTE_HIT_PADDING = 3;
 
+  // How close (in surface pixels) two clicks must be to count as "the same spot"
+  // for cycling. Small: a genuine overlap draws its heads within a pixel or two
+  // of each other, and a click that moves further than this is aiming elsewhere.
+  const SAME_SPOT_PX = 3;
+
   function boundsOf() {
     return api.renderer?.boundsLookup ?? api.boundsLookup ?? null;
   }
@@ -3019,16 +3032,28 @@ export function createScoreView(host, opts = {}) {
   // measured this resolving 100% where alphaTab's own getBeatAtPos returned a
   // different voice's beat on polyphony. With the notation staff shown a note
   // carries two head rectangles (one per staff); both belong to the same Note,
-  // so clicking either selects the same ordinal. On a genuine overlap the
-  // nearest head centre wins.
+  // so clicking either selects the same ordinal.
+  //
+  // On a genuine overlap - the ~1.5% of note heads the #10 evaluation flagged,
+  // where two voices sound the same pitch at the same onset and draw one head on
+  // top of another - the nearest head centre alone can never reach the note
+  // behind, so this DISAMBIGUATES BY CLICK-CYCLING: a first click at a spot
+  // selects the nearest of the notes stacked there (document order breaks a tie),
+  // and each further click at the SAME spot advances to the next note in that
+  // stack, wrapping around. A click that moves elsewhere starts a fresh stack.
+  // This is the stated rule (a voice filter was the alternative); it needs no
+  // extra chrome and keeps a single click's behaviour - the nearest note -
+  // exactly as it was for the monophonic 98.5%.
   function hitTestNote(clientX, clientY) {
     const lookup = boundsOf();
     const rect = surfaceRect();
     if (!lookup || !rect) return null;
     const x = clientX - rect.left;
     const y = clientY - rect.top;
-    let best = null;
-    let bestDist = Infinity;
+    // Every note whose head rectangle (either staff) covers the point, paired
+    // with its ordinal and squared distance to that head's centre. A note with
+    // two heads keeps only its nearer one, so it appears once.
+    const byOrdinal = new Map();
     for (const sys of lookup.staffSystems ?? []) {
       for (const mb of sys.bars ?? []) {
         for (const bar of mb.bars ?? []) {
@@ -3043,21 +3068,44 @@ export function createScoreView(host, opts = {}) {
                 y > b.y + b.h + NOTE_HIT_PADDING
               )
                 continue;
+              const ordinal = noteOrdinals.get(nb.note);
+              if (ordinal == null) continue;
               const dx = x - (b.x + b.w / 2);
               const dy = y - (b.y + b.h / 2);
               const dist = dx * dx + dy * dy;
-              if (dist < bestDist) {
-                bestDist = dist;
-                best = nb.note;
-              }
+              const prev = byOrdinal.get(ordinal);
+              if (prev == null || dist < prev) byOrdinal.set(ordinal, dist);
             }
           }
         }
       }
     }
-    if (!best) return null;
-    const ordinal = noteOrdinals.get(best);
-    return ordinal == null ? null : ordinal;
+    if (byOrdinal.size === 0) {
+      lastHit = null;
+      return null;
+    }
+    // The stack under the click, ordered nearest-first with document order
+    // breaking a tie - a stable order so a repeat click cycles predictably.
+    const stack = [...byOrdinal.entries()]
+      .sort((a, b) => a[1] - b[1] || a[0] - b[0])
+      .map(([ordinal]) => ordinal);
+
+    const sameSpot =
+      lastHit &&
+      Math.abs(lastHit.x - x) <= SAME_SPOT_PX &&
+      Math.abs(lastHit.y - y) <= SAME_SPOT_PX;
+    let chosen;
+    if (sameSpot && stack.length > 1) {
+      // Advance from wherever the last click on this spot landed to the next note
+      // in the stack, wrapping. If the last chosen note is gone from the stack
+      // (a re-render moved things), fall back to the nearest.
+      const at = stack.indexOf(lastHit.ordinal);
+      chosen = at < 0 ? stack[0] : stack[(at + 1) % stack.length];
+    } else {
+      chosen = stack[0];
+    }
+    lastHit = { x, y, ordinal: chosen };
+    return chosen;
   }
 
   // What alphaTab itself makes of the sounding note at `ordinal` - read back
