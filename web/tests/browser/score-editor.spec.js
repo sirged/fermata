@@ -121,6 +121,37 @@ test.describe("note editor", () => {
     await expect(wrap(page)).toHaveAttribute("data-editor-divergence-ok", "true");
   });
 
+  test("an out-of-range fret is refused, never written, and says why", async ({ page }) => {
+    await openEditor(page, EDITOR_MUSICXML);
+    // Note 0: string 1 (E4 = MIDI 64). Fret 68 would sound MIDI 132 = octave
+    // 10, which MusicXML's <octave> (0-9) cannot express (Rule 11). The editor
+    // must refuse it rather than write a document a validating consumer would
+    // reject - the divergence guard would NOT catch this, because both the
+    // renderer and the document would agree on the same out-of-range pitch.
+    await selectNote(page, 0);
+    await fretInput(page).fill("68");
+    await fretInput(page).blur();
+    // Unchanged: still fret 0, still MIDI 64, nothing to save.
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected-fret", "0");
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected-midi", "64");
+    await expect(wrap(page)).toHaveAttribute("data-editor-dirty", "false");
+    // And it said so, honestly, rather than swallowing the edit.
+    await expect(wrap(page)).toHaveAttribute("data-editor-warn", /octaves 0–9/);
+  });
+
+  test("a fret at the very top of the writable range is accepted", async ({ page }) => {
+    await openEditor(page, EDITOR_MUSICXML);
+    // The boundary: fret 67 on the high E string reaches B9 = MIDI 131, the
+    // highest pitch MusicXML can write - so it is allowed, where 68 was not.
+    await selectNote(page, 0);
+    await fretInput(page).fill("67");
+    await fretInput(page).blur();
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected-fret", "67");
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected-midi", "131");
+    await expect(wrap(page)).toHaveAttribute("data-editor-dirty", "true");
+    await expect(wrap(page)).toHaveAttribute("data-editor-divergence-ok", "true");
+  });
+
   test("undo restores the previous value and redo re-applies it", async ({ page }) => {
     await openEditor(page, EDITOR_MUSICXML);
     await selectNote(page, 0);
@@ -164,6 +195,9 @@ test.describe("note editor", () => {
     // The persisted MusicXML carries the new fret on that note - stored
     // verbatim through the edited-transcription path.
     await expect.poll(() => saved.content).toContain("<fret>7</fret>");
+    // And every <octave> it carries is inside MusicXML's 0-9 range, so the
+    // saved document is not one a validating consumer would reject (Rule 11).
+    expect(saved.content).not.toMatch(/<octave>(1\d|\d\d\d)<\/octave>/);
 
     // Reload the whole page: the stub now serves the saved (source='edited')
     // content, so re-opening the editor and selecting the same note shows the

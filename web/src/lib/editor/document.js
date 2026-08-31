@@ -17,6 +17,7 @@
 import {
   DURATION_TYPES,
   durationForType,
+  isWritablePitch,
   midiForStringFret,
   midiOfPitch,
   pitchFromMidi,
@@ -169,14 +170,18 @@ export function createDocument(xml) {
 
   /**
    * Set a sounding note's fret, recomputing its <pitch>. Refuses a negative
-   * fret. Returns true when the document changed.
+   * fret, and refuses any fret whose resulting pitch cannot be written (Rule
+   * 11: a <pitch> outside MIDI 12-131 has no valid <octave>, and writing it
+   * anyway makes the whole document unreadable to a validating consumer). The
+   * note is left exactly as it was rather than written as some other pitch.
+   * Returns true when the document changed.
    */
   function setFret(ordinal, fret) {
     const el = noteEls[ordinal];
     if (!el || !Number.isInteger(fret) || fret < 0) return false;
     const string = Number(tagText(technicalOf(el), "string"));
     const midi = midiForStringFret(tuningByLine, stringCount, string, fret);
-    if (midi == null) return false;
+    if (midi == null || !isWritablePitch(midi)) return false;
     if (!setTechText(el, "fret", fret)) return false;
     writePitch(el, midi);
     return true;
@@ -193,7 +198,8 @@ export function createDocument(xml) {
     if (!el || !Number.isInteger(string) || string < 1 || string > stringCount) return false;
     const fret = Number(tagText(technicalOf(el), "fret"));
     const midi = midiForStringFret(tuningByLine, stringCount, string, fret);
-    if (midi == null) return false;
+    // Same Rule 11 refusal as setFret: an unwritable pitch is not written.
+    if (midi == null || !isWritablePitch(midi)) return false;
     if (!setTechText(el, "string", string)) return false;
     writePitch(el, midi);
     return true;

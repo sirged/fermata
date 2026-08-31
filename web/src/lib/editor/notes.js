@@ -56,6 +56,21 @@ export function midiOfPitch(step, octave, alter = 0) {
   return 12 * (octave + 1) + s + (Number(alter) || 0);
 }
 
+// The range a `<pitch>` can actually express, and so the range an edit is
+// allowed to produce (Rule 11). MusicXML's `octave` is an integer 0-9, so the
+// lowest writable pitch is C0 (MIDI 12) and the highest is B9 (MIDI 131). A
+// note outside it cannot be written as some OTHER pitch instead - an `<octave>`
+// of 10 makes the whole document unreadable to a validating consumer - so an
+// edit that would land there is refused rather than written, exactly as the
+// extractor refuses to emit one.
+export const MIN_WRITABLE_MIDI = 12;
+export const MAX_WRITABLE_MIDI = 131;
+
+/** Whether a MIDI number can be written as a `<pitch>` at all (Rule 11). */
+export function isWritablePitch(midi) {
+  return Number.isFinite(midi) && midi >= MIN_WRITABLE_MIDI && midi <= MAX_WRITABLE_MIDI;
+}
+
 /**
  * The written pitch for a MIDI number - `{ step, octave, alter }`, spelled
  * with sharps (see SEMITONE_SPELLING). The inverse of midiOfPitch: feeding its

@@ -8,7 +8,10 @@ import { expect, test } from "@playwright/test";
 
 import {
   DURATION_TYPES,
+  MAX_WRITABLE_MIDI,
+  MIN_WRITABLE_MIDI,
   durationForType,
+  isWritablePitch,
   midiForStringFret,
   midiOfPitch,
   pitchFromMidi,
@@ -79,6 +82,25 @@ test("an out-of-range string or a negative fret has no pitch", () => {
   expect(midiForStringFret(STANDARD, STRINGS, 7, 0)).toBeNull();
   expect(midiForStringFret(STANDARD, STRINGS, 0, 0)).toBeNull();
   expect(midiForStringFret(STANDARD, STRINGS, 1, -1)).toBeNull();
+});
+
+// ---------------------------------------------------------------- Rule 11 range
+
+test("a pitch is writable only inside MusicXML's octave range (MIDI 12-131)", () => {
+  // <octave> is 0-9, so C0 (12) and B9 (131) are the extremes and octave 10
+  // (132) is unwritable - the value that would make a validating consumer
+  // reject the whole document.
+  expect(MIN_WRITABLE_MIDI).toBe(12);
+  expect(MAX_WRITABLE_MIDI).toBe(131);
+  expect(isWritablePitch(64)).toBe(true);
+  expect(isWritablePitch(12)).toBe(true);
+  expect(isWritablePitch(131)).toBe(true);
+  expect(isWritablePitch(132)).toBe(false);
+  expect(isWritablePitch(11)).toBe(false);
+  // The high E string (E4 = 64): fret 67 reaches B9 (131, the top of the
+  // range) and is still writable; fret 68 would be octave 10 and is not.
+  expect(isWritablePitch(midiForStringFret(STANDARD, STRINGS, 1, 67))).toBe(true);
+  expect(isWritablePitch(midiForStringFret(STANDARD, STRINGS, 1, 68))).toBe(false);
 });
 
 // ---------------------------------------------------------------- durations

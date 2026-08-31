@@ -173,6 +173,11 @@
   // mirror or the pitch recompute is wrong, and this goes false loudly.
   let divergenceOk = $state(true);
   let editError = $state("");
+  // A transient "that edit was refused" message - distinct from editError,
+  // which is a load-time parse failure that replaces the whole panel. A refused
+  // edit leaves the fields in place so the value can be corrected, so its
+  // message sits beside the actions instead.
+  let editWarn = $state("");
   let dirty = $state(false);
   let saving = $state(false);
   let saveError = $state("");
@@ -203,6 +208,7 @@
     selFret = selString = selType = selMidi = selNoteId = null;
     divergenceOk = true;
     overlay = null;
+    editWarn = "";
   }
 
   function enterEdit() {
@@ -236,6 +242,7 @@
     if (!editMode || !view || !doc) return;
     const ord = view.editor.hitTest(clientX, clientY);
     if (ord == null) return;
+    editWarn = "";
     selectedOrdinal = ord;
     refreshSelection();
   }
@@ -279,10 +286,18 @@
     };
   }
 
-  async function applyEdit(mutate) {
+  async function applyEdit(mutate, refusal) {
     if (selectedOrdinal == null || !doc || !view) return;
     const before = doc.text();
-    if (!mutate()) return; // invalid or no-op - do not record an undo step
+    // The document refuses an edit it cannot write - a fret whose pitch has no
+    // valid <octave> (Rule 11), a string out of range. Say so plainly rather
+    // than swallowing it: a silent no-op reads as "the app is broken", and a
+    // silent bad save is exactly what this bound exists to prevent.
+    if (!mutate()) {
+      editWarn = refusal || "That change can't be applied to this note.";
+      return;
+    }
+    editWarn = "";
     const after = doc.text();
     if (after === before) return;
     undoStack = [...undoStack, before];
@@ -294,18 +309,27 @@
 
   function changeFret(value) {
     const v = Number(value);
-    if (!Number.isInteger(v)) return;
-    applyEdit(() => doc.setFret(selectedOrdinal, v));
+    if (!Number.isInteger(v) || v < 0) {
+      editWarn = "A fret is a whole number, zero or more.";
+      return;
+    }
+    applyEdit(
+      () => doc.setFret(selectedOrdinal, v),
+      "That fret would put the note outside the pitch range MusicXML can write (octaves 0–9).",
+    );
   }
 
   function changeString(value) {
     const v = Number(value);
     if (!Number.isInteger(v)) return;
-    applyEdit(() => doc.setString(selectedOrdinal, v));
+    applyEdit(
+      () => doc.setString(selectedOrdinal, v),
+      "That string would put the note outside the pitch range MusicXML can write (octaves 0–9).",
+    );
   }
 
   function changeDuration(type) {
-    applyEdit(() => doc.setDurationType(selectedOrdinal, type));
+    applyEdit(() => doc.setDurationType(selectedOrdinal, type), "That duration can't be written for this note.");
   }
 
   async function restore(text) {
@@ -731,6 +755,7 @@
   data-editor-available={canEditNotes()}
   data-editor-active={editMode}
   data-editor-error={editError || null}
+  data-editor-warn={editWarn || null}
   data-editor-selected={selectedOrdinal}
   data-editor-selected-fret={selFret}
   data-editor-selected-string={selString}
@@ -970,6 +995,7 @@
             ⚠ out of sync
           </span>
         {/if}
+        {#if editWarn}<span class="hint warn">{editWarn}</span>{/if}
         {#if saveError}<span class="hint warn">{saveError}</span>{/if}
         <button class="ghost" disabled={!undoStack.length} onclick={undo} title="Undo">Undo</button>
         <button class="ghost" disabled={!redoStack.length} onclick={redo} title="Redo">Redo</button>
