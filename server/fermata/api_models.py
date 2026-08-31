@@ -630,6 +630,11 @@ class TranscriptionOut(BaseModel):
     bars_unread: int | None
     notes_no_stem: int | None
     staves_no_stem: int | None
+    # A notation staff whose stem/beam vector pass found no stems at all though
+    # it decoded noteheads that must carry one (issue #91) - the whole-staff
+    # version of notes_no_stem, and a stronger claim: nothing on the staff was
+    # read from a stem, flag or beam.
+    staves_stemless: int | None
     dots_unassigned: int | None
     dots_unassigned_no_candidate: int | None
     dots_unassigned_eliminated: int | None

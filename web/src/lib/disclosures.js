@@ -107,6 +107,13 @@ export const DISCLOSURE_ROWS = [
   // counted here.
   { key: "notes_no_stem", label: "Noteheads read with no stem (quarter or shorter)" },
   { key: "staves_no_stem", label: "Staves with a stemless notehead" },
+  // A whole notation staff whose stem/beam vector pass found NO stems at all,
+  // though it decoded noteheads that must carry one (issue #91). Stronger than
+  // the row above: not "one head lost its stem" but "no stem, flag or beam
+  // anywhere on the staff was read", so its durations came from the notehead
+  // shapes alone and the staff is degraded rather than reported as read
+  // directly from its glyphs.
+  { key: "staves_stemless", label: "Staves with stem-bearing noteheads but no stems found at all" },
   // HOW THE DURATIONS WERE OBTAINED (issue #117). tabextract.py counted both
   // of these on every extraction from the start, inside `rhythm_provenance` -
   // a field nothing stores, nothing returns and no interface code reads - so
