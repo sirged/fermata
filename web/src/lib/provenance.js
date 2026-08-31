@@ -158,6 +158,23 @@ export function tuningStatement(t) {
   const unread = Array.isArray(t.tuning_unread) ? t.tuning_unread.filter(Boolean) : [];
   const label = typeof t.tuning_label === "string" && t.tuning_label ? t.tuning_label : null;
 
+  // The tuning came from the instrument the player assigned this score (issue
+  // #72). Said first and plainly, because it is the strongest source there is -
+  // an explicit choice about the physical instrument, not something inferred
+  // from the page - and it is worth confirming precisely because a player who
+  // pointed a score at the wrong instrument would see the wrong strings here and
+  // catch it. Not an "incomplete" mark: nothing was assumed, so nothing is
+  // caveated.
+  if (t.tuning_source === "instrument") {
+    const strings = Array.isArray(t.tuning) ? t.tuning.join(" ") : "";
+    return {
+      kind: "recognised",
+      text:
+        `Tuning: from the instrument assigned to this score` +
+        (strings ? ` (${strings})` : "") + `.`,
+    };
+  }
+
   if (unread.length) {
     const instructions = unread.join(" and ");
     const lead = label

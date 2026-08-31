@@ -118,6 +118,68 @@ from . import musicxml as mxl
 DEFAULT_TUNING = ["E2", "A2", "D3", "G3", "B3", "E4"]
 DROP_D_TUNING = ["D2", "A2", "D3", "G3", "B3", "E4"]
 
+# HOW THE TUNING IN A TRANSCRIPTION WAS OBTAINED - the provenance word carried
+# alongside `tuning`, in the same spirit as time_signature_source and
+# key_signature_source (see api._PROVENANCE_KEYS). A fret number is turned into
+# a sounding pitch entirely by the tuning (musicxml.open_string_midi), so a
+# tuning stated as fact that was only assumed is the one place this pipeline
+# would state something it does not know (issue #80). These three words are what
+# stop that: every transcription now says which of them its tuning is.
+#
+#   TUNING_FROM_INSTRUMENT  the player assigned this score an instrument and its
+#                           tuning was used (issue #72). The strongest source:
+#                           an explicit choice about the physical instrument.
+#   TUNING_FROM_LABEL       a tuning NAME printed on the page was recognised
+#                           ("Drop D", "DADGAD"). Recognising a name is reading a
+#                           LABEL, not verifying the strings against the
+#                           notation, so this caps confidence at medium and any
+#                           unread instruction beside it (a capo, a half-step
+#                           down - see unread_tuning_instructions) lowers it
+#                           further.
+#   TUNING_ASSUMED_STANDARD nothing was read and no instrument was assigned, so
+#                           the standard six strings are assumed. The honest
+#                           default: said out loud rather than presented as a
+#                           reading.
+TUNING_FROM_INSTRUMENT = "instrument"
+TUNING_FROM_LABEL = "label"
+TUNING_ASSUMED_STANDARD = "assumed standard"
+
+# Tuning NAMES recognised in the page's text, each mapped to the strings it
+# means - ordered lowest string NUMBER first (string 6 -> string 1), the order
+# DEFAULT_TUNING and instruments.string_pitches already use. Recognising one is
+# reading a LABEL (TUNING_FROM_LABEL), never a reading of the strings against
+# the notation - deriving the tuning from notation-against-frets is issue #80's
+# part 2 and is not attempted here.
+#
+# `aliases` are matched as-is against the page text. "Drop D" is kept FIRST and
+# as a bare substring so its behaviour is byte-for-byte what it has always been
+# (the library's 100 Drop D scores are unchanged); the rest are distinctive
+# multi-letter names that appear nowhere in that library, so adding them moves
+# no existing transcription. A score naming two of these is read as the first in
+# this list that its text contains, in page order - the same "first match wins"
+# the single Drop D branch had.
+_NAMED_TUNINGS = [
+    ("Drop D", ["Drop D"], DROP_D_TUNING),
+    ("DADGAD", ["DADGAD", "D A D G A D"], ["D2", "A2", "D3", "G3", "A3", "D4"]),
+    ("Open G", ["Open G"], ["D2", "G2", "D3", "G3", "B3", "D4"]),
+    ("Open D", ["Open D"], ["D2", "A2", "D3", "F#3", "A3", "D4"]),
+    ("Drop C", ["Drop C"], ["C2", "G2", "C3", "F3", "A3", "D4"]),
+]
+
+
+def read_tuning(text: str) -> tuple[list[str], str] | None:
+    """A tuning recognised from a page's text by its printed NAME, as
+    (tuning, label), or None if no recognised name is present.
+
+    Reading a name is reading a LABEL, not a reading of the strings - see
+    _NAMED_TUNINGS. The returned `tuning` is a fresh list so a caller can hold
+    it without aliasing the table.
+    """
+    for label, aliases, tuning in _NAMED_TUNINGS:
+        if any(alias in text for alias in aliases):
+            return list(tuning), label
+    return None
+
 # TUNING INSTRUCTIONS THIS EXTRACTOR RECOGNISES AND DOES NOT APPLY.
 #
 # Detection only, and deliberately nothing more. `tuning` is not adjusted, the
@@ -185,6 +247,12 @@ class ExtractionResult:
     tempo: int | None = None
     tuning: list[str] = field(default_factory=lambda: list(DEFAULT_TUNING))
     tuning_label: str | None = None
+    # HOW `tuning` was obtained - one of the TUNING_* constants, or None on a
+    # refusal path where no tuning was settled. The tuning and its provenance
+    # travel together, the same rule time_signature/time_signature_source
+    # follow: a reader given the array without this word cannot tell a tuning
+    # read off the page from one assumed, which is the whole of issue #80.
+    tuning_source: str | None = None
     # Tuning instructions found printed on the page and NOT applied to `tuning`
     # - see unread_tuning_instructions. Non-empty means `tuning` is known to be
     # incomplete, so no reader may describe it as having been read.
@@ -416,6 +484,7 @@ class ExtractionResult:
             "tempo": self.tempo,
             "tuning": self.tuning,
             "tuning_label": self.tuning_label,
+            "tuning_source": self.tuning_source,
             "tuning_unread": self.tuning_unread,
             "time_signature": list(self.time_signature) if self.time_signature else None,
             "time_signature_source": self.time_signature_source,
@@ -4877,7 +4946,8 @@ def analyze(pdf_path) -> dict:
         doc.close()
 
 
-def extract(pdf_path, time_signature: tuple[int, int] | None = None) -> ExtractionResult:
+def extract(pdf_path, time_signature: tuple[int, int] | None = None,
+            instrument_tuning: list[str] | None = None) -> ExtractionResult:
     """Full extraction: returns alphaTex plus bars/beats/notes, tuning,
     per-section confidence, and an explicit list of warnings. Never raises -
     a malformed PDF or one with no tab staves comes back as
@@ -4885,13 +4955,22 @@ def extract(pdf_path, time_signature: tuple[int, int] | None = None) -> Extracti
 
     time_signature lets a caller supply the numerator/denominator by hand,
     since auto-detection frequently fails (see module docstring).
+
+    instrument_tuning is the tuning of the instrument this score has been
+    assigned (issue #72), ordered lowest string NUMBER first the way
+    DEFAULT_TUNING and instruments.string_pitches are. When its string count
+    matches the tab staff on the page it becomes the tuning used, ahead of any
+    name printed on the page; when it does not it is a conflict, reported and
+    NOT applied - a six-line tab staff is not read as a seven-string
+    instrument just because a seven-string one was named. None keeps the
+    page-read-or-assumed behaviour.
     """
     try:
         doc = fitz.open(pdf_path)
     except Exception as exc:
         return ExtractionResult(extractable=False, reason=f"could not open pdf: {exc}")
     try:
-        return _extract(doc, pdf_path, time_signature)
+        return _extract(doc, pdf_path, time_signature, instrument_tuning)
     except Exception as exc:
         return ExtractionResult(extractable=False, reason=f"extraction failed: {exc}")
     finally:
@@ -5117,7 +5196,8 @@ def _detect_key_signature(pages_with_tab) -> tuple[int, str, str | None]:
     return 0, "not detected (assumed no key signature)", reason
 
 
-def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> ExtractionResult:
+def _extract(doc, pdf_path, time_signature: tuple[int, int] | None,
+             instrument_tuning: list[str] | None = None) -> ExtractionResult:
     if doc.page_count == 0:
         return ExtractionResult(extractable=False, reason="pdf has no pages")
 
@@ -5132,8 +5212,17 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
     ts = override
     ts_source = "manual override" if ts else None
     tempo = None
+    # The tuning is settled AFTER the census loop, once the page's text has been
+    # scanned for a printed tuning name and the tab staff's string count is
+    # known - see the precedence block below. The loop only COLLECTS what the
+    # page names (read_label / read_tuning_array); it does not commit a tuning,
+    # because the instrument the player assigned this score outranks anything
+    # the page says and is not known to the loop.
     tuning = list(DEFAULT_TUNING)
     tuning_label = None
+    tuning_source = None
+    read_label = None
+    read_tuning_array = None
     tuning_unread: list[str] = []
     # tab_staff_count / standard_staff_count are the total number of tab /
     # standard staff systems found across the whole document (summed across
@@ -5177,9 +5266,10 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             if q_match:
                 tempo = int(q_match.group(1))
 
-        if tuning_label is None and "Drop D" in text:
-            tuning_label = "Drop D"
-            tuning = list(DROP_D_TUNING)
+        if read_label is None:
+            found = read_tuning(text)
+            if found is not None:
+                read_tuning_array, read_label = found
 
         # Recognised and NOT applied - see unread_tuning_instructions. Collected
         # whether or not a tuning name was found, because the two are
@@ -5223,6 +5313,60 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             systems_unread=systems_unread,
             systems_unread_pages=systems_unread_pages,
         )
+
+    # SETTLE THE TUNING, now that both halves are in hand: what the page names
+    # (read_label / read_tuning_array, from the census loop) and how many
+    # strings the tab staff actually has. Precedence, strongest first:
+    #
+    #   1. the instrument the player assigned this score (issue #72), IF its
+    #      string count matches the tab staff - an explicit choice about the
+    #      physical instrument outranks anything inferred from the page;
+    #   2. a tuning NAME printed on the page (issue #80's "read it");
+    #   3. the standard six strings, assumed and SAID to be assumed (#80's
+    #      "say so").
+    #
+    # The tab staff's own line count is the string count the frets were read
+    # against, so it is the number an assigned instrument has to agree with.
+    # Every "tab" staff this detector reports has six lines, but reading it off
+    # the staff rather than hardcoding 6 keeps this honest if that ever widens.
+    tab_string_count = len(pages_with_tab[0][2][0].line_ys)
+
+    if instrument_tuning:
+        if len(instrument_tuning) == tab_string_count:
+            tuning = list(instrument_tuning)
+            tuning_source = TUNING_FROM_INSTRUMENT
+            # An instrument was chosen AND the page names a tuning that differs
+            # from it: report the disagreement rather than silently resolving it
+            # (issue #80's precedence note). The instrument still wins - it is
+            # the stronger statement - but a reader is told the page said
+            # otherwise.
+            if read_tuning_array is not None and read_tuning_array != tuning:
+                warnings.append(
+                    f"this score is assigned an instrument tuned {' '.join(tuning)}, but the "
+                    f"page names {read_label} ({' '.join(read_tuning_array)}) - the instrument's "
+                    "tuning is used and the printed name is not"
+                )
+        else:
+            # A real conflict, not a detail (issue #72): the assigned instrument
+            # has a different number of strings than the tab staff the frets
+            # were read from. Reported and NOT applied - reading a six-line
+            # staff as a seven-string instrument would put every note on the
+            # wrong string. Falls through to the page-read-or-assumed tuning
+            # below.
+            warnings.append(
+                f"this score is assigned a {len(instrument_tuning)}-string instrument, but its "
+                f"tablature staff has {tab_string_count} lines - the instrument's tuning is not "
+                "applied, and the tuning is read from the page or assumed standard instead"
+            )
+
+    if tuning_source is None:
+        if read_tuning_array is not None:
+            tuning = list(read_tuning_array)
+            tuning_label = read_label
+            tuning_source = TUNING_FROM_LABEL
+        else:
+            tuning = list(DEFAULT_TUNING)
+            tuning_source = TUNING_ASSUMED_STANDARD
 
     # Time signature, now that we know there is tab worth extracting. Read at
     # every position one is printed - the start of each notation system and
@@ -5955,10 +6099,44 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
             "score's own engraving"
         )
 
+    # HOW THE TUNING WAS OBTAINED, in the same voice as the other confidence
+    # lines (issue #80). A fret becomes a sounding pitch entirely through the
+    # tuning, so an assumed tuning stated as read is a wrong pitch stated as
+    # fact - this is the line that stops that. An instrument the player assigned
+    # is the firmest source; a name recognised on the page is a LABEL, not a
+    # reading of the strings, so it caps at medium and a printed instruction
+    # nobody applied (a capo, a half-step down) lowers it again; nothing read at
+    # all is the honest "assumed" case.
+    if tuning_source == TUNING_FROM_INSTRUMENT:
+        tuning_confidence = (
+            "high - the tuning of the instrument this score is assigned; the fret numbers are "
+            "read from the page and sounded against it"
+        )
+    elif tuning_source == TUNING_FROM_LABEL:
+        tuning_confidence = (
+            f"medium - recognised the tuning name {tuning_label!r} printed on the page; the "
+            "strings were not verified against the notation, so a name that is wrong or "
+            "incomplete would not be caught here"
+        )
+        if tuning_unread:
+            tuning_confidence = (
+                f"low - recognised the tuning name {tuning_label!r}, but the page also prints "
+                + " and ".join(tuning_unread)
+                + " which is not applied, so the sounding pitches are wrong by whatever that asks "
+                "for"
+            )
+    else:
+        tuning_confidence = (
+            "low - no tuning was read from the page and no instrument is assigned, so the "
+            "standard six-string tuning is assumed; the fret numbers are read from the page but "
+            "the pitches they sound are only as right as that assumption"
+        )
+
     confidence = {
         "frets": fret_confidence,
         "rhythm": rhythm_confidence,
         "time_signature": ts_confidence,
+        "tuning": tuning_confidence,
         "structure": structure_confidence,
         # The key decides between enharmonic spellings of the same sounding
         # pitch and nothing else, so even a wrong reading here cannot make a
@@ -5980,6 +6158,7 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None) -> Extractio
         tempo=tempo,
         tuning=tuning,
         tuning_label=tuning_label,
+        tuning_source=tuning_source,
         tuning_unread=tuning_unread,
         time_signature=ts,
         time_signature_source=ts_source,

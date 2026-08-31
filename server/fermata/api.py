@@ -1746,6 +1746,11 @@ _PROVENANCE_KEYS = (
     "key_signature_source",
     "tuning",
     "tuning_label",
+    # How the tuning was obtained - one of tabextract's TUNING_* words
+    # ("instrument", "label", "assumed standard"), or None on a row extracted
+    # before this was stored. The provenance the tuning travels with (issue
+    # #80), the same way the meter travels with time_signature_source.
+    "tuning_source",
     # Tuning instructions the extractor recognised on the page and did NOT
     # apply - see tabextract.unread_tuning_instructions. Stored with the tuning
     # because it is what stops the tuning being describable as read: a text
@@ -1861,7 +1866,31 @@ def transcribe(score_id: RowId, body: TranscribeIn | None = Body(default=None)):
     ts = tuple(body.time_signature) if body and body.time_signature else None
     if ts is not None:
         _validate_time_signature(ts)
-    result = extract_pdf(path, time_signature=ts)
+
+    # The tuning of the instrument this score is assigned, if any (issue #72).
+    # Until this, scores.instrument_id was recorded and read by nobody, so a
+    # drop-D or seven-string score was transcribed as a standard six-string
+    # whatever instrument it named (see db.py's comment on the column). The
+    # instrument's `string_pitches` are ordered highest string NUMBER first,
+    # which is exactly the order tabextract's tuning uses, so they pass straight
+    # through. A dangling instrument_id (an instrument deleted without the
+    # ON DELETE SET NULL firing, which cannot happen through the API but a
+    # restored backup could) is treated as no instrument rather than a 500.
+    instrument_tuning = None
+    if row["instrument_id"] is not None:
+        inst = conn.execute(
+            "SELECT string_pitches FROM instruments WHERE id = ? AND owner = ?",
+            (row["instrument_id"], DEFAULT_OWNER),
+        ).fetchone()
+        if inst is not None:
+            try:
+                pitches = json.loads(inst["string_pitches"])
+            except (TypeError, ValueError):
+                pitches = None
+            if isinstance(pitches, list) and pitches:
+                instrument_tuning = [str(p) for p in pitches]
+
+    result = extract_pdf(path, time_signature=ts, instrument_tuning=instrument_tuning)
     if not result.extractable:
         raise HTTPException(422, result.reason or "pdf is not extractable")
     return _store_extraction_result(score_id, result)
@@ -1985,6 +2014,12 @@ def _store_extraction_result(score_id: int, result) -> dict:
             "key_signature_source": result.key_signature_source,
             "tuning": result.tuning,
             "tuning_label": result.tuning_label,
+            # How the tuning was obtained (issue #80): "instrument", "label" or
+            # "assumed standard". Stored with the tuning for the same reason
+            # time_signature_source is stored with the meter - a tuning read
+            # back on a later visit with no word for where it came from is the
+            # assumed-presented-as-read failure this exists to end.
+            "tuning_source": result.tuning_source,
             "tuning_unread": result.tuning_unread,
         }
     )
