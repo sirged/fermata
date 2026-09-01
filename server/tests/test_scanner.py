@@ -89,7 +89,7 @@ def attach_irreplaceable_work(score_id: int, tag: str = "wedding") -> None:
     conn = db.connect()
     conn.execute(
         """INSERT INTO practice_sessions(score_id, activity, started_at, local_date, seconds, note)
-           VALUES (?, 'piece', '2026-08-01T19:00:00', '2026-08-01', 2400, 'felt rough')""",
+           VALUES (?, 'piece', datetime('now', '-1 day'), date('now', '-1 day'), 2400, 'felt rough')""",
         (score_id,),
     )
     # One goal per period per owner, so each score's goal gets its own week.
