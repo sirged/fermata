@@ -105,6 +105,13 @@ _FIXTURE_RELATIVE_PATHS = {
     # None... which compares equal to nothing and unequal to 0. This score
     # writes 6 ties, leaves 4 tie ends unpaired, and marks 19 harmonics.
     "courage": "Patreon/John Oeth/Final Fantasy/FF XVI/Courage (Final Fantasy XVI).pdf",
+    # Issue #210's top-member half of the coincident unison: bar 18 writes an
+    # upper voice's open string in unison with the lower voice's own two-note
+    # chord top, and the chord's distinct lower member (fret 2, sixth string)
+    # was starved because the rank match spent both digits on the top pair.
+    # Referenced by relative path; named here by the mechanism it exercises.
+    "top_member_unison": ("Patreon/John Oeth/Final Fantasy/FF XVI/"
+                          "My Star (Final Fantasy XVI).pdf"),
     # #116's one named residual, and issue #137's whole subject: 12 onsets
     # across 4 pages where the coincident duplicate is one member of a
     # three-notehead CHORD, so the tab's two digits are consumed by the
@@ -515,6 +522,15 @@ def spanish_romance_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing 'Spanish Romance' fixture)")
+    return p
+
+
+@pytest.fixture
+def top_member_unison_pdf() -> Path:
+    p = _fixture_path("top_member_unison")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing top-member unison fixture)")
     return p
 
 

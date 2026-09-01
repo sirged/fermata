@@ -3389,15 +3389,86 @@ def _share_unison_digits(heads, digits, taken, per_group):
     positions = {(round(m.x, 2), round(m.y, 2)) for m, _g in heads}
     if len(positions) < 2 or len(digits) != len(positions):
         return len(unmatched), 0
-    starved = 0
+    starved_heads = []
     sharedn = 0
     for m, g in unmatched:
         shared = taken.get((round(m.x, 2), round(m.y, 2)))
         if shared is None or shared[1] == id(g):
-            starved += 1
+            starved_heads.append((m, g))
             continue
         per_group[id(g)].append(shared[0])
         sharedn += 1
+    if not starved_heads:
+        return 0, sharedn
+    starved, freed_shared = _share_top_member_unison(
+        heads, digits, starved_heads, per_group)
+    return starved, sharedn + freed_shared
+
+
+def _share_top_member_unison(heads, digits, starved_heads, per_group):
+    """The other half of the same defect (issue #210): a cross-voice unison on
+    a chord's TOP or MIDDLE member rather than its lowest.
+
+    The rank match consumes `heads` from the top and hands the leftover to
+    _share_unison_digits above, so a leftover head is always one of the
+    LOWEST - and it has a coincident twin at its OWN position only when the
+    duplicated position is the chord's own lowest. Where the unison sits
+    higher, BOTH its copies fall inside the matched slice and are handed two
+    DIFFERENT digits between them, and the head left starved is a distinct,
+    lower notehead with no twin at all. The tab named the string once; the
+    higher pair spent two digits on it; the note that column's second digit
+    really belonged to - the distinct lower head - got none.
+
+    THE ONE SIGNAL THAT SEPARATES THIS FROM A FALSE ALARM. A coincident
+    duplicate at the top of a fully named chord is only a shared unison when
+    its two copies are two VOICES sounding one string - two stems, one copy
+    bound to each (glyph.decode_note_events's coincident_split_pairs, issue
+    #116). Where instead the two copies sit in ONE group - a single voice's
+    notehead the vector pass doubled, coincident_unsplit_pairs - there is no
+    second voice to have lost a note: the extra copy is spurious, the chord's
+    own digits are already right, and collapsing the pair would move a digit
+    off the note it was printed for. So this only ever fires where the
+    duplicated position spans TWO groups, and does nothing where a leftover
+    starved head coexists with same-voice duplicates alone. Measured across
+    the library's in-chord coincident onsets whose leftover has no twin, this
+    partitions cleanly: the one score with a genuinely dropped note here has
+    its top pair split across two stems, and every score whose chord is
+    already complete (the large Romanza population among them) has its pair in
+    one voice and is left byte-for-byte unchanged.
+
+    Repairs in place: each spurious extra digit is taken back off the copy that
+    over-consumed it, that copy is given the unison's own (shared) digit like
+    any other cross-voice unison, and the digit freed is handed to the starved
+    head the tab printed it for. Returns (heads still starved, unison copies
+    that took a shared digit) - the second joining unison_digits_shared, since
+    a copy sounding a string the tab numbered once for its twin is the same
+    inference #137 discloses. The freed digit reaching its own starved head is
+    a re-ranking of a printed number, not an inference, and is not counted."""
+    matched = heads[:len(digits)]
+    by_pos = {}
+    for i, (m, g) in enumerate(matched):
+        by_pos.setdefault((round(m.x, 2), round(m.y, 2)), []).append((i, m, g))
+    freed = []
+    for items in by_pos.values():
+        if len(items) < 2 or len({id(g) for _i, _m, g in items}) < 2:
+            # A single copy, or copies that all sit in one voice
+            # (coincident_unsplit_pairs): no second voice lost a note here.
+            continue
+        owner_digit = digits[items[0][0]]
+        for i, m, g in items[1:]:
+            slot = sum(1 for j in range(i) if heads[j][1] is g)
+            per_group[id(g)][slot] = _mark_from_notehead(owner_digit, m)
+            freed.append(digits[i])
+    sharedn = len(freed)
+    # Give each freed digit to the starved head the tab printed it for. Both
+    # sides run lowest-pitch-first (the starved heads are the chord's lowest,
+    # the freed digits its highest string numbers) so a rare multi-way case
+    # pairs by pitch rather than by discovery order.
+    freed.sort(key=lambda d: d[0], reverse=True)
+    starved_heads = sorted(starved_heads, key=lambda mg: mg[0].y, reverse=True)
+    for (m, g), digit in zip(starved_heads, freed):
+        per_group[id(g)].append(_mark_from_notehead(digit, m))
+    starved = max(0, len(starved_heads) - len(freed))
     return starved, sharedn
 
 

@@ -429,6 +429,55 @@ def test_a_chord_the_tab_never_fully_named_is_not_patched_from_a_twin():
     assert per_group[1] == []
 
 
+def test_a_top_member_unison_frees_its_second_digit_for_the_starved_lower_note():
+    """Issue #210, the other half of #137, at the level the decision is made.
+    The unison is the chord's TOP member, not its lowest: an upper voice's
+    single note (100, 90) sits at the same position as a lower voice's own
+    two-note chord top, and that chord also has a distinct lower member
+    (100, 110) - three noteheads, two positions, over a column holding one
+    digit per position.
+
+    Two noteheads at ONE position are one pitch, so the tab named that string
+    once and both voices sound it; the rank match instead spends BOTH digits
+    on the pair - the two copies coming away with two DIFFERENT frets, which
+    two heads at one position cannot be - and leaves the distinct lower note
+    starved. Collapsing the pair onto its own single digit frees the second
+    for the note the column really printed it for: the lower voice comes away
+    with its whole chord and the upper voice sounds the shared string."""
+    per_group, missing, shared = _onset_columns(
+        [[(100.0, 90.0)], [(100.0, 90.0), (100.0, 110.0)]],
+        [(2, "0"), (6, "2")])
+    assert per_group[0] == [(2, "0")], "the upper voice sounds the shared string"
+    assert per_group[1] == [(2, "0"), (6, "2")], \
+        "and the lower voice keeps its whole chord, lower note and all"
+    assert missing == 0
+    assert shared == 1, "the doubled unison copy is the one inference, disclosed"
+
+
+def test_a_top_member_duplicate_in_one_voice_is_left_starved_not_recovered():
+    """The refusal that keeps #210 from touching correct output. Same shape -
+    a fully named two-position chord with a coincident duplicate on its TOP
+    member and a distinct lower note left without a digit - but here BOTH
+    copies of the duplicate sit in ONE voice (a single voice's notehead the
+    vector pass doubled, glyph.decode_note_events's coincident_unsplit_pairs),
+    not two voices sounding one string.
+
+    With no second stem there is no second voice to have lost a note: the
+    extra copy is spurious, the chord's own digits are already right, and
+    freeing one onto the lower head would move a printed number off the note
+    it belongs to. So nothing is shared and the lower head stays reported as a
+    notehead with no fret number. This is the shape of the largest population
+    of the #141 onsets (a Romanza arpeggio's melody-doubling copy), and it
+    must read exactly as it did before #210 existed."""
+    per_group, missing, shared = _onset_columns(
+        [[(100.0, 90.0), (100.0, 90.0)], [(100.0, 110.0)]],
+        [(2, "0"), (6, "2")])
+    assert per_group[0] == [(2, "0"), (6, "2")], "the doubled voice keeps both digits"
+    assert per_group[1] == [], "the other voice's lower head is not fabricated a note"
+    assert missing == 1
+    assert shared == 0
+
+
 def test_the_cosmic_wheel_chord_unison_stops_costing_it_twelve_bars(cosmic_wheel_pdf):
     """Issue #137's whole subject, on the score it was filed for. Twelve
     onsets across four pages write an upper voice's two-note chord whose
@@ -559,25 +608,68 @@ def test_a_deep_chords_pushed_down_dots_all_find_their_own_note(storms_past_pdf)
         "and this staff's only remaining orphan is the three-in-a-row cascade"
 
 
-def test_a_unison_on_a_chords_top_member_is_left_exactly_as_it_was(spanish_romance_pdf):
-    """The known limitation, pinned so it cannot drift unnoticed. Sharing can
-    only reach a coincident copy that sorts LAST in pitch order - i.e. the
-    unison is the chord's LOWEST member - because the rank match consumes
-    heads from the top and only then is a leftover head's twin among the
-    matched ones. Spanish Romance is the library's largest population of the
-    other arrangement (34 of the 48 onsets where the leftover head has no
-    twin at its own position), and it must read exactly as it did before this
-    change: nothing shared, and its conformance figures untouched.
+def test_a_top_member_copy_that_borrows_a_stem_is_left_exactly_as_it_was(spanish_romance_pdf):
+    """The refusal that keeps #210 off correct output, pinned on the library's
+    largest population of the shape (34 of the 48 in-chord onsets whose
+    leftover head has no twin at its own position). Every one of these is a
+    Romanza arpeggio whose melody note is DRAWN again as the arpeggio's first
+    note - two coincident notehead glyphs, but only ONE stem, so the vector
+    pass cannot split the pair across two voices (glyph.decode_note_events's
+    coincident_unsplit_pairs) and both copies sit in one voice. There is no
+    second voice to have lost a note: the chord's own digits are already
+    right, and the leftover copy is a redundant double, not a starved voice.
 
-    This is a DIFFERENT defect, not one this refuses on evidence - see
-    issue #141 - and the assertion here is that #137 neither fixed nor
-    worsened it."""
+    #210 recovers the top-member unison only where the pair has TWO genuine
+    stems (a real second voice sounding the string); this score has none, so
+    it must read exactly as it did before - nothing shared, its emitted
+    output and conformance figures byte-for-byte untouched. See issue #141,
+    which measured this population, and #116, which found the borrowed stem."""
     result = tabextract.extract(spanish_romance_pdf)
     assert result.extractable
     assert result.unison_digits_shared == 0
     assert result.bars == 32
     assert result.notes == 312
     assert (result.bars_overfull, result.bars_short, result.bars_defective) == (1, 1, 1)
+
+
+def test_a_top_member_cross_voice_unison_recovers_the_starved_lower_note(
+        top_member_unison_pdf):
+    """Issue #210 on the one library score with a genuinely dropped note of
+    this shape. Bar 18 stacks an upper voice's open second string in unison
+    with the top of a lower voice's own two-note chord; the chord's distinct
+    lower member is fret 2 on the sixth string. Two noteheads at one position
+    cannot carry two different frets, but the pitch-ranked match handed the
+    pair both of the column's digits and left the sixth-string note starved -
+    absent from the emitted bar, its voice a note short.
+
+    With the top pair collapsed onto its own single digit (see
+    tabextract._share_top_member_unison) the freed digit reaches the note the
+    column printed it for: the lower voice's chord comes back whole - `(00.2
+    2.6)` where it had been `00.2` alone with the 2.6 misvoiced away - and the
+    doubled unison is the one inference, disclosed as a shared digit."""
+    result = tabextract.extract(top_member_unison_pdf)
+    assert result.extractable
+    assert result.unison_digits_shared == 1
+    assert result.notes == 699
+    assert "(00.2 2.6)" in result.alphatex, \
+        "the lower voice's chord recovers its starved sixth-string note (2.6)"
+
+
+def test_the_top_member_recovery_is_what_restores_the_starved_note(
+        top_member_unison_pdf, monkeypatch):
+    """The RED the test above pins, reproduced without touching the source:
+    neutralise the top-member recovery (the starved head keeps no digit,
+    exactly what the pitch-ranked match alone leaves it) and the sixth-string
+    2.6 vanishes from the bar, the note count falling back by the one it
+    recovered and nothing disclosed as shared."""
+    monkeypatch.setattr(
+        tabextract, "_share_top_member_unison",
+        lambda heads, digits, starved_heads, _per_group: (len(starved_heads), 0))
+    result = tabextract.extract(top_member_unison_pdf)
+    assert result.extractable
+    assert result.unison_digits_shared == 0
+    assert result.notes == 698
+    assert "(00.2 2.6)" not in result.alphatex
 
 
 def test_notation_only_pdf_has_no_tab_staves(tarrega_pdf):
@@ -4653,7 +4745,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     assert extractable == 293
     assert totals["bars"] == 10762               # 10632 + 130 (issue #152)
     assert totals["bars_unread"] == 20           # 23 - 3 (issue #152)
-    assert totals["notes"] == 99461              # 98704 + 757 (issue #152)
+    assert totals["notes"] == 99471              # 98704 + 757 (#152); + 10 (#210)
     # Pinned here for the first time by issue #113, which is the change that
     # needs it: a duration fix that moved this would not be a duration fix.
     assert totals["beats"] == 83365
@@ -4714,12 +4806,27 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # systems across 22 files.
     assert totals["systems_unread"] == 2
     assert scores_with_systems_unread == 2
-    # The whole of #137's effect on this library, disclosed as data: 16 notes
-    # given a fret number read for their coincident twin. It equals the note
-    # delta above exactly (+12 +4), which is the check that no note came back
-    # by any other route - a shared digit is the ONLY way this change can add
-    # a note, so any drift between these two numbers is a different defect.
-    assert totals["unison_digits_shared"] == 16
+    # The whole of #137's and #210's effect on this library, disclosed as
+    # data: 26 notes given a fret number read for their coincident twin. It
+    # equals the note delta exactly (#137's +12 +4, then #210's +10), which is
+    # the check that no note came back by any other route - a shared digit is
+    # the ONLY way either change can add a note, so any drift between these two
+    # numbers is a different defect.
+    #
+    # +10 at #210, across 8 scores, is the top-member half of the coincident
+    # unison: where the shared string is a chord's TOP (or middle) member the
+    # rank match spent both digits on the pair and starved the distinct lower
+    # note, and freeing the pair's second digit recovers it (see
+    # tabextract._share_top_member_unison). Every one of the 8 is a genuine
+    # cross-voice unison - two stems, one string
+    # (glyph.decode_note_events's coincident_split_pairs) - which is why none
+    # of the same-shaped copies that sit in ONE voice moves: the whole 34-onset
+    # Spanish-Romance population stays byte-for-byte identical (its pair is a
+    # melody-doubling copy with no second stem, coincident_unsplit_pairs). No
+    # bar-conformance figure moves with the 10 notes: each lands in a voice
+    # that was already sounding at that onset (a completed chord or a doubled
+    # unison), so no bar's fullness changes.
+    assert totals["unison_digits_shared"] == 26
     # The dot figures the same change moves, pinned here for the same reason
     # the note count is: this is the only place they are measured over the
     # whole library rather than on one fixture. `dots` counts the <dot />
@@ -4733,7 +4840,11 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # (a half plus a quarter) and move BEATS instead, which must not move; the
     # single dotted rest keeps the beat count and adds exactly this one dot. It
     # is bound to the rest, so dots_unassigned below does not move.
-    assert totals["dots"] == 9183                          # 8884 -> 9182 (#111/#112) -> 9183 (#180)
+    # +2 at #210: two of the ten notes recovered by the top-member unison
+    # (see _share_top_member_unison) land in a DOTTED chord, so each emits its
+    # own <dot /> alongside the chord's other members. They are bound to their
+    # note, so dots_unassigned below does not move.
+    assert totals["dots"] == 9185                          # 8884 -> 9182 (#111/#112) -> 9183 (#180) -> 9185 (#210)
     assert totals["dots_unassigned"] == 1154                # 1280
     assert totals["dots_unassigned_no_candidate"] == 1144   # 1226
     assert totals["dots_unassigned_eliminated"] == 10       # 54
