@@ -2641,93 +2641,162 @@ def _displaced_pairs(owners, stems, spacing):
     return pairs
 
 
-def _reach_anchors(owners, pairs):
+def _reach_anchors(owners, pairs, spacing):
     """The x positions a dot's reach may be measured from, per owner.
 
-    Every owner offers its own right edge, as it always did. The lower half of
-    a displaced seconds pair offers its partner's right edge as well - the edge
-    that pair's shared dot column is actually set from (see _displaced_pairs,
-    #112).
+    Every owner offers its own right edge, as it always did. A displaced
+    seconds pair sets its chord's single dot column from the RIGHT (upper)
+    member's right edge, and that column belongs to the whole chord, not to the
+    one member a second away (#160). So every notehead sharing the pair's LEFT
+    (lower) notehead column - the column a full notehead width too far from the
+    dots for its own edge to reach - is lent the upper member's right edge as a
+    second anchor, the edge the shared column is actually set from. The lower
+    member of the pair is one such head (#112); the rest are the chord's other
+    undisplaced members, which the pair fix alone still left short of a column
+    that is theirs as much as anyone's.
+
+    Heads a full notehead width apart on one page x are the same beat - one
+    chord - so the left column is picked out by x alone, within the same abut
+    tolerance _displaced_pairs uses to say two heads' boxes touch.
 
     Returned as a list of (anchor_x, owner_index) sorted by anchor_x, ready to
     bisect. Anchors are ADDED, never substituted, so this cannot take a dot out
     of any owner's reach.
     """
     anchors = [(e.x1, i) for i, e in enumerate(owners)]
+    abut = _DOT_COLUMN_ABUT_TOL * spacing
+    heads = [i for i, e in enumerate(owners) if e.category in NOTEHEAD_CATS]
     for lower, upper in pairs:
-        anchors.append((owners[upper].x1, lower))
+        col_edge = owners[upper].x1
+        far_x1 = owners[lower].x1
+        for i in heads:
+            if owners[i].x1 < col_edge and abs(owners[i].x1 - far_x1) <= abut:
+                anchors.append((col_edge, i))
     anchors.sort()
     return anchors
 
 
 def _pushed_down_pairs(owners, pairs, runs, tol):
-    """Which dot runs a displaced seconds pair resolves JOINTLY, and to whom.
+    """Which dot runs a displaced seconds pair - and the chord members stacked
+    below it - resolve JOINTLY, and to whom.
 
-    Returns (contested_run, upper_i, beneath_run, lower_i) for every pair whose
-    two dots were pushed down a step together, which is the only arrangement
-    that fits two dots into one space's worth of room - see _DOT_PUSHED_STEP.
+    Returns a list of (contested_run, upper_i, chain) for every pair whose dots
+    were pushed down. `chain` is the ordered list of (dot_run, owner_i) whose
+    dots were pushed a FULL space below their owners, top member first;
+    contested_run is the UPPER member's own dot, pushed only into the space
+    below it (the space its partner occupies). Both are out of every tier's
+    reach - see _DOT_PUSHED_STEP.
 
-    The signature has to be the whole thing, not either half of it. A single
-    dot level with the lower head, with nothing a space beneath it, is that
-    head's own ordinary dot and is left to the ordinary rules: there was no
-    collision to avoid, so nothing was pushed anywhere. It is the SECOND dot,
-    a full space below, in the pair's own column, with no notehead of that
-    column down there to own it, that says the pair was pushed - and the first
-    dot is only ever read as the UPPER member's by being read together with it.
+    Two heads a second apart cannot print their dots half a space apart in one
+    column, so the engraver pushes them down a step together: the upper's dot
+    into the lower's space, the lower's a full space below its own centre. When
+    a further chord member sits where the lower's pushed dot lands, ITS slot is
+    taken too, so its dot is pushed a further space in turn, and the walk
+    continues to it - a cascade of evenly spaced dots over members that are NOT
+    evenly spaced (#160). The column is the chord's, and its dots go to the
+    chord's members in printed order.
+
+    The signature has to be the whole thing. What proves a push happened at all
+    is a dot at the BOTTOM of the chain that no notehead of the column owns at a
+    real tier - the orphan a chord that dots every member the ordinary way never
+    leaves. A single dot level with the lower head, nothing beneath it, is that
+    head's own; it takes that orphan a full space down to say the pair was
+    pushed, and the dots above it are only ever read as the upper members' by
+    being read together with it.
+
+    A notehead that already carries its own dot elsewhere in the column, at a
+    tier of its own, is not such an owner and does not refute the orphan: a note
+    takes ONE dot per column (see _DOT_X_DUP_TOL), so a head already spoken for
+    explains nothing. That exemption is what lets the deep pushed-down chord
+    resolve - where the head a third below the lower dot fits it, but owns a dot
+    of its own half a space further down - while still keeping the ordinary
+    all-dotted chords, whose lower member owns the beneath dot outright, out of
+    the joint reading (see the #159 guard fixtures).
     """
     sp = tol.spacing
     slack = _DOT_Y_SLACK * sp
+    step = _DOT_PUSHED_STEP * sp
+    col_reach = (1.0 + _DOT_COLUMN_ABUT_TOL) * sp
+    abut = _DOT_COLUMN_ABUT_TOL * sp
     out = []
     taken = set()
     for lower, upper in pairs:
         lo_e, up_e = owners[lower], owners[upper]
         col = up_e.x1
+        # A chord dots from ONE column but stands on TWO notehead columns a full
+        # notehead width apart (that is what a second forces - see
+        # _displaced_pairs), and both columns' heads share the dot column. So a
+        # chord member is a head on the RIGHT column (near `col`) or on the LEFT
+        # column (near the lower member's own edge, a notehead width left of
+        # `col`); the right-column reach alone would miss the far heads by a
+        # hair and let the cascade fire past a member that owns its own dot (the
+        # #160 defect). far_x1 pins the left column exactly.
+        far_x1 = lo_e.x1
         in_col = [j for j, r in enumerate(runs)
                   if -tol.dot_x_back <= r[1] - col <= tol.dot_x_tol]
-        contested = [j for j in in_col if abs(runs[j][2] - lo_e.yc) <= slack]
-        beneath = [j for j in in_col
-                   if abs(runs[j][2] - (lo_e.yc + _DOT_PUSHED_STEP * sp)) <= slack]
-        if not contested or not beneath:
+        contested = [j for j in in_col
+                     if j not in taken and abs(runs[j][2] - lo_e.yc) <= slack]
+        if not contested:
             continue
-        # ...and only where nothing ELSE in the chord explains that second dot.
-        # A dot a full space below the lower member is also "the space above"
-        # a head a third below it, which is an ordinary tier and an ordinary
-        # reading; a chord that dots every member that way was never pushed
-        # anywhere. So another notehead of this column that the dot fits at a
-        # real tier refutes the joint reading.
-        #
-        # Unless that notehead has a dot of its own already, elsewhere in the
-        # same column and at a tier of its own. Then it is not a rival for
-        # this one: a note carries ONE dot per column (that is what
-        # _DOT_X_DUP_TOL enforces later), so a head that is already spoken for
-        # explains nothing, and letting it refute leaves the pair's second dot
-        # orphaned with the pair unread. Measured across the library, this
-        # exemption recovers two sites - both in "Storm's Past", where the
-        # refuting head's own dot sits half a space above the one it was being
-        # allowed to claim - and touches none of the four chords the guard is
-        # there for (Vamo alla Flamenco twice, A Pendant Darkly, Courage).
-        c0, b0 = contested[0], beneath[0]
+        c0 = contested[0]
+        # Walk the pushed cascade down from the lower member. The dot a full
+        # space below the lower member is the lower member's own; a chord member
+        # sitting where that dot lands has had ITS slot taken, so its own dot is
+        # pushed a further space, and the walk continues to it. Rung k puts a dot
+        # at lower.yc + k*step, owned by the member at lower.yc + (k-1)*step.
+        chain = []
+        chain_owners = {upper}
+        owner_i = lower
+        j = 1
+        while True:
+            target = lo_e.yc + j * step
+            dj = next((k for k in in_col
+                       if k not in taken and k != c0
+                       and all(k != d for d, _o in chain)
+                       and abs(runs[k][2] - target) <= slack), None)
+            if dj is None:
+                break
+            chain.append((dj, owner_i))
+            chain_owners.add(owner_i)
+            nxt = next((i for i, e in enumerate(owners)
+                        if i not in chain_owners and e.category in NOTEHEAD_CATS
+                        and (abs(e.x1 - col) <= col_reach or abs(e.x1 - far_x1) <= abut)
+                        and abs(e.yc - target) <= slack), None)
+            if nxt is None:
+                break
+            owner_i = nxt
+            j += 1
+        if not chain:
+            continue
+        # The joint reading is correct only where the BOTTOM of the chain is an
+        # orphan - a dot no OTHER notehead of this column owns at a real tier,
+        # excepting a head already carrying its own dot elsewhere in the column
+        # (spoken for, so no rival). See the docstring: this one check both
+        # keeps the ordinary all-dotted chords out and lets the deep pushed-down
+        # chord's already-dotted neighbour stand aside.
+        b0 = chain[-1][0]
         b_yc = runs[b0][2]
         rival = False
-        for e in owners:
-            if e is lo_e or e is up_e or e.category not in NOTEHEAD_CATS:
+        for i, e in enumerate(owners):
+            if i in chain_owners or e.category not in NOTEHEAD_CATS:
                 continue
-            if abs(e.x1 - col) > (1.0 + _DOT_COLUMN_ABUT_TOL) * sp:
+            if abs(e.x1 - col) > col_reach and abs(e.x1 - far_x1) > abut:
                 continue
             if _dot_fit(b_yc - e.yc, sp) is None:
                 continue
-            if any(j not in (c0, b0) and _dot_fit(runs[j][2] - e.yc, sp) is not None
-                   for j in in_col):
+            if any(k != b0 and _dot_fit(runs[k][2] - e.yc, sp) is not None
+                   for k in in_col):
                 continue                      # already has its own dot here
             rival = True
             break
         if rival:
             continue
-        if c0 == b0 or c0 in taken or b0 in taken:
+        if c0 in taken or any(d in taken for d, _o in chain):
             continue
         taken.add(c0)
-        taken.add(b0)
-        out.append((c0, upper, b0, lower))
+        for d, _o in chain:
+            taken.add(d)
+        out.append((c0, upper, chain))
     return out
 
 
@@ -2836,7 +2905,7 @@ def _assign_dots(owners, dot_events, tol, stems=()):
     # window beside it was.
     owners = sorted(owners, key=lambda e: e.x1)
     pairs = _displaced_pairs(owners, stems, tol.spacing)
-    anchors = _reach_anchors(owners, pairs)
+    anchors = _reach_anchors(owners, pairs, tol.spacing)
     anchor_xs = [a for a, _i in anchors]
     runs = _dot_runs(dot_events, tol.spacing)
     joint = _pushed_down_pairs(owners, pairs, runs, tol)
@@ -2861,14 +2930,14 @@ def _assign_dots(owners, dot_events, tol, stems=()):
         live.append(sorted(best.values()))
 
     n = len(runs)
-    # The lower member of a pushed-down pair is out of every tier's reach by
-    # construction - its dot is a full space below it, which is exactly what
-    # _DOT_TIERS refuses - so the joint resolution supplies that candidate
-    # here, for the one run it identified and no other. Recorded before
-    # had_candidate is taken, so a jointly-resolved run is never reported as
-    # having reached nothing.
-    for _c_run, _upper, b_run, lower in joint:
-        live[b_run] = [(lower, _TIER_PUSHED_DOWN, 0.0, 0.0)]
+    # Every pushed-down member is out of every tier's reach by construction -
+    # its dot is a full space below it, which is exactly what _DOT_TIERS refuses
+    # - so the joint resolution supplies that candidate here, for the runs it
+    # identified and no others. Recorded before had_candidate is taken, so a
+    # jointly-resolved run is never reported as having reached nothing.
+    for _c_run, _upper, chain in joint:
+        for b_run, owner in chain:
+            live[b_run] = [(owner, _TIER_PUSHED_DOWN, 0.0, 0.0)]
     # Whether dot i EVER had a reachable candidate, fixed here before
     # elimination gets a chance to remove any of them - the only way to tell
     # unassigned_no_candidate apart from unassigned_eliminated below.
@@ -2916,14 +2985,15 @@ def _assign_dots(owners, dot_events, tol, stems=()):
         owner_dot_xs[owner_i].append(runs[dot_idx][1])
         resolved[dot_idx] = True
 
-    # The jointly-resolved pairs go in FIRST, before anything is ranked. Both
-    # their dots are reachable by the lower member and neither is the lower
-    # member's on its own, so any ordering that let ranking see them first
-    # would hand it the upper member's dot and leave the upper member bare -
-    # which is precisely the reading this replaces.
-    for c_run, upper, b_run, lower in joint:
+    # The jointly-resolved cascades go in FIRST, before anything is ranked. Each
+    # pushed dot is reachable by more than its true owner and none is any one
+    # member's on its own, so any ordering that let ranking see them first would
+    # hand a member a neighbour's dot and leave that neighbour bare - which is
+    # precisely the reading this replaces.
+    for c_run, upper, chain in joint:
         _commit(c_run, upper, len(_DOT_TIERS) - 1)   # the space below it
-        _commit(b_run, lower, _TIER_PUSHED_DOWN)     # a full space below it
+        for b_run, owner in chain:
+            _commit(b_run, owner, _TIER_PUSHED_DOWN)  # a full space below it
 
     # Then commit ONE dot at a time, re-running the conflict filter before
     # looking for the next one. Committing every currently-forced dot in a

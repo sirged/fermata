@@ -608,6 +608,89 @@ def test_a_deep_chords_pushed_down_dots_all_find_their_own_note(storms_past_pdf)
         "and this staff's only remaining orphan is the three-in-a-row cascade"
 
 
+def _chord_in_box(page, x_lo, x_hi, y_lo, y_hi):
+    """Decode every standard staff on `page` and return, from the staff that
+    covers the most of them, the noteheads whose centre falls in the box,
+    sorted top to bottom, together with that staff's decode stats.
+
+    A single frame's chord can be caught by more than one detected staff record
+    when two are ruled a fraction of a space apart, so the staff is chosen by
+    which decode actually reads the frame rather than by a fragile top-y match.
+    """
+    best = None
+    for staff in tabextract._detect_staves(page)[0]:
+        if staff.kind != "standard":
+            continue
+        notes, stats = glyph_rhythm.decode_note_events(
+            page, staff.top, staff.bottom, staff.x0, staff.x1,
+            staff.line_ys, staff.spacing)
+        heads = sorted(
+            (n for n in notes if not n.is_rest
+             and x_lo <= n.x <= x_hi and y_lo <= n.y <= y_hi),
+            key=lambda n: n.y)
+        if best is None or len(heads) > len(best[0]):
+            best = (heads, stats)
+    return best
+
+
+def test_a_five_member_chord_shares_its_dot_column_a(chord_shared_dot_column_a_pdf):
+    """Issue #160, class 1: a five-note chord with five printed dots in ONE
+    column. The dots stand a fixed distance right of the chord's rightmost
+    (displaced) head, so the undisplaced members - a full notehead width to the
+    left - sit 1.9 spaces from the column, past the 1.17-space reach of their
+    own edge. Before #160 only the members within reach of their own dot read:
+    2 of the 5.
+
+    The column belongs to the whole chord, not to the one member a second away,
+    so every member on the chord's left notehead column is lent the column-
+    setting (right) edge as a second anchor (see glyph_rhythm._reach_anchors).
+    All five then reach their own dot at their own tier - no push, no cascade,
+    the ordinary tier ranking does the rest. Read off decode_note_events, since
+    the beat model collapses a chord's members to one duration and would hide
+    which notehead each dot landed on."""
+    page = fitz.open(chord_shared_dot_column_a_pdf)[0]
+    heads, _stats = _chord_in_box(page, 524, 542, 652, 680)
+    assert len(heads) == 5, "the five noteheads of the chord, one frame"
+    assert [n.dotted for n in heads] == [1, 1, 1, 1, 1], \
+        "five printed dots, one to each member - not the 2 the pair fix read"
+
+
+def test_a_five_member_chord_shares_its_dot_column_b(chord_shared_dot_column_b_pdf):
+    """Issue #160, class 1, on the library's second instance of the shape - a
+    row of repeated five-note chords, each with five dots in one column, each
+    read 2 of 5 before #160. The first chord of the first standard staff is
+    pinned; the rest move with it (the whole score's dots_unassigned falls from
+    40 to 16). Same mechanism as _a: the chord's dot column is lent to every
+    member, not only the displaced pair's lower head."""
+    page = fitz.open(chord_shared_dot_column_b_pdf)[0]
+    heads, _stats = _chord_in_box(page, 149, 166, 118, 154)
+    assert len(heads) == 5, "the five noteheads of the first chord, one frame"
+    assert [n.dotted for n in heads] == [1, 1, 1, 1, 1], \
+        "five printed dots, one to each member - not the 2 the pair fix read"
+
+
+def test_a_pushed_down_cascade_gives_each_member_its_own_dot(pushed_down_cascade_pdf):
+    """Issue #160, class 2: three members whose dots the engraver pushed into an
+    evenly spaced cascade. A displaced seconds pair is pushed down a step (the
+    upper's dot into the lower's space, the lower's a full space below); the
+    member below the pair, whose own slot the lower's pushed dot now takes, is
+    pushed a further space in turn. Four dots at evenly spaced positions over
+    members that are NOT evenly spaced.
+
+    The pair model resolved only its own two dots and orphaned the third pushed
+    dot - read 3 of 4. The cascade walk carries the push down the chord in
+    printed order, proven by the orphan at the bottom of the column that no
+    member owns at a tier (see glyph_rhythm._pushed_down_pairs). All four dots,
+    one to each of the four dotted members; the fifth (undotted) head of the
+    frame stays bare. Page index 2 is page 3."""
+    page = fitz.open(pushed_down_cascade_pdf)[2]
+    heads, stats = _chord_in_box(page, 470, 485, 662, 692)
+    dotted = [n for n in heads if n.dotted]
+    assert len(dotted) == 4, "the four dotted members of the chord"
+    assert stats["dots_unassigned"] == 0, \
+        "no dot of this staff is left orphaned - the cascade's last is bound"
+
+
 def test_a_top_member_copy_that_borrows_a_stem_is_left_exactly_as_it_was(spanish_romance_pdf):
     """The refusal that keeps #210 off correct output, pinned on the library's
     largest population of the shape (34 of the 48 in-chord onsets whose
@@ -4844,10 +4927,21 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # (see _share_top_member_unison) land in a DOTTED chord, so each emits its
     # own <dot /> alongside the chord's other members. They are bound to their
     # note, so dots_unassigned below does not move.
+    # #160 moves dots_unassigned WITHOUT moving `dots`: it binds augmentation
+    # dots that were left over on chords whose members share ONE dot column - the
+    # undisplaced members a full notehead width too far from the column for their
+    # own reach, and the members below a displaced pair whose dots were pushed
+    # into an evenly spaced cascade (see glyph_rhythm._reach_anchors and
+    # ._pushed_down_pairs). Each such chord was ALREADY dotted by the members
+    # that did bind, and the beat model carries one duration per chord, so
+    # accounting for the extra glyph emits no new <dot /> - only the disclosure
+    # counter falls. -76 across 16 scores, every move a chord gaining a dot it
+    # already reads no differently for; notes, beats and the emitted MusicXML
+    # and alphaTex are byte-for-byte identical library-wide.
     assert totals["dots"] == 9185                          # 8884 -> 9182 (#111/#112) -> 9183 (#180) -> 9185 (#210)
-    assert totals["dots_unassigned"] == 1154                # 1280
-    assert totals["dots_unassigned_no_candidate"] == 1144   # 1226
-    assert totals["dots_unassigned_eliminated"] == 10       # 54
+    assert totals["dots_unassigned"] == 1078                # 1280 -> 1154 (#111/#112) -> 1078 (#160)
+    assert totals["dots_unassigned_no_candidate"] == 1073   # 1226 -> 1144 (#111/#112) -> 1073 (#160)
+    assert totals["dots_unassigned_eliminated"] == 5        # 54 -> 10 (#111/#112) -> 5 (#160)
     # ...and the repeat furniture the same glyph stream carries, unmoved by
     # any of it. Maestro and Opus draw a repeat's dots with the augmentation
     # dot's own glyph, and issue #138 reads them off this stream, so a change
