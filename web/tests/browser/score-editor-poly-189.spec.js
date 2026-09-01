@@ -35,6 +35,36 @@ async function openEditor(page, content, expected) {
   await page.getByRole("button", { name: "Edit notes" }).click();
   await expect(wrap(page)).toHaveAttribute("data-editor-active", "true");
   await expect.poll(() => page.evaluate(() => window.__scoreEditor?.noteCount() ?? 0)).toBe(expected);
+  await settleEditorLayout(page);
+}
+
+// Entering edit mode turns the notation staff on (an alphaTab re-render) AND
+// mounts the edit panel (a DOM reflow); the coordinates headPoint()/hitTest()
+// work in are live screen geometry (an alphaTab bound plus the surface's
+// getBoundingClientRect), so a click fired before that geometry settles
+// hit-tests against a layout still in motion and lands on empty space - the
+// select registers nothing and data-editor-selected reads null. This is #189's
+// intermittent flake: noteCount() does NOT gate on the settle (it is already
+// 52/4 from the tab-only render before edit mode, so its poll passes at once),
+// and neither does a render-completion signal - the note's screen y was
+// measured still shifting (363 -> 295 px) after alphaTab's postRenderFinished
+// had fired and the note bounds had doubled, because the panel-mount reflow and
+// growPaperToDrawing move the surface, not the alphaTab bounds. So gate on the
+// hit-test geometry itself holding still: the same head point across two
+// consecutive reads. Once the layout has settled it stays put (measured stable
+// across 29 further reads), so this waits out the transient without a fixed
+// sleep, exactly where the click's coordinates come from.
+async function settleEditorLayout(page) {
+  let prev = null;
+  await expect
+    .poll(async () => {
+      const p = await page.evaluate(() => window.__scoreEditor?.headPoint(0) ?? null);
+      const key = p ? `${Math.round(p.x)},${Math.round(p.y)}` : null;
+      const stable = key != null && key === prev;
+      prev = key;
+      return stable;
+    })
+    .toBe(true);
 }
 
 // The currently-selected ordinal, as an integer, read off the DOM.
