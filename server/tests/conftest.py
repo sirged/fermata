@@ -81,6 +81,22 @@ _FIXTURE_RELATIVE_PATHS = {
     # refuting the pushed-down reading has no other real score to be
     # exercised on - see glyph_rhythm._pushed_down_pairs.
     "storms_past": "Patreon/John Oeth/New World/Storm_s Past (New World).pdf",
+    # Issue #160: a chord whose members share ONE dot column, not the pushed-down
+    # arrangement above. Five noteheads, five printed dots in a single column;
+    # the undisplaced members sit a full notehead width too far from the column
+    # for their own reach, so before #160 only the members within reach read - 2
+    # of the 5. Two scores carry the shape; both are pinned. Referenced by
+    # relative path, named here by the mechanism they exercise.
+    "chord_shared_dot_column_a": ("Patreon/John Oeth/The Legend of Zelda/"
+        "TLOZ Link_s Awakening/Inside a House (The Legend of Zelda Link_s Awakening).pdf"),
+    "chord_shared_dot_column_b": ("Patreon/John Oeth/Final Fantasy/FF IX/"
+        "Vamo alla Flamenco (Final Fantasy IX).pdf"),
+    # Issue #160's other class: three members whose dots the engraver pushed into
+    # an evenly spaced cascade - a displaced pair pushed down a step, then a
+    # further member whose own slot the pair took pushed a step again - four dots
+    # over members that are not evenly spaced. The pair model orphaned the last
+    # dot (read 3 of 4). Page 3 (0-based page index 2) isolates it.
+    "pushed_down_cascade": "Patreon/John Oeth/Suikoden/Reminiscence (Suikoden II).pdf",
     # Two of the four scores the #116 research had a guitarist check against
     # the printed page. Born a Stranger's flagged spot is a genuine unison
     # shared by two voices - two notes drawn adjacent on the same row, the
@@ -478,6 +494,33 @@ def storms_past_pdf() -> Path:
     if p is None:
         skip_without_library(
             "FERMATA_TEST_LIBRARY not set (or missing 'Storm's Past' fixture)")
+    return p
+
+
+@pytest.fixture
+def chord_shared_dot_column_a_pdf() -> Path:
+    p = _fixture_path("chord_shared_dot_column_a")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing shared-dot-column fixture A)")
+    return p
+
+
+@pytest.fixture
+def chord_shared_dot_column_b_pdf() -> Path:
+    p = _fixture_path("chord_shared_dot_column_b")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing shared-dot-column fixture B)")
+    return p
+
+
+@pytest.fixture
+def pushed_down_cascade_pdf() -> Path:
+    p = _fixture_path("pushed_down_cascade")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing pushed-down-cascade fixture)")
     return p
 
 

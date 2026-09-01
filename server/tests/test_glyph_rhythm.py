@@ -2016,6 +2016,70 @@ def test_the_column_anchor_never_takes_a_dot_out_of_reach():
     assert no_cand == 0 and eliminated == 0
 
 
+def test_a_five_member_chord_shares_its_dot_column():
+    """Issue #160, class 1: five members, five dots in ONE column, each dot at
+    its own member's tier - the ordinary arrangement, nothing pushed. One pair
+    is a displaced second (the reason the chord needs two notehead columns at
+    all); the other three members sit on the LEFT column, a full notehead width
+    - 1.9 spaces - from the dots, past the 1.17-space reach of their own edge.
+
+    The pair fix alone lends the shared column only to the pair's lower head, so
+    those three read nothing: 2 of the 5. The column is the chord's, so every
+    member on the left column is lent the column-setting edge, and all five
+    reach their own dot. No push fires here - there is no orphan a space below
+    the lowest member - so it is pure reach, resolved by the ordinary tiers."""
+    tol = _tol(_SECONDS_SPACING)
+    upper = _head(_UPPER_HEAD)                    # right column, yc 107.009
+    lower = _head(_LOWER_HEAD)                    # left column, yc 109.489 (a second below)
+    far_a = _head(_LOWER_HEAD, y_shift=-9.95)     # left column, 2 spaces above lower
+    far_b = _head(_LOWER_HEAD, y_shift=-14.925)   # left column, 3 spaces above
+    far_c = _head(_LOWER_HEAD, y_shift=-19.9)     # left column, 4 spaces above
+    heads = [far_c, far_b, far_a, upper, lower]
+    dots = [
+        _column_dot(109.489),                     # level with lower (tier 0)
+        _column_dot(107.009 - 0.5 * _SECONDS_SPACING),  # the space above upper (tier 1)
+        _column_dot(99.539), _column_dot(94.564), _column_dot(89.589),  # the far heads' own
+    ]
+    counts, no_cand, eliminated = G._assign_dots(heads, dots, tol, _SECONDS_STEM)
+    assert all(counts[id(h)] == 1 for h in heads), \
+        "every member reads its own dot - not just the two within their own reach"
+    assert (no_cand, eliminated) == (0, 0)
+
+
+def test_a_pushed_down_cascade_gives_each_member_its_own_dot():
+    """Issue #160, class 2: the pushed-down pair, extended to a cascade. The
+    displaced pair's two dots are pushed down a step (upper's into the lower's
+    space, lower's a full space below). The member a third below the lower sits
+    where the lower's pushed dot lands, so ITS slot is taken and its own dot is
+    pushed a further space in turn. Four dots at evenly spaced positions over
+    members that are NOT evenly spaced (a second, then a third, then a fifth).
+
+    The pair model resolves only its own two dots and orphans the third pushed
+    dot - 3 of 4. The cascade walks the push down the chord in printed order.
+    The fourth member, a fifth below, is far enough that its own slot is free -
+    its dot sits at its own tier, not pushed - so the cascade stops and it reads
+    the ordinary way. What proves the push happened is the orphan at the bottom
+    of the pushed run that no member owns at any tier; reading either pushed dot
+    alone gets its owner wrong."""
+    tol = _tol(_SECONDS_SPACING)
+    sp = _SECONDS_SPACING
+    upper = _head(_UPPER_HEAD)                    # right, yc 107.009
+    lower = _head(_LOWER_HEAD)                    # left, yc 109.489 (a second below upper)
+    mid = _head(_UPPER_HEAD, y_shift=(109.489 + sp) - 107.009)   # a third below lower
+    low = _head(_UPPER_HEAD, y_shift=(109.489 + 3 * sp) - 107.009)  # a fifth below lower
+    contested = _column_dot(109.489)              # level with lower -> upper's, pushed
+    beneath = _column_dot(109.489 + sp)           # a space below lower -> lower's own, pushed
+    third = _column_dot(109.489 + 2 * sp)         # a further space -> mid's own, pushed
+    ordinary = _column_dot(109.489 + 3 * sp)      # level with low -> low's own, NOT pushed
+    counts, no_cand, eliminated = G._assign_dots(
+        [upper, lower, mid, low], [contested, beneath, third, ordinary], tol, _SECONDS_STEM)
+    assert counts[id(upper)] == 1, "the contested dot is the UPPER member's"
+    assert counts[id(lower)] == 1, "the first pushed dot is the lower member's"
+    assert counts[id(mid)] == 1, "the cascade carries the push to the third member"
+    assert counts[id(low)] == 1, "and the fifth-below member keeps its own untouched dot"
+    assert (no_cand, eliminated) == (0, 0), "nothing is left over - 4 of 4"
+
+
 # ---------------------------------------------------------------------------
 # A glyph's position is its ink, not its metrics box (finding 88)
 # ---------------------------------------------------------------------------
