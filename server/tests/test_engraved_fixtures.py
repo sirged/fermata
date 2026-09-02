@@ -760,6 +760,126 @@ def test_a_staff_line_drawn_in_pieces_is_still_one_staff(engraved):
 
 
 # ---------------------------------------------------------------------------
+# A staff size the cluster window measured in points could not survive
+# ---------------------------------------------------------------------------
+
+
+# The same eight-bar figure engraved at four staff sizes, and what
+# _detect_staves must find on each: one notation staff (5 lines) over one
+# tablature staff (6 lines) per system, and no group discarded. The two large
+# sizes were already correct; the two small ones came back as a single
+# eleven-line anomaly and yielded nothing before issue #86, because the
+# inter-staff gap - a fixed ~6.5 staff spaces - had shrunk below a cluster
+# window fixed at 15pt (see tabextract.STAFF_CLUSTER_WINDOW_SPACES).
+STAFF_SIZE_STAVES = {
+    "staff_size_7_0mm": 6,   # ten systems over two pages
+    "staff_size_4_0mm": 3,
+    "staff_size_2_5mm": 2,
+    "staff_size_1_8mm": 1,   # all thirty-two bars on one page-wide system
+}
+
+
+@pytest.mark.parametrize("name", list(STAFF_SIZE_STAVES))
+def test_a_small_staff_size_still_separates_notation_from_tab(name, engraved):
+    """Issue #86. Below roughly a 3.2mm staff the gap between the notation
+    staff and the tablature staff under it - which is a fixed number of STAFF
+    SPACES, not of points - fell under a cluster window that was a fixed 15pt,
+    so the two merged into one eleven-line group, failed the five-or-six-lines
+    test, and the page yielded nothing at all. staff_size_2_5mm and
+    staff_size_1_8mm are engraved in exactly that regime; staff_size_7_0mm and
+    staff_size_4_0mm are the sizes that already worked, kept here so a fix that
+    only moved the small ones by breaking the large ones cannot pass.
+
+    The window is now derived from the candidate lines' own spacing, so every
+    system on all four pages resolves into its 5-line notation staff and its
+    6-line tab staff, and nothing is discarded."""
+    expected = STAFF_SIZE_STAVES[name]
+    doc = fitz.open(engraved(name))
+    kinds = []
+    anomalies = []
+    for page in doc:
+        staves, anom = tabextract._detect_staves(page)
+        kinds += [s.kind for s in staves]
+        anomalies += anom
+    assert not anomalies, f"a staff-line group was discarded: {anomalies}"
+    assert kinds.count("standard") == expected
+    assert kinds.count("tab") == expected
+    assert kinds.count("standard") == kinds.count("tab") > 0, kinds
+
+    # ...and the score reads, rather than merely being detected - a transcription
+    # with the frets on it, at the same size that used to return nothing.
+    result = tabextract.extract(engraved(name))
+    assert result.extractable, result.reason
+    assert result.tab_staff_count == result.standard_staff_count == expected
+    assert result.reason is None
+
+
+def test_the_cluster_window_scales_with_the_engraving_and_is_clamped():
+    """The window derivation itself (issue #86), on constructed geometry so the
+    behaviours are separable from any one fixture.
+
+    Large engraving: 2.5 line spacings is 15pt or more, and the window is
+    clamped to the historical fixed value - which is what keeps the whole
+    library byte-identical, every score there being engraved at that scale.
+    Small engraving: 2.5 line spacings is under 15pt, and the window shrinks
+    with it. The near-zero offsets two side-by-side systems interleave must
+    not collapse it, and too few lines to measure from leaves the fixed value
+    standing."""
+    W = tabextract.STAFF_CLUSTER_WINDOW_DEFAULT_PT
+    K = tabextract.STAFF_CLUSTER_WINDOW_SPACES
+    # a normal-sized staff (lines 8pt apart): 2.5 spacings exceeds 15, clamped
+    assert tabextract._staff_cluster_window([100.0 + i * 8.0 for i in range(6)]) == W
+    # a small engraving (lines 2pt apart): the window scales down with it
+    small = [100.0 + i * 2.0 for i in range(6)]
+    assert tabextract._staff_cluster_window(small) == pytest.approx(K * 2.0)
+    assert tabextract._staff_cluster_window(small) < W
+    # two 6-line staves ruled 1.7pt apart and interleaved: the window measures
+    # the 7.7pt line spacing, NOT the 1.7pt offset, so the band stays whole
+    # (issue #152) and it is the x-split, not the window, that separates them
+    interleaved = sorted([100.0 + i * 7.7 for i in range(6)]
+                         + [101.7 + i * 7.7 for i in range(6)])
+    assert tabextract._staff_cluster_window(interleaved) == W
+    # fewer than four gaps - no staff to measure - falls back to the fixed value
+    assert tabextract._staff_cluster_window([100.0, 105.0]) == W
+
+
+def test_a_page_whose_groups_were_all_discarded_says_so_not_notation_only(tmp_path):
+    """Issue #86's second half: the refusal reason. A page whose only staff-
+    line group was discarded for an unexpected line count is a DIFFERENT
+    diagnosis from a page that genuinely holds no tablature, and telling a user
+    the second when the first is true - as the old reason did, calling a merged
+    tab score 'standard-notation only' - sends them looking in the wrong place.
+
+    A single eleven-line group with nothing else on the page (a notation and a
+    tab staff merged, or any other over-count) has no readable tab staff, so it
+    is refused - but the reason has to name what actually happened."""
+    rows = {200.0 + i * 7.4: [(60.0, 560.0)] for i in range(11)}
+    pdf = _lines_pdf(tmp_path / "merged.pdf", rows)
+    _staves, anomalies = tabextract._detect_staves(fitz.open(pdf)[0])
+    assert [a["line_count"] for a in anomalies] == [11], "one over-count group, nothing else"
+
+    result = tabextract.extract(pdf)
+    assert result.extractable is False
+    assert "standard-notation only" not in result.reason
+    assert "discarded" in result.reason
+    assert result.systems_unread == 1
+
+    info = tabextract.analyze(pdf)
+    assert info["extractable"] is False
+    assert "standard-notation only" not in info["reason"]
+    assert "discarded" in info["reason"]
+
+    # ...while a page that really is notation-only, with nothing discarded,
+    # still gets the notation-only reason - the two diagnoses stay distinct.
+    plain = _lines_pdf(tmp_path / "notation.pdf",
+                       {200.0 + i * 6.0: [(60.0, 560.0)] for i in range(5)})
+    plain_result = tabextract.extract(plain)
+    assert plain_result.extractable is False
+    assert "standard-notation only" in plain_result.reason
+    assert plain_result.systems_unread == 0
+
+
+# ---------------------------------------------------------------------------
 # Every rest value and every flag hook
 # ---------------------------------------------------------------------------
 
@@ -2351,6 +2471,10 @@ ENGRAVED_NAMES = (
     # The first fixture in this repository to engrave a three-stroke beam
     # (issue #113).
     "thirty_second_beams",
+    # The same notation-over-tablature score at four staff SIZES (issue #86):
+    # detection must find both staves at all four, where below ~3.2mm it used
+    # to merge them into one discarded group.
+    "staff_size_7_0mm", "staff_size_4_0mm", "staff_size_2_5mm", "staff_size_1_8mm",
 )
 SYNTHESISED_NAMES = (
     "raster_scan", "fake_music_font",
