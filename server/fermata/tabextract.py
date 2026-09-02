@@ -710,6 +710,42 @@ SHORT_STAFF_LEN_RATIO = 0.10
 # discarded.
 STAFF_LINE_MIN_SPACING = 3.0
 
+# The vertical cluster window, expressed relative to the STAFF LINE SPACING
+# the page is engraved at rather than in fixed points (issue #86). This one
+# number does both jobs a staff detector needs: a gap between two vertically
+# adjacent candidate lines at or below it JOINS them into one staff-line
+# group, and a gap above it SEPARATES one group from the next.
+#
+# It was a fixed 15pt, which is very nearly 3.0 NOTATION staff spaces at the
+# ~7mm default engraving (a space is ~4.97pt there) or 2.0 of a tablature
+# staff's wider line spacings (~7.4pt). But the gap between a notation staff
+# and the tablature staff under it is a fixed number of STAFF SPACES - ~6.5
+# notation spaces, ~4.3 tablature line spacings, at every size measured - so
+# it shrinks in points as the staff size does, while a 15pt window did not.
+# Below roughly a 3.2mm staff that inter-staff gap fell under 15pt, the two
+# staves merged into a single eleven-line group, the five-or-six-lines test
+# failed, and the page yielded nothing. The window is now 2.5 times a line
+# spacing derived from the candidate lines themselves (see
+# _staff_cluster_window), so it tracks the engraving. The unit that estimate
+# lands on is the wider, tablature line spacing, and 2.5 of those stays under
+# the ~4.3 the inter-staff gap runs to (a 1.7x margin) while clearing the ~1.0
+# a staff's own lines sit at (a 2.5x margin).
+STAFF_CLUSTER_WINDOW_SPACES = 2.5
+
+# ...and never wider than the historical 15pt, whatever the derived spacing
+# says (see _staff_cluster_window). This is a genuine absolute CEILING, and
+# what it encodes is the whole reason issue #86 is a Patch-1 fix and not a
+# Rev-1 one: every score in the current 297-file library is engraved at or
+# near the ~7mm default, where 2.5 line spacings already works out to 15pt or
+# more, so clamping there reproduces the exact fixed window the library was
+# validated against - byte for byte, no score's detected staves move. The
+# derived window only takes over BELOW the default size, which is precisely
+# the regime no library file is in and the one the bug lives in. Without the
+# clamp, 2.5 line spacings on a large tablature staff reaches ~18pt and sweeps
+# in a coda system ruled ~16pt below the last full one on a handful of pages -
+# a real regression the ceiling exists to prevent.
+STAFF_CLUSTER_WINDOW_DEFAULT_PT = 15.0
+
 # A rule drawn along the page's own edge is page furniture, not a staff.
 PAGE_EDGE_TOLERANCE = 1.0
 
@@ -865,6 +901,50 @@ def _rows_are_staff_spaced(rows):
     return all(b - a >= STAFF_LINE_MIN_SPACING for a, b in zip(rows, rows[1:]))
 
 
+def _staff_cluster_window(ys):
+    """The vertical gap, in POINTS, above which two candidate staff lines are
+    ruled too far apart to belong to the same staff-line group.
+
+    Derived from the lines themselves, so it tracks the engraving instead of
+    assuming a size (issue #86), and clamped so it can only ever shrink below
+    the historical fixed value, never grow past it (see
+    STAFF_CLUSTER_WINDOW_DEFAULT_PT for why that clamp is what keeps this
+    behaviour-preserving on the current library).
+
+    The unit is a staff's line spacing, estimated as the UPPER QUARTILE of the
+    gaps between vertically adjacent candidate lines. The gaps fall into three
+    kinds: within a notation staff (one staff space), within a tablature staff
+    (~1.5 spaces, its lines ruled wider), and between staves or systems (many
+    spaces). The upper quartile sits above the notation gaps and lands on the
+    wider tablature spacing, and it is deliberately robust at BOTH tails:
+
+      - the low tail is the near-zero gaps two systems printed side by side
+        and ruled a hair apart interleave into the sorted list (issue #152's
+        coda layout). A page that is nothing BUT such a band - which the unit
+        test constructs - has more of those tiny gaps than real ones, enough
+        to drag a median or a lower quartile down onto the interleave offset
+        and collapse the window; the upper quartile ignores them.
+      - the high tail is the between-staff and between-system gaps, a minority
+        (a staff contributes four or five within-staff gaps and a system only
+        one or two larger ones), so the upper quartile stays below them.
+
+    Which staff's spacing the estimate lands on does not have to be exact: on
+    any engraving large enough for it to matter the clamp has already pinned
+    the window to the fixed value, and the derived spacing only decides the
+    window once the engraving is small enough that 2.5 of them fall under the
+    ceiling.
+
+    `ys` is the sorted list of distinct candidate-line y positions. With fewer
+    than four gaps - less than one staff's worth of lines - there is no staff
+    to measure a spacing from, so the historical fixed value stands.
+    """
+    gaps = sorted(b - a for a, b in zip(ys, ys[1:]))
+    if len(gaps) < 4:
+        return STAFF_CLUSTER_WINDOW_DEFAULT_PT
+    line_spacing = gaps[3 * len(gaps) // 4]  # upper quartile ~ tablature line spacing
+    return min(STAFF_CLUSTER_WINDOW_DEFAULT_PT, STAFF_CLUSTER_WINDOW_SPACES * line_spacing)
+
+
 def _detect_staves(page):
     """Cluster long horizontal line primitives into staff systems.
 
@@ -920,10 +1000,11 @@ def _detect_staves(page):
         return [], []
 
     ys = sorted({round(y, 1) for y, _x0, _x1 in segs})
+    window = _staff_cluster_window(ys)
     band_of = {ys[0]: 0}
     band = 0
     for prev, y in zip(ys, ys[1:]):
-        if (y - prev) > 15.0:
+        if (y - prev) > window:
             band += 1
         band_of[y] = band
 
@@ -5371,13 +5452,16 @@ def analyze(pdf_path) -> dict:
         vector_pages = 0
         tab_total = 0
         std_total = 0
+        discarded_staff_sized = 0
         for page in doc:
             if _page_is_raster(page):
                 continue
             vector_pages += 1
-            staves, _ = _detect_staves(page)
+            staves, anomalies = _detect_staves(page)
             tab_total += sum(1 for s in staves if s.kind == "tab")
             std_total += sum(1 for s in staves if s.kind == "standard")
+            discarded_staff_sized += sum(
+                1 for a in anomalies if a.get("line_count", 0) >= _STAFF_SIZED_GROUP)
         if vector_pages == 0:
             return {
                 "extractable": False,
@@ -5389,7 +5473,18 @@ def analyze(pdf_path) -> dict:
             }
         extractable = tab_total > 0
         reason = None
-        if not extractable:
+        if not extractable and discarded_staff_sized:
+            # Discarded staff-sized groups mean the tablature was most likely
+            # there and merged with the notation staff into one oversized
+            # group, not that the page is notation-only - see extract() and
+            # issue #86.
+            reason = (
+                f"no readable 6-line tab staff - but {discarded_staff_sized} staff-sized "
+                "line group(s) were discarded for an unexpected line count, so the tablature "
+                "was probably present and unresolved (e.g. a small-print engraving whose "
+                "notation and tab staves merged), not absent"
+            )
+        elif not extractable:
             reason = (
                 "no 6-line tab staff groups found - pages are vector but appear to be "
                 "standard-notation only (fingering numbers are not fret numbers)"
@@ -5767,12 +5862,29 @@ def _extract(doc, pdf_path, time_signature: tuple[int, int] | None,
         )
 
     if not pages_with_tab:
-        return ExtractionResult(
-            extractable=False,
-            reason=(
+        # WHY no tab staff was found is two different diagnoses, and telling a
+        # user the wrong one sends them looking in the wrong place (issue #86).
+        # If staff-sized groups were discarded, the tab staff was most likely
+        # there and merged with the notation staff above it into one oversized
+        # group - which is what happens to a small-print engraving whose
+        # inter-staff gap the detector could not resolve - not that the page is
+        # standard notation with no tablature at all.
+        if systems_unread:
+            reason = (
+                f"no readable 6-line tab staff - but {systems_unread} staff-sized line "
+                "group(s) on this score were discarded for having an unexpected line count "
+                f"(page(s) {_bar_list(systems_unread_pages)}); a notation staff and the tab "
+                "staff under it that merge into one oversized group look like this, so the "
+                "tablature was probably present and unresolved, not absent"
+            )
+        else:
+            reason = (
                 "no 6-line tab staff groups found - pages are vector but appear to be "
                 "standard-notation only (fingering numbers are not fret numbers)"
-            ),
+            )
+        return ExtractionResult(
+            extractable=False,
+            reason=reason,
             tab_staff_count=tab_count,
             standard_staff_count=std_count,
             warnings=warnings,

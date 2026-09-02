@@ -213,13 +213,28 @@ def attributes(fifths=0, time=(4, 4), staves=2, tuning=STANDARD_TUNING,
     return "".join(out)
 
 
-def score(part_name, measures, program=25):
+def scaling(millimeters):
+    """A `<defaults><scaling>` block fixing the engraved staff SIZE.
+
+    `<tenths>40</tenths>` is the height of a five-line staff (four interline
+    spaces) in MusicXML's own hundredths-of-a-space unit, so `<millimeters>`
+    is that staff's height in mm - the "staff size" an engraver's style
+    dialog names. MuseScore reads this on import and sets its spatium from
+    it, which is the only way to ask it for a staff smaller than its ~7mm
+    default from MusicXML alone. `millimeters` is passed as a string so the
+    committed source is byte-for-byte what this writes."""
+    return (f"  <defaults><scaling><millimeters>{millimeters}</millimeters>"
+            "<tenths>40</tenths></scaling></defaults>\n")
+
+
+def score(part_name, measures, program=25, defaults=""):
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN"'
         ' "http://www.musicxml.org/dtds/partwise.dtd">\n'
         '<score-partwise version="4.0">\n'
-        "  <part-list>\n"
+        + defaults
+        + "  <part-list>\n"
         f'    <score-part id="P1"><part-name>{part_name}</part-name>\n'
         '      <score-instrument id="P1-I1">'
         f"<instrument-name>{part_name}</instrument-name></score-instrument>\n"
@@ -1078,6 +1093,35 @@ def fixture_double_dotted_in_chord():
     return score("Guitar", [attributes() + bar] + [bar] * 7)
 
 
+# The same notation-over-tablature score engraved at four staff SIZES, to pin
+# staff detection against the one quantity that scales with the engraving
+# (issue #86). Below roughly a 3.2mm staff the gap between the notation staff
+# and the tablature staff under it shrinks past a detector that measured it in
+# absolute points, the two staves merge into one eleven-line group, the
+# five-or-six-lines test fails, and the page yields nothing.
+#
+# THIRTY-TWO bars, not eight, and every bar the same four quarters: eight bars
+# at 1.8mm engrave a single system barely a quarter of the page wide, which is
+# lost to the length floor (issue #152's shape) before staff detection is even
+# reached - a DIFFERENT failure. Thirty-two fill at least one page-width system
+# at every size here, so what these fixtures isolate is the inter-staff cluster
+# gap and nothing else. The content is deliberately plain; correctness of the
+# notes is `notation_and_tab`'s job, and a size this small is not the place to
+# also be reading a dotted chord.
+#
+# STAFF_SIZE_MM values are strings so the committed MusicXML is byte-for-byte
+# what the script writes (the numerator '2.5' must not become '2.50').
+STAFF_SIZE_BARS = 32
+STAFF_SIZE_MM = ("7.0", "4.0", "2.5", "1.8")
+
+
+def _staff_size_fixture(millimeters):
+    bar = _bar([note(("E", 4), "quarter"), note(("F", 4), "quarter"),
+                note(("G", 4), "quarter"), note(("A", 4), "quarter")], 4.0)
+    measures = [attributes() + bar] + [bar] * (STAFF_SIZE_BARS - 1)
+    return score("Guitar", measures, defaults=scaling(millimeters))
+
+
 FIXTURES = {
     "notation_and_tab": fixture_notation_and_tab,
     "stacked_dotted_chord": fixture_stacked_dotted_chord,
@@ -1108,6 +1152,13 @@ FIXTURES = {
     "navigation": fixture_navigation,
     "harmonics_dense": fixture_harmonics_dense,
     "notation_only": fixture_notation_only,
+    # The four staff sizes of issue #86 - see _staff_size_fixture above. Named
+    # by mechanism (the engraved staff height), decimal point written as an
+    # underscore so the name is a legal identifier and file stem.
+    "staff_size_7_0mm": lambda: _staff_size_fixture("7.0"),
+    "staff_size_4_0mm": lambda: _staff_size_fixture("4.0"),
+    "staff_size_2_5mm": lambda: _staff_size_fixture("2.5"),
+    "staff_size_1_8mm": lambda: _staff_size_fixture("1.8"),
 }
 
 # Rasterised from an engraved fixture rather than engraved itself: no
