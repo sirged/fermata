@@ -1307,7 +1307,7 @@ def test_navigation_pdf_binds_every_mark_to_the_bar_it_is_engraved_over(engraved
     route from the Finale glyph ID every library segno arrives by, so the two
     paths are covered by different tests and neither stands in for the other
     (the Maestro path is
-    test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws).
+    test_a_ds_resolves_to_the_segno_the_page_draws in test_tabextract.py).
 
     Note what the bar numbers prove. Three of these instructions
     (2, 4, 7) are engraved LEFT-aligned at the barline they close, so their

@@ -60,6 +60,11 @@ def score(client):
 
 @pytest.fixture
 def other_score(client):
+    # "Third Score" is picked for its collation, not its wording: it must
+    # sort AFTER "Study in C" (as the earlier placeholder title this
+    # replaced did) so the tie-break order in
+    # test_the_review_states_what_happened_in_each_recent_week does not
+    # flip. Renaming it to anything starting before "St" re-breaks that test.
     conn = db.connect()
     cur = conn.execute(
         """INSERT INTO scores(title, path, file_type, hash, size, mtime)

@@ -234,18 +234,18 @@ def test_a_move_re_derives_where_a_score_is_but_not_what_it_is(client, library, 
     score_id = add_score("Inbox/Study.pdf", title="Study")
     client.patch(
         f"/api/scores/{score_id}",
-        json={"title": "Estudio Sencillo", "composer": "Brouwer", "source": "Patreon"},
+        json={"title": "Sample Piece", "composer": "Test Composer", "source": "Patreon"},
     )
 
-    client.post(f"/api/scores/{score_id}/move", json={"folder": "Classical/Brouwer/Estudios"})
+    client.post(f"/api/scores/{score_id}/move", json={"folder": "Classical/Composer/Etudes"})
     after = client.get(f"/api/scores/{score_id}").json()
 
     assert after["collection"] == "Classical"
-    assert after["series"] == "Estudios"
+    assert after["series"] == "Etudes"
     # Corrected by hand before the move, and still correct after it. Re-deriving
     # these from the path would have made the title "Study" again.
-    assert after["title"] == "Estudio Sencillo"
-    assert after["composer"] == "Brouwer"
+    assert after["title"] == "Sample Piece"
+    assert after["composer"] == "Test Composer"
     assert after["source"] == "Patreon"
 
 

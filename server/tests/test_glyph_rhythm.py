@@ -378,7 +378,7 @@ def test_a_beam_offset_inside_tolerance_that_rounds_outside_is_still_counted():
 
     At this library's most common staff spacing (REF, 5.125pt) beam_y_tol
     is 1.17 * 5.125 == 5.99625pt. 5.9711pt - the measured offset on
-    "Score E" (a real library score) - is inside that window unrounded, but
+    unpinned score 1 - is inside that window unrounded, but
     round(5.9711, 1) == 6.0, which is outside it. Comparing the rounded
     value cost that stem its ONLY level: a note that should read as an
     eighth would silently read as a quarter."""

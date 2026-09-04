@@ -289,7 +289,7 @@ def test_a_melody_over_a_chord_stays_a_separate_voice(score_d_pdf):
         assert voices["1"] == 4.0, f"bar {bar} voice 1: {voices}"
 
 
-def test_born_a_stranger_unison_survives_as_two_notes_in_two_voices(score_m_pdf):
+def test_a_genuine_unison_survives_as_two_notes_in_two_voices(score_m_pdf):
     """A regression guard for issue #116, on the score the research's
     guitarist checked against the printed page: two notes adjacent on the
     same row, the lower drawn stem-left and the higher swapped stem-right -
@@ -478,7 +478,7 @@ def test_a_top_member_duplicate_in_one_voice_is_left_starved_not_recovered():
     assert shared == 0
 
 
-def test_the_cosmic_wheel_chord_unison_stops_costing_it_twelve_bars(score_q_pdf):
+def test_a_chord_unison_stops_costing_the_third_voice_its_note(score_q_pdf):
     """Issue #137's whole subject, on the score it was filed for. Twelve
     onsets across four pages write an upper voice's two-note chord whose
     LOWER member is the lower voice's own eighth: three noteheads at two
@@ -524,7 +524,7 @@ def test_the_cosmic_wheel_chord_unison_stops_costing_it_twelve_bars(score_q_pdf)
     assert any("coincident notehead at the same position" in w for w in result.warnings)
 
 
-def test_the_cosmic_wheel_harmonic_is_not_read_as_a_whole_note(score_q_pdf):
+def test_a_harmonic_is_not_read_as_a_whole_note(score_q_pdf):
     """Issue #140, on the score it was filed for. Page 1, bar 13, voice 1 was
     emitted `:16 3.1 :1 5.1` - a sixteenth grace note plus a WHOLE note, 4.25
     quarters in a 4/4 bar. What is engraved there is a natural harmonic: a
@@ -2276,7 +2276,7 @@ def test_a_first_bar_pickup_is_excused_from_rule_8_uncompensated():
 def test_a_first_bar_pickup_is_excused_from_rule_8_compensated():
     """The classical, compensated pairing: bar 1 is short AND the final bar is
     short by exactly the beats bar 1 is missing, so the two sum to one measure
-    (Score A is the real case - 2.0 + 2.0 in 4/4). BOTH bars are the pickup,
+    (unpinned score 1 is the real case - 2.0 + 2.0 in 4/4). BOTH bars are the pickup,
     and both come out of the defective count."""
     full = [[(4, 0, [(1, 0)])] * 4]        # 4.0 == a full 4/4 bar
     pickup = [[(2, 0, [(1, 0)])]]          # 2.0 - short of 4/4
@@ -3247,7 +3247,7 @@ def test_a_thick_stroke_read_as_thin_still_finds_its_repeat_dots(monkeypatch):
     assert bl.repeat_unread is False
 
 
-def test_zeldas_lullaby_reads_the_repeat_and_both_endings(score_s_pdf):
+def test_a_forward_repeat_with_both_endings_is_read_correctly(score_s_pdf):
     """The phase-1 acceptance case: the score whose exact structure the
     project's one human tester established by hand (issue #134). 23 bars -
     not 24, the phantom sliver a repeat pair's two strokes used to leave
@@ -3257,7 +3257,7 @@ def test_zeldas_lullaby_reads_the_repeat_and_both_endings(score_s_pdf):
     at measures 10 and 18, and a final barline at measure 23.
 
     The page's navigation marks are read too, and are asserted separately -
-    see test_zeldas_lullaby_reads_its_navigation_marks.
+    see test_a_ds_paired_with_its_drawn_segno_contributes_no_navigation_term.
     """
     result = tabextract.extract(score_s_pdf)
     assert result.extractable
@@ -3292,7 +3292,7 @@ def test_zeldas_lullaby_reads_the_repeat_and_both_endings(score_s_pdf):
     assert loaded["tickLookup"] == expected_order
 
 
-def test_zeldas_lullaby_reads_its_navigation_marks(score_s_pdf):
+def test_a_ds_paired_with_its_drawn_segno_contributes_no_navigation_term(score_s_pdf):
     """The phase-2 acceptance case, on the same score phase 1 used.
 
     THE FORM THE PAGE DESCRIBES, established from the engraving and from the
@@ -3488,7 +3488,7 @@ def test_an_incomplete_ending_run_alone_downgrades_structure_confidence(score_v_
 
     Phase 2 (issue #134) leaves that isolation exactly as it was. The score
     prints a "D.S." AND draws the segno it names (see
-    test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws), so it
+    test_a_ds_resolves_to_the_segno_the_page_draws), so it
     contributes no navigation term at all and the count is 1 - from
     `endings_incomplete` alone, which is what makes dropping that term from
     the sum visible as 1 -> 0 rather than as one less of several.
@@ -3506,7 +3506,7 @@ def test_an_incomplete_ending_run_alone_downgrades_structure_confidence(score_v_
     assert "1 repeat/volta/navigation mark(s)" in result.confidence["structure"]
 
 
-def test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws(
+def test_a_ds_resolves_to_the_segno_the_page_draws(
         score_v_pdf):
     """Blocker 1 of the adversarial review on this branch, on a real score.
 
@@ -3532,7 +3532,7 @@ def test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws(
     assert result.nav_marks_unresolved == 0
 
 
-def test_melodies_of_life_numbers_its_two_segnos_and_their_two_ds_jumps(
+def test_two_segnos_and_their_ds_jumps_are_numbered_by_the_printed_digit(
         score_w_pdf):
     """Issue #167 on a real score. The page draws a segno printing a bold "1"
     at bar 16 and one printing "2" at bar 32, and "D.S. 1"/"D.S. 2" send the
@@ -3583,7 +3583,7 @@ def test_segnos_are_numbered_by_the_printed_digit_not_reading_order(
     assert result.nav_marks_unresolved == 0
 
 
-def test_hinata_numbers_its_codas_from_the_sign_digit_and_discloses_the_two_target_to_coda(
+def test_codas_are_numbered_from_the_sign_digit_and_a_two_target_to_coda_is_disclosed(
         score_y_pdf):
     """Issue #167's coda shape. This page numbers its codas as a music-font
     digit drawn to the LEFT of the sign ("1 (sign) Coda" at bar 19, "2 (sign)
@@ -4004,7 +4004,7 @@ def test_two_systems_ruled_at_the_same_y_are_not_one_full_width_staff():
     """The other half of the same defect, and the quieter one.
 
     Where the two systems are ruled at the IDENTICAL y - which is what
-    score_ad does with its notation staves, and score_ag and Score B
+    score_ad does with its notation staves, and score_ag and unpinned score 5
     with both - the rows collapsed into a single staff record spanning
     the whole band, 54.0 to 575.9. Nothing was reported: the extractor
     simply held a staff that claimed music across the 36.5pt gap where the
@@ -4036,7 +4036,7 @@ def test_a_short_system_is_read_but_a_tight_ornament_is_not():
     1.2-2.6pt apart, where no engraver rules a staff closer than 5.1.
 
     Admitting one cost a real staff rather than merely adding a phantom: on
-    Score H p3 the ornament's rows fell in the same 15.0pt band as the
+    unpinned score 8 p3 the ornament's rows fell in the same 15.0pt band as the
     page's first notation staff and swallowed it into an 11-line group.
     """
     ornament = [(100.0, 200.0, 320.0), (102.5, 200.0, 320.0),
@@ -4382,7 +4382,7 @@ def test_a_d_s_with_no_segno_is_written_as_words_with_no_jump_and_disclosed():
     docs/musicxml-tab-profile.md, which retracts the claim in full.
 
     Measured now: 86 files print a "D.S." and 84 of them draw the segno it
-    names. Two do not - Score B and Score C. A third, score_ah, used to be
+    names. Two do not - unpinned score 2 and unpinned score 3. A third, score_ah, used to be
     here too: its Maestro embed was filtered out by resource name before any
     glyph on it was read at all, which issue #154 fixed by fingerprinting a
     TrueType resource regardless of its name - it now draws its segno like
@@ -4678,7 +4678,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # aggregate: score_q, where 12 bars stop being short of
     # an eighth they were padded with silence for (notes +12, bars_short and
     # bars_defective and bars_padded -12, inferred_rest_quarters -6.0), and
-    # Score D, where 4 notes come back
+    # unpinned score 4, where 4 notes come back
     # into a voice that had been padded around them (notes +4,
     # inferred_rest_quarters -2.0) with every conformance figure of its own
     # unmoved. bars, bars_unread and notes do not move at all: nothing here
@@ -4710,13 +4710,13 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # without its bar count moving, which is the check that this reads new
     # music rather than re-reading the old music differently.
     #
-    # 3 scores LOSE a bar - Score E 29->28, score_ag 25->24 and Score F
-    # 39->38 - and those three are corrections too, verified
-    # against the printed pages: their two side-by-side systems were ruled at
-    # the same y and had merged into ONE full-width staff record, so the gap
-    # between the systems produced a bar boundary the page does not draw.
-    # Score E prints 28 bars, score_ag 24, and Score F 37 plus a
-    # pickup measure.
+    # 3 scores LOSE a bar - unpinned score 5 29->28, score_ag 25->24 and
+    # unpinned score 6 39->38 - and those three are corrections too,
+    # verified against the printed pages: their two side-by-side systems
+    # were ruled at the same y and had merged into ONE full-width staff
+    # record, so the gap between the systems produced a bar boundary the
+    # page does not draw. unpinned score 5 prints 28 bars, score_ag 24, and
+    # unpinned score 6 37 plus a pickup measure.
     #
     # And a FOURTH time, by the augmentation-dot binding of #111/#112, which
     # attaches dot glyphs that were printed on these pages and previously bound
@@ -4761,8 +4761,8 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # ones, because reading the pages says what they are.
     #
     # TWELVE CHANGED BARS WERE READ OFF THE PRINTED PAGES, across six scores
-    # (Score G 7/8/10, Score H 13, Score I 9/27, Score J
-    # 1, Score K 9/27, Score L
+    # (unpinned score 7 7/8/10, unpinned score 8 13, unpinned score 9 9/27, unpinned score 10
+    # 1, unpinned score 11 9/27, unpinned score 12
     # 2/11/18), counted stroke by stroke against the vector
     # geometry rather than by eye. ALL TWELVE are engraved with three beam
     # strokes - the ink is unambiguous - so the notes this change re-read
@@ -4772,12 +4772,12 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # though, it is 8 of the 12, not 10 as an earlier version of this comment
     # said (adversarial review of #166). Four still do not add up, each for
     # its own reason, and NONE of the four is what moves bars_short by +2
-    # below - see that pin's own note. Score J bar 1
-    # and Score L bar 18 each keep a short voice 2 this
-    # change does not touch. Score K bar 9 and Score L
+    # below - see that pin's own note. unpinned score 10 bar 1
+    # and unpinned score 12 bar 18 each keep a short voice 2 this
+    # change does not touch. unpinned score 11 bar 9 and unpinned score 12
     # bar 2 each also DROP a note (a second beam group collapsing
     # into one), so the emitted bar still does not match the page. In
-    # Score K bar 9 the dropped note cost exactly what the over-valued
+    # unpinned score 11 bar 9 the dropped note cost exactly what the over-valued
     # 32nds added - two notes moving from a 16th to a 32nd is -0.25, against
     # a 0.25 shortfall elsewhere in the bar - so that bar used to add up BY
     # COINCIDENCE. That is a compensating error, not a regression: the
@@ -4788,13 +4788,13 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # THE +2 IN bars_short IS NOT SCORE K BAR 9 OR SCORE L BAR 2 (adversarial
     # review of #166 corrects an earlier version of this comment that named
     # them). Both bars were ALREADY short before this change - short in a
-    # DIFFERENT voice than the one this fixes (Score K voice 2 sits at 2.5
-    # of 3.0; Score L voice 1 at 2.75 of 4.0) - so reading their 32nds
+    # DIFFERENT voice than the one this fixes (unpinned score 11 voice 2 sits at 2.5
+    # of 3.0; unpinned score 12 voice 1 at 2.75 of 4.0) - so reading their 32nds
     # correctly does not flip either bar's already-short verdict, and their
     # net contribution to bars_short is zero. The two sites that actually
-    # flip a bar to short are Score M bar 13 (voice 1:
-    # 4.125 -> 3.75, now short where it used to overfill) and Score L
-    # bars 8 and 26 together (net +1 across the two). Score M
+    # flip a bar to short are unpinned score 13 bar 13 (voice 1:
+    # 4.125 -> 3.75, now short where it used to overfill) and unpinned score 12
+    # bars 8 and 26 together (net +1 across the two). unpinned score 13
     # is not named anywhere else in this change - it is named here
     # because this pin is the only place its own fix shows up.
     #
@@ -4806,8 +4806,8 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # as no_stem_noteheads, instead of asserting a whole note. FOUR scores carry
     # this exact figure, all engraved by the same arranger's commissioned
     # arrangements): score_q, the one #140 was filed for, plus
-    # Score N, Score O
-    # and Score P - each verified against its printed page as the
+    # unpinned score 14, unpinned score 15
+    # and unpinned score 16 - each verified against its printed page as the
     # same grace-note-into-hollow-head harmonic, not a whole note. Measured
     # score by score against this change's parent, exactly these four files move
     # and the other 289 come out byte-for-byte identical.
@@ -4817,8 +4817,8 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # stays defective (its other voice or the freed budget leaves it short) and
     # only its DIRECTION changes. So bars_overfull falls by 4 while
     # bars_defective does not move at all. bars_short and bars_padded each rise
-    # by 2 (score_q and Score O; the harmonic bars in
-    # Score N and Score P were overfull AND short already, so their
+    # by 2 (score_q and unpinned score 15; the harmonic bars in
+    # unpinned score 14 and unpinned score 16 were overfull AND short already, so their
     # short verdict does not flip). inferred_rest_quarters rises by 10.75 - the
     # silence that pads each freed bar out to its meter. NOTES, BEATS AND BARS
     # DO NOT MOVE: a floored harmonic is still one note at one onset in one bar.
@@ -4851,9 +4851,9 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # -40 at #174: a first-bar pickup (anacrusis) is normal notation, not a
     # short bar, so _bar_conformance lifts it out of bars_short / bars_defective.
     # 40 bars are excused across 38 scores (see bars_anacrusis below): 36 scores
-    # excuse their first bar alone, and Score A and Score Q
+    # excuse their first bar alone, and unpinned score 1 and unpinned score 17
     # each also excuse their FINAL bar, the compensated pairing where
-    # bar 1's length plus the final bar's length sum to one measure (Score A:
+    # bar 1's length plus the final bar's length sum to one measure (unpinned score 1:
     # 2.0 + 2.0 in 4/4). Every excused bar was short in every voice, so
     # bars_short and bars_defective each fall by exactly the same 40.
     assert totals["bars_short"] == 4152                  # 4190 -> 4192 (#140) -> 4152 (#174, -40)
@@ -4868,7 +4868,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # the same rhythm band (it still carries other defects, or was already low).
     assert totals["bars_anacrusis"] == 40
     assert totals["bars_padded"] == 3605                 # 3603 -> 3605 (#140); unmoved by #174
-    # 4897.875 before #162, 4899.875 after: Score R
+    # 4897.875 before #162, 4899.875 after: unpinned score 18
     # bar 45 held one quarter in each of its two voices in a bar read
     # a system early as 3/4. #162 puts that bar back on the running 4/4 it is
     # printed in, so each short voice is now padded to four quarters instead of
@@ -4879,7 +4879,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # The systems still lost, named. Both are 7-line groups - a 6-line tab
     # staff ruled at 7.7pt with ONE extra full-width rule below its last
     # line, close enough to fall inside the 15.0pt cluster gap: score_ac p1 at
-    # 14.3pt and Score S p2 at 12.8pt. A different defect from #152's
+    # 14.3pt and unpinned score 19 p2 at 12.8pt. A different defect from #152's
     # two systems side by side, and one no split by x extent can reach,
     # because the stray rule spans the same extent the staff does. Before
     # this change the same measurement over the library counted 41 such
@@ -4957,10 +4957,11 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # and the drawn right end snaps to no boundary) is written over its
     # first bar only. Measured directly against the spec's own predicted 3 -
     # the gap is the review's own finding, not a regression to chase here.
-    # 25 + 3 (issue #152): Score B, Score E and Score T each gain one,
-    # all three on a system that was previously not read at all, whose volta
-    # bracket has no closing hook drawn and so is written over its first bar
-    # only - the same disclosure these 25 already were, on new music.
+    # 25 + 3 (issue #152): unpinned score 2, unpinned score 5 and
+    # unpinned score 20 each gain one, all three on a system that was
+    # previously not read at all, whose volta bracket has no closing hook
+    # drawn and so is written over its first bar only - the same
+    # disclosure these 25 already were, on new music.
     assert totals["endings_truncated"] == 28
     assert scores_with_endings_truncated == 25
     # "Expect large" (issue #134's own phrasing): the census found 190 of 297
@@ -5024,8 +5025,8 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # carry an instruction naming a jump this transcription holds no target
     # for. By reason, over 87 instructions on 87 distinct bars in 47 files:
     # 45 a "To Coda" with no coda read, 40 an "al Coda" with none, and 2 a
-    # "D.S." on a score that genuinely draws no segno - Score B and
-    # Score C. Most of
+    # "D.S." on a score that genuinely draws no segno - unpinned score 2 and
+    # unpinned score 3. Most of
     # the first two are the lost coda system above: the page draws the coda,
     # this transcription could not place it.
     #
@@ -5047,8 +5048,8 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # rather than by describing the loss better. 87 -> 8 and 43 -> 0.
     #
     # 7 bars over 6 files, and every one is now a score that genuinely names
-    # a target its page does not draw: Score C, chord_shared_dot_column_b,
-    # score_af, Score B, Score U and Score V (2).
+    # a target its page does not draw: unpinned score 3, chord_shared_dot_column_b,
+    # score_af, unpinned score 2, unpinned score 21 and unpinned score 22 (2).
     # The other 80 were all the lost coda system, exactly as the note on
     # _resolve_nav_marks predicted. score_ah was on this list until
     # issue #154 let its segno be read at all; between the two changes it
@@ -5254,10 +5255,10 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
 
     It was the meter. Re-measured against the same library at the commit the
     issue was filed against, the seventeen are exactly reproducible - five on
-    Score W, eight on score_p, four on Score X - and all gone
+    unpinned score 23, eight on score_p, four on unpinned score 24 - and all gone
     at the commit that landed #90/#104's printed-meter reading, two days
-    later. score_p and Score W are engraved in 12/8 and were being
-    barred as 4/4; Score X prints 6/4 changes, which is also six
+    later. score_p and unpinned score 23 are engraved in 12/8 and were being
+    barred as 4/4; unpinned score 24 prints 6/4 changes, which is also six
     quarters. All three were read off their pages: every one of the seventeen
     is a dotted whole that exactly fills the bar it is printed in.
 
@@ -5273,7 +5274,7 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
     The notes of this shape are now ALL gone; one rest remains. Both were once
     named here and both have been worked since:
 
-    Score R, bars 43 and 44 held a whole note in
+    unpinned score 18, bars 43 and 44 held a whole note in
     a bar read as 3/4. Read off the page, both bars are printed in 4/4 and hold
     exactly what the decoder says - a whole-note bass pedal under running
     eighths. What was wrong was the meter: the Coda that follows this system is
@@ -5346,7 +5347,7 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
                         impossible_rests.append(where)
 
     assert scores_checked >= 250, f"only {scores_checked} scores were checked"
-    # The seventeen went at #90/#104; the two on Score R went at #162, which
+    # The seventeen went at #90/#104; the two on unpinned score 18 went at #162, which
     # moved that score's bars 43-44 off the courtesy 3/4 they were being read a
     # system early in and back onto the running 4/4 a whole note fills exactly.
     # Nothing of this shape remains, and none may come back: an emitted note
