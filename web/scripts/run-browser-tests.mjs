@@ -33,6 +33,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import { loadSpecFloors } from "../tests/spec-floors.js";
@@ -79,10 +80,22 @@ const reporters = process.env.CI
   ? "list,github,html,./tests/minimum-tests.js,json"
   : "list,./tests/minimum-tests.js,json";
 
-const result = spawnSync("npx", ["playwright", "test", `--reporter=${reporters}`, ...filteredArgs], {
+// Resolved directly and run through node (process.execPath) with shell: false
+// rather than handed to `npx playwright test … --grep "<phrase>"` under
+// shell: true. On Windows, spawnSync with shell: true does not invoke argv
+// as separate process-creation arguments - it joins them into one cmd.exe
+// command line, and Node's quoting only covers characters cmd.exe treats
+// specially, not internal spaces. A multi-word --grep value came out on the
+// far side as several bare words, so Playwright saw --grep followed by only
+// its first word and ran the whole file instead of the one matching test.
+// Resolving the CLI entry point and invoking it without a shell hands argv
+// to the child process array-for-array on every platform - there is no
+// command line for a space to get lost in, on Windows or POSIX.
+const playwrightCli = createRequire(import.meta.url).resolve("@playwright/test/cli");
+
+const result = spawnSync(process.execPath, [playwrightCli, "test", `--reporter=${reporters}`, ...filteredArgs], {
   cwd: webRoot,
   stdio: "inherit",
-  shell: true,
   env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: summaryPath },
 });
 

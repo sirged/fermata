@@ -1215,7 +1215,7 @@ def test_a_discontinued_ending_abutting_the_next_ones_hook_still_reads_discontin
     forces the two apart. Read against the engraved page (not merely the
     source XML) because that is where the confusion actually lives: two
     hook-shaped downward strokes can land at the exact same x on a real
-    page (confirmed on Zelda's Lullaby, whose ending 1 closes with `stop`
+    page (confirmed on score_s, whose ending 1 closes with `stop`
     immediately into ending 2's own opening hook - the "spare hook" case
     hook_x_counts/own_hook_counts exists to keep working)."""
     pdf = engraved("adjacent_endings")
@@ -1307,7 +1307,7 @@ def test_navigation_pdf_binds_every_mark_to_the_bar_it_is_engraved_over(engraved
     route from the Finale glyph ID every library segno arrives by, so the two
     paths are covered by different tests and neither stands in for the other
     (the Maestro path is
-    test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws).
+    test_a_ds_resolves_to_the_segno_the_page_draws in test_tabextract.py).
 
     Note what the bar numbers prove. Three of these instructions
     (2, 4, 7) are engraved LEFT-aligned at the barline they close, so their
@@ -2619,8 +2619,8 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(monkeypat
 
 def test_the_summary_says_how_many_tests_skipped_for_want_of_node_modules(monkeypatch):
     """The same loud skip as the library one above, for `web/node_modules`
-    (issue #134 adversarial review, item 7): nine tests - including the
-    Zelda's Lullaby and playback-order headline cases - used to skip in
+    (issue #134 adversarial review, item 7): nine tests - including
+    score_s's and playback-order headline cases - used to skip in
     total silence when `npm ci` had not been run in web/, and nothing said
     so unless a reader compared this run's summary against CI's by hand."""
     import conftest

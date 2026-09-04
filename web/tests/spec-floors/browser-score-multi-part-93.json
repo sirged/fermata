@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-multi-part.spec.js",
+  "count": 2,
+  "reason": "issue #93: a two-part MusicXML document draws only its first part's name/notation on unfixed main - alphaTab's renderScore() falls back to tracks[0] when load() is given no track list - and both parts must reach the drawn SVG once load()/tex() ask for ALL_TRACKS instead."
+}

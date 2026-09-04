@@ -728,7 +728,7 @@ missing" sweep skips it) and it is not a segno (so the "what did we find"
 sweep never counts it). Only rendering the outline and looking at it settles
 that class of question, which is the standard the glyph table claims for
 itself; GID 4 renders as an unmistakable segno, and every one of the 84 files
-carrying it also prints a "D.S.". (One of those 84, "Rito Village - Night",
+carrying it also prints a "D.S.". (One of those 84 (conftest score_ah)
 embeds its Maestro subset under a PDF resource name this decoder did not yet
 recognise at all — issue #154 — so its glyphs, segno included, were invisible
 regardless of the GID-mislabelling this correction is otherwise about.) What
@@ -1034,7 +1034,7 @@ below it. So the unread convention is never the only marking on a score.
 **What this rule does NOT fix: a harmonic's duration.** Marking the note says
 nothing about how long it is, and the notehead a harmonic is drawn with is
 still not calibrated for its own value. Finale's Maestro glyph 174 — an open
-diamond, rendered from *Courage (Final Fantasy XVI)* page 2 — is read at a
+diamond, rendered from conftest score_p page 2 — is read at a
 quarter's floor rather than a half's, so a harmonic engraved as a dotted half
 comes out a dotted quarter; MuseScore's three SMuFL diamonds are not in the
 codepoint map at all, and a score using them is counted as partly
@@ -1664,8 +1664,8 @@ promise more interoperability than exists.
 - Grace notes, which the schema handles as a separate `<note>` branch with no
   `<duration>` at all. This is a live source of wrong arithmetic rather than
   an absence: a grace note is decoded as an ordinary note and given its
-  written duration, so it adds time its bar does not have. Measured: "The
-  Cosmic Wheel (Final Fantasy XI)" bar 13 is a slashed grace note slurred
+  written duration, so it adds time its bar does not have. Measured:
+  conftest score_q bar 13 is a slashed grace note slurred
   into a whole note, and comes out `:16 3.1 :1 5.1` — 4.25 quarters in a 4/4
   bar, one of that score's eight overfull bars.
 - A `<segno/>` or `<coda/>` written inside a `<barline>` rather than as a

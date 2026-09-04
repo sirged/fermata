@@ -173,8 +173,9 @@ the library flagged `missing_since`, which is the state it was in before.
 `POST /api/transcribe/batch` starts a background pass over many scores and
 `GET /api/transcribe/batch/status` polls it - the same start/poll shape
 `POST /api/scan` and `GET /api/scan/status` use, rather than a client looping
-single `POST /api/scores/{id}/transcribe` calls itself. The planned MCP
-layer (see below) wraps this endpoint for exactly that reason.
+single `POST /api/scores/{id}/transcribe` calls itself. The MCP layer (see
+below) does not cover batch transcription in this release: its tools are
+read-only, and batch status is deliberately not among them.
 
 **Selection.** Give `score_ids` (an explicit list, honoured exactly - even an
 id that turns out not to be a pdf or to be in the trash gets its own outcome
@@ -307,8 +308,21 @@ dangling reference — the setlist itself still travels, just without that membe
 
 ## Who else reads this contract
 
-A planned companion server speaks the Model Context Protocol, an open
-standard, and is meant to wrap this REST API rather than reimplement its
-logic - which is the reason "generated but wrong or incomplete" is not good
-enough here: that layer's own correctness depends on this one meaning what it
-says.
+A companion server speaks the Model Context Protocol, an open standard, and
+wraps this REST API rather than reimplementing its logic - which is the
+reason "generated but wrong or incomplete" is not good enough here: that
+layer's own correctness depends on this one meaning what it says.
+
+That server (issue #31, `server/fermata/mcp_server.py`) is off unless
+`FERMATA_MCP` is set, and when it runs it is a CLIENT of this API like any
+other: each of its thirteen read-only tools is one documented `GET` from the
+list above, called over HTTP, answering with that route's own JSON
+unchanged. It never adds an operation to this document - it reads it. The
+tool list and every tool's input schema are generated from `app.openapi()`
+at startup, so a tool cannot describe a route that no longer looks like
+that, and `server/tests/test_mcp_server.py` requires every readable route
+here to be either exposed as a tool or recorded with a reason why not -
+which means adding or renaming a route in `api.py` fails that test by name
+rather than quietly leaving the tool layer behind. Operators turn it on and
+publish it as described in
+[docs/deployment.md](deployment.md#the-model-context-protocol-server).

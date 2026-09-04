@@ -89,6 +89,85 @@ def load_auth_trusted_networks() -> None:
     AUTH_TRUSTED_NETWORKS = parse_trusted_proxies(AUTH_TRUSTED_PROXIES_RAW)
 
 
+# The Model Context Protocol server (issue #31) - an open standard for
+# describing a set of tools to a program that reads them. OFF unless
+# FERMATA_MCP is set to something true; that one variable is the whole gate,
+# and the three below it are inert while it is unset.
+#
+# Off by default is not caution for its own sake. Turning this on opens a
+# SECOND listener with no authentication of its own, offering the library
+# and the practice history to anything that can reach it - so it has to be
+# something an operator chose, on a port they chose, rather than something
+# an upgrade quietly started. See docs/deployment.md's "The Model Context
+# Protocol server" section.
+#
+# Nothing in fermata/mcp_server.py is imported unless this is on: main.py's
+# lifespan does that import inside the `if`, so a deployment with the flag
+# unset never loads the protocol library and does not need it installed at
+# all. server/tests/test_mcp_server.py pins both halves of that.
+MCP_ENABLED = os.environ.get("FERMATA_MCP", "").strip().lower() in {"1", "true", "yes", "on"}
+
+# Where the protocol server listens. Loopback by default, which inside a
+# container means "reachable from this container only" - publishing it is a
+# second deliberate act (set this to 0.0.0.0 and map the port), for the same
+# reason the flag itself is off by default.
+MCP_HOST = os.environ.get("FERMATA_MCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
+MCP_PORT_RAW = os.environ.get("FERMATA_MCP_PORT", "8765")
+
+# Where the protocol server finds the REST API - it is a CLIENT of the API,
+# over ordinary HTTP, exactly as any other client is (docs/api.md's rule
+# that this layer wraps the REST API rather than reimplementing it). The
+# default matches the port the Dockerfile's CMD serves on; running from
+# source on another port means setting this to match, because the
+# application genuinely does not know what port uvicorn was told to use.
+MCP_API_URL = os.environ.get("FERMATA_MCP_API_URL", "http://127.0.0.1:8080").rstrip("/")
+
+# Parsed by load_mcp_settings(), not here - same reason as
+# AUTH_TRUSTED_NETWORKS above: a RuntimeError raised during THIS module's
+# import happens before main.py's lifespan exists to turn it into a readable
+# sentence, so a typo in FERMATA_MCP_PORT would arrive as a bare "Error
+# loading ASGI app" traceback instead of a message naming the setting.
+MCP_PORT = 0
+
+
+def load_mcp_settings() -> None:
+    """Parse FERMATA_MCP_PORT into MCP_PORT. Called once from main.py's
+    lifespan, inside the same try/except every other startup
+    misconfiguration is reported through.
+
+    The PARSE happens whether or not the feature is on; only the COMPLAINT
+    is conditional. Two reasons, and the second is the load-bearing one. An
+    operator who never turned this on should not be stopped by a stale value
+    left in their environment - so a bad value with the flag off is ignored
+    rather than fatal. But MCP_PORT still ends up holding the port that
+    WOULD be used, which is what makes the flag the only thing standing
+    between "off" and "listening": if the gate in main._start_mcp_server
+    were ever removed, the server would bind the real configured port and
+    test_nothing_listens_with_the_flag_off would notice. Short-circuiting
+    this function on the flag as well would leave MCP_PORT at 0, uvicorn
+    would bind an arbitrary free port, and that test could pass with the
+    gate gone - a guard that cannot fail.
+    """
+    global MCP_PORT
+    try:
+        port = int(MCP_PORT_RAW)
+    except ValueError as exc:
+        if not MCP_ENABLED:
+            return
+        raise RuntimeError(
+            f"FERMATA_MCP_PORT is {MCP_PORT_RAW!r}, which is not a port number. See "
+            "docs/deployment.md's 'The Model Context Protocol server' section."
+        ) from exc
+    if not 1 <= port <= 65535:
+        if not MCP_ENABLED:
+            return
+        raise RuntimeError(
+            f"FERMATA_MCP_PORT is {port}, which is not a port number between 1 and 65535. "
+            "See docs/deployment.md's 'The Model Context Protocol server' section."
+        )
+    MCP_PORT = port
+
+
 # File extensions the scanner picks up, mapped to a broad type used by the UI
 # to pick a viewer.
 FILE_TYPES = {

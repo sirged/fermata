@@ -10,7 +10,12 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 COPY server/ ./server/
-RUN pip install --no-cache-dir ./server
+# The [mcp] extra is installed even though the Model Context Protocol server
+# (issue #31) is off by default, and that is the point: an operator turns it
+# on with FERMATA_MCP in their compose file, not by rebuilding an image.
+# Nothing it brings in is imported unless that flag is set - see
+# server/fermata/main.py's _start_mcp_server.
+RUN pip install --no-cache-dir "./server[mcp]"
 COPY --from=web /web/dist ./static
 
 # The commit and date GET /api/version reports (see server/fermata/version.py).

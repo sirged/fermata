@@ -254,6 +254,16 @@ test.describe("every toolbar control is reachable by an actual click, not merely
       await tap(page, ladderStart, "ladder start");
       await ladderStart.fill("70");
       await expect(ladderStart).toHaveValue("70");
+
+      // Restore the theme picker's own selection before finishing: staff_theme
+      // is a server-side setting (server/fermata/api.py), shared by the whole
+      // suite rather than scoped to this test or even this file - leaving it
+      // on "noir" here leaked into whatever spec happened to run next and read
+      // the rendered staff colour (measured: score-multi-part.spec.js's
+      // staff-line count reading 0 instead of 10 when it ran after this one).
+      await tap(page, themePicker, "theme picker");
+      await themePicker.selectOption("parchment");
+      await expect(themePicker).toHaveValue("parchment");
     });
   }
 });

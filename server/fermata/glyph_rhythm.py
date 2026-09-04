@@ -51,7 +51,7 @@ How this works (full validation detail):
 
   THE NAME IS A FAST PATH, NOT A GATE (issue #154). A PDF producer that
   renames every embedded font generically defeats a name-first filter
-  outright: "Rito Village - Night (BotW)" embeds its Maestro subset as
+  outright: score_ah embeds its Maestro subset as
   resource "CIDFont+F1" - the CID-subsetting tool renamed all nine of its
   embedded fonts to "CIDFont+F1".."CIDFont+F9" (F9 only used on pages 2-3)
   and left none of them named "Maestro" - and used to yield zero glyph
@@ -65,7 +65,7 @@ How this works (full validation detail):
   evidence (at least one glyph outline that matches a calibrated digest
   exactly), which - measured over every embedded TrueType font in the
   library that is NOT named Maestro/Opus/OpusSpecial (2,260 of them) -
-  happens for zero fonts that are not actually Rito's renamed Maestro. An
+  happens for zero fonts that are not actually score_ah's renamed Maestro. An
   ordinary unrelated font (body text, lyrics, tab numerals) can and does
   fill some of the same GID slots the calibrated subset uses, but never
   with byte-identical outlines by coincidence.
@@ -192,8 +192,8 @@ MAESTRO_GID_MAP = {
     # presumably how the wrong label was arrived at; the segno adds the
     # S-curve through the slash, and at 900 dpi there is no mistaking one for
     # the other. Rendered from the page - not from the font in isolation - at
-    # its drawn size for "1 AM (Animal Crossing New Leaf).pdf" p1 and "Ask Me
-    # Why (The Boy and the Heron).pdf" p1: an unmistakable segno both times.
+    # its drawn size for score_aa p1 and "unpinned score 1" (a real library score) p1:
+    # an unmistakable segno both times.
     # Corroborated by what the pages say: this library draws GID 4 88 times
     # across 84 files, and all 84 print a "D.S." somewhere; not one file
     # carries the glyph without one.
@@ -208,7 +208,7 @@ MAESTRO_GID_MAP = {
     # claims for itself and the standard the two entries below were held to.
     #
     # GID 68 was likewise labelled "trill" and is an ARPEGGIO wiggle segment:
-    # rendered from "Carcelera - Reflejo Andaluz (Counter-Strike).pdf" p1,
+    # rendered from "unpinned score 2" (a real library score) p1,
     # where its 15 occurrences stand in three vertical stacks of five, each
     # stack drawn immediately before a chord and spanning it - which is how
     # an arpeggio roll is engraved, and is nothing like the horizontal "tr"
@@ -217,8 +217,8 @@ MAESTRO_GID_MAP = {
     #
     # digit7 (22) and digit9 (24) confirmed by rendering the actual glyph
     # outlines from real library files and eyeballing them: 22 from
-    # "Moonlit Shadows (New World).pdf" (a 7/8 signature), 24 from
-    # "The Butterfly (New World).pdf" (a 9/8 signature) - same visual
+    # "unpinned score 3" (a real library score, a 7/8 signature), 24 from
+    # "unpinned score 4" (a real library score, a 9/8 signature) - same visual
     # verification method the rest of this table was built with. digit0 is
     # NOT mapped: it never turned up in a scan of the whole library's
     # Maestro-subset pages (Finale only embeds glyphs actually used, and no
@@ -1743,7 +1743,7 @@ def _beam_from_contour(pts, tol):
     height gate. Measure true perpendicular thickness instead: polygon
     area / long-axis length (area = length * thickness for a thin
     parallelogram, regardless of rotation) - confirmed against real
-    rejected cases (e.g. Classical-Guitar-Method-Vol1-2020.pdf p92, a
+    rejected cases (e.g. score_ai p92, a
     single beam with a 16.7pt-tall bbox over an 85pt run that a flat
     height<=14 gate always discarded)."""
     n = len(pts)
@@ -2082,7 +2082,7 @@ def _best_stem(stems, stem_xs, x0, x1, yc, tol, x_tol=None, y_tol=None):
     letting the noisier margin overrule the other picked a stem further away in
     y than the alternative for 90 noteheads across 20 scores, in 49 cases the
     other VOICE's stem. That is a duration error of up to fourfold and a lost
-    voice, not a near miss - see the two-voice bars of Dalza's Recercar.
+    voice, not a near miss - see the two-voice bars of score_d.
 
     Nor can y rank them alone: a neighbouring note's stem one notehead-width
     away in x can end nearer this notehead's centre than its own stem does, by
@@ -2223,7 +2223,7 @@ def _beam_count_near(beams, stem, notehead_yc, tol):
     version of this function once rounded the tip offset to 0.1pt BEFORE
     comparing it against beam_y_tol, rather than after. Rounding units are
     points (see _Tol), and a genuine offset can sit inside the tolerance
-    while its rounded form sits outside it: "Our Terms" (Final Fantasy XVI),
+    while its rounded form sits outside it: "unpinned score 5" (a real library score),
     at this library's most common staff spacing of 5.125pt, has a stroke at
     offset -5.9711pt against a tolerance of 5.99625pt - inside the window
     unrounded, but rounds to -6.0pt and would be rejected. That is a level
@@ -2839,7 +2839,7 @@ def _assign_dots(owners, dot_events, tol, stems=()):
     another note in the chord is left with none. That is not a double dot
     (two ink marks at the SAME tier, side by side); it is one note absorbing
     two different notes' dots because each was ranked in isolation.
-    Reproduced in the library ("Courage", Final Fantasy XVI): a half note
+    Reproduced in the library (score_p): a half note
     whose only reachable dot fits both "the space above the note a third
     below it" and "the space below the note a fourth below it" equally well
     in isolation, so ranking it alone always hands it to the same neighbour,
@@ -3048,8 +3048,8 @@ def _harmonic_attack_flag(head_ev, flag_events, tol):
     One codepoint draws both. A natural harmonic's sounding pitch is engraved
     as an open (hollow) round notehead, usually on a ledger line off the staff,
     and that is the very glyph a whole note uses - `notehead_whole`, gid 84 in
-    Maestro. Nothing in the outline separates the two (measured on "The Cosmic
-    Wheel", where the harmonic's head and the score's two real whole notes are
+    Maestro. Nothing in the outline separates the two (measured on score_q,
+    where the harmonic's head and the score's two real whole notes are
     the identical gid at the identical size), so a head taken for a whole note
     is emitted at a confident 4.0 quarters, and a harmonic that is not held for
     four beats overfills its bar. Its true duration is not carried by the head
@@ -3279,7 +3279,7 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         # staff whose own best-ranked stem this is - and that note's onset is
         # not this one, binding the duplicate to it does not recover a lost
         # voice, it invents a note at a time nothing sounds (measured:
-        # Spanish Romance and The Cosmic Wheel, where the runner-up was the
+        # score_r and score_q, where the runner-up was the
         # accompaniment's own next stem, not a dedicated stem for the
         # coincident pair).
         #
@@ -3292,7 +3292,7 @@ def decode_note_events(page, staff_top, staff_bottom, staff_x0, staff_x1, line_y
         # split by the vector pass into more than one abutting segment at the
         # SAME x but different y - two distinct Stem objects that are the
         # SAME printed line. Keying on identity missed exactly this (measured
-        # on Spanish Romance: the bass note's own resolution correctly finds
+        # on score_r: the bass note's own resolution correctly finds
         # its NEAR segment; the coincident pair's runner-up search finds a
         # FAR segment of that same line, at an x nothing else appears to
         # claim, because nothing else literally IS that Stem object even
@@ -3882,10 +3882,10 @@ _MID_SYSTEM_MAX_LEAD_SPACINGS = _TS_MAX_LEAD_SPACINGS
 # the key and meter for the system that follows, engraved as the last thing
 # on this one - sits well within a key-signature-anchored reach of a barline
 # several spaces earlier, so accepting it here would start that change a bar
-# early. Measured on the two scores this guard exists for: Kaine Salvation's
+# early. Measured on the two scores this guard exists for: score_k's
 # courtesy 6/8 (four sharps, then the meter, printed after the system's last
-# barline) ends 0.83 staff spaces short of the staff's own right edge; Into
-# the Wilderness's real mid-system 6/4 (three flats, printed the same way)
+# barline) ends 0.83 staff spaces short of the staff's own right edge; score_j's
+# real mid-system 6/4 (three flats, printed the same way)
 # ends 55.8 spaces short of it. Two orders of magnitude apart, so this sits
 # generously between them.
 _END_OF_SYSTEM_GUARD_SPACINGS = 4.0
