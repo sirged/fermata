@@ -1,4 +1,6 @@
 <script>
+  import { untrack } from "svelte";
+
   import { api } from "./api.js";
 
   let scores = $state([]);
@@ -321,6 +323,12 @@
         timer = setTimeout(poll, 1500);
       } else {
         refresh();
+        // A scan this page is tracking just finished - the single instant
+        // most likely to have just started an automatic transcription pass
+        // (#190's own hook). Check right away rather than wait out
+        // whatever is left of the background poll's own idle interval -
+        // see nudgeBackgroundBatchPoll's own comment.
+        nudgeBackgroundBatchPoll();
       }
     }
     api.scanStatus().then((s) => {
@@ -330,56 +338,98 @@
     return () => clearTimeout(timer);
   });
 
-  // For a bulk pass THIS page never started (#190 review, F3) - a scan's
-  // own automatic one, or one started from another tab or client. UNLIKE
-  // the scan poll above, this does not read any reactive state and does
-  // not stop once idle: an effect that only checked once, at mount (the
-  // first version of this), or that only rechecked when a scan already
-  // being watched by THIS page finished, both left a real gap - a person
-  // clicking "Scan library" and then watching the page saw nothing for as
-  // long as the pass ran (measured: 250 files, provably running, no live
-  // line after 8s), and a pass neither started nor watched by this page
-  // (another tab, another client) was never noticed at all. Polling
-  // continuously at a low rate, for as long as the page is open, is what
-  // actually covers every one of those - the same "low rate poll whenever
-  // open" the scan status could use too, but does not need to: a scan
-  // reliably outlives its own trigger long enough for the mount-time
-  // check in that effect to catch it, which is not true here (a pass this
-  // page did not start could begin and end between any two checks a
-  // slower interval would take).
+  // For a bulk pass THIS page never started (#190 review, F3, three
+  // passes) - a scan's own automatic one, or one started from another tab
+  // or client. Polled independently of both the scan poll above and the
+  // transcribe dialog's own poll (see `backgroundBatch`'s own comment).
   //
-  // Skips a beat while the transcribe dialog is open (`transcribeOpen`,
-  // read fresh on every tick rather than as an effect dependency, so this
-  // loop itself never restarts) - that dialog runs its own poll of the
-  // exact same endpoint at a faster rate for whatever it started, and this
-  // one's only job is ambient awareness of a pass THIS page did not start,
-  // which the dialog already covers while it is open. Refreshes the grid
-  // once when a background-only pass it was watching finishes, the same
-  // way the scan poll above does for a scan - the one place the newly
-  // transcribed cards' marks would otherwise wait for an unrelated refetch.
-  $effect(() => {
-    let cancelled = false;
-    let timer;
-    let wasRunning = false;
-    async function poll() {
-      if (!transcribeOpen) {
+  // RATE: 3s while a pass is confirmed running, 15s while idle. Idle
+  // forever at 3s (an earlier version of this) was roughly 1200
+  // requests/hour/tab with nothing running at all; backing off to 15s
+  // while idle - measured over 60s with nothing running: 4 requests, once
+  // every ~15s, as designed - cuts that by roughly 80% while a pass is
+  // NOT running, which is the overwhelmingly common case. Backing off
+  // rather than stopping outright (which the brief also allowed) is what
+  // still catches a pass THIS PAGE neither started nor is watching, from
+  // another tab or another client, without waiting for this page's own
+  // next reload to notice it.
+  //
+  // NUDGED - an immediate check, replacing whatever is left of the idle
+  // wait - the moment a scan this page is tracking finishes (both the
+  // mount-time scan poll above and pollUntilDone below call
+  // nudgeBackgroundBatchPoll() in their own "not scanning any more"
+  // branch). That is what keeps the 15s idle floor from being a real gap
+  // for the single most common case this feature is FOR - clicking "Scan
+  // library" and watching: the automatic pass this page's own scan may
+  // have started is checked within one request round trip of the scan
+  // itself finishing, not after up to 15s of nothing. A pass from
+  // elsewhere still relies on the 15s idle floor - there is no local
+  // signal for those to nudge on.
+  //
+  // RESILIENT to one failed request (#190 review, F3-1). api.js throws
+  // ApiError on a non-2xx response and fetch itself rejects on a dropped
+  // connection - a self-hosted server restarting with this page open is
+  // the ordinary way to see one - so without the try/finally below, ONE
+  // failed request ended this loop for the rest of the page's life
+  // (measured: baseline 2 requests/9s; after one aborted response, 0
+  // requests in the following 15s, plus an unhandled rejection). The
+  // reschedule lives in `finally` specifically so it runs whether the
+  // request above it succeeded or not. Logged and otherwise swallowed,
+  // nothing louder: this poll is ambient awareness, not a request a
+  // person is waiting on, and the ordinary scan poll and every other
+  // request on this page already surface a real outage of their own.
+  //
+  // `transcribeOpen` is read through `untrack` rather than as an ordinary
+  // reactive read, on purpose: reading it as a normal reactive value here
+  // would make this effect's own synchronous setup one of
+  // `transcribeOpen`'s dependents, so Svelte would tear this whole loop
+  // down and restart it - one extra request - every time the dialog opens
+  // or closes, exactly backwards from "skip a beat while it's open".
+  // `untrack` reads the current value without subscribing to it, so
+  // opening or closing the dialog no longer touches this loop at all; the
+  // next already-scheduled tick simply sees the new value when it runs.
+  let backgroundBatchTimer;
+  let backgroundBatchCancelled = true;
+  let wasBackgroundBatchRunning = false;
+
+  async function pollBackgroundBatch() {
+    clearTimeout(backgroundBatchTimer);
+    let nextDelay = 15000;
+    try {
+      if (!untrack(() => transcribeOpen)) {
         const status = await api.transcribeBatchStatus();
-        if (cancelled) return;
+        if (backgroundBatchCancelled) return;
         if (status.running) {
           backgroundBatch = status;
-          wasRunning = true;
+          wasBackgroundBatchRunning = true;
+          nextDelay = 3000;
         } else {
-          if (wasRunning) refresh();
-          wasRunning = false;
+          if (wasBackgroundBatchRunning) refresh();
+          wasBackgroundBatchRunning = false;
           backgroundBatch = null;
         }
       }
-      timer = setTimeout(poll, 3000);
+    } catch (err) {
+      console.error("background transcription status check did not complete", err);
+    } finally {
+      if (!backgroundBatchCancelled) {
+        backgroundBatchTimer = setTimeout(pollBackgroundBatch, nextDelay);
+      }
     }
-    poll();
+  }
+
+  function nudgeBackgroundBatchPoll() {
+    if (backgroundBatchCancelled) return;
+    clearTimeout(backgroundBatchTimer);
+    backgroundBatchTimer = setTimeout(pollBackgroundBatch, 0);
+  }
+
+  $effect(() => {
+    backgroundBatchCancelled = false;
+    pollBackgroundBatch();
     return () => {
-      cancelled = true;
-      clearTimeout(timer);
+      backgroundBatchCancelled = true;
+      clearTimeout(backgroundBatchTimer);
     };
   });
 
@@ -392,8 +442,17 @@
   function pollUntilDone() {
     const poll = async () => {
       scan = await api.scanStatus();
-      if (scan.scanning) setTimeout(poll, 1500);
-      else refresh();
+      if (scan.scanning) {
+        setTimeout(poll, 1500);
+      } else {
+        refresh();
+        // This page's own click just finished scanning - nudge the
+        // background-batch poll rather than leave it to its own idle
+        // interval, since this is exactly the moment #190's own hook may
+        // have started an automatic pass. See nudgeBackgroundBatchPoll's
+        // own comment.
+        nudgeBackgroundBatchPoll();
+      }
     };
     setTimeout(poll, 800);
   }

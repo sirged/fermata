@@ -356,17 +356,19 @@ test("a pass this page did not start is visible while it runs and after it is re
   await page.goto("/#/");
 
   // The live indicator: ambient awareness of a pass this page never
-  // started, visible with no dialog open at all. Matched on "Transcribing
-  // 7" rather than "in the background" - hasText is a case-insensitive
-  // substring match, and the SUCCESS note (`_finish_scan_chain`'s own
-  // "started transcribing N newly scanned score(s) in the background")
-  // contains "in the background" too, so that phrase alone does not
-  // distinguish the live line from a chain's own after-the-fact note when
-  // both could plausibly render together. "Transcribing 7" is the live
-  // line's own template start (`Transcribing {total} score(s) in the
-  // background…`) and never appears in the backend's differently-worded
-  // note.
-  await expect(page.locator(".scan-note", { hasText: "Transcribing 7" })).toContainText(
+  // started, visible with no dialog open at all. Matched on the trailing
+  // ellipsis "…" the live line's own template ends with
+  // (`Transcribing {total} score(s) in the background…`), not on
+  // "Transcribing 7" or "in the background" alone: hasText is a
+  // case-insensitive SUBSTRING match, and the SUCCESS note
+  // (`_finish_scan_chain`'s own "started transcribing 7 newly scanned
+  // score(s) in the background") would contain both of those literally,
+  // count and all, if it were the one rendering here - it happens not to
+  // be, in THIS test (the mock below uses the refusal note, which has no
+  // count at all), but the ellipsis is absent from every backend note
+  // regardless (they end in a period, from the "Last scan: ...." template),
+  // so it does not depend on that coincidence.
+  await expect(page.locator(".scan-note", { hasText: "…" })).toContainText(
     "in the background",
   );
   // The static note: what the scan's own chain decided, in words, since a
@@ -394,21 +396,22 @@ test("clicking Scan while the page is open shows the live background-pass line, 
   // which would scan and auto-transcribe each one individually the instant
   // it lands) so ONE "Scan library" click discovers all of them together and
   // the automatic pass that scan's own chain starts has real, multi-second
-  // work to do - long enough to outlast this page's own 3s poll interval by
-  // a wide margin, the same reasoning zzzz-library-transcribe-batch.spec.js's
-  // WARMUP_COUNT uses for the same reason, scaled up here because a poll that
-  // only rechecks every 3s (rather than that file's own 100ms out-of-band
-  // wait) needs a wider margin to reliably catch the pass before it ends.
-  // Measured directly on this box (server/tests/fixtures/engraved/
-  // notation_and_tab.pdf, the same fixture EXTRACTABLE_PDF loads):
-  // tabextract.extract() alone runs ~15ms/file, but the FULL scan+transcribe
-  // pipeline this test actually exercises (hashing, DB writes, the scan's
-  // own walk) runs closer to the ~90ms/score the PR body's 293-file
-  // reference-library run measured end to end. 120 undershot that margin
-  // once (measured: the occupying pass had already finished by the time
-  // this test reached the Apply click, so it succeeded instead of being
-  // refused) - 400 keeps the pass running for tens of seconds, comfortably
-  // outlasting this page's own 3s poll interval and every round trip below.
+  // work to do - long enough to still be running once this page notices it
+  // and clicks Apply below. 120 undershot that once (measured: the occupying
+  // pass had already finished by the time this test reached the Apply
+  // click, so it succeeded instead of being refused).
+  //
+  // 400 - MEASURED, not estimated (#190 review, third pass): 6.6-6.7s of
+  // real occupied time across repeated runs on this box, against this
+  // page's own poll effect, which - since this round - is NUDGED into an
+  // immediate check the moment pollUntilDone sees this test's own scan
+  // finish (see nudgeBackgroundBatchPoll's own comment in Library.svelte),
+  // rather than waiting out whatever is left of its idle interval. That
+  // nudge is most of why this margin holds: the worst-case slack between
+  // "the automatic pass is confirmed running" and "this test has clicked
+  // Apply" measured around 3.2s, well inside the 6.6-6.7s window, and does
+  // not depend on the poll's own 3s/15s cadence the way an un-nudged design
+  // would have.
   const BULK_COUNT = 400;
   const dir = path.join(libraryDir(), "Uploads");
   fs.mkdirSync(dir, { recursive: true });
@@ -458,4 +461,80 @@ test("clicking Scan while the page is open shows the live background-pass line, 
   // runs next, the same reasoning uploadAndSettle uses throughout this file.
   await dialog.locator(".dialog-cancel").click();
   await autoTranscribePassSettled(request);
+});
+
+test("a failed background-poll request does not end polling for the rest of the page's life", async ({
+  page,
+}) => {
+  // #190 review, F3-1. api.js throws ApiError on a non-2xx response and
+  // fetch itself rejects outright on a dropped connection - a self-hosted
+  // server restarting with this page open is the ordinary way to see one -
+  // and the poll used to have no try/catch around the request at all: ONE
+  // failed request ended the loop for the rest of the page's life (measured
+  // directly against the real build before this fix: baseline 2 requests in
+  // 9s; after one aborted response, 0 requests in the following 15s, plus
+  // an unhandled "Failed to fetch"). Reproduced here with a genuine network
+  // abort via page.route, fired exactly once, on the very first request the
+  // poll makes at mount - the worst case, since nothing has succeeded yet
+  // to prove the loop was ever alive.
+  let requestCount = 0;
+  let aborted = false;
+  let reportRunning = false;
+
+  await page.route("**/api/transcribe/batch/status", (route) => {
+    requestCount += 1;
+    if (!aborted) {
+      aborted = true;
+      return route.abort("failed");
+    }
+    return route.fulfill({
+      json: reportRunning
+        ? {
+            running: true,
+            total: 3,
+            processed: 1,
+            transcribed: 1,
+            already_transcribed: 0,
+            non_extractable: 0,
+            errored: 0,
+            with_defective_bars: 0,
+            reconvert: false,
+            results: [],
+            started_at: Date.now() / 1000,
+            finished_at: null,
+          }
+        : {
+            running: false,
+            total: 0,
+            processed: 0,
+            transcribed: 0,
+            already_transcribed: 0,
+            non_extractable: 0,
+            errored: 0,
+            with_defective_bars: 0,
+            reconvert: false,
+            results: [],
+            started_at: null,
+            finished_at: null,
+          },
+    });
+  });
+
+  await page.goto("/#/");
+
+  // Polling continues: at least one more request lands after the aborted
+  // one - the loop is not dead. Waits out the idle backoff's own 15s
+  // interval (nothing is "running" yet, so the poll is at its slowest).
+  await expect
+    .poll(() => requestCount, { timeout: DEADLINE_MS, intervals: [500] })
+    .toBeGreaterThanOrEqual(2);
+
+  // And the loop is not merely alive but still doing its actual job: once
+  // a pass "starts", the live line still appears - proving the one earlier
+  // failure left no half-broken state behind (a stuck `wasBackgroundBatchRunning`,
+  // a poll wedged at the wrong rate, or similar).
+  reportRunning = true;
+  await expect(
+    page.locator(".scan-note", { hasText: "…" }),
+  ).toContainText("in the background", { timeout: DEADLINE_MS });
 });

@@ -765,6 +765,18 @@ def test_a_scan_landing_right_after_the_chain_decision_does_not_lose_the_chains_
     claim on `_chain_added_ids`, and the assertion below is that the
     real ids - not whatever the intruder leaves behind - are what actually
     reach transcribe_batch.
+
+    ALSO PINS F2-1 (#190 review, third pass), for free, from this exact
+    construction: the intruding start_scan() (scan B) is accepted and bumps
+    `scanner._scan_generation` SYNCHRONOUSLY, before `real_finish` (scan A's
+    own) ever gets to check it - deterministic regardless of when B's own
+    background thread gets around to actually walking the library - so
+    scan A's write of transcribe_batch_started/note is guaranteed stale by
+    the time it tries. B adds nothing new (the file scan A already added is
+    still the only one on disk), so B's own _finish_scan_chain is a no-op
+    too (`ids` empty) - meaning the FINAL status, once both chains settle,
+    must be exactly what B's own `_scan()` reset left it (None/None), never
+    scan A's "started transcribing 1", the clobber the review measured.
     """
     import shutil
 
@@ -783,7 +795,7 @@ def test_a_scan_landing_right_after_the_chain_decision_does_not_lose_the_chains_
     intruder_started = []
     fired = False
 
-    def intruding_finish(ids):
+    def intruding_finish(ids, generation):
         # Fires exactly ONCE - the intruder's own chain finishes through
         # this same wrapper too (it is patched module-wide), and without
         # the guard each intruder would start another, cascading forever
@@ -792,7 +804,7 @@ def test_a_scan_landing_right_after_the_chain_decision_does_not_lose_the_chains_
         if not fired:
             fired = True
             intruder_started.append(scanner.start_scan())
-        return real_finish(ids)
+        return real_finish(ids, generation)
 
     monkeypatch.setattr(scanner, "_finish_scan_chain", intruding_finish)
 
@@ -807,6 +819,14 @@ def test_a_scan_landing_right_after_the_chain_decision_does_not_lose_the_chains_
     conn = db.connect()
     one_id = conn.execute("SELECT id FROM scores WHERE path='one.pdf'").fetchone()["id"]
     assert calls[0] == [one_id]
+
+    status = scanner.scan_status()
+    assert status["transcribe_batch_started"] is None, (
+        f"chain A's stale write clobbered chain B's own status: {status}"
+    )
+    assert status["transcribe_batch_note"] is None, (
+        f"chain A's stale write clobbered chain B's own status: {status}"
+    )
 
 
 def test_a_scan_that_adds_one_score_does_not_transcribe_a_pre_existing_untranscribed_one(
@@ -1159,4 +1179,53 @@ def test_a_mutation_landing_right_after_a_chain_continues_does_not_lose_the_chai
     two_id = conn.execute("SELECT id FROM scores WHERE path='two.pdf'").fetchone()["id"]
     assert set(calls[0]) == {one_id, two_id}, (
         f"expected the union {{one_id, two_id}}, got {calls[0]}"
+    )
+
+
+def test_a_newer_chain_accepted_after_start_batch_returns_does_not_have_its_status_clobbered(
+    library, extractable_pdf, monkeypatch
+):
+    """#190 review, F2-1 (third pass). _finish_scan_chain calls
+    transcribe_batch.start_batch OUTSIDE any lock, deliberately - see its
+    own docstring - which leaves a window between that call returning and
+    this chain's own write of transcribe_batch_started/note. A plain
+    start_scan() landing in exactly that window is accepted (bumping
+    scanner._scan_generation and resetting those two keys to None for
+    itself, via its own _scan() pass) before this OLDER chain's write ever
+    lands - measured (the reviewer's own reproduction): a newer chain that
+    added nothing had its status read "started transcribing 1", the OLDER
+    chain's own count, because the older chain's write landed last and
+    clobbered the newer chain's fresh None.
+
+    Pinned via scanner._before_finish_writes_status - a hook that is a
+    no-op in production, the one seam between start_batch returning and the
+    generation check immediately before the write. Simulates the newer
+    chain being ACCEPTED via _begin_scan_locked directly (the moment
+    _scan_generation actually changes - see its own comment) rather than
+    running a second real scan end to end, which is both unnecessary to
+    prove the mechanism and, as the sibling test above notes, not
+    reliably orderable via real thread timing.
+    """
+    import shutil
+
+    shutil.copy(extractable_pdf, library / "one.pdf")
+
+    def intruding_hook(ids):
+        with scanner._state_lock:
+            scanner._begin_scan_locked(_continuing_chain=False)
+            scanner._state["scanning"] = False
+
+    monkeypatch.setattr(scanner, "_before_finish_writes_status", intruding_hook)
+
+    scan_started = scanner.start_scan()
+    assert scan_started is True
+    _wait_for_scan()
+    _wait_for_batch()
+
+    status = scanner.scan_status()
+    assert status["transcribe_batch_started"] is None, (
+        f"the older chain's write clobbered the newer chain's status: {status}"
+    )
+    assert status["transcribe_batch_note"] is None, (
+        f"the older chain's write clobbered the newer chain's status: {status}"
     )
