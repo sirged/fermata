@@ -128,6 +128,13 @@ Count = Annotated[StrictInt, Field()]
 
 VALID_KINDS = {"notation", "tab", "both", "unknown"}
 VALID_PRACTICED = {"recent", "neglected"}
+# GET /api/scores' `transcribed` filter (#190): "yes" narrows to scores with
+# a transcription (extracted or hand-edited, and the filter draws no
+# distinction between those two - see the No-gos on #190), "no" to its exact
+# complement. Anything a scan judged non-extractable has no transcription
+# and so falls under "no", which is what makes the filter double as "show me
+# what a scan could not read".
+VALID_TRANSCRIBED = {"yes", "no"}
 
 # A user setting, not a per-score one - kept server-side (not browser storage)
 # so it follows a person between devices. Defaults are what a fresh install
@@ -531,12 +538,16 @@ def list_scores(
     tag: str = "",
     favorite: bool = False,
     practiced: str = "",
+    transcribed: str = "",
 ):
     """The library, filtered and searched. `search` matches title, composer,
     source or series; `practiced` is 'recent' (practised in the last 14 days)
     or 'neglected' (present on disk, and either never practised or not
     practised in 30 days) - see the query's own comments for why those two
-    views disagree about a score whose file has gone missing.
+    views disagree about a score whose file has gone missing. `transcribed`
+    is 'yes' (has a transcription, extracted or hand-edited - this filter
+    draws no distinction between the two) or 'no' (its exact complement,
+    which is also every score a scan judged non-extractable) (#190).
 
     A DELETED SCORE IS NEVER HERE, under any filter - it is in GET /api/trash
     until it is restored or destroyed. A score whose FILE has gone missing is a
@@ -545,6 +556,8 @@ def list_scores(
     thrown it away."""
     if practiced and practiced not in VALID_PRACTICED:
         raise HTTPException(422, f"practiced must be one of {sorted(VALID_PRACTICED)}")
+    if transcribed and transcribed not in VALID_TRANSCRIBED:
+        raise HTTPException(422, f"transcribed must be one of {sorted(VALID_TRANSCRIBED)}")
     conn = connect()
     sql = "SELECT DISTINCT s.* FROM scores s"
     # A deleted score is not in the library, and no filter brings it back here -
@@ -567,6 +580,10 @@ def list_scores(
     if kind:
         where.append("s.content_kind = ?")
         params.append(kind)
+    if transcribed == "yes":
+        where.append("EXISTS (SELECT 1 FROM transcriptions t WHERE t.score_id = s.id)")
+    elif transcribed == "no":
+        where.append("NOT EXISTS (SELECT 1 FROM transcriptions t WHERE t.score_id = s.id)")
     if favorite:
         where.append("s.favorite = 1")
     # Windowed on the practice DAY, not on the UTC timestamp. These two views
@@ -2323,6 +2340,19 @@ def _batch_process_one(score_id: int, reconvert: bool) -> dict:
         "score_id": score_id, "title": title, "outcome": "transcribed", "reason": None,
         "bars_defective": stored.get("bars_defective"), "bars_measured": stored.get("bars_measured"),
     }
+
+
+# A freshly scanned library should not sit with zero transcriptions until
+# somebody clicks a bulk pass by hand (#190) - so the scan itself starts one,
+# over exactly the scores it added, once its own chain of passes finishes
+# (scanner._finish_scan_chain). scanner.py cannot call `_batch_process_one`
+# directly - it would have to import this module to reach it, and this
+# module already imports scanner.py, which is the circular import
+# transcribe_batch.py's own module comment already argues against one layer
+# up. Registering it here, right after its definition, is the seam instead:
+# scanner.py depends on nothing above it, and this is the one place that
+# hands it something to call.
+scanner.register_transcribe_hook(_batch_process_one)
 
 
 class TranscribeBatchIn(BaseModel):

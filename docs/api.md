@@ -206,6 +206,16 @@ complete, already-committed rows behind - nothing half-written - so
 scores already done come back `already_transcribed` and the rest are
 attempted for the first time.
 
+**A freshly scanned library transcribes itself (issue #190).** The last scan
+of a chain - including the one `POST /api/upload` triggers - starts this
+same background pass on its own, over exactly the scores that chain added.
+A bulk pass already running by hand is never interrupted for this: the
+scan's own attempt is simply skipped, recorded in `GET /api/scan/status`'s
+`transcribe_batch_started` and `transcribe_batch_note`, never queued or
+retried. `GET /api/scores` accepts `transcribed=yes` or `transcribed=no` to
+narrow the library to scores with a transcription (extracted or hand-edited
+- undistinguished here) or its exact complement.
+
 ## Getting everything in and out (issue #58)
 
 Two endpoints, one archive format, and one rule that holds for both directions:

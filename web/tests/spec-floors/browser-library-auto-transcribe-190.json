@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/zzzz-library-auto-transcribe.spec.js",
+  "count": 6,
+  "reason": "issue #190: an uploaded extractable score transcribes itself with no bulk-transcription click anywhere, the library card marks it, and the transcription filter narrows the grid to exactly that set and its exact complement; first review round adds F1 (a refused POST /transcribe/batch is never adopted as this selection's own progress) and F3 (a pass this page did not start is visible, both while running and after a scan's own chain is refused, mocked); second review round adds F3 unmocked (clicking Scan while the page is open shows the live background-pass line against a real occupying pass, not only a canned response); third review round adds F3-1 (a genuinely aborted status request does not end the background poll for the rest of the page's life, and the live line still appears once a pass starts afterwards)."
+}
