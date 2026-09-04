@@ -72,10 +72,11 @@ async def lifespan(app: FastAPI):
         # docstring for why this is fatal and a genuinely broad-but-real
         # subnet is not.
         authproxy.check_trusted_proxies_are_not_everyone()
-        # Parses FERMATA_MCP_PORT when, and only when, FERMATA_MCP is on -
-        # in here, not at import time, for exactly the same reason
-        # load_auth_trusted_networks is (see config.py's comment on
-        # MCP_PORT).
+        # Parses FERMATA_MCP_PORT - in here, not at import time, for exactly
+        # the same reason load_auth_trusted_networks is (see config.py's
+        # comment on MCP_PORT). It complains about a bad value only when
+        # FERMATA_MCP is on; see that function's own docstring for why it
+        # parses either way.
         config.load_mcp_settings()
         init_db()
         mcp_listener = _start_mcp_server(app)
