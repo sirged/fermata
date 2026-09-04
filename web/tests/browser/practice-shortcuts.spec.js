@@ -120,6 +120,74 @@ const speedSelect = (page) => page.locator('select[title="Playback speed"]');
 const themeSelect = (page) => page.locator(".theme-picker");
 const profileButtons = (page) => page.locator(".seg button");
 
+/**
+ * The PDF pane's live scroll geometry: where the scroller is, and how tall
+ * each page has actually rendered. Everything the page-turn tests below
+ * measure comes from here rather than from a screenshot or a fixed sleep.
+ */
+const pdfGeometry = (page) =>
+  page.evaluate(() => {
+    const scroller = document.querySelector(".pages");
+    const first = document.querySelector('.pdf-page[data-page="1"]');
+    const rect = scroller.getBoundingClientRect();
+    const topOf = (el) => el.getBoundingClientRect().top - rect.top + scroller.scrollTop;
+    return {
+      scrollTop: scroller.scrollTop,
+      pageHeight: first.getBoundingClientRect().height,
+      pageOneTop: topOf(first),
+      pageTwoTop: topOf(document.querySelector('.pdf-page[data-page="2"]')),
+    };
+  });
+
+/**
+ * Waits for the PDF pane to have finished re-rendering its canvases at the
+ * width it is going to keep - the readiness barrier the page-turn tests
+ * below need and #168's did not.
+ *
+ * Any layout change that widens or narrows the pane (entering gig mode,
+ * which drops the staff pane; a viewport resize) makes PdfViewer re-render
+ * every canvas at a new width, 200ms after the resize stops. Until that
+ * lands, the pages on screen are still the OLD ones, at the old height - and
+ * a half-page turn is measured off the current rendered height, so the same
+ * keypress moves the reader a different distance either side of it.
+ *
+ * The condition is PdfViewer's own: `Math.min(clientWidth - 32, 1100)` (see
+ * its computeWidth), read back off the DOM rather than restated as a number,
+ * so a change to how the pane sizes itself moves both together. Waiting on
+ * the width the component computes for the container it is actually in is a
+ * fact about the render having completed, not an interval hoped to be long
+ * enough.
+ */
+async function pdfPagesRenderedAtSettledWidth(page) {
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const scroller = document.querySelector(".pages");
+        const pages = [...document.querySelectorAll(".pdf-page")];
+        if (!scroller || !pages.length) return "no pages yet";
+        const want = Math.min(scroller.clientWidth - 32, 1100);
+        const widths = [...new Set(pages.map((p) => Math.round(p.getBoundingClientRect().width)))];
+        return widths.length === 1 && widths[0] === want ? "settled" : `rendered ${widths} of ${want}`;
+      }),
+    )
+    .toBe("settled");
+}
+
+/**
+ * Waits for the PDF pane's scroll to come to rest at `target`, naming what
+ * that target is so a failure says where the pane went instead of only that
+ * two numbers differ. A tolerance of a pixel, because a smooth scroll lands
+ * on device pixels and the targets here are computed in CSS ones.
+ */
+async function pdfScrollSettlesAt(page, target, what) {
+  await expect
+    .poll(async () => {
+      const at = (await pdfGeometry(page)).scrollTop;
+      return Math.abs(at - target) <= 1 ? what : `at ${Math.round(at)}, not ${what} (${Math.round(target)})`;
+    })
+    .toBe(what);
+}
+
 async function openDemo(page) {
   await page.goto("/#/demo");
   // All three profile buttons is the signal the sample actually finished
@@ -807,8 +875,104 @@ test.describe("gig mode itself", () => {
     // (#168) - this test shares the hole and only wins the race more often.
     await expect(page.locator(".pdf-page")).toHaveCount(2);
     await expect(page.locator(".hud span")).toHaveText("1 / 2");
+    // And one barrier that test does not need. Gig mode drops the staff
+    // pane, so the PDF pane roughly doubles in width and every canvas is
+    // re-rendered; both presses below have to land on the SAME rendered
+    // geometry or they are two different distances (see the helper).
+    await pdfPagesRenderedAtSettledWidth(page);
+
+    // Two presses, not one - and this is the whole of issue #219.
+    //
+    // A gig-mode arrow key turns a HALF page: PdfViewer's `halfPage` is
+    // switched on the moment gig mode is entered (that is the point of gig
+    // mode - a performer reads down a page, not from page top to page top),
+    // and a half turn is half the current page's rendered height plus its
+    // share of the gap. Whether ONE of those moves the page INDICATOR is
+    // therefore pure geometry: it moves only when half a page is taller than
+    // whatever is left of the current page on screen. At the narrow
+    // side-by-side render this test starts from, that is true; at the wide
+    // gig render it is false, and the reader is legitimately still on the
+    // bottom half of page one with the indicator correctly saying so.
+    //
+    // So the old single-press assertion on "2 / 2" was resting on the press
+    // beating the re-render - an accident of runner speed, not a property of
+    // the product. It is what failed on 3 of 36 main CI runs while every
+    // pull-request run of the same trees was green. The barrier above
+    // deliberately removes that accident, which makes a single press read
+    // "1 / 2" every time; two presses are what actually turn the page.
+    //
+    // Two is not an arbitrary retry. A step is exactly half of a page plus
+    // half of the gap between pages - half the page PITCH - so two of them
+    // advance the pane by exactly one page whatever the pages measure, and
+    // page two ends up sitting where page one was. That is what keeps this
+    // an assertion about the keys reaching the PDF pane in gig mode rather
+    // than about the height the pages happen to have rendered at.
+    const before = await pdfGeometry(page);
+    const step = (before.pageTwoTop - before.pageOneTop) / 2;
+
     await page.keyboard.press("ArrowRight");
+    // The key reached the PDF pane, and moved it by exactly a half turn.
+    await pdfScrollSettlesAt(page, before.scrollTop + step, "half a page on");
+    // Deliberately still page one: half a page in, with half of it left.
+    await expect(page.locator(".hud span")).toHaveText("1 / 2");
+
+    await page.keyboard.press("ArrowRight");
+    await pdfScrollSettlesAt(page, before.scrollTop + 2 * step, "a whole page on");
     await expect(page.locator(".hud span")).toHaveText("2 / 2");
+  });
+
+  // The product half of #219, and the one that matters at the stand. The
+  // test above waits for gig mode's re-render; a performer does not, and a
+  // pedal sends nothing but arrow keys with no mouse to recover with.
+  //
+  // A half-page turn leaves the reader mid-page by design. PdfViewer's
+  // re-render then had to put them back, and it aimed at the top of the page
+  // they were on - which threw the half turn away entirely. Entering gig
+  // mode is exactly when the two collide: it widens the pane, so a re-render
+  // is already queued when the first tap arrives.
+  //
+  // Not raced for here. The resize is issued while the reader is provably
+  // half a page down and the assertion is on where the re-render leaves
+  // them, so this fails on every run against the old restore rather than on
+  // a slow one - the race only decided how often a real reader met it.
+  test("a half-page turn survives the pane being re-rendered at a new width", async ({ page }) => {
+    // Windowed gig mode - the path Viewer.svelte already carries a catch for
+    // ("fullscreen denied or unavailable; gig mode still works windowed"),
+    // and the only one a test can resize: a fullscreen window refuses
+    // setViewportSize outright. Half-page turning, the pane widening and the
+    // re-render this is about are all the same either way; only the window
+    // chrome differs.
+    await page.evaluate(() => {
+      Element.prototype.requestFullscreen = () => Promise.reject(new Error("denied"));
+    });
+    await page.keyboard.press("f");
+    await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
+    await expect(page.locator(".pdf-page")).toHaveCount(2);
+    await pdfPagesRenderedAtSettledWidth(page);
+
+    const before = await pdfGeometry(page);
+    const step = (before.pageTwoTop - before.pageOneTop) / 2;
+    await page.keyboard.press("ArrowRight");
+    await pdfScrollSettlesAt(page, before.scrollTop + step, "half a page on");
+    // How far down page one the reader now is - the thing that has to
+    // survive the re-render, expressed as a fraction because the pixel
+    // count will not: the pages are about to change height.
+    const mid = await pdfGeometry(page);
+    const fraction = (mid.scrollTop - mid.pageOneTop) / mid.pageHeight;
+    expect(fraction).toBeGreaterThan(0.3);
+
+    // Narrower pane -> shorter pages -> a re-render, the same one entering
+    // gig mode causes, with the reader already mid-page.
+    await page.setViewportSize({ width: 900, height: 720 });
+    await pdfPagesRenderedAtSettledWidth(page);
+    const after = await pdfGeometry(page);
+    expect(after.pageHeight).toBeLessThan(before.pageHeight);
+
+    const want = after.pageOneTop + fraction * after.pageHeight;
+    expect(Math.abs(after.scrollTop - want)).toBeLessThanOrEqual(2);
+    // Stated the blunt way too: not scrolled back to the top of page one,
+    // which is where the old restore put it on every run.
+    expect(after.scrollTop).toBeGreaterThan(after.pageOneTop + 1);
   });
 
   test("from the staff layout, gig mode keeps the staff pane and Space still plays/pauses it", async ({ page }) => {

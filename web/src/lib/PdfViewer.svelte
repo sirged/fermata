@@ -147,9 +147,36 @@
       }
     }
 
+    // Where a page's top edge sits in the scroller's own coordinates. Read
+    // off rects rather than offsetTop, which is measured against whichever
+    // ancestor happens to be positioned - .wrap here, not the scroller - and
+    // so would carry that element's own offset into the arithmetic below.
+    function pageTop(canvas) {
+      return (
+        canvas.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
+      );
+    }
+
     async function rerenderAtWidth(width) {
       renderedWidth = width;
       const dpr = window.devicePixelRatio || 1;
+      // How far down the current page the reader actually is, as a fraction
+      // of that page's height, captured BEFORE the canvases change size.
+      //
+      // The restore below used to aim at the page's TOP, which discards
+      // every within-page position there is - and in gig mode that is most
+      // of them, because a half-page turn exists precisely to leave the
+      // reader halfway down a page. So a re-render landing shortly after a
+      // pedal tap scrolled them straight back off the half they had just
+      // turned to, with nothing left to retry it: the same shape as #168 and
+      // #175, on the one branch of turn() neither of them covered, and
+      // entering gig mode is exactly the moment both happen together
+      // (widening the pane forces the re-render). Measured on this branch, a
+      // 2-page score entering gig mode: the tap left the scroller at 313px
+      // and the re-render's restore put it back to 24px, page one's top.
+      const anchor = container.querySelector(`[data-page="${currentPage}"]`);
+      const anchorHeight = anchor ? anchor.getBoundingClientRect().height : 0;
+      const fractionDownPage = anchorHeight ? (container.scrollTop - pageTop(anchor)) / anchorHeight : 0;
       // re-render the existing canvases in place (same elements, same
       // order) so the IntersectionObserver's page tracking keeps working
       // without needing to be torn down and reattached
@@ -162,8 +189,12 @@
       }
       if (cancelled) return;
       // canvases changed height, so restore scroll to wherever the reader
-      // was rather than let it drift to an arbitrary pixel offset
-      container.querySelector(`[data-page="${currentPage}"]`)?.scrollIntoView({ block: "start" });
+      // was rather than let it drift to an arbitrary pixel offset - to the
+      // same fraction down the same page, not merely to that page's top
+      const restored = container.querySelector(`[data-page="${currentPage}"]`);
+      if (restored) {
+        container.scrollTop = pageTop(restored) + fractionDownPage * restored.getBoundingClientRect().height;
+      }
     }
 
     async function flushResize() {
