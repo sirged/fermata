@@ -292,6 +292,12 @@ async function pdfRenderSettleStamp(page) {
  * attribute is a restore that has completed and painted. It throws on timeout
  * naming the attribute rather than falling through to the assertion.
  *
+ * This is the barrier for a read that follows a re-render BY CONSTRUCTION -
+ * the test resizes the pane, or presses into a re-render long enough that the
+ * press provably lands inside it. It is not the barrier for a read that only
+ * SOMETIMES follows one; see pdfSettlesPast below for that, and for what
+ * happens when this one is used there.
+ *
  * One obligation it puts on the caller, found by the same construction and
  * not by reading: the baseline only rules out re-renders that have already
  * STAMPED, so a re-render already in flight when the baseline is taken will
@@ -303,19 +309,6 @@ async function pdfRenderSettleStamp(page) {
  * would leave the reader. So a test that enters gig mode first has to wait
  * for THAT re-render to have restored too, before taking its baseline, and
  * the width barrier is not that wait either. Both callers below do.
- *
- * One thing worth saying about the indicator test in particular, because it
- * was previously written down the wrong way round: its `pdfIndicatorAgrees`
- * poll does NOT agree trivially there. Measured at the pre-restore offset,
- * 3 of 3: the HUD reads "2 / 2" over a pane showing page one, because at the
- * narrow pre-render geometry a half turn brought page two past the 0.4
- * intersection threshold and the observer said so. The poll therefore waits
- * for the re-derivation in flushResize, which happens in the same frame this
- * stamp is written - so today it screens the early read by accident. That
- * accident is geometric: raise the threshold so the observer never fires
- * mid-turn and the HUD agrees at once, and with this barrier removed the test
- * reads 0.2627 in 5 of 5 runs and fails on the band. This barrier is what
- * makes the screening deliberate and independent of the threshold.
  */
 async function pdfRestoreSettlesPast(page, stamp, timeout) {
   const was = stamp === null ? "none yet" : stamp;
@@ -331,6 +324,73 @@ async function pdfRestoreSettlesPast(page, stamp, timeout) {
       timeout ? { timeout } : undefined,
     )
     .toBe("restored");
+}
+
+/**
+ * The PDF pane's rest counter, or null while it says it is moving.
+ * `PdfViewer` stamps `data-settle-seq` when the pane has been quiet for 200ms
+ * with no re-render in flight AND none pending, and removes it the moment it
+ * asks the pane to move.
+ */
+async function pdfSettleStamp(page) {
+  return page.evaluate(() => document.querySelector(".pages")?.dataset.settleSeq ?? null);
+}
+
+/**
+ * Waits for the pane to be AT REST with nothing queued, past a stamp taken
+ * before the press.
+ *
+ * The barrier for the one read below whose relationship to the re-render is
+ * the race the test exists to tolerate. `pdfRestoreSettlesPast` above cannot
+ * do that job, and this is not a preference: measured at CPU throttle 20x,
+ * `--repeat-each 20`, the press lands AFTER gig mode's re-render has finished
+ * in 18 of 20 runs, so there is no later restore to wait for and that barrier
+ * times out - traced, one run: gig mode's flush restored at 1749 and stamped
+ * at 1840, and the turn asked to scroll at 1920. Rest is the only claim that
+ * is true in every ordering.
+ *
+ * What makes rest trustworthy here is the "nothing pending" half, which is
+ * new. Without it, a turn racing a re-render goes quiet BEFORE that re-render
+ * starts - the resize has been observed and its 200ms debounce is counting
+ * down, but nothing has begun, so the pane looks idle. Traced on the
+ * half-page-turn test, 8 of 8 runs: quiet at 1086, re-render started 1132,
+ * restored 1140. A barrier on the old rest counter returned 54ms before the
+ * restore, on its first poll, and read the pre-render offset - 0.2627 of a
+ * page against a band that starts at 0.35. With the re-render counted as
+ * pending from the moment it is observed, that stamp is not written, and the
+ * first one after it is the one flushResize arms when it has handed the pane
+ * back.
+ *
+ * The stamp is removed when the component asks the pane to move, and this
+ * waits for the counter to ADVANCE past a value captured before the press, so
+ * neither a leftover stamp nor one that lands between the two satisfies it.
+ * It throws on timeout naming the attribute rather than falling through.
+ *
+ * One thing worth saying about the indicator test in particular, because it
+ * was previously written down the wrong way round: its `pdfIndicatorAgrees`
+ * poll does NOT agree trivially there. Measured at the pre-restore offset,
+ * 3 of 3: the HUD reads "2 / 2" over a pane showing page one, because at the
+ * narrow pre-render geometry a half turn brought page two past the 0.4
+ * intersection threshold and the observer said so. The poll therefore waits
+ * for the re-derivation in flushResize, which happens in the same frame the
+ * restore stamp is written - so it screens the early read by accident. That
+ * accident is geometric: raise the threshold so the observer never fires
+ * mid-turn and the HUD agrees at once, and with this barrier removed the test
+ * reads 0.2627 in 5 of 5 runs and fails on the band. This barrier is what
+ * makes the screening deliberate and independent of the threshold.
+ */
+async function pdfSettlesPast(page, stamp, timeout) {
+  const was = stamp === null ? "absent" : stamp;
+  await expect
+    .poll(
+      async () => {
+        const now = await pdfSettleStamp(page);
+        if (now === null) return `data-settle-seq absent, the pane is still moving (was ${was})`;
+        return Number(now) > Number(stamp ?? -1) ? "settled" : `data-settle-seq still ${now} (was ${was})`;
+      },
+      timeout ? { timeout } : undefined,
+    )
+    .toBe("settled");
 }
 
 async function openDemo(page) {
@@ -1398,17 +1458,22 @@ test.describe("gig mode itself", () => {
     await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
     // Deliberately no barrier before the press: this is the tap a performer
     // actually makes, straight into the pane that is still about to
-    // re-render. The count is only read, not waited on.
-    const restores = await pdfRenderSettleStamp(page);
+    // re-render. The stamp is only read, not waited on.
+    const settled = await pdfSettleStamp(page);
     await page.keyboard.press("ArrowRight");
 
     await pdfPagesRenderedAtSettledWidth(page);
     // The turn's own barrier, and the only one here that is about where the
-    // re-render put the reader rather than about the canvases (#234). The
-    // indicator poll below happens to screen the same early read at this
-    // threshold and this geometry; see pdfRestoreSettlesPast for the
-    // measurement, and for why that is an accident worth not depending on.
-    await pdfRestoreSettlesPast(page, restores);
+    // pane ended up rather than about the canvases (#234). REST rather than
+    // the restore barrier the two tests above use, because which side of the
+    // re-render this press lands on is the race the test exists to tolerate:
+    // measured at 20x throttle it lands after the re-render in 18 of 20 runs,
+    // and there is no restore left to wait for. See pdfSettlesPast.
+    //
+    // The indicator poll below happens to screen the same early read at this
+    // threshold and this geometry; see pdfSettlesPast for the measurement,
+    // and for why that is an accident worth not depending on.
+    await pdfSettlesPast(page, settled);
     await pdfIndicatorAgrees(page, 2);
 
     // And the geometry that makes the line above worth asserting: the reader
