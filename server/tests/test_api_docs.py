@@ -6,8 +6,8 @@ Five separate claims, each with its own test group below:
 
 1. GET /openapi.json is a document that validates against the OpenAPI spec -
    FastAPI producing SOME JSON is not the same claim as producing one a
-   client's codegen (or a planned MCP server - issue #31 - built on this
-   surface as its contract) could actually trust.
+   client's codegen (or the MCP server - issue #31 - which generates its
+   whole tool list from this document) could actually trust.
 2. Every route carries a summary, a description and at least one tag, and
    its success response declares a schema (or, for the two file-serving
    routes, a real content type, with no stray application/json alongside
@@ -198,7 +198,7 @@ def test_openapi_document_validates_against_the_spec(openapi_schema):
     malformed against the spec - a response with no "content" at all under a
     status code, a $ref FastAPI failed to resolve, and so on. This is the
     check that a tool consuming the document (Swagger UI, a codegen, the
-    planned MCP server this documents the contract for) would not choke on
+    MCP server this documents the contract for) would not choke on
     it. openapi_spec_validator.validate raises on the first thing wrong,
     which pytest reports directly - there is no assertion to write."""
     validate_openapi(openapi_schema)
