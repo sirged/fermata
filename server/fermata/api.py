@@ -280,8 +280,8 @@ def get_me(request: Request):
     verified before this handler ran (a header naming the user, sent by a
     proxy address on the configured trust list) and stashed on
     `request.state`. Nothing in Fermata acts on this today - no per-user
-    filtering, no permissions - it exists for a future consumer (the
-    planned MCP server, a possible sharing layer) to read. Always 200: when
+    filtering, no permissions - it exists for a consumer (a possible sharing
+    layer; the MCP server leaves it inert, #31) to read. Always 200: when
     reverse-proxy auth is off (the default) or this particular request
     carried no identity, that is `{"enabled": false, "username": null}`
     rather than an error, since asking "who am I" is safe regardless of
@@ -2006,7 +2006,7 @@ def _store_extraction_result(score_id: int, result) -> dict:
             # first place, and it named every other _BAR_KEYS entry by hand
             # already but never picked these two up, so the round trip broke
             # here even after _BAR_KEYS did the reading half. Without this,
-            # a score with real unsplit pairs (e.g. Ronfaure, 15 per #116)
+            # a score with real unsplit pairs (e.g. score_o, 15 per #116)
             # stores None for both and #143's own verification plan fails.
             "coincident_unsplit_pairs": result.coincident_unsplit_pairs,
             "staves_coincident_unsplit": result.staves_coincident_unsplit,
@@ -3688,7 +3688,7 @@ def purge_score(score_id: RowId):
 # ONE ENDPOINT AND NOT SIX, and every figure on it computed here. A client that
 # had to fetch the sessions for one score and total them itself would be
 # writing the arithmetic this module already owns - and the second reader of
-# this surface (the planned MCP server, #31) would then write it a third time,
+# this surface (the MCP server, #31) would then write it a third time,
 # slightly differently, with nothing to say which of the three was right. See
 # issue #32's design rules: every field readable through the documented API, so
 # any future integration wraps one source of truth.
@@ -3772,7 +3772,7 @@ def score_practice_progress(
 #
 # Issue #32's design rule - structured, queryable, every field readable
 # through the documented API - is what makes the OTHER half of #32 possible:
-# a planned MCP server (#31) wraps this REST surface rather than reading
+# the MCP server (#31) wraps this REST surface rather than reading
 # SQLite directly. That rule is also what makes THIS feature nearly free.
 # Nothing here invents a second notion of what a session or a goal is; export
 # reads the same tables every other endpoint reads, and import writes rows

@@ -180,6 +180,57 @@ def check_trusted_proxies_are_not_everyone() -> None:
         )
 
 
+def check_mcp_is_not_configured_behind_proxy_auth() -> None:
+    """Refuses to start (raises RuntimeError, caught by main.py's lifespan
+    the same way ensure_dirs's library-folder check is) when the Model
+    Context Protocol server and reverse-proxy authentication are both turned
+    on. They do not work together in this release, and the way they fail is
+    the reason this is fatal rather than logged.
+
+    WHAT ACTUALLY HAPPENS WITHOUT THIS CHECK. The protocol server reads the
+    REST API as an ordinary anonymous client over loopback (issue #31's rule
+    that it wraps the API rather than reimplementing it). With
+    FERMATA_AUTH_HEADER set, this middleware refuses every request that did
+    not arrive from a trusted proxy carrying that header - so every single
+    tool call comes back 401, while `tools/list` goes on advertising a full
+    set of working tools. Nothing anywhere says why. That is the worst shape
+    a failure can have: silent, total, and indistinguishable from an empty
+    library.
+
+    AND THE OBVIOUS WORKAROUND IS WORSE. An operator who diagnoses the 401
+    reaches for adding 127.0.0.1 to FERMATA_TRUSTED_PROXIES. That does not
+    even fix it - the internal client sends no identity header, so the
+    request is refused a second time for the header being missing - but it
+    DOES mean that anything else on loopback may now set the identity header
+    itself and be believed. The fix that suggests itself next, having the
+    internal client send an identity header of its own, is precisely the
+    forgery this module exists to prevent: it would make the trusted header
+    something a process on the box can mint. So neither half is offered, and
+    the combination is refused instead.
+
+    A no-op unless BOTH are on. Either alone is a supported deployment."""
+    if not (config.MCP_ENABLED and config.AUTH_HEADER):
+        return
+    raise RuntimeError(
+        "Fermata cannot start: FERMATA_MCP is on and FERMATA_AUTH_HEADER is set "
+        f"({config.AUTH_HEADER!r}), and those two are not supported together in this "
+        "release.\n"
+        "\n"
+        "The Model Context Protocol server reads this API as an anonymous client over "
+        "loopback, so with reverse-proxy authentication on, every one of its tools would "
+        "answer 401 while still advertising itself as working. Refusing to start says that "
+        "now, out loud, instead of leaving you to discover it one empty tool call at a "
+        "time.\n"
+        "\n"
+        "Turn one of them off: unset FERMATA_MCP to keep your login, or unset "
+        "FERMATA_AUTH_HEADER to use the tools. See docs/deployment.md's 'The Model Context "
+        "Protocol server' section.\n"
+        "\n"
+        "Nothing has been changed. Your sheet music and your practice history are both as "
+        "they were."
+    )
+
+
 def check_auth_configuration_sanity() -> None:
     """The one remaining way to configure this feature into silently doing
     nothing - see check_trusted_proxies_are_not_everyone for the other

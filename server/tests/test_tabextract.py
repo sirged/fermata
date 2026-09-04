@@ -153,8 +153,8 @@ def _make_tab_pdf(path, pages):
     return path
 
 
-def test_finale_tab_pdf_extracts_notes_and_bars(zanarkand_pdf):
-    result = tabextract.extract(zanarkand_pdf, time_signature=(3, 4))
+def test_finale_tab_pdf_extracts_notes_and_bars(score_a_pdf):
+    result = tabextract.extract(score_a_pdf, time_signature=(3, 4))
     assert result.extractable
     assert result.reason is None
     # tab_staff_count / standard_staff_count are summed across pages (see
@@ -192,8 +192,8 @@ def test_finale_tab_pdf_extracts_notes_and_bars(zanarkand_pdf):
     assert "own engraving" in result.confidence["rhythm"]
 
 
-def test_finale_tab_pdf_analyze(zanarkand_pdf):
-    info = tabextract.analyze(zanarkand_pdf)
+def test_finale_tab_pdf_analyze(score_a_pdf):
+    info = tabextract.analyze(score_a_pdf)
     assert info["extractable"] is True
     assert info["vector"] is True
     assert info["tab_staff_count"] >= 5
@@ -201,13 +201,13 @@ def test_finale_tab_pdf_analyze(zanarkand_pdf):
     assert info["page_count"] == 2
 
 
-def test_glyph_decoded_time_signature_and_dots_without_override(zanarkand_pdf):
+def test_glyph_decoded_time_signature_and_dots_without_override(score_a_pdf):
     """The engraved time signature (3/4 for this piece) and dotted note
     durations must be read straight from the score's own notehead/flag/dot
     glyphs - no manual time_signature override, and no reliance on the
     old plain-text digit scan (which practically never finds a time
     signature - see module docstring)."""
-    result = tabextract.extract(zanarkand_pdf)
+    result = tabextract.extract(score_a_pdf)
     assert result.extractable
     assert result.time_signature == (3, 4)
     assert result.time_signature_source == "glyph-decoded"
@@ -215,7 +215,7 @@ def test_glyph_decoded_time_signature_and_dots_without_override(zanarkand_pdf):
     assert "{d}" in result.alphatex or "{dd}" in result.alphatex
 
 
-def test_glyph_decoded_alphatex_parses_with_dotted_beats(zanarkand_pdf):
+def test_glyph_decoded_alphatex_parses_with_dotted_beats(score_a_pdf):
     """The emitted alphaTex must actually parse with alphaTab, and the
     dotted-duration beat effects must survive the round trip as real dotted
     beats (not just a `{d}` substring that happens to be present but sits
@@ -225,7 +225,7 @@ def test_glyph_decoded_alphatex_parses_with_dotted_beats(zanarkand_pdf):
     mirrored low string a low-to-high tuning emission would produce)."""
     import xml.etree.ElementTree as ET
 
-    result = tabextract.extract(zanarkand_pdf, time_signature=(3, 4))
+    result = tabextract.extract(score_a_pdf, time_signature=(3, 4))
     assert result.extractable
     parsed = _parse_with_alphatab(result.alphatex)
     assert parsed["bars"] == result.bars
@@ -273,14 +273,14 @@ def _measure_voice_quarters(xml: str, number: int) -> dict:
     raise AssertionError(f"measure {number} is not in the emitted score")
 
 
-def test_a_melody_over_a_chord_stays_a_separate_voice(dalza_pdf):
+def test_a_melody_over_a_chord_stays_a_separate_voice(score_d_pdf):
     """End-to-end for the notehead-to-stem attachment this file is full of: a
     melody eighth one staff space above a stem-down half-note chord, sharing
     its beat. Attaching the melody note to the CHORD's stem folds the two
     voices into one, and the bar then reports 6 half-note units of a single
     voice in 2/2 - a fourfold duration error with the second voice gone, not a
     near miss. Every one of these bars carries the figure."""
-    result = tabextract.extract(dalza_pdf)
+    result = tabextract.extract(score_d_pdf)
     assert result.extractable
     assert result.time_signature == (2, 2)
     for bar in (7, 11, 12, 13, 14):
@@ -289,7 +289,7 @@ def test_a_melody_over_a_chord_stays_a_separate_voice(dalza_pdf):
         assert voices["1"] == 4.0, f"bar {bar} voice 1: {voices}"
 
 
-def test_born_a_stranger_unison_survives_as_two_notes_in_two_voices(born_a_stranger_pdf):
+def test_a_genuine_unison_survives_as_two_notes_in_two_voices(score_m_pdf):
     """A regression guard for issue #116, on the score the research's
     guitarist checked against the printed page: two notes adjacent on the
     same row, the lower drawn stem-left and the higher swapped stem-right -
@@ -298,7 +298,7 @@ def test_born_a_stranger_unison_survives_as_two_notes_in_two_voices(born_a_stran
     stem (the pre-fix defect) would lose one of them; collapsing the
     coincident glyphs to one copy (the tempting wrong fix) would too. These
     figures are invariant under every variant tried during the research."""
-    result = tabextract.extract(born_a_stranger_pdf)
+    result = tabextract.extract(score_m_pdf)
     assert result.extractable
     # One fewer than before _detect_barlines merged a repeat pair's two
     # strokes into one boundary (see BARLINE_STROKE_MERGE_SPACES) - this
@@ -308,8 +308,8 @@ def test_born_a_stranger_unison_survives_as_two_notes_in_two_voices(born_a_stran
     assert result.notes == 403
 
 
-def test_carulli_moderato_unison_emits_one_note_per_voice_not_two_in_one(carulli_moderato_pdf):
-    """The other half of the same guard: Carulli's flagged spots read as
+def test_two_voice_unison_emits_one_note_per_voice_not_two_in_one(score_n_pdf):
+    """The other half of the same guard: score_n's flagged spots read as
     single notes on the page, but the content stream shows the SAME
     two-opposing-stem signature as a genuine unison (the research measured
     this - 'no unisons possible' reads the ink correctly and the content
@@ -318,7 +318,7 @@ def test_carulli_moderato_unison_emits_one_note_per_voice_not_two_in_one(carulli
     doubled chord; these figures are unchanged from before the fix, and no
     beat anywhere in the piece repeats the same fret/string within one
     chord."""
-    result = tabextract.extract(carulli_moderato_pdf)
+    result = tabextract.extract(score_n_pdf)
     assert result.extractable
     assert result.bars == 42
     assert result.bars_defective == 0
@@ -330,7 +330,7 @@ def test_carulli_moderato_unison_emits_one_note_per_voice_not_two_in_one(carulli
             f"{chord.group(1)}")
 
 
-def test_a_coincident_pair_with_no_second_stem_is_disclosed_not_silently_doubled(ronfaure_pdf):
+def test_a_coincident_pair_with_no_second_stem_is_disclosed_not_silently_doubled(score_o_pdf):
     """A coincident duplicate pair that cannot be told apart - either because
     only ONE candidate stem was found at all, or because every further
     candidate's x-column already belongs to a different, real note's own
@@ -342,7 +342,7 @@ def test_a_coincident_pair_with_no_second_stem_is_disclosed_not_silently_doubled
     without the onset guard this score reads 5 unsplit / 4 staves (see the
     guard's own regression test), which is the smaller, geometry-only
     residue the #116 research first measured."""
-    result = tabextract.extract(ronfaure_pdf)
+    result = tabextract.extract(score_o_pdf)
     assert result.extractable
     assert result.coincident_unsplit_pairs == 15
     assert result.staves_coincident_unsplit == 4
@@ -390,7 +390,7 @@ def test_a_coincident_pair_alone_at_an_onset_is_not_given_a_second_note():
     pair - one printed notehead over one printed digit - the page is
     self-consistent as a single note, and the only thing suggesting two is
     the two-opposing-stem signature that #116 measured to be unreliable on
-    its own (Carulli-Moderato reads as single notes on the printed page and
+    its own (score_n reads as single notes on the printed page and
     carries exactly that signature 74 times). Doubling it here would invent a
     sounding note; the copy stays without a digit and is reported as one.
     Library-wide this shape is 500 onsets against the chord shape's 65."""
@@ -478,7 +478,7 @@ def test_a_top_member_duplicate_in_one_voice_is_left_starved_not_recovered():
     assert shared == 0
 
 
-def test_the_cosmic_wheel_chord_unison_stops_costing_it_twelve_bars(cosmic_wheel_pdf):
+def test_a_chord_unison_stops_costing_the_third_voice_its_note(score_q_pdf):
     """Issue #137's whole subject, on the score it was filed for. Twelve
     onsets across four pages write an upper voice's two-note chord whose
     LOWER member is the lower voice's own eighth: three noteheads at two
@@ -509,7 +509,7 @@ def test_the_cosmic_wheel_chord_unison_stops_costing_it_twelve_bars(cosmic_wheel
     own reach. The note count does NOT move with any of it - a dot changes a
     duration, and a floored harmonic is still one note - which is what keeps
     this test about #137."""
-    result = tabextract.extract(cosmic_wheel_pdf)
+    result = tabextract.extract(score_q_pdf)
     assert result.extractable
     assert result.bars == 78
     assert result.notes == 914
@@ -524,7 +524,7 @@ def test_the_cosmic_wheel_chord_unison_stops_costing_it_twelve_bars(cosmic_wheel
     assert any("coincident notehead at the same position" in w for w in result.warnings)
 
 
-def test_the_cosmic_wheel_harmonic_is_not_read_as_a_whole_note(cosmic_wheel_pdf):
+def test_a_harmonic_is_not_read_as_a_whole_note(score_q_pdf):
     """Issue #140, on the score it was filed for. Page 1, bar 13, voice 1 was
     emitted `:16 3.1 :1 5.1` - a sixteenth grace note plus a WHOLE note, 4.25
     quarters in a 4/4 bar. What is engraved there is a natural harmonic: a
@@ -545,7 +545,7 @@ def test_the_cosmic_wheel_harmonic_is_not_read_as_a_whole_note(cosmic_wheel_pdf)
     Decoded off the staff that carries it (page 1, the third standard staff,
     ruled at y 464.9), so the assertion is on the head's own duration rather
     than on the bar sum a dozen other readings also feed."""
-    page = fitz.open(cosmic_wheel_pdf)[0]
+    page = fitz.open(score_q_pdf)[0]
     staff = next(s for s in tabextract._detect_staves(page)[0]
                  if s.kind == "standard" and abs(s.top - 464.9) < 1.0)
     notes, stats = glyph_rhythm.decode_note_events(
@@ -561,7 +561,7 @@ def test_the_cosmic_wheel_harmonic_is_not_read_as_a_whole_note(cosmic_wheel_pdf)
     # End to end: the overfull count drops by exactly the one bar, the harmonic
     # bar 13 stops printing a whole note, and the score's two genuine whole
     # notes are untouched.
-    result = tabextract.extract(cosmic_wheel_pdf)
+    result = tabextract.extract(score_q_pdf)
     bar13 = result.alphatex.split("|")[12]
     assert ":1 5.1" not in bar13, "no whole note is emitted for the harmonic"
     assert ":4 5.1" in bar13, "it is a floored quarter instead"
@@ -570,7 +570,7 @@ def test_the_cosmic_wheel_harmonic_is_not_read_as_a_whole_note(cosmic_wheel_pdf)
     assert result.bars_overfull == 7
 
 
-def test_a_deep_chords_pushed_down_dots_all_find_their_own_note(storms_past_pdf):
+def test_a_deep_chords_pushed_down_dots_all_find_their_own_note(score_l_pdf):
     """Issues #111/#112, on the score that isolates the last piece of it.
 
     Page 2 of this score prints a five-note chord with five dots in one
@@ -592,7 +592,7 @@ def test_a_deep_chords_pushed_down_dots_all_find_their_own_note(storms_past_pdf)
     All five heads, one dot each, nothing unassigned - read off
     decode_note_events, since the beat model collapses a chord's members to
     one duration and would hide which notehead the dots landed on."""
-    page = fitz.open(storms_past_pdf)[1]
+    page = fitz.open(score_l_pdf)[1]
     staff = next(s for s in tabextract._detect_staves(page)[0]
                  if s.kind == "standard" and abs(s.top - 66.6) < 1.0)
     notes, stats = glyph_rhythm.decode_note_events(
@@ -691,7 +691,7 @@ def test_a_pushed_down_cascade_gives_each_member_its_own_dot(pushed_down_cascade
         "no dot of this staff is left orphaned - the cascade's last is bound"
 
 
-def test_a_top_member_copy_that_borrows_a_stem_is_left_exactly_as_it_was(spanish_romance_pdf):
+def test_a_top_member_copy_that_borrows_a_stem_is_left_exactly_as_it_was(score_r_pdf):
     """The refusal that keeps #210 off correct output, pinned on the library's
     largest population of the shape (34 of the 48 in-chord onsets whose
     leftover head has no twin at its own position). Every one of these is a
@@ -707,7 +707,7 @@ def test_a_top_member_copy_that_borrows_a_stem_is_left_exactly_as_it_was(spanish
     it must read exactly as it did before - nothing shared, its emitted
     output and conformance figures byte-for-byte untouched. See issue #141,
     which measured this population, and #116, which found the borrowed stem."""
-    result = tabextract.extract(spanish_romance_pdf)
+    result = tabextract.extract(score_r_pdf)
     assert result.extractable
     assert result.unison_digits_shared == 0
     assert result.bars == 32
@@ -755,26 +755,26 @@ def test_the_top_member_recovery_is_what_restores_the_starved_note(
     assert "(00.2 2.6)" not in result.alphatex
 
 
-def test_notation_only_pdf_has_no_tab_staves(tarrega_pdf):
-    info = tabextract.analyze(tarrega_pdf)
+def test_notation_only_pdf_has_no_tab_staves(score_b_pdf):
+    info = tabextract.analyze(score_b_pdf)
     assert info["extractable"] is False
     assert info["vector"] is True
     assert info["tab_staff_count"] == 0
     assert info["standard_staff_count"] > 0
 
-    result = tabextract.extract(tarrega_pdf)
+    result = tabextract.extract(score_b_pdf)
     assert result.extractable is False
     assert result.alphatex is None
     assert "standard-notation only" in result.reason
 
 
-def test_raster_pdf_is_not_extractable(claire_de_lune_pdf):
-    info = tabextract.analyze(claire_de_lune_pdf)
+def test_raster_pdf_is_not_extractable(score_c_pdf):
+    info = tabextract.analyze(score_c_pdf)
     assert info["extractable"] is False
     assert info["vector"] is False
     assert "raster" in info["reason"]
 
-    result = tabextract.extract(claire_de_lune_pdf)
+    result = tabextract.extract(score_c_pdf)
     assert result.extractable is False
     assert "raster" in result.reason
 
@@ -831,13 +831,13 @@ def test_measure_quarter_length_scales_by_denominator():
     assert tabextract._measure_quarter_length((9, 8)) == 4.5
 
 
-def test_six_eight_and_three_four_extract_identically(zanarkand_pdf):
+def test_six_eight_and_three_four_extract_identically(score_a_pdf):
     """6/8 and 3/4 share the same 3-quarter measure budget, so rhythm
     inference (driven purely by that budget) must produce the same bars,
     notes, and duration codes for either - before the fix, 6/8 doubled the
     budget and every duration diverged."""
-    three_four = tabextract.extract(zanarkand_pdf, time_signature=(3, 4))
-    six_eight = tabextract.extract(zanarkand_pdf, time_signature=(6, 8))
+    three_four = tabextract.extract(score_a_pdf, time_signature=(3, 4))
+    six_eight = tabextract.extract(score_a_pdf, time_signature=(6, 8))
     assert six_eight.extractable
     assert six_eight.bars == three_four.bars
     assert six_eight.notes == three_four.notes
@@ -1557,15 +1557,15 @@ def _emitted_bars(alphatex):
     return out
 
 
-def test_reference_score_bars_mostly_add_up(zanarkand_pdf):
-    """To Zanarkand is two-voice fingerstyle writing throughout: a melody over
+def test_reference_score_bars_mostly_add_up(score_a_pdf):
+    """score_a is two-voice fingerstyle writing throughout: a melody over
     an independent bass line. Assembled into one voice per bar, 37 of its 50
     bars held more than their meter (only 24% summed exactly, 72.5 quarters of
     total error) with every individual duration decoded correctly. Separating
     the voices is what fixes the arithmetic, so pin it: this is the metric the
     feature exists to move.
     """
-    result = tabextract.extract(zanarkand_pdf)
+    result = tabextract.extract(score_a_pdf)
     assert result.extractable
     bars = _emitted_bars(result.alphatex)
     # One fewer than before _detect_barlines merged a repeat pair's two
@@ -1585,13 +1585,13 @@ def test_reference_score_bars_mostly_add_up(zanarkand_pdf):
     assert multivoice >= 30, f"only {multivoice} bars came out as two voices"
 
 
-def test_reference_score_reports_the_bars_it_invented_silence_in(zanarkand_pdf):
+def test_reference_score_reports_the_bars_it_invented_silence_in(score_a_pdf):
     """The emitted alphaTex bars mostly add up (above) BECAUSE some of them
     were filled out from the meter. Both facts have to be reported, and the
     second one by bar number: the padding is why a score with notes missing
     could report every bar conformant at high confidence.
     """
-    result = tabextract.extract(zanarkand_pdf)
+    result = tabextract.extract(score_a_pdf)
     assert result.bars_padded > 0
     assert len(result.padded_bars) == result.bars_padded
     assert result.padded_bars == sorted(result.padded_bars)
@@ -1607,10 +1607,10 @@ def test_reference_score_reports_the_bars_it_invented_silence_in(zanarkand_pdf):
     assert result.bars_short > 0
 
 
-def test_reference_score_still_reports_the_bars_that_do_not_add_up(zanarkand_pdf):
+def test_reference_score_still_reports_the_bars_that_do_not_add_up(score_a_pdf):
     """A much smaller number, but it must still be reported rather than
     disappearing - the remaining bars really do play wrong."""
-    result = tabextract.extract(zanarkand_pdf)
+    result = tabextract.extract(score_a_pdf)
     fullness = [w for w in result.warnings if "hold more than their time signature" in w]
     assert len(fullness) == 1, result.warnings
     # 49, not 50 - see test_reference_score_bars_mostly_add_up.
@@ -1899,11 +1899,11 @@ def test_rhythm_report_is_the_single_source_of_warnings_and_confidence():
 # ---------------------------------------------------------------------------
 
 
-def test_emitted_time_signature_is_always_usable(zanarkand_pdf):
+def test_emitted_time_signature_is_always_usable(score_a_pdf):
     """A glyph-decoded signature is written into \\ts and STORED, and alphaTab
     throws outright on something like `\\ts 3 12`, so an unvalidated decode
     produces a saved transcription that can never be rendered again."""
-    result = tabextract.extract(zanarkand_pdf)
+    result = tabextract.extract(score_a_pdf)
     assert glyph_rhythm.time_signature_is_valid(result.time_signature)
     for line in result.alphatex.splitlines():
         m = re.search(r"\\ts\s+(\d+)\s+(\d+)", line)
@@ -1911,8 +1911,8 @@ def test_emitted_time_signature_is_always_usable(zanarkand_pdf):
             assert glyph_rhythm.time_signature_is_valid((int(m.group(1)), int(m.group(2)))), line
 
 
-def test_unusable_manual_override_is_ignored_not_emitted(zanarkand_pdf):
-    result = tabextract.extract(zanarkand_pdf, time_signature=(3, 12))
+def test_unusable_manual_override_is_ignored_not_emitted(score_a_pdf):
+    result = tabextract.extract(score_a_pdf, time_signature=(3, 12))
     assert result.extractable
     assert glyph_rhythm.time_signature_is_valid(result.time_signature)
     assert result.time_signature_source != "manual override"
@@ -1966,7 +1966,7 @@ def test_ts_timeline_lookup_uses_the_last_meter_printed_before_a_position():
     assert tabextract._ts_at(timeline, 0, 100.0, -1e6) == (4, 4)
 
 
-def test_a_meter_further_along_a_bar_is_not_a_meter_at_this_barline(mitsuha_pdf):
+def test_a_meter_further_along_a_bar_is_not_a_meter_at_this_barline(score_i_pdf):
     """What is offered as a barline is every vertical that spans the staff,
     and on a notation staff most of those are stems. So the mid-system meter
     reader is asked about positions a bar ahead of the meter it can see, and
@@ -1992,7 +1992,7 @@ def test_a_meter_further_along_a_bar_is_not_a_meter_at_this_barline(mitsuha_pdf)
     opening, which is a different reader entirely and has its own coverage
     (see test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early).
     """
-    page = fitz.open(mitsuha_pdf)[0]
+    page = fitz.open(score_i_pdf)[0]
     staves, _ = tabextract._detect_staves(page)
     std = sorted((s for s in staves if s.kind == "standard"), key=lambda s: s.top)[0]
     vseg = tabextract._vertical_segments(page)
@@ -2032,7 +2032,7 @@ def test_a_meter_further_along_a_bar_is_not_a_meter_at_this_barline(mitsuha_pdf)
             bx, refused_ts, "nearest accepted position", nearest_x, nearest_ts)
 
 
-def test_a_key_change_at_a_mid_system_barline_does_not_hide_the_meter(wild_arms_pdf):
+def test_a_key_change_at_a_mid_system_barline_does_not_hide_the_meter(score_j_pdf):
     """Issue #90's window defect, again, but for a meter change printed
     part-way ALONG a system instead of at its start: three flats behind the
     barline push the numerator's left edge to 6.18 staff spaces past it, past
@@ -2043,7 +2043,7 @@ def test_a_key_change_at_a_mid_system_barline_does_not_hide_the_meter(wild_arms_
     `emitted_meters` reads the sequence back out of the emitted MusicXML, not
     off the ExtractionResult, so a consumer's own view of the file is what is
     being checked."""
-    result = tabextract.extract(wild_arms_pdf)
+    result = tabextract.extract(score_j_pdf)
     meters = emitted_meters(result.musicxml)
     # Two of this score's bars used to be the phantom sliver a repeat pair's
     # two strokes left behind before _detect_barlines merged them (see
@@ -2054,7 +2054,7 @@ def test_a_key_change_at_a_mid_system_barline_does_not_hide_the_meter(wild_arms_
         result.warnings)
 
 
-def test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early(kaine_salvation_pdf):
+def test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early(score_k_pdf):
     """The shape that forbids naive widening: a courtesy 6/8 is printed
     behind four sharps at the end of a system, about 7 staff spaces past that
     system's LAST barline, to preview the meter the NEXT system opens in. It
@@ -2073,7 +2073,7 @@ def test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early(kaine_salv
     # inspecting the page directly: its first system's own opening meter is
     # 3/4, and the courtesy signature behind four sharps sits near that
     # system's right edge, previewing the second system's 6/8.
-    page = fitz.open(kaine_salvation_pdf)[1]
+    page = fitz.open(score_k_pdf)[1]
     staves, _ = tabextract._detect_staves(page)
     stds = sorted((s for s in staves if s.kind == "standard"), key=lambda s: s.top)
     vseg = tabextract._vertical_segments(page)
@@ -2117,7 +2117,7 @@ def test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early(kaine_salv
         found_and_refused = True
     assert found_and_refused, "this page's first system carries no (6, 8) candidate to refuse"
 
-    result = tabextract.extract(kaine_salvation_pdf)
+    result = tabextract.extract(score_k_pdf)
     meters = emitted_meters(result.musicxml)
     changes = [(i + 1, m) for i, m in enumerate(meters) if i == 0 or m != meters[i - 1]]
     # One bar earlier than before _detect_barlines merged a repeat pair's two
@@ -2180,7 +2180,7 @@ def test_ts_at_anchor_must_match_a_recorded_system_top_exactly():
 # ---------------------------------------------------------------------------
 
 
-def test_unrecognised_maestro_falls_back_honestly(zanarkand_pdf, monkeypatch):
+def test_unrecognised_maestro_falls_back_honestly(score_a_pdf, monkeypatch):
     """An honest fallback with a warning beats confidently-wrong output. A
     font that keeps the name "Maestro" but not the calibrated outlines must
     take the whole document to the spacing heuristic AND say why - and must
@@ -2191,7 +2191,7 @@ def test_unrecognised_maestro_falls_back_honestly(zanarkand_pdf, monkeypatch):
     )
     glyph_rhythm.clear_caches()
     try:
-        result = tabextract.extract(zanarkand_pdf)
+        result = tabextract.extract(score_a_pdf)
     finally:
         glyph_rhythm.clear_caches()
 
@@ -2206,11 +2206,11 @@ def test_unrecognised_maestro_falls_back_honestly(zanarkand_pdf, monkeypatch):
     assert result.time_signature_source != "glyph-decoded"
 
 
-def test_calibrated_maestro_still_decodes(zanarkand_pdf):
+def test_calibrated_maestro_still_decodes(score_a_pdf):
     """The other direction: the library's own files must keep decoding, or
     the fingerprint is just an outage."""
     glyph_rhythm.clear_caches()
-    result = tabextract.extract(zanarkand_pdf)
+    result = tabextract.extract(score_a_pdf)
     assert result.rhythm_provenance == {tabextract.PROV_GLYPHS: 10}
     assert "own engraving" in result.confidence["rhythm"]
     assert result.time_signature_source == "glyph-decoded"
@@ -2276,7 +2276,7 @@ def test_a_first_bar_pickup_is_excused_from_rule_8_uncompensated():
 def test_a_first_bar_pickup_is_excused_from_rule_8_compensated():
     """The classical, compensated pairing: bar 1 is short AND the final bar is
     short by exactly the beats bar 1 is missing, so the two sum to one measure
-    (Bella-Ciao is the real case - 2.0 + 2.0 in 4/4). BOTH bars are the pickup,
+    (unpinned score 1 is the real case - 2.0 + 2.0 in 4/4). BOTH bars are the pickup,
     and both come out of the defective count."""
     full = [[(4, 0, [(1, 0)])] * 4]        # 4.0 == a full 4/4 bar
     pickup = [[(2, 0, [(1, 0)])]]          # 2.0 - short of 4/4
@@ -2292,7 +2292,7 @@ def test_a_first_bar_short_in_only_one_voice_is_not_a_pickup():
     that FILLS the meter and another that falls short is a dropped note, not a
     pickup - even when the final bar is a complete measure, the shape that would
     otherwise complete the pairing. It stays short and defective. This is the
-    _bar_conformance shape of the real Far Promise case."""
+    _bar_conformance shape of the real score_g case."""
     full = [[(4, 0, [(1, 0)])] * 4]
     # voice 1 is 1.0, voice 2 fills the bar at 4.0 - the longest voice is NOT
     # under the meter, so the bar is not wholly short.
@@ -2339,11 +2339,11 @@ def test_the_pickup_exemption_is_disclosed_in_the_rhythm_warnings():
     assert any("pickup (anacrusis)" in w and "bars are: 1" in w for w in warnings)
 
 
-def test_sad_song_pickup_is_recognised_and_lifts_its_demotion(sad_song_pdf):
-    """Issue #174 target 1: Sad Song opens on a two-eighth-note pickup that was
+def test_a_pickup_is_recognised_and_lifts_its_demotion(score_e_pdf):
+    """Issue #174 target 1: score_e opens on a two-eighth-note pickup that was
     its ONLY defective bar, so recognising it takes the score to zero defective
     bars and its rhythm confidence from medium back to high."""
-    result = tabextract.extract(sad_song_pdf)
+    result = tabextract.extract(score_e_pdf)
     assert result.bars_anacrusis == 1
     assert result.anacrusis_bars == [1]
     assert result.bars_defective == 0
@@ -2351,12 +2351,12 @@ def test_sad_song_pickup_is_recognised_and_lifts_its_demotion(sad_song_pdf):
     assert result.confidence["rhythm"].startswith("high")
 
 
-def test_singing_mountain_pickup_is_lifted_but_its_other_defect_remains(
-        singing_mountain_pdf):
-    """Issue #174 target 2: Singing Mountain opens on a one-beat pickup but also
+def test_a_pickup_with_an_unrelated_short_bar_is_lifted_but_the_defect_remains(
+        score_f_pdf):
+    """Issue #174 target 2: score_f opens on a one-beat pickup but also
     carries an unrelated short bar (bar 19). The pickup is recognised - bar 1
     leaves the defective count - while bar 19 keeps the score at medium."""
-    result = tabextract.extract(singing_mountain_pdf)
+    result = tabextract.extract(score_f_pdf)
     assert result.bars_anacrusis == 1
     assert result.anacrusis_bars == [1]
     # bar 19 is a genuine misread and stays defective
@@ -2364,12 +2364,12 @@ def test_singing_mountain_pickup_is_lifted_but_its_other_defect_remains(
     assert result.confidence["rhythm"].startswith("medium")
 
 
-def test_far_promise_short_first_bar_is_not_excused_as_a_pickup(far_promise_pdf):
-    """Issue #174 adversarial non-fire on a real score: Far Promise's first bar
+def test_a_short_first_bar_in_one_voice_only_is_not_excused_as_a_pickup(score_g_pdf):
+    """Issue #174 adversarial non-fire on a real score: score_g's first bar
     is short in one voice while another voice fills it (a dropped note), and its
     final bar IS a complete measure - the shape that would complete the pairing.
     The 'wholly short' guard keeps bar 1 defective and the demotion intact."""
-    result = tabextract.extract(far_promise_pdf)
+    result = tabextract.extract(score_g_pdf)
     assert result.bars_anacrusis == 0
     assert result.anacrusis_bars == []
     assert result.bars_defective == 2       # bars 1 and 16, both still counted
@@ -2406,7 +2406,7 @@ def test_the_padded_bars_are_named_not_just_counted():
     assert not any("deduced from the time signature" in w for w in quiet)
 
 
-def test_floored_durations_are_counted_and_disclosed_on_a_real_score(hymn_of_the_fayth_pdf):
+def test_floored_durations_are_counted_and_disclosed_on_a_real_score(score_h_pdf):
     """The end-to-end half of #115, and the reason it needs a real score.
 
     Every notation staff in this file carries filled noteheads whose stems the
@@ -2420,7 +2420,7 @@ def test_floored_durations_are_counted_and_disclosed_on_a_real_score(hymn_of_the
     The numbers are exact on purpose. A counter that fires on the wrong branch,
     or one wired to the notehead count rather than to the stemless ones, still
     produces a non-zero figure and a plausible-looking sentence."""
-    result = tabextract.extract(str(hymn_of_the_fayth_pdf))
+    result = tabextract.extract(str(score_h_pdf))
     assert result.notes_no_stem == 73
     assert result.staves_no_stem == 4
     # Every staff on the file is degraded by it, so nothing here can claim to
@@ -2850,11 +2850,11 @@ def test_reported_beat_count_matches_what_the_musicxml_holds():
     assert len(root.findall("./part/measure/forward")) == 1
 
 
-def test_reported_beat_count_matches_the_reference_scores_musicxml(zanarkand_pdf):
+def test_reported_beat_count_matches_the_reference_scores_musicxml(score_a_pdf):
     """The same invariant on a real score, where the padding actually happens."""
     import xml.etree.ElementTree as ET
 
-    result = tabextract.extract(zanarkand_pdf)
+    result = tabextract.extract(score_a_pdf)
     root = ET.fromstring(result.musicxml)
     holds = len([n for n in root.findall("./part/measure/note") if n.find("chord") is None])
     assert holds == result.beats
@@ -2881,13 +2881,13 @@ def test_reported_note_count_matches_what_the_musicxml_holds():
     assert written == extracted - unwritable
 
 
-def test_extract_emits_musicxml_alongside_alphatex(zanarkand_pdf):
+def test_extract_emits_musicxml_alongside_alphatex(score_a_pdf):
     """Both emitters read the same measures, so their note counts must agree -
     a MusicXML document holding a different number of notes than the alphaTex
     for the same score means one of them is dropping beats."""
     import xml.etree.ElementTree as ET
 
-    result = tabextract.extract(zanarkand_pdf)
+    result = tabextract.extract(score_a_pdf)
     assert result.musicxml is not None
     root = ET.fromstring(result.musicxml)
     assert root.tag == "score-partwise"
@@ -2896,8 +2896,8 @@ def test_extract_emits_musicxml_alongside_alphatex(zanarkand_pdf):
     assert len(pitched) == result.notes
 
 
-def test_extract_decodes_the_key_signature(zanarkand_pdf):
-    result = tabextract.extract(zanarkand_pdf)
+def test_extract_decodes_the_key_signature(score_a_pdf):
+    result = tabextract.extract(score_a_pdf)
     assert result.key_signature_source == "glyph-decoded"
     assert -7 <= result.key_fifths <= 7
     assert "high" in result.confidence["key_signature"]
@@ -2947,13 +2947,13 @@ def test_a_chord_with_one_impossible_fret_keeps_its_other_notes():
     assert [n.findtext("notations/technical/fret") for n in notes] == ["2", "0"]
 
 
-def test_reported_conformance_matches_the_emitted_measures(zanarkand_pdf):
+def test_reported_conformance_matches_the_emitted_measures(score_a_pdf):
     """The Rule 8 counts are reported as data as well as prose, so they have to
     agree with what a consumer reads out of the emitted document - which is the
     whole argument for emitting a standard format."""
     import xml.etree.ElementTree as ET
 
-    result = tabextract.extract(zanarkand_pdf)
+    result = tabextract.extract(score_a_pdf)
     root = ET.fromstring(result.musicxml)
     assert result.bars_measured == result.bars
 
@@ -2981,7 +2981,7 @@ def test_reported_conformance_matches_the_emitted_measures(zanarkand_pdf):
     assert max(result.bars_overfull, result.bars_short) <= result.bars_defective
 
 
-def test_no_voice_is_written_as_inferred_silence_alone(zanarkand_pdf):
+def test_no_voice_is_written_as_inferred_silence_alone(score_a_pdf):
     """What makes the check above valid for a consumer as well as for us.
 
     Inferred silence is a `<forward>`, which is not counted by Rule 8 - so a
@@ -2994,7 +2994,7 @@ def test_no_voice_is_written_as_inferred_silence_alone(zanarkand_pdf):
     """
     import xml.etree.ElementTree as ET
 
-    result = tabextract.extract(zanarkand_pdf)
+    result = tabextract.extract(score_a_pdf)
     root = ET.fromstring(result.musicxml)
     forwards = 0
     for measure in root.findall("./part/measure"):
@@ -3133,21 +3133,21 @@ def test_read_tuning_does_not_trip_on_a_tuning_name_that_only_begins_a_word():
     assert read_tuning("Drop C\ntune the sixth string")[1] == "Drop C"
 
 
-def test_a_named_tuning_beside_an_unread_capo_is_read_low_and_says_why(zanarkand_pdf):
+def test_a_named_tuning_beside_an_unread_capo_is_read_low_and_says_why(score_a_pdf):
     """A tuning read from a NAME caps at medium; a name whose page ALSO prints an
     instruction nobody applied is lower still, because the sounding pitches are
     then wrong by whatever that instruction asks for (issue #80). Exercised on a
     real library page rather than a constructed one, because the label branch
-    needs a PDF - "To Zanarkand" prints "Drop D" and this checks the recognised
+    needs a PDF - score_a prints "Drop D" and this checks the recognised
     name arrives as a label read low when an unread instruction rides with it."""
     import fermata.tabextract as tabextract
 
-    result = tabextract.extract(zanarkand_pdf)
+    result = tabextract.extract(score_a_pdf)
     assert result.extractable
     assert result.tuning_label == "Drop D"
     assert result.tuning_source == tabextract.TUNING_FROM_LABEL
     # A plain recognised name (no unread instruction) is medium; one WITH an
-    # unread instruction is low and names it. Whichever "To Zanarkand" is, the
+    # unread instruction is low and names it. Whichever way score_a reads, the
     # word matches its tuning_unread state - the two cannot disagree.
     if result.tuning_unread:
         assert result.confidence["tuning"].startswith("low")
@@ -3247,7 +3247,7 @@ def test_a_thick_stroke_read_as_thin_still_finds_its_repeat_dots(monkeypatch):
     assert bl.repeat_unread is False
 
 
-def test_zeldas_lullaby_reads_the_repeat_and_both_endings(zelda_lullaby_pdf):
+def test_a_forward_repeat_with_both_endings_is_read_correctly(score_s_pdf):
     """The phase-1 acceptance case: the score whose exact structure the
     project's one human tester established by hand (issue #134). 23 bars -
     not 24, the phantom sliver a repeat pair's two strokes used to leave
@@ -3257,9 +3257,9 @@ def test_zeldas_lullaby_reads_the_repeat_and_both_endings(zelda_lullaby_pdf):
     at measures 10 and 18, and a final barline at measure 23.
 
     The page's navigation marks are read too, and are asserted separately -
-    see test_zeldas_lullaby_reads_its_navigation_marks.
+    see test_a_ds_paired_with_its_drawn_segno_contributes_no_navigation_term.
     """
-    result = tabextract.extract(zelda_lullaby_pdf)
+    result = tabextract.extract(score_s_pdf)
     assert result.extractable
     assert result.bars == 23
     assert result.bars_unread == 0
@@ -3292,7 +3292,7 @@ def test_zeldas_lullaby_reads_the_repeat_and_both_endings(zelda_lullaby_pdf):
     assert loaded["tickLookup"] == expected_order
 
 
-def test_zeldas_lullaby_reads_its_navigation_marks(zelda_lullaby_pdf):
+def test_a_ds_paired_with_its_drawn_segno_contributes_no_navigation_term(score_s_pdf):
     """The phase-2 acceptance case, on the same score phase 1 used.
 
     THE FORM THE PAGE DESCRIBES, established from the engraving and from the
@@ -3320,7 +3320,7 @@ def test_zeldas_lullaby_reads_its_navigation_marks(zelda_lullaby_pdf):
     puts it at 18, on the same bar as the double barline the page draws to
     end that section.
     """
-    result = tabextract.extract(zelda_lullaby_pdf)
+    result = tabextract.extract(score_s_pdf)
     assert result.extractable
     assert result.bars == 23
 
@@ -3355,7 +3355,7 @@ def test_zeldas_lullaby_reads_its_navigation_marks(zelda_lullaby_pdf):
         list(range(1, 9)) + list(range(1, 7)) + list(range(9, 24)))
 
 
-def test_lennas_theme_reads_a_volta_that_opens_a_system(lenna_theme_pdf):
+def test_a_volta_bracket_opening_at_a_system_start_is_read(score_t_pdf):
     """The adversarial review's own acid test for issue #134's blocker 1: a
     volta bracket opening AT a system start, past the clef and key
     signature, with no barline stroke anywhere near its left end because the
@@ -3371,7 +3371,7 @@ def test_lennas_theme_reads_a_volta_that_opens_a_system(lenna_theme_pdf):
     next bar, immediately after the repeat - and is left open (no closing
     hook drawn).
     """
-    result = tabextract.extract(lenna_theme_pdf)
+    result = tabextract.extract(score_t_pdf)
     assert result.extractable
     # 17, not the 13 this pinned before issue #152: the page's last band
     # prints TWO systems side by side (bars 14-15 on the left, 16-17 on the
@@ -3412,8 +3412,8 @@ def test_lennas_theme_reads_a_volta_that_opens_a_system(lenna_theme_pdf):
     assert loaded["tickLookup"] == expected_order
 
 
-def test_sorrows_of_parting_reads_its_side_by_side_systems(sorrows_of_parting_pdf):
-    """Issue #87 on the score it names. The report reads its page 1 as two
+def test_a_score_with_ruled_close_side_by_side_systems_reads_them(score_u_pdf):
+    """Issue #87, on score_u. The report reads its page 1 as two
     staves each drawn with every line stroked twice:
 
         anomaly lines=10  ys=[663.4, 664.1, 668.6, 669.2, 673.7, 674.3,
@@ -3431,12 +3431,12 @@ def test_sorrows_of_parting_reads_its_side_by_side_systems(sorrows_of_parting_pd
     So #87 is the same bug as #152, and _band_columns (which splits a band
     into its x-overlapping columns before the lines are counted) is what
     already fixes it - reverting that split returns the two anomalies above,
-    gaps and all. This pins that the named score is read, so #87 cannot
-    silently regress behind #152's coverage on Lenna's Theme (a sibling in
+    gaps and all. This pins that score_u is read, so #87 cannot
+    silently regress behind #152's coverage on score_t (a sibling in
     the same folder and exporter - see
-    test_lennas_theme_reads_a_volta_that_opens_a_system).
+    test_a_volta_bracket_opening_at_a_system_start_is_read).
     """
-    page = fitz.open(sorrows_of_parting_pdf)[0]
+    page = fitz.open(score_u_pdf)[0]
     staves, anomalies = tabextract._detect_staves(page)
     # Every band is read; nothing is thrown away as an unexpected line count.
     assert anomalies == []
@@ -3465,13 +3465,13 @@ def test_sorrows_of_parting_reads_its_side_by_side_systems(sorrows_of_parting_pd
     assert left_std.x1 < right_std.x0
 
     # And the music of those recovered systems decodes rather than being lost.
-    result = tabextract.extract(sorrows_of_parting_pdf)
+    result = tabextract.extract(score_u_pdf)
     assert result.extractable
     assert result.bars == 20
     assert result.systems_unread == 0
 
 
-def test_an_incomplete_ending_run_alone_downgrades_structure_confidence(victory_fanfare_pdf):
+def test_an_incomplete_ending_run_alone_downgrades_structure_confidence(score_v_pdf):
     """Blocker 2 (issue #134 adversarial review): `structure_issues` (~the
     confidence sum near musicxml build in tabextract.py) used to omit
     `endings_incomplete`, so a score could simultaneously warn that its
@@ -3488,12 +3488,12 @@ def test_an_incomplete_ending_run_alone_downgrades_structure_confidence(victory_
 
     Phase 2 (issue #134) leaves that isolation exactly as it was. The score
     prints a "D.S." AND draws the segno it names (see
-    test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws), so it
+    test_a_ds_resolves_to_the_segno_the_page_draws), so it
     contributes no navigation term at all and the count is 1 - from
     `endings_incomplete` alone, which is what makes dropping that term from
     the sum visible as 1 -> 0 rather than as one less of several.
     """
-    result = tabextract.extract(victory_fanfare_pdf)
+    result = tabextract.extract(score_v_pdf)
     assert result.extractable
     assert result.endings_incomplete == 1
     assert result.repeats_unread == 0
@@ -3506,8 +3506,8 @@ def test_an_incomplete_ending_run_alone_downgrades_structure_confidence(victory_
     assert "1 repeat/volta/navigation mark(s)" in result.confidence["structure"]
 
 
-def test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws(
-        victory_fanfare_pdf):
+def test_a_ds_resolves_to_the_segno_the_page_draws(
+        score_v_pdf):
     """Blocker 1 of the adversarial review on this branch, on a real score.
 
     The library DOES draw segnos - 88 of them across 84 files - and every one
@@ -3522,7 +3522,7 @@ def test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws(
     engraved `navigation` fixture covers the same shape in a SMuFL font,
     which reaches the segno by an entirely different route (a published
     codepoint, not a glyph ID), so it could never have caught this."""
-    result = tabextract.extract(victory_fanfare_pdf)
+    result = tabextract.extract(score_v_pdf)
     assert result.extractable
     from test_engraved_fixtures import _navigation_structure
     assert _navigation_structure(result.musicxml) == {
@@ -3532,8 +3532,8 @@ def test_victory_fanfare_resolves_its_ds_to_the_segno_the_page_draws(
     assert result.nav_marks_unresolved == 0
 
 
-def test_melodies_of_life_numbers_its_two_segnos_and_their_two_ds_jumps(
-        melodies_of_life_pdf):
+def test_two_segnos_and_their_ds_jumps_are_numbered_by_the_printed_digit(
+        score_w_pdf):
     """Issue #167 on a real score. The page draws a segno printing a bold "1"
     at bar 16 and one printing "2" at bar 32, and "D.S. 1"/"D.S. 2" send the
     player to one each. Before #167 every segno sign emitted the single shared
@@ -3544,7 +3544,7 @@ def test_melodies_of_life_numbers_its_two_segnos_and_their_two_ds_jumps(
     The number is read from the music-font digit drawn against the sign, not
     from the text layer: the same digit reaches the text fused to the sign and
     offset by one, so a text reading would mislabel."""
-    result = tabextract.extract(melodies_of_life_pdf)
+    result = tabextract.extract(score_w_pdf)
     assert result.extractable
     from test_engraved_fixtures import _navigation_structure
     assert _navigation_structure(result.musicxml) == {
@@ -3560,8 +3560,8 @@ def test_melodies_of_life_numbers_its_two_segnos_and_their_two_ds_jumps(
     assert result.nav_marks_unresolved == 0
 
 
-def test_agnea_numbers_its_segnos_by_the_printed_digit_not_reading_order(
-        agnea_the_dancer_pdf):
+def test_segnos_are_numbered_by_the_printed_digit_not_reading_order(
+        score_x_pdf):
     """The adversarial case for #167, and the reason the id must come from the
     printed digit rather than from appearance order. This page draws its segno
     printing "2" on the HIGHER system (bar 2) and its segno printing "1" LOWER
@@ -3569,7 +3569,7 @@ def test_agnea_numbers_its_segnos_by_the_printed_digit_not_reading_order(
     bar-2 sign is segno2 and the bar-10 sign is segno1, and "D.S. 2"/"D.S. 1"
     resolve to segno2/segno1 accordingly - by their own parsed number, not by
     which sign the page draws first."""
-    result = tabextract.extract(agnea_the_dancer_pdf)
+    result = tabextract.extract(score_x_pdf)
     assert result.extractable
     from test_engraved_fixtures import _navigation_structure
     structure = _navigation_structure(result.musicxml)
@@ -3583,8 +3583,8 @@ def test_agnea_numbers_its_segnos_by_the_printed_digit_not_reading_order(
     assert result.nav_marks_unresolved == 0
 
 
-def test_hinata_numbers_its_codas_from_the_sign_digit_and_discloses_the_two_target_to_coda(
-        hinata_vs_neji_pdf):
+def test_codas_are_numbered_from_the_sign_digit_and_a_two_target_to_coda_is_disclosed(
+        score_y_pdf):
     """Issue #167's coda shape. This page numbers its codas as a music-font
     digit drawn to the LEFT of the sign ("1 (sign) Coda" at bar 19, "2 (sign)
     Coda" at bar 27) rather than as the word "Coda 1", so the coda LABEL fold
@@ -3600,7 +3600,7 @@ def test_hinata_numbers_its_codas_from_the_sign_digit_and_discloses_the_two_targ
     the words the page prints with no playback jump, and its bar is disclosed
     (nav_marks_unresolved) with a stated reason rather than silently pointed
     at half of what the page says."""
-    result = tabextract.extract(hinata_vs_neji_pdf)
+    result = tabextract.extract(score_y_pdf)
     assert result.extractable
     from test_engraved_fixtures import _navigation_structure
     structure = _navigation_structure(result.musicxml)
@@ -3615,7 +3615,7 @@ def test_hinata_numbers_its_codas_from_the_sign_digit_and_discloses_the_two_targ
 
 
 def test_two_thick_strokes_with_no_readable_dots_emit_heavy_heavy_not_nothing(
-        tarrega_estudio_em_pdf):
+        score_z_pdf):
     """Item 6 (issue #134 adversarial review): a barline group of two-or-more
     thick strokes ("tHHt" here) with no repeat direction resolved at all -
     not because a dot pair was found and disputed, but because no dot-shaped
@@ -3631,7 +3631,7 @@ def test_two_thick_strokes_with_no_readable_dots_emit_heavy_heavy_not_nothing(
     guessed - the same "bar-style for the strokes seen is still written,
     the repeat is not" contract repeats_unread already promises.
     """
-    result = tabextract.extract(tarrega_estudio_em_pdf)
+    result = tabextract.extract(score_z_pdf)
     assert result.extractable
     assert result.repeats_unread == 1
     assert result.repeats_unread_bars == [8]
@@ -3716,7 +3716,7 @@ def test_prose_that_merely_contains_a_marks_words_is_not_a_mark(text):
     # Every one of these is a text line in this project's library, verbatim,
     # and every one was being emitted as a live <direction>. The first three
     # are performance prose - an instruction to the PLAYER about a jump, not
-    # the jump - and "repeat after D.C." was giving Kaine Salvation a
+    # the jump - and "repeat after D.C." was giving score_k a
     # <sound dacapo="yes"/> on measure 1 with nothing disclosing it.
     "repeat after D.C.",
     "after D.S. repeat this",
@@ -3817,7 +3817,7 @@ def test_the_sign_printed_inside_a_to_coda_is_that_instructions_glyph_not_a_coda
     first coda seen, and `codas.setdefault` keeps the first), so the
     instruction pointed at itself and the score wrote `coda="coda"` twice.
 
-    The boxes below are Bygone Days' own, at the coordinates the page
+    The boxes below are score_ag's own, at the coordinates the page
     reports: the glyph's box sits inside the text line's, which is what
     distinguishes it from that score's REAL coda head lower down the page
     (x 417.9-427.8, y 616.6-637.1), which is inside no text line at all."""
@@ -3905,7 +3905,7 @@ def test_a_jump_and_a_sign_are_anchored_by_different_ends_of_their_own_text():
     left_aligned = tabextract._NavMark("jump", "D.C. al Coda", 201.0, 0, 250.0, 5)
     assert bar_of(left_aligned) == 2
     # A sign opens the bar it sits in, and is not snapped to a boundary at
-    # all - the coda sign on Zelda's Lullaby sits 34.8pt into its own bar,
+    # all - the coda sign on score_s sits 34.8pt into its own bar,
     # past the system's clef and key signature.
     sign = tabextract._NavMark("coda", "", 201.0, 0, 215.0, 5)
     assert bar_of(sign) == 3
@@ -3933,7 +3933,7 @@ def test_a_mark_drawn_entirely_outside_the_staff_is_refused_not_clamped():
     mark with no bar to name is already handled everywhere else."""
     bounds = [0.0, 100.0, 200.0, 300.0, 400.0]
     spacing = 5.0
-    # 1 AM's geometry, to scale: the coda sign sits 7.5 staff spaces past its
+    # score_aa's geometry, to scale: the coda sign sits 7.5 staff spaces past its
     # staff's right end. Nothing in the library sits closer than 3.42 spaces
     # out, so there is no borderline case between this and the overhang above.
     past_the_end = tabextract._NavMark("coda", "", 437.5, 0, 447.4, 5)
@@ -3984,8 +3984,7 @@ def test_two_systems_on_one_band_split_into_two_staves_when_interleaved():
     above them. Their y values interleave inside the 15.0pt cluster gap, so
     clustering by vertical gap alone returned ONE group of twelve lines,
     which is neither 5 nor 6 and was discarded whole, taking the band's bars
-    with it. This is Imprisoned Town's last band and both of The Nautilus
-    Knoweth's, to scale.
+    with it. This is score_ad's last band and both of score_ae's, to scale.
     """
     doc = _page_with_rules(
         _staff_rules(300.0, 54.0, 341.7, 6, 7.7)
@@ -4005,8 +4004,8 @@ def test_two_systems_ruled_at_the_same_y_are_not_one_full_width_staff():
     """The other half of the same defect, and the quieter one.
 
     Where the two systems are ruled at the IDENTICAL y - which is what
-    Imprisoned Town does with its notation staves, and Bygone Days and Our
-    Terms with both - the rows collapsed into a single staff record spanning
+    score_ad does with its notation staves, and score_ag and unpinned score 5
+    with both - the rows collapsed into a single staff record spanning
     the whole band, 54.0 to 575.9. Nothing was reported: the extractor
     simply held a staff that claimed music across the 36.5pt gap where the
     page draws none, and the gap then produced a bar boundary the page does
@@ -4037,7 +4036,7 @@ def test_a_short_system_is_read_but_a_tight_ornament_is_not():
     1.2-2.6pt apart, where no engraver rules a staff closer than 5.1.
 
     Admitting one cost a real staff rather than merely adding a phantom: on
-    Troian Beauty p3 the ornament's rows fell in the same 15.0pt band as the
+    unpinned score 8 p3 the ornament's rows fell in the same 15.0pt band as the
     page's first notation staff and swallowed it into an 11-line group.
     """
     ornament = [(100.0, 200.0, 320.0), (102.5, 200.0, 320.0),
@@ -4074,7 +4073,7 @@ def test_rows_packed_tighter_than_a_staff_are_not_staff_lines():
 
 
 def test_a_right_hand_coda_system_is_read_in_its_printed_order(
-        one_am_pdf, kakariko_village_pdf, imprisoned_town_pdf, nautilus_knoweth_pdf):
+        score_aa_pdf, score_ab_pdf, score_ad_pdf, score_ae_pdf):
     """Issue #152 on the four library pages it was verified against by
     reading them, asserted by the bar numbers those pages PRINT.
 
@@ -4082,36 +4081,36 @@ def test_a_right_hand_coda_system_is_read_in_its_printed_order(
     full system, on the same horizontal band. All four lost it - by two
     different routes, both fixed here (see _detect_staves):
 
-      - 1 AM and Kakariko Village rule that system's staff lines short
+      - score_aa and score_ab rule that system's staff lines short
         enough to fall under the length floor, so it was never seen at all:
         no staff, no anomaly, and no bars, with nothing saying so.
 
-      - Imprisoned Town and The Nautilus Knoweth rule both systems long, a
+      - score_ad and score_ae rule both systems long, a
         shade apart, so the pair clustered as one group with twice the lines
         and was discarded as unreadable.
 
     The bar numbers below are the ones printed on the pages, not the ones
-    the extractor happened to produce: 1 AM prints its coda at 18, Kakariko
-    at 37, Imprisoned Town at 34 (of 35), Nautilus at 57 (of 58). Each was
+    the extractor happened to produce: score_aa prints its coda at 18, score_ab
+    at 37, score_ad at 34 (of 35), score_ae at 57 (of 58). Each was
     previously one bar short of its coda, or four to five short of its end.
 
-    THE ORDER IS AN ASSERTION, not a by-product. On 1 AM the right-hand
+    THE ORDER IS AN ASSERTION, not a by-product. On score_aa the right-hand
     system is ruled 0.3pt HIGHER than the one beside it, so ordering staves
     by `top` - which is what this did - puts the coda system's bar FIRST and
     numbers the page backwards. The coda landing on the LAST bar is what
     says reading order beat top order.
 
-    This also closes issue #153's named residual. Nautilus's coda sign could
+    This also closes issue #153's named residual. score_ae's coda sign could
     not be refused by any x test, because the staff record it was measured
     against spanned the whole page width; here it anchors to the bar the
     page prints it over, and nav_marks_unanchored falls to 0 on all four.
     """
     from test_engraved_fixtures import _navigation_structure
 
-    one_am = tabextract.extract(one_am_pdf)
-    assert one_am.extractable
-    assert one_am.bars == 18, "the page prints 18 bars"
-    assert _navigation_structure(one_am.musicxml) == {
+    score_aa = tabextract.extract(score_aa_pdf)
+    assert score_aa.extractable
+    assert score_aa.bars == 18, "the page prints 18 bars"
+    assert _navigation_structure(score_aa.musicxml) == {
         1: [("before", "segno", {"segno": "segno"})],
         8: [("after", "To Coda", {"tocoda": "coda"})],
         17: [("after", "D.S. al Coda", {"dalsegno": "segno"})],
@@ -4119,56 +4118,56 @@ def test_a_right_hand_coda_system_is_read_in_its_printed_order(
     }
     # The jump and the coda are now on DIFFERENT bars, which is the whole
     # point: the clamp used to put both on 17.
-    assert one_am.nav_marks_unanchored == 0
-    assert one_am.nav_marks_unresolved_bars == []
-    assert one_am.systems_unread == 0
+    assert score_aa.nav_marks_unanchored == 0
+    assert score_aa.nav_marks_unresolved_bars == []
+    assert score_aa.systems_unread == 0
 
-    kakariko = tabextract.extract(kakariko_village_pdf)
-    assert kakariko.extractable
-    assert kakariko.bars == 37, "the page prints 37 bars"
-    assert _navigation_structure(kakariko.musicxml) == {
+    score_ab = tabextract.extract(score_ab_pdf)
+    assert score_ab.extractable
+    assert score_ab.bars == 37, "the page prints 37 bars"
+    assert _navigation_structure(score_ab.musicxml) == {
         19: [("after", "To Coda", {"tocoda": "coda"})],
         36: [("after", "D.C. al Coda", {"dacapo": "yes"})],
         37: [("before", "coda", {"coda": "coda"})],
     }
-    assert kakariko.nav_marks_unanchored == 0
-    assert kakariko.nav_marks_unresolved_bars == []
-    assert kakariko.systems_unread == 0
+    assert score_ab.nav_marks_unanchored == 0
+    assert score_ab.nav_marks_unresolved_bars == []
+    assert score_ab.systems_unread == 0
 
     # The 12-line route. Its two notation staves were ruled at the same y and
     # had merged into one full-width staff, so this page lost a whole band of
     # four printed bars (32-35) while reporting a staff for it.
-    imprisoned = tabextract.extract(imprisoned_town_pdf)
-    assert imprisoned.extractable
-    assert imprisoned.bars == 35, "the page prints 35 bars"
-    assert _navigation_structure(imprisoned.musicxml) == {
+    score_ad = tabextract.extract(score_ad_pdf)
+    assert score_ad.extractable
+    assert score_ad.bars == 35, "the page prints 35 bars"
+    assert _navigation_structure(score_ad.musicxml) == {
         14: [("after", "To Coda", {"tocoda": "coda"})],
         33: [("after", "D.C. al Coda", {"dacapo": "yes"})],
         34: [("before", "coda", {"coda": "coda"})],
     }
-    assert imprisoned.nav_marks_unanchored == 0
-    assert imprisoned.systems_unread == 0
+    assert score_ad.nav_marks_unanchored == 0
+    assert score_ad.systems_unread == 0
 
     # Both groups at once - a 10-line pair of notation staves and a 12-line
     # pair of tab staves on one band - and issue #153's named residual.
-    nautilus = tabextract.extract(nautilus_knoweth_pdf)
-    assert nautilus.extractable
-    assert nautilus.bars == 58, "the page prints 58 bars"
-    assert _navigation_structure(nautilus.musicxml) == {
+    score_ae = tabextract.extract(score_ae_pdf)
+    assert score_ae.extractable
+    assert score_ae.bars == 58, "the page prints 58 bars"
+    assert _navigation_structure(score_ae.musicxml) == {
         16: [("after", "To Coda", {"tocoda": "coda"})],
         56: [("after", "D.C. al Coda", {"dacapo": "yes"})],
         57: [("before", "coda", {"coda": "coda"})],
     }
-    assert nautilus.nav_marks_unanchored == 0
-    assert nautilus.systems_unread == 0
+    assert score_ae.nav_marks_unanchored == 0
+    assert score_ae.systems_unread == 0
 
 
 def test_the_two_systems_on_one_band_are_separate_staves(
-        imprisoned_town_pdf, one_am_pdf):
+        score_ad_pdf, score_aa_pdf):
     """The geometry issue #152 turns on, asserted directly rather than only
     through the bar counts it produces.
 
-    Imprisoned Town's last band holds two systems whose staff lines do not
+    score_ad's last band holds two systems whose staff lines do not
     overlap in x at all - 54.0-341.7 and 378.2-575.9, a 36.5pt gap - and
     whose tab staves are ruled 1.7pt apart, which is what interleaved them
     into one 12-line group inside the 15.0pt cluster gap. Its notation
@@ -4177,13 +4176,13 @@ def test_the_two_systems_on_one_band_are_separate_staves(
     54.0-575.9, describing music across a 36.5pt gap where the page draws
     none.
 
-    1 AM is the short-lines route, and pins the ordering hazard: its
+    score_aa is the short-lines route, and pins the ordering hazard: its
     right-hand system is ruled HIGHER (683.9 against 684.2), so `top` alone
     orders that band right to left.
     """
     import fitz
 
-    with fitz.open(imprisoned_town_pdf) as doc:
+    with fitz.open(score_ad_pdf) as doc:
         staves, anomalies = tabextract._detect_staves(doc[1])
     assert anomalies == [], "no 12-line group is left to discard"
     last = [s for s in staves if s.band == max(t.band for t in staves)]
@@ -4195,7 +4194,7 @@ def test_the_two_systems_on_one_band_are_separate_staves(
     assert [(round(s.x0, 1), round(s.x1, 1)) for s in stds] == [
         (54.0, 341.7), (378.2, 575.9)]
 
-    with fitz.open(one_am_pdf) as doc:
+    with fitz.open(score_aa_pdf) as doc:
         staves, anomalies = tabextract._detect_staves(doc[0])
     assert anomalies == []
     band = max(s.band for s in staves)
@@ -4209,14 +4208,14 @@ def test_the_two_systems_on_one_band_are_separate_staves(
     assert [s.reading_order for s in last] == sorted(s.reading_order for s in last)
 
 
-def test_performance_prose_naming_a_jump_writes_no_jump(kaine_salvation_pdf):
+def test_performance_prose_naming_a_jump_writes_no_jump(score_k_pdf):
     """Blocker 3 of the adversarial review, on the page it was verified
-    against. Kaine Salvation prints "only do the second / repeat after D.C."
+    against. score_k prints "only do the second / repeat after D.C."
     as a note to the player above its first system; the unanchored jump
     pattern read the second line of that as a D.C. and gave measure 1 a live
     `<sound dacapo="yes"/>`, disclosed as nothing. The score's one REAL jump,
     a bare "D.C." closing its last bar, still reads."""
-    result = tabextract.extract(kaine_salvation_pdf)
+    result = tabextract.extract(score_k_pdf)
     assert result.extractable
     from test_engraved_fixtures import _navigation_structure
     assert _navigation_structure(result.musicxml) == {
@@ -4227,9 +4226,9 @@ def test_performance_prose_naming_a_jump_writes_no_jump(kaine_salvation_pdf):
 
 
 def test_the_sign_inside_a_to_coda_does_not_become_the_coda_it_points_at(
-        bygone_days_pdf):
+        score_ag_pdf):
     """Blocker 4 of the adversarial review, on the page it was verified
-    against. Bygone Days engraves "To Coda (sign)" closing bar 12 and its
+    against. score_ag engraves "To Coda (sign)" closing bar 12 and its
     real coda head opening bar 24. The glyph inside the instruction was read
     as a coda section head, and being the first one seen it took bar 12 - so
     the "To Coda" pointed at its own measure and the score wrote
@@ -4241,7 +4240,7 @@ def test_the_sign_inside_a_to_coda_does_not_become_the_coda_it_points_at(
     full-width staff record spanning the gap between them - and the gap
     produced a bar boundary the page does not draw, so the score came out a
     bar long. 24 is the number printed on the page."""
-    result = tabextract.extract(bygone_days_pdf)
+    result = tabextract.extract(score_ag_pdf)
     assert result.extractable
     assert result.bars == 24, "the page prints 24 bars"
     from test_engraved_fixtures import _navigation_structure
@@ -4255,8 +4254,8 @@ def test_the_sign_inside_a_to_coda_does_not_become_the_coda_it_points_at(
     assert result.nav_marks_unanchored == 0
 
 
-def _zelda_page_staves():
-    """Systems 3, 4 and 5 of Zelda's Lullaby's only page, at the coordinates
+def _score_s_page_staves():
+    """Systems 3, 4 and 5 of score_s's only page, at the coordinates
     the staff detector actually reports for them - so the assertions below
     are about the real geometry rather than about numbers chosen to make a
     rule look good."""
@@ -4294,7 +4293,7 @@ def test_a_navigation_mark_belongs_to_the_nearest_staff_below_it():
 
     A guitar system is notation over tablature, so the gap above one
     system's notation staff is also the gap below the previous system's tab
-    staff - and on Zelda's Lullaby, where the page prints its own bar
+    staff - and on score_s, where the page prints its own bar
     numbers to check the answer against, the mark is NEARER the wrong one:
 
       "D.C. al Coda"  6.9pt below system 3's tab staff and 29.9pt above
@@ -4305,7 +4304,7 @@ def test_a_navigation_mark_belongs_to_the_nearest_staff_below_it():
 
     Nearest-staff-by-distance gets both of those wrong, in the direction
     that leaves four bars of the piece played by nothing."""
-    staves = _zelda_page_staves()
+    staves = _score_s_page_staves()
 
     dc = tabextract._NavMark("jump", "D.C. al Coda", 508.9, 472.4, 575.6, 485.6)
     assert _assign_on(staves, dc) == "s4_tab"
@@ -4329,7 +4328,7 @@ def test_a_navigation_mark_between_a_systems_two_staves_belongs_to_that_system()
     navigation marks this extractor reads off the library are placed there,
     and without this they were disclosed as having no bar grid to land on
     when they had one."""
-    staves = _zelda_page_staves()
+    staves = _score_s_page_staves()
     between = tabextract._NavMark("fine", "Fine", 340.0, 400.0, 360.0, 410.0)
     assert _assign_on(staves, between) == "s3_tab"
 
@@ -4339,7 +4338,7 @@ def test_a_navigation_mark_too_far_from_any_staff_is_page_furniture():
     these notation staves - against a measured worst case of 10.87 spaces
     across every navigation mark in the library. A phrase farther off than
     that is annotating nothing."""
-    staves = _zelda_page_staves()
+    staves = _score_s_page_staves()
     high = tabextract._NavMark("fine", "Fine", 340.0, 280.0, 360.0, 290.0)
     assert _assign_on(staves, high) is None
 
@@ -4347,14 +4346,14 @@ def test_a_navigation_mark_too_far_from_any_staff_is_page_furniture():
 def test_a_navigation_mark_below_the_last_staff_belongs_to_the_staff_above_it():
     """Where an engraver puts a closing instruction. Nothing follows it, so
     there is nothing for it to be ambiguous with."""
-    staves = _zelda_page_staves()
+    staves = _score_s_page_staves()
     below = tabextract._NavMark("jump", "D.C.", 500.0, 775.0, 560.0, 785.0)
     assert _assign_on(staves, below) == "s5_tab"
 
 
 def test_a_navigation_mark_on_a_staff_with_no_bar_grid_is_disclosed():
     """A notation staff whose tab partner was never detected (the 12-line
-    staff-line anomaly on Imprisoned Town's last page is the real case) has
+    staff-line anomaly on score_ad's last page is the real case) has
     no bars for a mark above it to name. Disclosed, not pushed onto the
     neighbouring system's bars."""
     def staff(kind, top, spacing, lines):
@@ -4383,9 +4382,8 @@ def test_a_d_s_with_no_segno_is_written_as_words_with_no_jump_and_disclosed():
     docs/musicxml-tab-profile.md, which retracts the claim in full.
 
     Measured now: 86 files print a "D.S." and 84 of them draw the segno it
-    names. Two do not - Hollow (Final Fantasy VII Remake) and Rebel Army
-    Theme (Final Fantasy II). A third, Rito Village - Night, used to be here
-    too: its Maestro embed was filtered out by resource name before any
+    names. Two do not - unpinned score 2 and unpinned score 3. A third, score_ah, used to be
+    here too: its Maestro embed was filtered out by resource name before any
     glyph on it was read at all, which issue #154 fixed by fingerprinting a
     TrueType resource regardless of its name - it now draws its segno like
     every other Maestro file. Those two remaining files are what this branch
@@ -4463,7 +4461,7 @@ def test_a_numbered_ds_names_the_segno_that_carries_the_same_number():
 
     The target is chosen by the JUMP's own parsed number, NOT by which segno
     was anchored first: here segno2 is anchored (bar 2) BEFORE segno1 (bar 10),
-    the reverse-order shape Agnea draws, and "D.S. 1" still resolves to
+    the reverse-order shape score_x draws, and "D.S. 1" still resolves to
     segno1. Before #167 both signs and both jumps shared the single id
     "segno", so a numbered D.S. could not name distinct places at all."""
     segno2 = tabextract._NavMark("segno", "", 40.0, 0, 52.0, 5, number=2)
@@ -4485,7 +4483,7 @@ def test_a_numbered_ds_names_the_segno_that_carries_the_same_number():
         {"words": "D.S. 2", "sound": {"dalsegno": "segno2"}}]
 
     # A lone unnumbered D.S. still names a single unnumbered segno - the
-    # fallback the numbered scheme must keep (Hinata's shape).
+    # fallback the numbered scheme must keep (score_y's shape).
     segno = tabextract._NavMark("segno", "", 40.0, 0, 52.0, 5)
     plain = tabextract._NavMark("jump", "D.S.", 100.0, 0, 150.0, 5, back_to="segno")
     directions, unresolved, _refused = tabextract._resolve_nav_marks(
@@ -4564,10 +4562,10 @@ def test_a_refused_coda_changes_the_disclosure_wording_and_not_a_single_count():
     assert refused_flag is False
 
 
-def test_the_unresolved_warning_says_which_cause_it_was(phantom_train_pdf):
+def test_the_unresolved_warning_says_which_cause_it_was(score_af_pdf):
     """The two causes of an unresolved jump still say which one they were.
 
-    *Phantom Train* prints a "To Coda" on a score that draws no coda sign
+    score_af prints a "To Coda" on a score that draws no coda sign
     and no coda label anywhere at all - genuinely target-less - and is
     asserted against the real page.
 
@@ -4580,7 +4578,7 @@ def test_the_unresolved_warning_says_which_cause_it_was(phantom_train_pdf):
     be drawn outside its staff's x span for reasons other than a lost system
     - so it keeps its test, on a constructed refusal rather than on a score
     that would silently stop covering it."""
-    absent = tabextract.extract(phantom_train_pdf)
+    absent = tabextract.extract(score_af_pdf)
     assert absent.nav_marks_unanchored == 0
     assert any("al Coda with no coda read" in w for w in absent.warnings), \
         absent.warnings
@@ -4677,10 +4675,10 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # as moved, once, by issue #137's shared-unison digit (see
     # tabextract._share_unison_digits). #137 changes exactly two scores and
     # nothing else in these 293, measured score by score rather than in
-    # aggregate: The Cosmic Wheel (FF XI), where 12 bars stop being short of
+    # aggregate: score_q, where 12 bars stop being short of
     # an eighth they were padded with silence for (notes +12, bars_short and
     # bars_defective and bars_padded -12, inferred_rest_quarters -6.0), and
-    # Castti, the Apothecary (Octopath Traveler II), where 4 notes come back
+    # unpinned score 4, where 4 notes come back
     # into a voice that had been padded around them (notes +4,
     # inferred_rest_quarters -2.0) with every conformance figure of its own
     # unmoved. bars, bars_unread and notes do not move at all: nothing here
@@ -4690,8 +4688,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # bars_overfull/bars_short/bars_defective/bars_padded/inferred_rest_quarters
     # moved a SECOND time, again by exactly one score, when issue #154 fixed
     # load_music_fonts rejecting a music font by resource name before its
-    # fingerprint was ever consulted: "Rito Village - Night (The Legend of
-    # Zelda Breath of the Wild)" embeds its Maestro subset as a resource
+    # fingerprint was ever consulted: score_ah embeds its Maestro subset as a resource
     # named "CIDFont+F1" (every embedded font in that PDF was renamed
     # generically), so this decoder used to read zero glyphs from a fully
     # engraved score and fall back to the spacing heuristic for its rhythm.
@@ -4713,13 +4710,13 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # without its bar count moving, which is the check that this reads new
     # music rather than re-reading the old music differently.
     #
-    # 3 scores LOSE a bar - Our Terms 29->28, Bygone Days 25->24 and The
-    # Crestlands 39->38 - and those three are corrections too, verified
-    # against the printed pages: their two side-by-side systems were ruled at
-    # the same y and had merged into ONE full-width staff record, so the gap
-    # between the systems produced a bar boundary the page does not draw. Our
-    # Terms prints 28 bars, Bygone Days 24, and The Crestlands 37 plus a
-    # pickup measure.
+    # 3 scores LOSE a bar - unpinned score 5 29->28, score_ag 25->24 and
+    # unpinned score 6 39->38 - and those three are corrections too,
+    # verified against the printed pages: their two side-by-side systems
+    # were ruled at the same y and had merged into ONE full-width staff
+    # record, so the gap between the systems produced a bar boundary the
+    # page does not draw. unpinned score 5 prints 28 bars, score_ag 24, and
+    # unpinned score 6 37 plus a pickup measure.
     #
     # And a FOURTH time, by the augmentation-dot binding of #111/#112, which
     # attaches dot glyphs that were printed on these pages and previously bound
@@ -4764,9 +4761,9 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # ones, because reading the pages says what they are.
     #
     # TWELVE CHANGED BARS WERE READ OFF THE PRINTED PAGES, across six scores
-    # (Traverse Town 7/8/10, Troian Beauty 13, Stables 9/27, Where the Egg of
-    # Dreams Hatches 1, Serenade of Respite - Night 9/27, Singing of the
-    # Gentle Wind 2/11/18), counted stroke by stroke against the vector
+    # (unpinned score 7 7/8/10, unpinned score 8 13, unpinned score 9 9/27, unpinned score 10
+    # 1, unpinned score 11 9/27, unpinned score 12
+    # 2/11/18), counted stroke by stroke against the vector
     # geometry rather than by eye. ALL TWELVE are engraved with three beam
     # strokes - the ink is unambiguous - so the notes this change re-read
     # really are 32nds in every one of them.
@@ -4775,12 +4772,12 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # though, it is 8 of the 12, not 10 as an earlier version of this comment
     # said (adversarial review of #166). Four still do not add up, each for
     # its own reason, and NONE of the four is what moves bars_short by +2
-    # below - see that pin's own note. Where the Egg of Dreams Hatches bar 1
-    # and Singing of the Gentle Wind bar 18 each keep a short voice 2 this
-    # change does not touch. Serenade of Respite bar 9 and Singing of the
-    # Gentle Wind bar 2 each also DROP a note (a second beam group collapsing
+    # below - see that pin's own note. unpinned score 10 bar 1
+    # and unpinned score 12 bar 18 each keep a short voice 2 this
+    # change does not touch. unpinned score 11 bar 9 and unpinned score 12
+    # bar 2 each also DROP a note (a second beam group collapsing
     # into one), so the emitted bar still does not match the page. In
-    # Serenade bar 9 the dropped note cost exactly what the over-valued
+    # unpinned score 11 bar 9 the dropped note cost exactly what the over-valued
     # 32nds added - two notes moving from a 16th to a 32nd is -0.25, against
     # a 0.25 shortfall elsewhere in the bar - so that bar used to add up BY
     # COINCIDENCE. That is a compensating error, not a regression: the
@@ -4788,17 +4785,17 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # note-drop it was hiding is a separate defect this change only stops
     # masking rather than causes.
     #
-    # THE +2 IN bars_short IS NOT SERENADE BAR 9 OR SINGING BAR 2 (adversarial
+    # THE +2 IN bars_short IS NOT SCORE K BAR 9 OR SCORE L BAR 2 (adversarial
     # review of #166 corrects an earlier version of this comment that named
     # them). Both bars were ALREADY short before this change - short in a
-    # DIFFERENT voice than the one this fixes (Serenade voice 2 sits at 2.5
-    # of 3.0; Singing voice 1 at 2.75 of 4.0) - so reading their 32nds
+    # DIFFERENT voice than the one this fixes (unpinned score 11 voice 2 sits at 2.5
+    # of 3.0; unpinned score 12 voice 1 at 2.75 of 4.0) - so reading their 32nds
     # correctly does not flip either bar's already-short verdict, and their
     # net contribution to bars_short is zero. The two sites that actually
-    # flip a bar to short are Midnight Harmony (New World) bar 13 (voice 1:
-    # 4.125 -> 3.75, now short where it used to overfill) and Singing of the
-    # Gentle Wind bars 8 and 26 together (net +1 across the two). Midnight
-    # Harmony is not named anywhere else in this change - it is named here
+    # flip a bar to short are unpinned score 13 bar 13 (voice 1:
+    # 4.125 -> 3.75, now short where it used to overfill) and unpinned score 12
+    # bars 8 and 26 together (net +1 across the two). unpinned score 13
+    # is not named anywhere else in this change - it is named here
     # because this pin is the only place its own fix shows up.
     #
     # AND A SIXTH TIME, by issue #140's harmonic notehead. The sounding pitch
@@ -4807,10 +4804,10 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # emitted at a confident 4.0 and overfilled its bar. #140 recognises that
     # attack (glyph_rhythm._harmonic_attack_flag) and floors the head, disclosed
     # as no_stem_noteheads, instead of asserting a whole note. FOUR scores carry
-    # this exact figure, all engraved by the same hand (John Oeth's Patreon
-    # arrangements): The Cosmic Wheel (FF XI), the one #140 was filed for, plus
-    # Jessie's Theme (FF VII Remake), Enveloped in Kindness (Octopath Traveler)
-    # and Main Theme (Suikoden) - each verified against its printed page as the
+    # this exact figure, all engraved by the same arranger's commissioned
+    # arrangements): score_q, the one #140 was filed for, plus
+    # unpinned score 14, unpinned score 15
+    # and unpinned score 16 - each verified against its printed page as the
     # same grace-note-into-hollow-head harmonic, not a whole note. Measured
     # score by score against this change's parent, exactly these four files move
     # and the other 289 come out byte-for-byte identical.
@@ -4820,8 +4817,8 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # stays defective (its other voice or the freed budget leaves it short) and
     # only its DIRECTION changes. So bars_overfull falls by 4 while
     # bars_defective does not move at all. bars_short and bars_padded each rise
-    # by 2 (Cosmic Wheel and Enveloped in Kindness; the harmonic bars in
-    # Jessie's Theme and Main Theme were overfull AND short already, so their
+    # by 2 (score_q and unpinned score 15; the harmonic bars in
+    # unpinned score 14 and unpinned score 16 were overfull AND short already, so their
     # short verdict does not flip). inferred_rest_quarters rises by 10.75 - the
     # silence that pads each freed bar out to its meter. NOTES, BEATS AND BARS
     # DO NOT MOVE: a floored harmonic is still one note at one onset in one bar.
@@ -4833,7 +4830,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # needs it: a duration fix that moved this would not be a duration fix.
     assert totals["beats"] == 83365
     #                                        before #113 -> after
-    # 1541 before #163, 1540 after: My Star (Final Fantasy XVI) bar 5 held a
+    # 1541 before #163, 1540 after: top_member_unison bar 5 held a
     # dotted whole rest read as six quarters in a 4/4 bar, which #163 shortens
     # to the three quarters the bar had room for beside the quarter chord in its
     # voice - so that voice stops being overfull. The bar stays SHORT (and so
@@ -4841,7 +4838,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # this change, which is why only bars_overfull moves and bars_short /
     # bars_defective do not. No note, beat or bar moves: a rest is neither.
     #
-    # 1536 before #180, 1535 after: Classical-Guitar-Method-Vol1 bar 16 held a
+    # 1536 before #180, 1535 after: score_ai bar 16 held a
     # six-eighth arpeggio filling its 3/4 bar with a whole rest stacked onto the
     # same voice (7.0 quarters). #180 lifts that whole rest into its own silent
     # voice - a whole-measure rest of 3.0 - so the arpeggio voice stops being
@@ -4854,9 +4851,9 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # -40 at #174: a first-bar pickup (anacrusis) is normal notation, not a
     # short bar, so _bar_conformance lifts it out of bars_short / bars_defective.
     # 40 bars are excused across 38 scores (see bars_anacrusis below): 36 scores
-    # excuse their first bar alone, and Bella-Ciao and Peaceful Sleep (NieR
-    # Automata) each also excuse their FINAL bar, the compensated pairing where
-    # bar 1's length plus the final bar's length sum to one measure (Bella-Ciao:
+    # excuse their first bar alone, and unpinned score 1 and unpinned score 17
+    # each also excuse their FINAL bar, the compensated pairing where
+    # bar 1's length plus the final bar's length sum to one measure (unpinned score 1:
     # 2.0 + 2.0 in 4/4). Every excused bar was short in every voice, so
     # bars_short and bars_defective each fall by exactly the same 40.
     assert totals["bars_short"] == 4152                  # 4190 -> 4192 (#140) -> 4152 (#174, -40)
@@ -4865,14 +4862,14 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # bars_short and bars_defective each dropped by, and the disclosure a reader
     # sees. Two of the 38 scores excuse two bars each (the compensated pairing
     # above), so this is 40, not 38. Verified score by score against the printed
-    # pages for the classification movers: Sad Song (Super Mario RPG), the only
+    # pages for the classification movers: score_e, the only
     # score whose rhythm confidence this lifts from medium to high, is a
     # two-eighth-note pickup; every other excused first bar leaves its score in
     # the same rhythm band (it still carries other defects, or was already low).
     assert totals["bars_anacrusis"] == 40
     assert totals["bars_padded"] == 3605                 # 3603 -> 3605 (#140); unmoved by #174
-    # 4897.875 before #162, 4899.875 after: Answers (Final Fantasy XIV
-    # Endwalker) bar 45 held one quarter in each of its two voices in a bar read
+    # 4897.875 before #162, 4899.875 after: unpinned score 18
+    # bar 45 held one quarter in each of its two voices in a bar read
     # a system early as 3/4. #162 puts that bar back on the running 4/4 it is
     # printed in, so each short voice is now padded to four quarters instead of
     # three - one extra quarter of meter-inferred silence per voice, +2.0 in
@@ -4881,8 +4878,8 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     assert totals["inferred_rest_quarters"] == 4910.625  # 4899.875 (#162) -> 4910.625 (#140, +10.75)
     # The systems still lost, named. Both are 7-line groups - a 6-line tab
     # staff ruled at 7.7pt with ONE extra full-width rule below its last
-    # line, close enough to fall inside the 15.0pt cluster gap: Dynamis p1 at
-    # 14.3pt and Hide, Hideaway p2 at 12.8pt. A different defect from #152's
+    # line, close enough to fall inside the 15.0pt cluster gap: score_ac p1 at
+    # 14.3pt and unpinned score 19 p2 at 12.8pt. A different defect from #152's
     # two systems side by side, and one no split by x extent can reach,
     # because the stray rule spans the same extent the staff does. Before
     # this change the same measurement over the library counted 41 such
@@ -4904,7 +4901,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # cross-voice unison - two stems, one string
     # (glyph.decode_note_events's coincident_split_pairs) - which is why none
     # of the same-shaped copies that sit in ONE voice moves: the whole 34-onset
-    # Spanish-Romance population stays byte-for-byte identical (its pair is a
+    # score_r population stays byte-for-byte identical (its pair is a
     # melody-doubling copy with no second stem, coincident_unsplit_pairs). No
     # bar-conformance figure moves with the 10 notes: each lands in a voice
     # that was already sounding at that onset (a completed chord or a doubled
@@ -4917,7 +4914,7 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # directions and the pair is what says a dot was BOUND rather than merely
     # stopped being reported.
     #                                        before #111/#112 -> after
-    # +1 at #180: the whole-measure rest lifted out of Classical-Guitar-Method
+    # +1 at #180: the whole-measure rest lifted out of score_ai's
     # bar 16 is spelled as the 3.0 quarters the 3/4 bar holds, which is a DOTTED
     # half rest - one emitted <dot />. Spelling it dotless would take two rests
     # (a half plus a quarter) and move BEATS instead, which must not move; the
@@ -4960,10 +4957,11 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # and the drawn right end snaps to no boundary) is written over its
     # first bar only. Measured directly against the spec's own predicted 3 -
     # the gap is the review's own finding, not a regression to chase here.
-    # 25 + 3 (issue #152): Hollow, Our Terms and Link is Awake each gain one,
-    # all three on a system that was previously not read at all, whose volta
-    # bracket has no closing hook drawn and so is written over its first bar
-    # only - the same disclosure these 25 already were, on new music.
+    # 25 + 3 (issue #152): unpinned score 2, unpinned score 5 and
+    # unpinned score 20 each gain one, all three on a system that was
+    # previously not read at all, whose volta bracket has no closing hook
+    # drawn and so is written over its first bar only - the same
+    # disclosure these 25 already were, on new music.
     assert totals["endings_truncated"] == 28
     assert scores_with_endings_truncated == 25
     # "Expect large" (issue #134's own phrasing): the census found 190 of 297
@@ -4997,29 +4995,29 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # coda-system layout whose right-hand system the staff detector loses
     # (see test_a_coda_drawn_on_a_lost_right_hand_system_is_disclosed_not_moved
     # and issue #152) and are disclosed as unanchored rather than clamped
-    # onto the jump's own bar - Rito Village's own coda sign, now read as a
+    # onto the jump's own bar - score_ah's own coda sign, now read as a
     # glyph like the rest of its page (issue #154), is one of these 41: it
     # sits outside its own staff's bar span the same way the other 40 do, so
     # it is still read from the word beside it rather than the sign's own
     # position; being outside the decoder's font vocabulary was never why
     # this one mark placed by word - and 6 are the reference glyph printed
     # inside a "To Coda" and are that instruction's, not section heads. One
-    # more coda MARK reaches the count from elsewhere: Imprisoned Town's
+    # more coda MARK reaches the count from elsewhere: score_ad's
     # sign has no bars on its system.
     #
     # And 88 segnos, from 84 files - all of them Finale's Maestro GID 4,
     # which the calibrated glyph table labelled "simile" until the outline
     # was rendered and looked at. While it did, this assertion read 0 and
     # every "D.S." in the library went out without its jump. The 84th file
-    # is Rito Village - Night: issue #154 fixed load_music_fonts rejecting
+    # is score_ah: issue #154 fixed load_music_fonts rejecting
     # its Maestro subset by resource name (embedded as "CIDFont+F1") before
     # the fingerprint that would have recognised it regardless ever ran.
     #
     # 109 + 41 (issue #152), and the accounting is exact: of the 43 marks
     # that were unanchored, 41 are coda signs - the 40 sitting entirely past
-    # their staff's right end, plus Imprisoned Town's, whose system had no
+    # their staff's right end, plus score_ad's, whose system had no
     # bars at all - and every one of them now anchors to the bar its page
-    # prints it over. The other 2 were a "D.S. 2" and Imprisoned Town's D.C.
+    # prints it over. The other 2 were a "D.S. 2" and score_ad's D.C.
     assert totals["coda_signs"] == 150
     assert totals["segno_signs"] == 88
     # The disclosure, pinned rather than assumed. 87 BARS (the counter counts
@@ -5027,12 +5025,12 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # carry an instruction naming a jump this transcription holds no target
     # for. By reason, over 87 instructions on 87 distinct bars in 47 files:
     # 45 a "To Coda" with no coda read, 40 an "al Coda" with none, and 2 a
-    # "D.S." on a score that genuinely draws no segno - Hollow (Final
-    # Fantasy VII Remake) and Rebel Army Theme (Final Fantasy II). Most of
+    # "D.S." on a score that genuinely draws no segno - unpinned score 2 and
+    # unpinned score 3. Most of
     # the first two are the lost coda system above: the page draws the coda,
     # this transcription could not place it.
     #
-    # Rito Village - Night moved OUT of the "D.S. genuinely no segno" bucket
+    # score_ah moved OUT of the "D.S. genuinely no segno" bucket
     # and INTO "al Coda with none" when issue #154 let its segno be read: its
     # "D.S. al Coda" now writes <sound dalsegno="segno"/> (the segno half
     # resolves), but its own coda sign is one of the ones outside its
@@ -5043,21 +5041,21 @@ def test_library_wide_repeat_structure_leaves_conformance_untouched(library_root
     # than going away.
     #
     # 43 unanchored: 41 drawn entirely outside their staff's own x span (40
-    # coda signs and one "D.S. 2"), and Imprisoned Town's two, whose last
+    # coda signs and one "D.S. 2"), and score_ad's two, whose last
     # system's tab staff comes back as a 12-line anomaly so that system has
     # no bars at all.
     # ISSUE #152 ANSWERS BOTH OF THESE, and answers them by reading the music
     # rather than by describing the loss better. 87 -> 8 and 43 -> 0.
     #
     # 7 bars over 6 files, and every one is now a score that genuinely names
-    # a target its page does not draw: Rebel Army Theme, Vamo alla Flamenco,
-    # Phantom Train, Hollow, Spoken Without End and Heartgem's Burden (2).
+    # a target its page does not draw: unpinned score 3, chord_shared_dot_column_b,
+    # score_af, unpinned score 2, unpinned score 21 and unpinned score 22 (2).
     # The other 80 were all the lost coda system, exactly as the note on
-    # _resolve_nav_marks predicted. Rito Village was on this list until
+    # _resolve_nav_marks predicted. score_ah was on this list until
     # issue #154 let its segno be read at all; between the two changes it
     # now both reads its segno and holds the bars its coda names.
     #
-    # 7 -> 8 (issue #167): Hinata vs Neji (Naruto) numbers its two codas as
+    # 7 -> 8 (issue #167): score_y numbers its two codas as
     # music-font digits drawn against the sign ("1 (sign) Coda" / "2 (sign)
     # Coda"), which are now read as coda1 and coda2. Its "To Coda 1 & 2" @10
     # names BOTH of them, which MusicXML's single-id `tocoda` cannot express,
@@ -5257,10 +5255,10 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
 
     It was the meter. Re-measured against the same library at the commit the
     issue was filed against, the seventeen are exactly reproducible - five on
-    A Better World, eight on Courage, four on Free from Fear - and all gone
+    unpinned score 23, eight on score_p, four on unpinned score 24 - and all gone
     at the commit that landed #90/#104's printed-meter reading, two days
-    later. Courage and A Better World are engraved in 12/8 and were being
-    barred as 4/4; Free from Fear prints 6/4 changes, which is also six
+    later. score_p and unpinned score 23 are engraved in 12/8 and were being
+    barred as 4/4; unpinned score 24 prints 6/4 changes, which is also six
     quarters. All three were read off their pages: every one of the seventeen
     is a dotted whole that exactly fills the bar it is printed in.
 
@@ -5276,7 +5274,7 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
     The notes of this shape are now ALL gone; one rest remains. Both were once
     named here and both have been worked since:
 
-    Answers (Final Fantasy XIV Endwalker), bars 43 and 44 held a whole note in
+    unpinned score 18, bars 43 and 44 held a whole note in
     a bar read as 3/4. Read off the page, both bars are printed in 4/4 and hold
     exactly what the decoder says - a whole-note bass pedal under running
     eighths. What was wrong was the meter: the Coda that follows this system is
@@ -5292,9 +5290,9 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
     separately here, because a rest longer than its bar is a rest fault, not a
     note one. The list is now empty; both rests once here have been worked:
 
-      Classical-Guitar-Method-Vol1-2020, bar 16 held a whole rest that read as
-      four quarters in a 3/4 bar. Read against the page (the Scarborough Fair
-      setting, "She once was a true love of mine" - the last system on PDF page
+      score_ai, bar 16 held a whole rest that read as
+      four quarters in a 3/4 bar. Read against the page (a traditional-song
+      setting - the last system on PDF page
       84) it is a LEGITIMATE whole-measure rest: the melody voice is silent for
       the bar while the tablature plays a six-eighth arpeggio. The fault was
       that the two were flattened into one voice, where the arpeggio already
@@ -5305,7 +5303,7 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
       See test_bar16_whole_measure_rest_reads_as_its_own_voice for the two-voice
       pin.
 
-      My Star (Final Fantasy XVI), bar 5 held a DOTTED whole rest - six quarters
+      top_member_unison, bar 5 held a DOTTED whole rest - six quarters
       in a 4/4 bar, never the whole-measure convention (a plain undotted whole
       rest) - beside a quarter chord in the same voice. That IS a confident
       over-read of a partial rest, the family #140 also belongs to, and #163
@@ -5349,7 +5347,7 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
                         impossible_rests.append(where)
 
     assert scores_checked >= 250, f"only {scores_checked} scores were checked"
-    # The seventeen went at #90/#104; the two on Answers went at #162, which
+    # The seventeen went at #90/#104; the two on unpinned score 18 went at #162, which
     # moved that score's bars 43-44 off the courtesy 3/4 they were being read a
     # system early in and back onto the running 4/4 a whole note fills exactly.
     # Nothing of this shape remains, and none may come back: an emitted note
@@ -5363,16 +5361,16 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
     # impossible whatever the page says, so an exact empty list makes any new
     # site name itself in the failure. Two rests were once here:
     #
-    # My Star (Final Fantasy XVI) bar 5 held a DOTTED whole rest - six quarters
+    # top_member_unison bar 5 held a DOTTED whole rest - six quarters
     # in a 4/4 bar, never the whole-measure convention (which is a plain whole
     # rest, undotted) - beside a quarter chord in the same voice. That is a
     # genuine over-read of a partial rest, and #163 shortens it to the three
     # quarters the bar has room for beside the chord, disclosed as an inferred
     # length. It is gone from this list as a result.
     #
-    # Classical-Guitar-Method-Vol1-2020 bar 16 held a whole rest that read as
-    # four quarters in a 3/4 bar. Read against the printed page (the Scarborough
-    # Fair setting, "She once was a true love of mine" - the last system on PDF
+    # score_ai bar 16 held a whole rest that read as
+    # four quarters in a 3/4 bar. Read against the printed page (a
+    # traditional-song setting - the last system on PDF
     # page 84) it is a LEGITIMATE whole-measure rest: the melody voice is silent
     # for the bar while the tablature plays a six-eighth arpeggio. The two were
     # flattened into one voice, where the arpeggio already fills the 3/4 bar and
@@ -5387,13 +5385,13 @@ def test_no_emitted_note_is_longer_than_the_bar_it_sits_in(library_root):
 
 
 def test_bar16_whole_measure_rest_reads_as_its_own_voice(
-        classical_guitar_method_vol1_pdf):
+        score_ai_pdf):
     """Issue #180: a whole-measure rest sharing a bar with a voice that already
     fills it is a second, silent voice - not a beat stacked onto the sounding
     one.
 
-    Classical-Guitar-Method-Vol1 bar 16 (the Scarborough Fair setting, "She
-    once was a true love of mine" - the last system on PDF page 84) prints a
+    score_ai bar 16 (a traditional-song setting - the last system on PDF
+    page 84) prints a
     whole rest in the melody staff, hanging below the fourth line: the melody is
     silent for the whole bar. The tablature underneath plays a six-eighth
     arpeggio that fills the 3/4 bar on its own. Because the tab staff draws no
@@ -5408,7 +5406,7 @@ def test_bar16_whole_measure_rest_reads_as_its_own_voice(
     rest means "the whole measure" in any meter, never four quarters in 3/4).
     Neither voice exceeds the bar, and both sum to 3.0.
     """
-    result = tabextract.extract(classical_guitar_method_vol1_pdf)
+    result = tabextract.extract(score_ai_pdf)
     assert result.extractable and result.musicxml
 
     type_quarters = {"breve": 8.0, "whole": 4.0, "half": 2.0, "quarter": 1.0,

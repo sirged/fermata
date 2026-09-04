@@ -813,7 +813,7 @@ def time_spent(
 # deciding what to practise next needs the per-piece picture as much as the
 # overall one, and reassembling it from the general endpoints meant a client
 # filtering the whole history by score_id and doing the arithmetic itself -
-# which is the arithmetic a second reader (the planned MCP server, #31) would
+# which is the arithmetic a second reader (the MCP server, #31) would
 # then have to write again and get subtly differently.
 #
 # WHAT THIS DELIBERATELY DOES NOT COMPUTE, and will not:

@@ -640,15 +640,15 @@ def test_a_scoped_goal_is_counted_against_only_its_own_scope(conn):
 
 def test_time_spent_names_the_pieces_and_the_kinds_of_work(conn):
     study = _score(conn, "Study in C", "a/study.pdf")
-    zanarkand = _score(conn, "To Zanarkand", "a/zan.pdf")
+    second_piece = _score(conn, "Second Score", "a/second.pdf")
     _log(conn, day="2026-08-17", seconds=600, score_id=study)
-    _log(conn, day="2026-08-18", seconds=1800, score_id=zanarkand)
+    _log(conn, day="2026-08-18", seconds=1800, score_id=second_piece)
     _log(conn, day="2026-08-18", seconds=900, score_id=None, activity="ear_training")
     _log(conn, day="2026-08-19", seconds=300, score_id=None, activity="free")
 
     spent = practice.time_spent(conn, "2026-08-17", "2026-08-23")
     assert [(r["title"], r["seconds"]) for r in spent["by_score"]] == [
-        ("To Zanarkand", 1800),
+        ("Second Score", 1800),
         ("Study in C", 600),
     ]
     assert [(r["activity"], r["seconds"]) for r in spent["by_activity"]] == [

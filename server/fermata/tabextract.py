@@ -427,8 +427,8 @@ class ExtractionResult:
     # INFERENCE - the tab did not print a number for that notehead - so it
     # is counted here rather than left unsaid, the same honesty pattern as
     # coincident_unsplit_pairs above. Expected to be small and specific: 16
-    # across the library's 293 extractable scores, 12 of them on The Cosmic
-    # Wheel (FF XI) and 4 on Castti, the Apothecary, and 0 everywhere else.
+    # across the library's 293 extractable scores, 12 of them on score_q
+    # and 4 on unpinned score 11, and 0 everywhere else.
     unison_digits_shared: int = 0
     # Repeat barlines and volta brackets that were read only partly, and so
     # were omitted from the emitted MusicXML rather than written as a guess
@@ -652,11 +652,11 @@ STAFF_LINE_SIBLING_TOLERANCE = 2.0
 # The primary floor above is a quarter of the page width. That is the right
 # size for a system that runs the width of the page, and it is why a
 # right-hand system printed on the same band as the last full one was not
-# merely misread but INVISIBLE: on "1 AM (Animal Crossing New Leaf)" the coda
+# merely misread but INVISIBLE: on score_aa the coda
 # system's six tab lines run x 441.2-575.7, which is 134.5pt on a 612pt page
 # - 0.220 of the width, under the 0.25 floor - so they were dropped before
 # staff detection ever saw them, no anomaly was reported, and the page's bar
-# 18 simply did not exist. "Kakariko Village" is the same shape at 133.5pt.
+# 18 simply did not exist. score_ab is the same shape at 133.5pt.
 # Measured over the library, 54 systems are drawn this way.
 #
 # A lower floor on its own is exactly how a volta bracket or a chord grid
@@ -672,14 +672,14 @@ STAFF_LINE_SIBLING_TOLERANCE = 2.0
 # finds 54 groups, and all 54 are real: every one comes back with exactly 11
 # rows - a 5-line notation staff and a 6-line tab staff ruled to the same x -
 # which is a side-by-side system and cannot be anything else. Their lengths
-# run from 0.1235 (Fond Memories, 75.6pt) to 0.2488 (Melodies of Life), and
+# run from 0.1235 (unpinned score 1, 75.6pt) to 0.2488 (score_w), and
 # BELOW 0.1235 the scan finds nothing whatsoever down to 0.04. So the floor
 # is not separating staves from decorations - the sibling and spacing tests
 # are - and 0.10 is placed in the empty band under the smallest real staff,
 # where it admits all 54 and cannot be the thing that decides.
 #
 # It was 0.15 first, which is inside the real range and cost 12 of the 54 -
-# among them "Rito Village - Night" at 0.1461, whose coda system is a
+# among them score_ah at 0.1461, whose coda system is a
 # perfectly ordinary 5+6 staff pair 89.4pt wide.
 SHORT_STAFF_LEN_RATIO = 0.10
 
@@ -689,11 +689,11 @@ SHORT_STAFF_LEN_RATIO = 0.10
 # floor and the sibling test is much tighter than either.
 #
 # Measured over the library at the floor above: 89 same-extent sibling groups
-# clear both of those tests and are refused here, from six files. Four draw a
-# title-block ornament whose rows alternate 2.5 and 1.3pt (Troian Beauty,
-# Moonlit Shadows, Carcelera, Celes's Theme); two method books draw
-# chord-grid rows at 2.4-2.7pt (Recuerdos de la Alhambra, Classical Guitar
-# Method Vol. 1). Every real staff admitted alongside them has a minimum row
+# clear both of those tests and are refused here, from six files. Four draw
+# a title-block ornament whose rows alternate 2.5 and 1.3pt (unpinned
+# score 13, unpinned score 14, unpinned score 15, unpinned score 16); two
+# method books draw chord-grid rows at 2.4-2.7pt (unpinned score 17,
+# score_ai). Every real staff admitted alongside them has a minimum row
 # gap of 5.00pt or more, so 3.0 sits in a clear band: worst admitted 5.00,
 # closest refused 2.60.
 #
@@ -704,7 +704,7 @@ SHORT_STAFF_LEN_RATIO = 0.10
 # through the overlap would throw away real systems to catch ornaments it
 # would still miss. A future tuner should move this constant, not that one.
 #
-# Admitting them is not merely noisy, it costs real music: on "Troian Beauty"
+# Admitting them is not merely noisy, it costs real music: on unpinned score 13
 # p3 the ornament's rows fall in the same 15.0pt band as the page's first
 # notation staff and swallow it into an 11-line group, which is then
 # discarded.
@@ -963,7 +963,7 @@ def _detect_staves(page):
     Merging the two cost music in two different ways, and both were measured:
 
       - Where the two systems are ruled at the SAME y, the rows collapsed
-        into one full-width staff record. "Imprisoned Town (Suikoden II)" p2
+        into one full-width staff record. score_ad p2
         reported a standard staff at x 54.0-575.9 for a band that actually
         holds one system at 54.0-341.7 and another at 378.2-575.9. Nothing
         said anything was wrong; the staff simply described music that was
@@ -975,9 +975,9 @@ def _detect_staves(page):
         does when the two systems have different content above them - the y
         values interleave inside the 15.0pt band and the group came back with
         TWICE the lines. That is the 12-line group issue #152 opens with:
-        Imprisoned Town's last band, and both of "The Nautilus Knoweth" p3's
+        score_ad's last band, and both of score_ae's p3
         (a 10-line pair of notation staves and a 12-line pair of tab staves),
-        discarded whole. Imprisoned Town lost 4 printed bars, Nautilus 5.
+        discarded whole. score_ad lost 4 printed bars, score_ae lost 5.
 
     Splitting by x extent answers the second question directly, and the tell
     is unambiguous: two side-by-side systems do not overlap in x at all (the
@@ -990,7 +990,7 @@ def _detect_staves(page):
     READING ORDER IS NOT TOP ORDER, and that is why this returns an order at
     all. Two side-by-side systems have nearly equal `top`, and which of them
     is the smaller number is decided by the 1.5pt engraving offset above -
-    on "Troian Beauty" p3 the RIGHT-hand system is the higher one. Sorting
+    on unpinned score 13 p3 the RIGHT-hand system is the higher one. Sorting
     staves by `top` would therefore have put the coda system's bars BEFORE
     the bars of the system printed to its left. Callers order by
     (band, x0) - see _Staff.band.
@@ -1312,7 +1312,7 @@ def _bar_style_for_shape(shape):
 # necessarily the leftmost one (see _Barline.edges / _associate_voltas). A
 # repeat pair's thin-to-thick gap is measured at 3.6-4.0pt in the library
 # (BARLINE_STROKE_MERGE_SPACES) - up to 0.69 tab-staff-spaces measured
-# directly on Zelda's Lullaby ending 2, whose left hook abuts a repeat's
+# directly on score_s ending 2, whose left hook abuts a repeat's
 # thick stroke 5.28pt from the group's registered (leftmost) x - so a
 # tolerance anywhere near VOLTA_ANCHOR_SPACES (0.5) would reject a bracket
 # that IS correctly anchored. 1.5 spaces comfortably clears every group width
@@ -1630,8 +1630,8 @@ def _read_volta_brackets(page, band_top, spacing, x0=None, x1=None):
     can hold two systems printed side by side (issue #152), and the y band
     above a staff runs the width of the page: without this, the "2." bracket
     drawn over the left-hand system was found AGAIN for the right-hand one
-    and written a second time onto the coda system's bar. Measured on "Our
-    Terms (Final Fantasy XVI)", which emitted ending 2 over both bar 27 and
+    and written a second time onto the coda system's bar. Measured on
+    unpinned score 2, which emitted ending 2 over both bar 27 and
     bar 28. A page with one system per band passes its full width here and
     nothing is excluded.
     brackets is (left_x, right_x, line_y, number) left-to-right; hooks is
@@ -1758,7 +1758,7 @@ def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first
     # 9). Two numbered endings can sit back to back with nothing between
     # them (see fixture_adjacent_endings) - the closing hook of one and the
     # opening hook of the next then land at THE SAME x, drawn as two
-    # coincident strokes (confirmed on Zelda's Lullaby: 2 separate hook
+    # coincident strokes (confirmed on score_s: 2 separate hook
     # entries at the exact x where ending 1 closes and ending 2 opens). A
     # count comparison, not a flat exclusion, is what tells "the next
     # bracket's own opening hook, and nothing else" (count equal - exclude)
@@ -1906,14 +1906,14 @@ def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first
 # "simile" - so a census that swept the mapped glyphs and then swept the
 # UNMAPPED ones, twice over, could not see them either time. The consequence
 # here was not cosmetic: 86 files print a "D.S.", and (as of issue #154)
-# 84 of them do draw the sign it names. Only two do not - "Hollow (Final
-# Fantasy VII Remake)" and "Rebel Army Theme (Final Fantasy II)" - written as
+# 84 of them do draw the sign it names. Only two do not - unpinned score 3 and
+# unpinned score 4 - written as
 # the words the page prints, with no <sound> jump attached, and counted
 # (nav_marks_unresolved). Inventing a segno at bar 1 for the other 84 would
 # have been the wrong fix for a problem that was a mislabelled table row.
 #
 # A THIRD FILE WAS IN THAT LIST TOO, FOR A DIFFERENT REASON (issue #154):
-# "Rito Village - Night (The Legend of Zelda Breath of the Wild)" embeds its
+# score_ah embeds its
 # Maestro subset as a resource literally named "CIDFont+F1" - every embedded
 # font in that PDF was renamed generically by whatever tool produced it, none
 # of them named "Maestro" - and glyph_rhythm.load_music_fonts used to reject
@@ -1972,8 +1972,8 @@ NAV_BOUNDARY_SNAP_SPACES = 2.0
 # of the time - measured, not estimated: nearest-by-distance names a
 # different staff than nearest-below for 170 of the 569 navigation marks this
 # extractor reads off the library, 29.9%. (Two of the 569 are owned by no
-# staff either way and so cannot disagree.) Measured in detail on Zelda's
-# Lullaby, where the answer is known from the page's own printed bar numbers:
+# staff either way and so cannot disagree.) Measured in detail on
+# score_s, where the answer is known from the page's own printed bar numbers:
 #
 #   "D.C. al Coda"  6.9pt below system 3's tab staff, 29.9pt above system
 #                   4's notation staff. It belongs to system 4 (bar 18):
@@ -1998,7 +1998,7 @@ NAV_BOUNDARY_SNAP_SPACES = 2.0
 # ANCHORED AT BOTH ENDS, for the reason _NAV_FINE_RE is: a line that merely
 # CONTAINS a jump phrase is usually prose ABOUT the jump, not the jump. Six
 # such lines in this library were being emitted as live directions, one of
-# them ("only do the second / repeat after D.C.", Kaine Salvation) with a
+# them ("only do the second / repeat after D.C.", score_k) with a
 # `<sound dacapo="yes"/>` on bar 1, undisclosed - a transcription of an
 # instruction to the player as an instruction to the renderer. The prose
 # found: "repeat after D.C.", "after D.S. repeat this", "on return D.S.",
@@ -2147,9 +2147,9 @@ def _read_navigation_marks(page):
     # A coda sign drawn INSIDE a "To Coda" instruction's own text line is
     # that instruction's reference glyph - the page is printing "To Coda ⊕",
     # naming the sign it sends the player to - and not a coda section head.
-    # 6 files in this library engrave it that way (Ami, Bygone Days,
-    # Cropdale, Ku Land of the Scarlet Sunset, The Crestlands, The Journey
-    # Begins), and reading it as a section head put the coda on the "To
+    # 6 files in this library engrave it that way (unpinned score 5, score_ag,
+    # unpinned score 6, unpinned score 7, unpinned score 8, unpinned score 9), and reading it as a section head
+    # put the coda on the "To
     # Coda"'s own bar, whereupon that instruction pointed the player at
     # itself and `coda="coda"` was written twice in the same score. The test
     # is geometric containment in the text line's box, not proximity: the
@@ -2329,8 +2329,8 @@ def _apply_nav_marks(marks, bounds, staff_first_bar, spacing):
     the music, and which bar it names depends on which kind it is:
 
       - a sign that OPENS a section (segno, coda) is drawn at the head of
-        its own bar, so it names the bar its LEFT edge falls in. Zelda's
-        Lullaby's coda sign sits 34.8pt into bar 19 - past that system's
+        its own bar, so it names the bar its LEFT edge falls in. score_s's
+        coda sign sits 34.8pt into bar 19 - past that system's
         clef and key signature - which no boundary rule would reach.
 
       - an instruction that FIRES AT THE END of a bar (D.C., D.S., To Coda,
@@ -2367,13 +2367,13 @@ def _apply_nav_marks(marks, bounds, staff_first_bar, spacing):
     library before this refusal existed: 41 marks (40 coda signs and one
     "D.S. 2") sat entirely past their staff's right end and were anchored
     anyway, the nearest of them 3.42 staff spaces out and the median 7.59 -
-    so there is no borderline case here to trade a tolerance against. On "1
-    AM (Animal Crossing New Leaf)" the page prints its coda at bar 18 and the
-    clamp emitted it at 17, alongside that bar's "D.S. al Coda"; on "Kakariko
-    Village" the page prints 37 and the clamp emitted 36.
+    so there is no borderline case here to trade a tolerance against. On
+    score_aa the page prints its coda at bar 18 and the
+    clamp emitted it at 17, alongside that bar's "D.S. al Coda"; on
+    score_ab the page prints 37 and the clamp emitted 36.
 
-    THIS CATCHES 40 OF THE 41. ONE RESIDUAL REMAINS, NAMED. "The Nautilus
-    Knoweth (Final Fantasy XIV Endwalker)" has the same layout and escapes by
+    THIS CATCHES 40 OF THE 41. ONE RESIDUAL REMAINS, NAMED. score_ae has
+    the same layout and escapes by
     a different route: its last band's two systems sit at the same y, so the
     staff-line clusterer MERGES them - the two 5-line notation staves come
     back as one 10-line group and the two 6-line tab staves as one 12-line
@@ -2387,8 +2387,8 @@ def _apply_nav_marks(marks, bounds, staff_first_bar, spacing):
     reach it: the staff record it is measured against spans the whole page.
 
     Library-wide, bars carrying both a coda sign and a jump therefore go from
-    43 to 2 - The Nautilus Knoweth's bar 52, above, and "Eyes on Me (Final
-    Fantasy VIII)" bar 71, which is not a defect at all: that page really
+    43 to 2 - score_ae's bar 52, above, and unpinned score 10
+    bar 71, which is not a defect at all: that page really
     does print a one-bar system carrying both "(sign) Coda 1" and "D.S. 2".
 
     A mark that merely OVERHANGS an end (a right-aligned instruction whose
@@ -2548,7 +2548,7 @@ def _resolve_nav_marks(anchored, refused=()):
                 # A numbered "D.S. 1"/"D.S. 2" names the segno printing that
                 # same digit (see the segno-number fold in
                 # _read_navigation_marks). Its own parsed number decides the
-                # target, NOT reading order: "Agnea, the Dancer" prints its
+                # target, NOT reading order: score_x prints its
                 # segno "2" on the higher system and its segno "1" lower, so a
                 # by-appearance id would send both jumps to the wrong sign.
                 sound = {"dalsegno": segno_id(mark.number)}
@@ -2662,7 +2662,7 @@ def _harmonic_bracket_marks(page):
     Read from the raw character boxes rather than from spans: an engraver
     writes the pair as its own text run with the fret number in a different
     font between them, and PyMuPDF reports the space between the marks as part
-    of the mark's own span (measured on "Hymn of the Fayth" p1, where '<', ' '
+    of the mark's own span (measured on score_h p1, where '<', ' '
     and '>' are one 15.4pt TimesNewRomanPSMT run and the '12' between them is
     a 9.4pt Arial-BoldMT one). A span bbox therefore spans the whole bracket
     and says nothing about where either mark is.
@@ -3140,13 +3140,13 @@ _CHORD_SPLIT_SPACINGS = 0.6
 # Guitar fingerstyle and classical writing is usually a melody over an
 # accompaniment, but classical guitar arrangements genuinely go to three: a
 # melody, an arpeggiated inner voice and a sustained bass, each with its own
-# rhythm (Spanish-Romance-Guitar-Free.pdf, measured for issue #133 - with a
+# rhythm (conftest score_r, measured for issue #133 - with a
 # ceiling of two the bass had nowhere to live and folded into the melody's
 # chord). Measured across the whole library at the coincident-notehead
 # binding this project currently has, a literal three-way onset collision -
 # the strongest evidence a bar needs more than two voices - appears in
 # exactly one score, and that one is a known missing-stem case, not a real
-# third voice: the same mis-binding load-bearing for Spanish Romance (#116)
+# third voice: the same mis-binding load-bearing for score_r (#116)
 # hides the third voice's own collisions everywhere else, which is why this
 # count cannot be pushed higher than "guitar rarely needs more than three"
 # by measurement alone. Nothing in the library shows any need for a fourth,
@@ -3399,7 +3399,7 @@ def _share_unison_digits(heads, digits, taken, per_group):
     on the fifth), so there is a digit apiece. Put the unison inside a CHORD
     and that freedom is gone - the chord's own members are what the column
     holds, the unison is one of them, and the onset has three noteheads and
-    two digits. Measured on The Cosmic Wheel (FF XI), 12 onsets across 4
+    two digits. Measured on score_q, 12 onsets across 4
     pages, every one of them that shape: an upper voice's two-note chord
     whose lower member is the lower voice's own eighth.
 
@@ -3418,15 +3418,15 @@ def _share_unison_digits(heads, digits, taken, per_group):
     notehead over one printed digit, the page is self-consistent as a single
     note and the only thing suggesting otherwise is the two-stem signature,
     which #116 measured to be unreliable on its own: its adjudicated example
-    (Carulli-Moderato-Op192) reads as single notes on the printed page while
+    (score_n) reads as single notes on the printed page while
     its content stream carries exactly that signature. Sharing the digit
     there would double a printed note into two sounding ones on no evidence.
     The two families are far apart in size as well as in kind - across the
     library's 293 extractable scores, 500 short onsets are a coincident pair
     alone over one digit split across two voices, against 65 that are a
     coincident copy inside a fully named chord. Of those 65: 16 have their
-    twin in ANOTHER voice and take the shared digit (12 on The Cosmic Wheel,
-    4 on Castti, the Apothecary), 48 have no coincident twin at the leftover
+    twin in ANOTHER voice and take the shared digit (12 on score_q,
+    4 on unpinned score 11), 48 have no coincident twin at the leftover
     head's own position at all (see the limitation below - a different
     defect, not one this refuses), and exactly 1 is a pair both of whose
     copies stayed in one voice, refused below (Kids Run Through the City
@@ -3452,7 +3452,7 @@ def _share_unison_digits(heads, digits, taken, per_group):
     member left starved is a different notehead with no twin at all. That is
     a distinct, pre-existing mis-ranking rather than a case this refuses -
     across the library it is 48 of the 65 in-chord onsets (47 with the unison
-    on the top member, 1 in the middle; 34 of them on Spanish-Romance alone),
+    on the top member, 1 in the middle; 34 of them on score_r alone),
     and every one of them reads exactly as it did before this existed. See
     issue #141.
 
@@ -3825,7 +3825,7 @@ def _separate_whole_measure_rest(live, budget):
     _assign_group_voices, which reads voices off stems, never makes it, and the
     whole rest is placed (by _place_rest_clusters) in the ONE voice the arpeggio
     does make. That voice already sums to the whole bar, so the rest stacks on
-    top of a full measure: Classical-Guitar-Method-Vol1 bar 16 is six eighths
+    top of a full measure: score_ai bar 16 is six eighths
     filling 3/4 plus a whole rest, read as 7.0 quarters.
 
     This is a mis-voicing, not the over-read #163 trims: #163 shortens a rest to
@@ -4510,8 +4510,8 @@ def _resolve_ties(measures) -> _TieReport:
     THE HELD NOTE TAKES THE STRUCK NOTE'S STRING AND FRET, always, whatever
     the tab-matching pass gave it. That is not a repair of a defect elsewhere;
     it is what a tie IS. The second note of a tie is not plucked, so the
-    engraving prints no fret number under it - measured on "Close in the
-    Distance (FF XIV Endwalker)" bar 6, where the tab draws `0` under the
+    engraving prints no fret number under it - measured on unpinned score 12 bar 6,
+    where the tab draws `0` under the
     struck sixteenth and nothing at all under the half note it is held into -
     and the rank match, which hands out whatever digits are near an onset,
     therefore gave that half note a digit belonging to a different string

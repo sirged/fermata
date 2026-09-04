@@ -348,8 +348,8 @@ def fixture_unison_voices():
 def fixture_unison_in_chord():
     """`unison_voices` with the upper voice thickened into a CHORD, so the
     unison is one member of it rather than the whole of it (issue #137) - the
-    shape the library's own residual case has, measured off The Cosmic Wheel
-    (FF XI) page by page: an upper voice writing a two-note chord whose LOWER
+    shape the library's own residual case has, measured off conftest score_q
+    page by page: an upper voice writing a two-note chord whose LOWER
     member sounds the same pitch, at the same moment, as the lower voice's
     own eighth. Three noteheads are drawn at that onset and only two
     positions are occupied, because two of the three are the identical glyph
@@ -1235,7 +1235,7 @@ HARMONIC_BRACKETS_SIZE_RATIO = 1.64
 HARMONIC_BRACKETS_GAP_LEFT = 0.06     # tab-staff line spacings
 HARMONIC_BRACKETS_GAP_RIGHT = 0.12
 # And how far ABOVE the digit's own centre the mark's box centre sits, in the
-# same spacings: measured on "Hymn of the Fayth (Final Fantasy X)" page 1,
+# same spacings: measured on conftest score_h page 1,
 # where a 15.38pt mark's box spans y 494.72-511.74 (centre 503.23) beside a
 # 9.4pt digit's 500.34-510.84 (centre 505.59) on a 7.7pt staff. A bigger glyph
 # set against a smaller one does not share its baseline.
