@@ -292,6 +292,18 @@ async function pdfRenderSettleStamp(page) {
  * attribute is a restore that has completed and painted. It throws on timeout
  * naming the attribute rather than falling through to the assertion.
  *
+ * One obligation it puts on the caller, found by the same construction and
+ * not by reading: the baseline only rules out re-renders that have already
+ * STAMPED, so a re-render already in flight when the baseline is taken will
+ * satisfy this barrier in place of the one the test is waiting for. Entering
+ * gig mode starts exactly such a re-render. Traced with the restore delayed 40
+ * frames: gig mode's flush restored at 1793 and stamped at 1827, the resize
+ * under test started its flush at 2086, and the barrier returned at 2376 on
+ * gig mode's stamp - after A restore, 112px away from where the resize's own
+ * would leave the reader. So a test that enters gig mode first has to wait
+ * for THAT re-render to have restored too, before taking its baseline, and
+ * the width barrier is not that wait either. Both callers below do.
+ *
  * One thing worth saying about the indicator test in particular, because it
  * was previously written down the wrong way round: its `pdfIndicatorAgrees`
  * poll does NOT agree trivially there. Measured at the pre-restore offset,
@@ -1154,8 +1166,17 @@ test.describe("a page turn pressed before the PDF has rendered", () => {
     });
     await page.keyboard.press("f");
     await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
-    // Gig mode's own re-render, out of the way before the one under test.
+    // Gig mode's own re-render, out of the way before the one under test -
+    // and "out of the way" has to mean RESTORED, not merely re-rendered. The
+    // width barrier alone returns before the restore, so gig mode's flush
+    // could still be in flight here; its stamp would then land after the
+    // baseline taken below and satisfy that barrier in the resize's place.
+    // Traced with the restore delayed 40 frames: gig mode's flush restored at
+    // 1793 and stamped 1827, the resize's flush started at 2086, and the
+    // barrier returned at 2376 on gig mode's stamp - before the restore it
+    // was waiting for.
     await pdfPagesRenderedAtSettledWidth(page, 15_000);
+    await pdfRestoreSettlesPast(page, null, 15_000);
     const before = await pdfGeometry(page);
     // Still at the start of page one, so the offset measured at the end is
     // the tap's own doing and not somewhere the reader already was.
@@ -1296,7 +1317,17 @@ test.describe("gig mode itself", () => {
     await page.keyboard.press("f");
     await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
     await expect(page.locator(".pdf-page")).toHaveCount(2);
+    // Gig mode's own re-render out of the way before the one under test, and
+    // "out of the way" has to mean RESTORED, not merely re-rendered. The
+    // width barrier alone returns before the restore, so gig mode's flush can
+    // still be in flight here - and its stamp would then land after the
+    // baseline taken below and satisfy that barrier in the resize's place.
+    // Traced with the restore delayed 40 frames: gig mode's flush restored at
+    // 1793 and stamped 1827, the resize's flush started at 2086, and the
+    // barrier returned at 2376 on gig mode's stamp - 112px from where the
+    // resize's own restore would have left the reader.
     await pdfPagesRenderedAtSettledWidth(page);
+    await pdfRestoreSettlesPast(page, null);
 
     const before = await pdfGeometry(page);
     const step = (before.pageTwoTop - before.pageOneTop) / 2;
