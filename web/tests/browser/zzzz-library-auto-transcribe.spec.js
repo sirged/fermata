@@ -55,6 +55,17 @@ async function batchStatus(request) {
   return (await request.get("/api/transcribe/batch/status")).json();
 }
 
+/** The throwaway library's root on disk (see playwright.config.js) - needed
+ * only by the unmocked F3 test below, to place many files WITHOUT going
+ * through POST /api/upload (which would scan each one immediately, one at a
+ * time), so a single "Scan library" click discovers all of them together and
+ * the automatic pass it starts has real, multi-second work to do. */
+const libraryDir = () => {
+  const dir = process.env.FERMATA_TEST_LIBRARY_DIR;
+  if (!dir) throw new Error("FERMATA_TEST_LIBRARY_DIR is not set - see playwright.config.js");
+  return dir;
+};
+
 /**
  * The barrier this whole file needs, and the exact race
  * zz-library-missing.spec.js's own scanAndWait warns about, one layer
@@ -345,12 +356,18 @@ test("a pass this page did not start is visible while it runs and after it is re
   await page.goto("/#/");
 
   // The live indicator: ambient awareness of a pass this page never
-  // started, visible with no dialog open at all. Matched on "in the
-  // background" rather than "Transcribing" - hasText is case-insensitive,
-  // and the static note just below also contains the word "transcribing",
-  // which would otherwise match both.
-  await expect(page.locator(".scan-note", { hasText: "in the background" })).toContainText(
-    "Transcribing 7",
+  // started, visible with no dialog open at all. Matched on "Transcribing
+  // 7" rather than "in the background" - hasText is a case-insensitive
+  // substring match, and the SUCCESS note (`_finish_scan_chain`'s own
+  // "started transcribing N newly scanned score(s) in the background")
+  // contains "in the background" too, so that phrase alone does not
+  // distinguish the live line from a chain's own after-the-fact note when
+  // both could plausibly render together. "Transcribing 7" is the live
+  // line's own template start (`Transcribing {total} score(s) in the
+  // background…`) and never appears in the backend's differently-worded
+  // note.
+  await expect(page.locator(".scan-note", { hasText: "Transcribing 7" })).toContainText(
+    "in the background",
   );
   // The static note: what the scan's own chain decided, in words, since a
   // scan runs unattended on every boot and this is the one place anybody
@@ -358,4 +375,87 @@ test("a pass this page did not start is visible while it runs and after it is re
   await expect(page.locator(".scan-note", { hasText: "did not start" })).toContainText(
     "already running",
   );
+});
+
+test("clicking Scan while the page is open shows the live background-pass line, unmocked", async ({
+  page,
+  request,
+}) => {
+  // #190 review, F3, unmocked. The two tests above prove the LIBRARY PAGE
+  // renders `backgroundBatch` correctly given a canned response; neither
+  // proves the actual reactive poll (Library.svelte's own $effect) ever
+  // NOTICES a real pass that starts AFTER the page is already open - the
+  // exact scenario the review measured directly against the real build: 250
+  // files, click Scan, the pass provably running, no live line on screen
+  // after 8s, because the first version of that effect only checked once,
+  // at mount, before the click that starts the pass had even happened.
+  //
+  // Many real files, placed on disk directly (never through POST /api/upload,
+  // which would scan and auto-transcribe each one individually the instant
+  // it lands) so ONE "Scan library" click discovers all of them together and
+  // the automatic pass that scan's own chain starts has real, multi-second
+  // work to do - long enough to outlast this page's own 3s poll interval by
+  // a wide margin, the same reasoning zzzz-library-transcribe-batch.spec.js's
+  // WARMUP_COUNT uses for the same reason, scaled up here because a poll that
+  // only rechecks every 3s (rather than that file's own 100ms out-of-band
+  // wait) needs a wider margin to reliably catch the pass before it ends.
+  // Measured directly on this box (server/tests/fixtures/engraved/
+  // notation_and_tab.pdf, the same fixture EXTRACTABLE_PDF loads):
+  // tabextract.extract() alone runs ~15ms/file, but the FULL scan+transcribe
+  // pipeline this test actually exercises (hashing, DB writes, the scan's
+  // own walk) runs closer to the ~90ms/score the PR body's 293-file
+  // reference-library run measured end to end. 120 undershot that margin
+  // once (measured: the occupying pass had already finished by the time
+  // this test reached the Apply click, so it succeeded instead of being
+  // refused) - 400 keeps the pass running for tens of seconds, comfortably
+  // outlasting this page's own 3s poll interval and every round trip below.
+  const BULK_COUNT = 400;
+  const dir = path.join(libraryDir(), "Uploads");
+  fs.mkdirSync(dir, { recursive: true });
+  for (let i = 0; i < BULK_COUNT; i++) {
+    fs.writeFileSync(path.join(dir, `bulk${i}.pdf`), EXTRACTABLE_PDF);
+  }
+
+  await page.goto("/#/");
+  await page.locator("button", { hasText: "Scan library" }).click();
+
+  // Out of band, via the API directly rather than the page's own poll -
+  // this is the moment a real pass this page did not (yet) know about
+  // starts running, confirmed independently of whatever the UI shows.
+  await expect(async () => {
+    const b = await batchStatus(request);
+    expect(b.running, JSON.stringify(b)).toBe(true);
+  }).toPass({ timeout: DEADLINE_MS });
+
+  // The live line, on the real page, having noticed a pass it did not
+  // start on its own. Matched with a regex rather than a literal string:
+  // the template that renders it (Library.svelte) wraps across two source
+  // lines with no <br>, so the rendered text carries a literal newline
+  // between "in" and "the background" - \s+ absorbs that (and any other
+  // whitespace collapsing a browser applies) instead of asserting on it.
+  await expect(
+    page.locator(".scan-note", { hasText: /Transcribing \d+ scores? in\s+the background/ }),
+  ).toBeVisible({ timeout: DEADLINE_MS });
+
+  // Selecting a score while that real pass is still running is refused,
+  // not silently adopted - F1's own claim, unmocked: a real occupying pass
+  // this click did not start, a real refusal from the real backend.
+  await page.locator(".organise-toggle").click();
+  const anyCard = page.locator(".card").first();
+  await expect(anyCard).toBeVisible({ timeout: DEADLINE_MS });
+  await anyCard.click();
+  await page.locator(".transcribe-open").click();
+  const dialog = page.locator(".dialog.transcribe");
+  await expect(dialog).toBeVisible();
+  await dialog.locator(".transcribe-apply").click();
+  await expect(dialog.locator(".alert-error")).toContainText(
+    "already running in the background",
+  );
+  await expect(dialog.locator(".alert-error")).toContainText("your selection was not started");
+
+  // Settled before this test ends, not left running - a leftover pass over
+  // BULK_COUNT files would occupy the batch slot for whatever the suite
+  // runs next, the same reasoning uploadAndSettle uses throughout this file.
+  await dialog.locator(".dialog-cancel").click();
+  await autoTranscribePassSettled(request);
 });

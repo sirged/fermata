@@ -971,3 +971,192 @@ def test_a_chain_with_no_hook_registered_still_clears_its_own_ids(
     status = scanner.scan_status()
     assert status["transcribe_batch_started"] is None
     assert status["transcribe_batch_note"] is None
+
+
+def test_a_plain_start_scan_landing_right_after_a_chain_continues_does_not_lose_the_chains_ids(
+    library, extractable_pdf, monkeypatch
+):
+    """#190 review, F2 second pass. The first fix closed the gap for a
+    chain's LAST pass (the ENDING branch); the CONTINUING branch still had
+    one: `_decide_and_settle_chain` left `_chain_added_ids` untouched,
+    cleared `scanning`, released its lock, and only THEN called
+    `start_scan(_continuing_chain=True)` - a separate function with its
+    own separate lock acquisition. An ordinary start_scan() landing in
+    that gap saw a genuinely idle scanner, was entitled to proceed, and
+    reset `_chain_added_ids` before the real continuation ever got there -
+    measured (this exact construction): a chain that added {1, 2} handed
+    transcribe_batch only [2].
+
+    Pinned via `scanner._after_chain_decided` - a hook that is a no-op in
+    production, called the moment `_decide_and_settle_chain`'s own lock
+    genuinely releases, whether the chain just continued or just ended
+    (see its own docstring for why this is the only seam left to inject
+    at: the fix's whole point is that no OTHER gap remains for a test, or
+    anything else, to land in). Synchronous and deterministic on purpose -
+    an earlier version of the FIRST round's equivalent test tried a
+    genuinely concurrent thread instead and it essentially never won the
+    race against the very same thread's own uninterrupted continuation
+    under CPython's GIL.
+    """
+    import shutil
+
+    shutil.copy(extractable_pdf, library / "one.pdf")
+
+    calls = []
+    real_start_batch = transcribe_batch.start_batch
+
+    def recording_start_batch(process_one, score_ids, reconvert=False):
+        calls.append(list(score_ids))
+        return real_start_batch(process_one, score_ids, reconvert)
+
+    monkeypatch.setattr(transcribe_batch, "start_batch", recording_start_batch)
+
+    real_hash_file = scanner.hash_file
+
+    def slow_hash_file(path):
+        time.sleep(0.3)
+        return real_hash_file(path)
+
+    monkeypatch.setattr(scanner, "hash_file", slow_hash_file)
+
+    intruder_started = []
+    fired = False
+
+    def intruding_hook(continuing):
+        nonlocal fired
+        if continuing and not fired:
+            fired = True
+            # The ordinary start_scan() from the reviewer's own
+            # reproduction - fired at the exact moment the lock that
+            # decided this chain continues has released.
+            intruder_started.append(scanner.start_scan())
+
+    monkeypatch.setattr(scanner, "_after_chain_decided", intruding_hook)
+
+    scan_started = scanner.start_scan()
+    assert scan_started is True
+    time.sleep(0.1)  # let it start hashing one.pdf
+    assert scanner.scan_status()["scanning"] is True
+
+    shutil.copy(extractable_pdf, library / "two.pdf")
+    second_call_started = scanner.start_scan()
+    assert second_call_started is False  # declined - the chain will continue
+
+    _wait_for_scan()
+    _wait_for_batch()
+
+    assert fired, "the hook never fired for the continuing branch"
+    # On the fix, `scanning` is already True (set inside the SAME lock that
+    # decided to continue) by the time the hook runs, so the intruder is
+    # refused - exactly what proves there is no gap for it to exploit.
+    assert intruder_started == [False], (
+        f"the intruding start_scan() was not refused: {intruder_started}"
+    )
+
+    assert len(calls) == 1, f"expected exactly one bulk pass, got {len(calls)}: {calls}"
+    conn = db.connect()
+    one_id = conn.execute("SELECT id FROM scores WHERE path='one.pdf'").fetchone()["id"]
+    two_id = conn.execute("SELECT id FROM scores WHERE path='two.pdf'").fetchone()["id"]
+    assert set(calls[0]) == {one_id, two_id}, (
+        f"expected the union {{one_id, two_id}}, got {calls[0]}"
+    )
+
+
+def test_a_mutation_landing_right_after_a_chain_continues_does_not_lose_the_chains_ids(
+    library, extractable_pdf, monkeypatch
+):
+    """#190 review, F2 second pass, the OTHER reproduction the reviewer
+    named: a move/delete (hold_library_still) taking `_mutating` in the
+    same gap, refusing the chain's own continuation, and then - on the
+    mutation's own finally, via _run_pending_rescan - starting a plain,
+    non-continuing start_scan() that resets `_chain_added_ids`. Same loss
+    as the plain-start_scan case, reached a different way, and worse than
+    silence: a pass still starts, over a subset, and transcribe_batch_note
+    reports that smaller count as though it were the whole chain's.
+
+    Same hook, same reasoning as the sibling test above. On the fix,
+    `hold_library_still` itself refuses outright (`scanning` is already
+    True by the time the hook runs), which is the strongest form this
+    assertion can take: not merely "the ids survive" but "the mutation
+    could not even begin".
+    """
+    import shutil
+
+    shutil.copy(extractable_pdf, library / "one.pdf")
+
+    calls = []
+    real_start_batch = transcribe_batch.start_batch
+
+    def recording_start_batch(process_one, score_ids, reconvert=False):
+        calls.append(list(score_ids))
+        return real_start_batch(process_one, score_ids, reconvert)
+
+    monkeypatch.setattr(transcribe_batch, "start_batch", recording_start_batch)
+
+    real_hash_file = scanner.hash_file
+
+    def slow_hash_file(path):
+        time.sleep(0.3)
+        return real_hash_file(path)
+
+    monkeypatch.setattr(scanner, "hash_file", slow_hash_file)
+
+    mutation_started = []
+    mutation_cm = {}
+    fired = False
+
+    def intruding_hook(continuing):
+        nonlocal fired
+        if continuing and not fired:
+            fired = True
+            try:
+                cm = scanner.hold_library_still()
+                cm.__enter__()
+            except scanner.LibraryBusy:
+                mutation_started.append(False)
+            else:
+                mutation_started.append(True)
+                mutation_cm["cm"] = cm
+
+    monkeypatch.setattr(scanner, "_after_chain_decided", intruding_hook)
+
+    scan_started = scanner.start_scan()
+    assert scan_started is True
+    time.sleep(0.1)
+    assert scanner.scan_status()["scanning"] is True
+
+    shutil.copy(extractable_pdf, library / "two.pdf")
+    second_call_started = scanner.start_scan()
+    assert second_call_started is False
+
+    try:
+        _wait_for_scan()
+        _wait_for_batch()
+    finally:
+        # If the hook's mutation genuinely got in (the bug), it is still
+        # HELD at this point - nothing else releases it. Exiting it here,
+        # unconditionally, both completes the reviewer's exact scenario
+        # (hold_library_still's own finally calls _run_pending_rescan,
+        # which is the second half of the loss) and guarantees this test
+        # never leaves `_mutating` stuck for whatever runs after it.
+        cm = mutation_cm.get("cm")
+        if cm is not None:
+            cm.__exit__(None, None, None)
+            _wait_for_scan()
+            _wait_for_batch()
+
+    assert fired, "the hook never fired for the continuing branch"
+    # On the fix, hold_library_still's own guard refuses outright - it
+    # never even gets as far as setting `_mutating`, because `scanning`
+    # reads True (set inside the same lock that decided to continue).
+    assert mutation_started == [False], (
+        f"the intruding mutation was not refused: {mutation_started}"
+    )
+
+    assert len(calls) == 1, f"expected exactly one bulk pass, got {len(calls)}: {calls}"
+    conn = db.connect()
+    one_id = conn.execute("SELECT id FROM scores WHERE path='one.pdf'").fetchone()["id"]
+    two_id = conn.execute("SELECT id FROM scores WHERE path='two.pdf'").fetchone()["id"]
+    assert set(calls[0]) == {one_id, two_id}, (
+        f"expected the union {{one_id, two_id}}, got {calls[0]}"
+    )

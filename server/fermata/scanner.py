@@ -57,8 +57,9 @@ _state = {
     # tried to start over the ids it added - see _finish_scan_chain. None at
     # the start of every pass (_scan() resets both keys unconditionally,
     # chained or not - see its own reset block) and set only once, by
-    # _decide_and_settle_chain, when the chain's LAST pass finishes - so a
-    # pass still mid-chain, or one that added nothing at all, reads as None
+    # _finish_scan_chain itself, when the chain's LAST pass finishes and
+    # _decide_and_settle_chain has handed it that pass's ids - so a pass
+    # still mid-chain, or one that added nothing at all, reads as None
     # rather than carrying over whatever an earlier, unrelated chain left
     # here (#190).
     "transcribe_batch_started": None,
@@ -862,6 +863,14 @@ def start_scan(acknowledge: str | None = None, _continuing_chain: bool = False) 
     own tests use for determinism - never goes through this reset either,
     which is correct: those ids were never claimed by a chain this function
     tracks, so a later, real start_scan() must not inherit them.
+
+    NOTE for the continuing case: this function is NOT how a scan's own
+    chain actually continues any more (#190 review, second pass - see
+    _decide_and_settle_chain's own comment for why a separate call here,
+    even with `_continuing_chain=True`, was itself still a gap). It is kept
+    reachable with that flag only because tests exercise it directly; real
+    continuations go through `_begin_scan_locked` instead, inside the same
+    lock that decided to continue.
     """
     global _rescan_pending
     with _state_lock:
@@ -876,12 +885,33 @@ def start_scan(acknowledge: str | None = None, _continuing_chain: bool = False) 
             # having looked for it.
             _rescan_pending = True
             return False
-        _state["scanning"] = True
-        _state["started_at"] = time.time()
-        _state["finished_at"] = None
-        if not _continuing_chain:
-            global _chain_added_ids
-            _chain_added_ids = []
+        _begin_scan_locked(_continuing_chain)
+    _spawn_scan_thread(acknowledge)
+    return True
+
+
+def _begin_scan_locked(_continuing_chain: bool) -> None:
+    """The part of starting a scan that must happen while `_state_lock` is
+    already held (#190 review, F2 second pass): flip `scanning` on and,
+    unless this is a chain's own continuation, reset `_chain_added_ids` for
+    the fresh chain that's beginning. Called from start_scan() (which holds
+    the lock itself) and from _decide_and_settle_chain's continuing branch
+    (which holds it for exactly this reason - see that function's comment).
+    """
+    global _chain_added_ids
+    _state["scanning"] = True
+    _state["started_at"] = time.time()
+    _state["finished_at"] = None
+    if not _continuing_chain:
+        _chain_added_ids = []
+
+
+def _spawn_scan_thread(acknowledge: str | None) -> None:
+    """The background thread every scan pass runs in, whether started by
+    start_scan() or by a chain continuing itself directly. Factored out so
+    _decide_and_settle_chain can spawn a continuation's thread without
+    going back through start_scan()'s own lock acquisition (#190 review,
+    F2 second pass)."""
 
     def run():
         try:
@@ -893,36 +923,45 @@ def start_scan(acknowledge: str | None = None, _continuing_chain: bool = False) 
         _decide_and_settle_chain()
 
     threading.Thread(target=run, name="fermata-scan", daemon=True).start()
-    return True
 
 
 def _decide_and_settle_chain() -> None:
-    """Clear `scanning` and decide the chain's fate in the SAME lock
-    acquisition (#190 review, F2) - not, as an earlier version of this had
-    it, one after the other with the lock released in between.
+    """Decide the chain's fate - continue with another pass, or end and hand
+    off to _finish_scan_chain - and, if it continues, hand `scanning` and
+    `_chain_added_ids` straight to that continuation, all in ONE lock
+    acquisition (#190 review, two rounds).
 
-    THE GAP THAT USED TO BE HERE. `scanning` used to clear (and the lock
-    release) BEFORE anything asked whether the chain continues or ends.
-    start_scan()'s own guard only checks `scanning` (and `_mutating`), so an
-    ordinary POST /api/scan or /api/upload landing in exactly that gap saw
-    nothing running, was entitled to proceed, and reset `_chain_added_ids` to
-    start ITS OWN fresh chain (see start_scan's own docstring on
-    `_continuing_chain`) - taking the ids this finishing chain was about to
-    hand to transcribe_batch with it. Nothing about the arriving scan was
-    wrong. What was wrong is that this function, running microseconds later,
-    found an empty list where the chain's real ids had been - indistinguishable
-    from a chain that genuinely added nothing - so
-    transcribe_batch_started/note stayed None and the scores that chain added
-    were silently never transcribed, with no record that anything had gone
-    missing.
+    THE GAP THIS CLOSES, FIRST ROUND. `scanning` used to clear (and the lock
+    release) BEFORE anything asked whether the chain continues or ends. An
+    ordinary POST /api/scan or /api/upload landing in that gap reset
+    `_chain_added_ids` to start ITS OWN fresh chain, taking the ids THIS
+    chain was about to hand to transcribe_batch with it (see the ENDING
+    branch below, which closes this by deciding under the lock).
 
-    Closed by deciding under the SAME lock that clears `scanning`: whether
-    this chain continues (another pass was declined against it,
-    `_rescan_pending`) or ends (nothing was declined; `_chain_added_ids` is
-    pulled out here, atomically, for `_finish_scan_chain` to hand off once
-    the lock is released) is settled before `scanning` becomes visible to
-    anybody as False. A start_scan() arriving after this returns is starting
-    a genuinely new chain, not stealing the tail of this one.
+    THE GAP THIS CLOSES, SECOND ROUND - and this is the one the first fix
+    left open. The ENDING branch decided everything it needed under the
+    lock, but the CONTINUING branch did not: it left `ids = None`,
+    `_chain_added_ids` untouched, and called `start_scan(_continuing_chain=
+    True)` - a SEPARATE function, with its OWN SEPARATE lock acquisition -
+    only AFTER this function's own lock had already released `scanning`
+    back to False. Anything landing in THAT gap (an ordinary start_scan(),
+    or a move/delete taking `_mutating` via hold_library_still and later
+    running _run_pending_rescan's plain start_scan() from its finally) saw
+    a genuinely idle scanner, was entitled to proceed, and reset
+    `_chain_added_ids` before the real continuation ever got there -
+    measured: a chain that added {1, 2} handed transcribe_batch only [2].
+    Worse than the first gap's silence: a pass still started, over a
+    subset, and transcribe_batch_started/note reported that smaller count
+    as though it were the whole chain's.
+
+    Closed the same way as the first gap, extended to cover the
+    continuation too: when this chain continues, `_begin_scan_locked` runs
+    right here, inside this SAME lock - `scanning` never becomes visible as
+    False, and `_chain_added_ids` is never reset, between one pass ending
+    and the next one of the SAME chain beginning. A start_scan() or a
+    mutation arriving after this function returns is starting or applying
+    against a genuinely settled scanner, never stealing the tail of a
+    chain still mid-flight.
     """
     global _rescan_pending, _chain_added_ids
     with _state_lock:
@@ -931,31 +970,54 @@ def _decide_and_settle_chain() -> None:
             _rescan_pending = False
             continuing = True
             ids = None
+            # The continuation itself, right here, under the same lock that
+            # just decided to continue - see the docstring above for why a
+            # separate start_scan() call, even after this lock released,
+            # was still the gap.
+            _begin_scan_locked(_continuing_chain=True)
         else:
             continuing = False
             ids = _chain_added_ids
             _chain_added_ids = []
-        _state["scanning"] = False
+            _state["scanning"] = False
+    # A no-op in production - see its own docstring. The one moment a test
+    # can inject something deterministically to prove nothing can land in
+    # a gap that, by design, no longer exists for anything else to use.
+    _after_chain_decided(continuing)
     if continuing:
-        # Plain start_scan(), never the acknowledge token a refused scan
-        # might have been holding: that token is consent to one specific,
-        # named set of missing files, and replaying it against whatever the
-        # library looks like now would apply a person's "yes" to evidence
-        # they never saw. _continuing_chain=True: this pass belongs to the
-        # SAME chain as the one that just declined to start it.
-        start_scan(_continuing_chain=True)
+        # No acknowledge token carried forward - see start_scan's own
+        # docstring for why a continuation never replays one.
+        _spawn_scan_thread(acknowledge=None)
     else:
         _finish_scan_chain(ids)
+
+
+def _after_chain_decided(continuing: bool) -> None:
+    """A no-op in production, always. The fix above (#190 review, F2
+    second pass) closes the continuing branch's gap by making `scanning`
+    and `_chain_added_ids` never externally observable in an inconsistent
+    state between one pass ending and the next one of the same chain
+    beginning - which is exactly why there is no other seam left for a
+    test to inject at and prove that. This one exists purely so a test can
+    try landing something HERE, right after `_decide_and_settle_chain`'s
+    own lock has genuinely released, and show it lands on a scanner that
+    is already fully settled (an ended chain) or already fully reclaimed
+    (a continuing one) either way - never on one still mid-transition."""
 
 
 def _run_pending_rescan() -> bool:
     """Start exactly one follow-up scan if something was declined while a
     MUTATION held the library - see `_rescan_pending` and
-    hold_library_still's own finally, the one remaining caller. A scan's own
-    chain no longer uses this (see _decide_and_settle_chain): mutations never
-    touch `_chain_added_ids`, so there is no ids-race here to close the way
-    there was one for a scan's own chain - `_mutating` and `_state["scanning"]`
-    are never both true, so no chain can be mid-flight when this fires.
+    hold_library_still's own finally, the one remaining caller. A scan's
+    own chain no longer uses this (see _decide_and_settle_chain) - and,
+    since that function now hands a continuing chain its `scanning` state
+    and `_chain_added_ids` directly, under one lock, `_mutating` and
+    `_state["scanning"]` genuinely are never both true here: a mutation
+    cannot begin while a chain is mid-flight (hold_library_still's own
+    guard refuses it, and `scanning` stays visibly True for the chain's
+    entire lifetime now, continuations included), so there is no
+    accumulated-ids state for this call to disturb - mutations never touch
+    `_chain_added_ids` in the first place.
 
     Plain start_scan(), never the acknowledge token a refused scan might have
     been holding: that token is consent to one specific, named set of missing

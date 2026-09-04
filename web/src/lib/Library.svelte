@@ -330,31 +330,57 @@
     return () => clearTimeout(timer);
   });
 
-  // The same shape as the scan poll above, for a bulk pass THIS page never
-  // started (#190 review, F3) - a scan's own automatic one, or one started
-  // from another tab or client. Without this the library page polled
-  // nothing and showed nothing while such a pass ran, so the one moment a
-  // person's own click here would be refused (startTranscribeBatch's
-  // `!result.started` branch) was invisible until they tried.
+  // For a bulk pass THIS page never started (#190 review, F3) - a scan's
+  // own automatic one, or one started from another tab or client. UNLIKE
+  // the scan poll above, this does not read any reactive state and does
+  // not stop once idle: an effect that only checked once, at mount (the
+  // first version of this), or that only rechecked when a scan already
+  // being watched by THIS page finished, both left a real gap - a person
+  // clicking "Scan library" and then watching the page saw nothing for as
+  // long as the pass ran (measured: 250 files, provably running, no live
+  // line after 8s), and a pass neither started nor watched by this page
+  // (another tab, another client) was never noticed at all. Polling
+  // continuously at a low rate, for as long as the page is open, is what
+  // actually covers every one of those - the same "low rate poll whenever
+  // open" the scan status could use too, but does not need to: a scan
+  // reliably outlives its own trigger long enough for the mount-time
+  // check in that effect to catch it, which is not true here (a pass this
+  // page did not start could begin and end between any two checks a
+  // slower interval would take).
+  //
+  // Skips a beat while the transcribe dialog is open (`transcribeOpen`,
+  // read fresh on every tick rather than as an effect dependency, so this
+  // loop itself never restarts) - that dialog runs its own poll of the
+  // exact same endpoint at a faster rate for whatever it started, and this
+  // one's only job is ambient awareness of a pass THIS page did not start,
+  // which the dialog already covers while it is open. Refreshes the grid
+  // once when a background-only pass it was watching finishes, the same
+  // way the scan poll above does for a scan - the one place the newly
+  // transcribed cards' marks would otherwise wait for an unrelated refetch.
   $effect(() => {
+    let cancelled = false;
     let timer;
+    let wasRunning = false;
     async function poll() {
-      const status = await api.transcribeBatchStatus();
-      if (status.running) {
-        backgroundBatch = status;
-        timer = setTimeout(poll, 1500);
-      } else {
-        backgroundBatch = null;
-        refresh();
+      if (!transcribeOpen) {
+        const status = await api.transcribeBatchStatus();
+        if (cancelled) return;
+        if (status.running) {
+          backgroundBatch = status;
+          wasRunning = true;
+        } else {
+          if (wasRunning) refresh();
+          wasRunning = false;
+          backgroundBatch = null;
+        }
       }
+      timer = setTimeout(poll, 3000);
     }
-    api.transcribeBatchStatus().then((s) => {
-      if (s.running) {
-        backgroundBatch = s;
-        poll();
-      }
-    });
-    return () => clearTimeout(timer);
+    poll();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   });
 
   async function triggerScan() {
