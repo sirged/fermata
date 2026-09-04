@@ -110,6 +110,19 @@ function noteCount(texts) {
   return texts.filter((t) => /^\d+$/.test(t)).length;
 }
 
+// Same convention as zzzz-library-auto-transcribe.spec.js's emptyTheLibrary:
+// a single DELETE moves a score to the trash, so the trash also has to be
+// purged or the score would still show up (as a trashed row) to a later
+// spec's "the library is empty" check.
+async function emptyTheLibrary(request) {
+  for (const score of await (await request.get("/api/scores")).json()) {
+    await request.delete(`/api/scores/${score.id}`);
+  }
+  for (const score of await (await request.get("/api/trash")).json()) {
+    await request.delete(`/api/trash/${score.id}`);
+  }
+}
+
 test.describe("a real Guitar Pro file loads through the real importer", () => {
   test.beforeEach(async ({ request }) => {
     // The same refusal viewer-practice.spec.js makes: this suite must not be
@@ -120,6 +133,15 @@ test.describe("a real Guitar Pro file loads through the real importer", () => {
       "refusing to run: this backend has scores in its library this spec did not put " +
         "there, so it is not the throwaway instance the suite creates",
     ).toEqual([]);
+  });
+
+  // Without this, the fixture uploaded below stays in the shared throwaway
+  // library for the rest of the run - every later spec file's own "this
+  // library is empty" refusal check (viewer-practice.spec.js,
+  // zz-library-missing.spec.js, instruments.spec.js, and others) would then
+  // fail on a score this spec put there, not one of its own.
+  test.afterEach(async ({ request }) => {
+    await emptyTheLibrary(request);
   });
 
   test("bar count, note count and tuning match the fixture, through the real Guitar Pro importer", async ({
