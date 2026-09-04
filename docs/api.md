@@ -174,7 +174,8 @@ the library flagged `missing_since`, which is the state it was in before.
 `GET /api/transcribe/batch/status` polls it - the same start/poll shape
 `POST /api/scan` and `GET /api/scan/status` use, rather than a client looping
 single `POST /api/scores/{id}/transcribe` calls itself. The MCP layer (see
-below) wraps this endpoint's status route for exactly that reason.
+below) does not cover batch transcription in this release: its tools are
+read-only, and batch status is deliberately not among them.
 
 **Selection.** Give `score_ids` (an explicit list, honoured exactly - even an
 id that turns out not to be a pdf or to be in the trash gets its own outcome

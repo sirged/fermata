@@ -299,8 +299,10 @@ but reaching this endpoint through a different path than your proxy, that is
 Fermata acts on this identity today** — there are no per-user permissions,
 no filtering of what a given username can see, and this does not turn
 Fermata into a multi-user application. It is read, logged, and left there
-for a future consumer — the practice-data MCP server this project is heading
-toward, or a possible sharing layer — to build on. (A few database tables
+for a consumer that might one day act on it — a sharing layer, say. The
+[Model Context Protocol server](#the-model-context-protocol-server) is not
+one: it leaves this identity inert, and Fermata refuses to run the two
+features together in any case. (A few database tables
 already carry an `owner` column reserved for that future, every row
 currently written as the single placeholder owner `local` — wiring a real
 username into it today would only orphan your own data from the very
@@ -543,7 +545,7 @@ Then rebuild and restart:
 docker compose up -d
 ```
 
-The tools are then reachable at **http://localhost:8765/mcp**, over the
+The tools are then reachable at **http://127.0.0.1:8765/mcp**, over the
 protocol's Streamable HTTP transport. Point a client that speaks the Model
 Context Protocol at that URL; it will list thirteen tools, each named after
 what it reads (`list_scores`, `get_practice_summary`, and so on).
