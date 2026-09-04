@@ -850,6 +850,59 @@ test.describe("a page turn pressed before the PDF has rendered", () => {
     await expect(page.locator(".hud span")).toHaveText("2 / 2");
   });
 
+  // The write that turn owes the library, which is not the same claim as the
+  // page it lands on (#229 review).
+  //
+  // A turn pressed before any canvas exists is remembered and honoured, and
+  // honouring it also REVOKES the stored-page restore (turnedBeforeRestore):
+  // the reader asked to be somewhere, so they are not to be yanked off it.
+  // On a score stored at page eight, ArrowLeft resolves to page one - which
+  // is the page the indicator already named - so the turn moves the reader
+  // without moving the indicator, and only the debounced save records that
+  // the reader is no longer where the database thinks. Skip that save and
+  // the two disagree silently until the score is reopened, at which point
+  // the reader is thrown to page eight by a restore that is now wrong.
+  //
+  // Held open, not raced: the PDF body is released only after the press.
+  test("a turn honoured before the pages existed is saved, even when it names the page already shown", async ({
+    page,
+  }) => {
+    await stubScoreApi(page, transcriptionResponse({ warnings: [], confidence: CLEAN_CONFIDENCE }));
+    // Overrides stubScoreApi's own /api/scores/1 route (most recent wins) to
+    // give the score a stored page far from page one, and to record what the
+    // viewer writes back to it.
+    const written = [];
+    await page.route("**/api/scores/1", (route) => {
+      if (route.request().method() === "PATCH") written.push(route.request().postDataJSON());
+      return route.fulfill({ json: { ...SCORE, last_page: 8 } });
+    });
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    await page.route("**/api/scores/1/file", async (route) => {
+      await held;
+      await route.fulfill({ body: buildMultiPagePdf(20), contentType: "application/pdf" });
+    });
+    await page.goto("/#/score/1");
+    await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+    await expect(page.locator(".pdf-page")).toHaveCount(0);
+
+    // Backwards from page one: goto() clamps it to page one, so this is the
+    // turn that asks for the page the indicator is already showing.
+    await page.keyboard.press("ArrowLeft");
+    release();
+
+    await expect(page.locator(".pdf-page")).toHaveCount(20, { timeout: 15_000 });
+    await expect(page.locator(".hud span")).toHaveText("1 / 20");
+    // The turn was honoured: page one, not the stored page eight.
+    const at = await pdfGeometry(page);
+    expect(Math.abs(at.scrollTop - at.pageOneTop)).toBeLessThanOrEqual(2);
+    // And the library was told, which is the half a page-turn that does not
+    // move the indicator can still lose. Polled: the save is debounced.
+    await expect
+      .poll(() => written.map((body) => body.last_page).join(","))
+      .toBe("1");
+  });
+
   // The same press, in gig mode, which is where it actually comes from: a
   // pedal tap on a score that has just been opened, with no mouse to fall
   // back on (issue #106's reasoning, and #92's).

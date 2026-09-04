@@ -1,5 +1,5 @@
 {
   "file": "tests/browser/practice-shortcuts.spec.js",
-  "count": 2,
-  "reason": "issue #229: after a resize re-render the page indicator is re-derived from the pane's own geometry, so it cannot be left reading a page the pane is no longer showing - once for a gig-mode turn taken inside the re-render, and once for a resize alone changing which page is on screen."
+  "count": 3,
+  "reason": "issue #229: after a resize re-render the page indicator is re-derived from the pane's own geometry, so it cannot be left reading a page the pane is no longer showing - once for a gig-mode turn taken inside the re-render, and once for a resize alone changing which page is on screen; plus, from the review of that fix, that a turn honoured before the pages existed is still SAVED when it lands on the page the indicator already named, which is the one write the visible-page gate must not swallow."
 }

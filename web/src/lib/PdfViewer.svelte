@@ -275,7 +275,18 @@
             // where a turn can still be travelling when the flush ends, and
             // there the two differ.
             intendedPage = null;
-            setPage(seen);
+            // Only when it has actually moved, and ONLY here. This is the
+            // one caller that speaks after every re-render rather than on a
+            // change - the observer fires on a crossing, which is a change
+            // by definition, and every other caller is recording an intent
+            // worth saving even when it names the page already showing (a
+            // turn pressed before any canvas exists resolves to page one on
+            // a score stored at page eight, and that write is the whole
+            // point of it). Gating inside setPage instead swallowed that
+            // one: measured, the reader sat on page one while the database
+            // kept eight. Ungated here, a reader who never leaves page one
+            // still wrote it once per resize - 10 writes for 10 resizes.
+            if (seen !== currentPage) setPage(seen);
           }
         }),
       );
@@ -363,15 +374,6 @@
   // including the debounced last_page write, which used to live only on the
   // observer's path and so was skipped for any turn the observer missed.
   function setPage(n) {
-    // Only when it actually moves. The write below is what makes this worth
-    // stating: the re-derive after a resize (see flushResize) asks this
-    // question after EVERY re-render, where the observer only ever spoke on
-    // a crossing - which is a change by definition. Without this, a reader
-    // who never leaves page one still writes the page they are already on
-    // once per resize (measured: 10 writes for 10 resizes, against none on
-    // main). Every other caller is a turn, and a turn that does not move the
-    // page has nothing to save either.
-    if (n === currentPage) return;
     currentPage = n;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => api.patch(score.id, { last_page: currentPage }).catch(() => {}), 1200);
