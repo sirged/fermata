@@ -2006,7 +2006,7 @@ def _store_extraction_result(score_id: int, result) -> dict:
             # first place, and it named every other _BAR_KEYS entry by hand
             # already but never picked these two up, so the round trip broke
             # here even after _BAR_KEYS did the reading half. Without this,
-            # a score with real unsplit pairs (e.g. Ronfaure, 15 per #116)
+            # a score with real unsplit pairs (e.g. score_o, 15 per #116)
             # stores None for both and #143's own verification plan fails.
             "coincident_unsplit_pairs": result.coincident_unsplit_pairs,
             "staves_coincident_unsplit": result.staves_coincident_unsplit,
