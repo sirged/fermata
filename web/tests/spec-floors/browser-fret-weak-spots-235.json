@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/fret-weak-spots.spec.js",
+  "count": 2,
+  "reason": "issue #235: with no attempts anywhere yet the weak-positions panel shows its empty state, and ten answers with three incorrect on one position lists that position first with its count - ahead of a smaller count seeded elsewhere - updating live as further answers are logged, with no reload anywhere in the test."
+}

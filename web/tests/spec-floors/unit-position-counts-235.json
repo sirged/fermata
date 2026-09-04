@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/position-counts.spec.js",
+  "count": 7,
+  "reason": "issue #235: grouping stored attempts by (target_string, target_fret) with the largest count first, a note_to_position row (no target position) never being grouped in, a deterministic tie-break, a display limit keeping the largest counts, and every string this module produces - including the empty state - passing the vocabulary check."
+}
