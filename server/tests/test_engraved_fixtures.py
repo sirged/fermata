@@ -2570,7 +2570,44 @@ class _FakeReporter:
         self.lines.append(text)
 
 
-def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(monkeypatch, tmp_path):
+@pytest.fixture
+def _reset_skip_counters(monkeypatch):
+    """Snapshot-and-clear every skip counter `pytest_terminal_summary` reads,
+    not just the one a given test means to exercise.
+
+    Issue #217: the library test below used to reset only `_library_skips`,
+    so in a full run with `web/node_modules` absent, real node_modules skips
+    that happened earlier in the session were still sitting in
+    `_node_modules_skips` when this test asserted the summary was empty - the
+    counters are module-level state shared across the whole run, not reset
+    between tests by pytest itself. Discovering every `*_skips` list on
+    `conftest` rather than naming them one at a time means a counter added
+    later is covered without anyone remembering to touch this fixture too -
+    PROVIDED it keeps to the `*_skips`-list convention. A counter that
+    doesn't (a differently named attribute, or one typed as a set rather
+    than a list) would narrow this fixture's coverage silently, which is the
+    same failure mode this fixture exists to close - so the two counters
+    `pytest_terminal_summary` is known to read today are asserted found
+    below, not just discovered ones cleared."""
+    import conftest
+
+    found = set()
+    for name in dir(conftest):
+        if name.endswith("_skips") and isinstance(getattr(conftest, name), list):
+            monkeypatch.setattr(conftest, name, [])
+            found.add(name)
+
+    known = {"_library_skips", "_node_modules_skips"}
+    assert known <= found, (
+        f"expected skip counters {sorted(known - found)} were not discovered by the "
+        "'*_skips list' convention this fixture relies on - renamed, retyped (e.g. a "
+        "set instead of a list), or removed from conftest without updating this "
+        "fixture's assumption"
+    )
+
+
+def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(
+        monkeypatch, tmp_path, _reset_skip_counters):
     """The loud skip. A suite that skipped a third of itself said so only by
     a number nobody compared against anything, which is exactly how 36
     skipped extraction tests went unnoticed. A count on the screen is not a
@@ -2583,7 +2620,6 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(monkeypat
     the one thing this must never say by accident."""
     import conftest
 
-    monkeypatch.setattr(conftest, "_library_skips", [])
     monkeypatch.delenv("FERMATA_TEST_LIBRARY", raising=False)
 
     # nothing skipped and no library configured: no claim either way
@@ -2617,16 +2653,15 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(monkeypat
     assert reporter.lines == []
 
 
-def test_the_summary_says_how_many_tests_skipped_for_want_of_node_modules(monkeypatch):
+def test_the_summary_says_how_many_tests_skipped_for_want_of_node_modules(
+        monkeypatch, _reset_skip_counters):
     """The same loud skip as the library one above, for `web/node_modules`
-    (issue #134 adversarial review, item 7): nine tests - including
-    score_s's and playback-order headline cases - used to skip in
+    (issue #134 adversarial review, item 7): a double-digit slice of tests -
+    including score_s's and playback-order headline cases - used to skip in
     total silence when `npm ci` had not been run in web/, and nothing said
     so unless a reader compared this run's summary against CI's by hand."""
     import conftest
 
-    monkeypatch.setattr(conftest, "_library_skips", [])
-    monkeypatch.setattr(conftest, "_node_modules_skips", [])
     monkeypatch.delenv("FERMATA_TEST_LIBRARY", raising=False)
 
     # nothing skipped: no claim either way
@@ -2645,6 +2680,27 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_node_modules(monkey
     conftest.pytest_terminal_summary(reporter, 0, None)
     assert len(reporter.lines) == 1
     assert "2 test(s) skipped for want of web/node_modules" in reporter.lines[0]
+
+
+def test_the_summary_says_one_test_skipped_for_want_of_node_modules(
+        monkeypatch, _reset_skip_counters):
+    """The single-skip boundary of the node_modules counter. The sibling test
+    above only ever exercises it at 2, so a hook that special-cased "more
+    than one" (or otherwise mishandled the count=1 case) would pass there and
+    still be wrong - this pins the line at its smallest non-zero count."""
+    import conftest
+
+    monkeypatch.delenv("FERMATA_TEST_LIBRARY", raising=False)
+
+    with pytest.raises(BaseException):
+        conftest.skip_without_node_modules("alphaTab.mjs not found")
+    assert conftest._library_skips == []
+    assert len(conftest._node_modules_skips) == 1
+
+    reporter = _FakeReporter()
+    conftest.pytest_terminal_summary(reporter, 0, None)
+    assert len(reporter.lines) == 1
+    assert "1 test(s) skipped for want of web/node_modules" in reporter.lines[0]
 
 
 def test_the_committed_musicxml_still_matches_its_generator():
