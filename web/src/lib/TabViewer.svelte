@@ -161,6 +161,24 @@
   let doc = null;
   let editStringCount = $state(6);
   let selectedOrdinal = $state(null);
+  // A selected REST (#238), mutually exclusive with selectedOrdinal - at most
+  // one of the two is ever non-null. `doc.restAt`'s own shape: { restOrdinal,
+  // id, type, dots, duration, voice, onset, measure }. A rest has no note-head
+  // bounds in the renderer (score-render.js's positional map skips rests, and
+  // stays skipping them - see document.js's stepAny), so a rest selection
+  // never sets `overlay`; the edit panel shows it as text instead.
+  let selectedRest = $state(null);
+  // The string offered for a rest-to-note conversion, editable in the panel
+  // while a rest is selected. Initialised from lastEditString (the string the
+  // player was last actually fretting) or the rest's voice's own default
+  // (defaultStringForVoice) when there is none yet this session (#238's
+  // "selected, or the rest's voice's default" string).
+  let selRestString = $state(null);
+  // The last string a real fret/string edit actually used, plain
+  // (non-reactive) like fretEntry - nothing renders from it directly, it only
+  // seeds selRestString the next time a rest is selected. null until the
+  // first fret/string edit or rest conversion this session.
+  let lastEditString = null;
   let selFret = $state(null);
   let selString = $state(null);
   let selType = $state(null);
@@ -237,6 +255,8 @@
 
   function clearSelection() {
     selectedOrdinal = null;
+    selectedRest = null;
+    selRestString = null;
     selFret = selString = selType = selMidi = selNoteId = null;
     selStep = selAlter = selAccidental = null;
     selDots = 0;
@@ -281,23 +301,71 @@
     else enterEdit();
   }
 
+  // Hit-tests against the renderer's own note-head bounds (score-render.js's
+  // positional map), which - unchanged by #238 - covers sounding notes only;
+  // a rest has no head of its own there to click. A rest is reached by arrow
+  // navigation instead (see moveSelection/stepAny); clicking one is a gap
+  // left open by that same boundary, not attempted here.
   function selectAt(clientX, clientY) {
     if (!editMode || !view || !doc) return;
     const ord = view.editor.hitTest(clientX, clientY);
     if (ord == null) return;
     editWarn = "";
     fretEntry = null;
+    selectedRest = null;
     selectedOrdinal = ord;
     refreshSelection();
   }
 
+  // The string offered to convert a rest into a note (#238): the string the
+  // player was last actually fretting this session if there is one, else a
+  // simple per-voice default (voice 1 -> string 1, voice 2 -> string 2, ...,
+  // wrapping if the voice number runs past the string count) - "a sensible
+  // default position" the issue asks for, not a claim about which string a
+  // given voice is conventionally written on.
+  function defaultStringForVoice(voice) {
+    if (lastEditString != null) return lastEditString;
+    const count = editStringCount || 1;
+    const v = Number.isInteger(voice) && voice > 0 ? voice : 1;
+    return ((v - 1) % count) + 1;
+  }
+
+  function selectRest(restOrdinal) {
+    if (!doc) return;
+    const d = doc.restAt(restOrdinal);
+    if (!d) {
+      clearSelection();
+      return;
+    }
+    selectedOrdinal = null;
+    selFret = selString = selType = selMidi = selNoteId = null;
+    selStep = selAlter = selAccidental = null;
+    selDots = d.dots ?? 0;
+    selTieStart = selTieStop = false;
+    selVoice = d.voice;
+    selOnset = d.onset;
+    selRenderVoice = null;
+    selVoiceOptions = [];
+    // No renderer read of a rest exists to cross-check against (it has no
+    // ordinal in score-render.js's positional map) - true, not merely
+    // unchecked, so it never reads as a false "out of sync" warning.
+    divergenceOk = true;
+    overlay = null;
+    editWarn = "";
+    fretEntry = null;
+    selRestString = defaultStringForVoice(d.voice);
+    selectedRest = d;
+  }
+
   function refreshSelection() {
     if (selectedOrdinal == null || !doc || !view) return;
+    selectedRest = null;
     const d = doc.noteAt(selectedOrdinal);
     if (!d) {
       clearSelection();
       return;
     }
+    if (d.string != null) lastEditString = d.string;
     const v = view.editor.viewInfo(selectedOrdinal);
     selFret = d.fret;
     selString = d.string;
@@ -567,16 +635,39 @@
   // Move the selection note-to-note (kind "note") or bar-to-bar (kind
   // "measure"), the editor's two arrow granularities - the same split the
   // transport's own arrows make (a beat, and a whole bar). No playback: this
-  // only re-reads a different note into the selection.
+  // only re-reads a different note (or, for "note", possibly a rest - #238)
+  // into the selection.
+  //
+  // "note" walks doc.stepAny - EVERY element in document order, rests
+  // included - so a rest is a stop along the way, not skipped, the same way a
+  // click cannot reach one but an arrow now can. "measure" stays
+  // doc.stepMeasure, sounding notes only: bar-to-bar rest stepping is not this
+  // increment's bet (the issue's own rabbit holes exclude the duration/
+  // structure work a general rest timeline would need), so it is a no-op from
+  // a rest, and unreachable from one via ArrowUp/Down.
   function moveSelection(kind, direction) {
-    if (selectedOrdinal == null || !doc) return;
-    // Moving off the note ends its two-digit fret window.
+    if ((selectedOrdinal == null && selectedRest == null) || !doc) return;
+    // Moving off the current selection ends its two-digit fret window.
     fretEntry = null;
-    const target = kind === "measure" ? doc.stepMeasure(selectedOrdinal, direction) : doc.stepNote(selectedOrdinal, direction);
-    if (target == null || target === selectedOrdinal) return;
+    if (kind === "measure") {
+      if (selectedOrdinal == null) return;
+      const target = doc.stepMeasure(selectedOrdinal, direction);
+      if (target == null || target === selectedOrdinal) return;
+      editWarn = "";
+      selectedOrdinal = target;
+      refreshSelection();
+      return;
+    }
+    const sel = selectedRest != null ? { restOrdinal: selectedRest.restOrdinal } : { ordinal: selectedOrdinal };
+    const target = doc.stepAny(sel, direction);
+    if (!target) return;
     editWarn = "";
-    selectedOrdinal = target;
-    refreshSelection();
+    if (target.ordinal != null) {
+      selectedOrdinal = target.ordinal;
+      refreshSelection();
+    } else {
+      selectRest(target.restOrdinal);
+    }
   }
 
   // A digit typed with a note selected. Sets the fret to that digit at once; a
@@ -586,8 +677,16 @@
   // writable-pitch bound (Rule 11, MIDI 12-131 / octaves 0-9) refuses an
   // out-of-range fret here too - a two-digit value that would exceed it is
   // refused, the already-committed single digit left in place.
+  //
+  // With a REST selected instead (#238), the same digit turns it into a note -
+  // see convertRestDigit - on selRestString at that fret; the two-digit
+  // window then continues normally once it becomes a real, selected ordinal.
   const FRET_REFUSAL = "That fret would put the note outside the pitch range MusicXML can write (octaves 0–9).";
   function typeFretDigit(d) {
+    if (selectedRest != null) {
+      convertRestDigit(d);
+      return;
+    }
     if (selectedOrdinal == null || !doc) return;
     const now = typeof performance !== "undefined" ? performance.now() : Date.now();
     const extend = fretEntry && fretEntry.ordinal === selectedOrdinal && now - fretEntry.at <= TWO_DIGIT_MS;
@@ -601,6 +700,63 @@
       fretEntry = { ordinal: selectedOrdinal, value: d, at: now };
       applyEdit(() => doc.setFret(selectedOrdinal, d), FRET_REFUSAL);
     }
+  }
+
+  // Turn the rest at `restOrdinal` into a note on `string` at `fret` (#238),
+  // through doc.restToNote - the shared body behind both convertRestDigit (the
+  // keyboard/panel path) and the fuzz harness's "restToNote" op below, so the
+  // two exercise exactly the same state transition. Structural like
+  // deleteSelected/changeVoice: the rest's position gains a new sounding
+  // ordinal, so the model is rebuilt from the new text and the NEW ordinal
+  // (restToNote's own return) is what gets selected, not the rest's old
+  // address. Returns the new ordinal, or null when the edit was refused
+  // (leaving the current selection as restOrdinal's rest, reselected, so the
+  // refusal message sits next to the rest the player was trying to fret).
+  const REST_TO_NOTE_REFUSAL = "That fret can't be written as a note on this string (octaves 0–9).";
+  async function applyRestToNote(restOrdinal, string, fret) {
+    if (!doc || !view) return null;
+    const before = doc.text();
+    const newOrdinal = doc.restToNote(restOrdinal, string, fret);
+    if (newOrdinal == null) {
+      editWarn = REST_TO_NOTE_REFUSAL;
+      selectRest(restOrdinal);
+      return null;
+    }
+    editWarn = "";
+    const after = doc.text();
+    undoStack = [...undoStack, before];
+    redoStack = [];
+    dirty = true;
+    lastEditString = string;
+    doc = createDocument(after);
+    editStringCount = doc.stringCount;
+    selectedRest = null;
+    selRestString = null;
+    selectedOrdinal = newOrdinal;
+    // Seeds the two-digit fret window as if this digit had been typed on an
+    // ordinary note, so a fast second digit right after extends the fret to
+    // two digits exactly the way typeFretDigit's own extend path does.
+    fretEntry = { ordinal: newOrdinal, value: fret, at: typeof performance !== "undefined" ? performance.now() : Date.now() };
+    await view.editor.reload(after);
+    if (doc.noteAt(selectedOrdinal)) refreshSelection();
+    else clearSelection();
+    return newOrdinal;
+  }
+
+  // A digit typed with a rest selected: fret it on selRestString (the panel's
+  // own default - see selectRest/defaultStringForVoice).
+  async function convertRestDigit(d) {
+    if (!selectedRest) return;
+    const string = selRestString ?? defaultStringForVoice(selectedRest.voice);
+    await applyRestToNote(selectedRest.restOrdinal, string, d);
+  }
+
+  // The String select on the rest panel (#238) - changes selRestString only;
+  // nothing is written to the document until a digit is typed (convertRestDigit).
+  function changeRestString(value) {
+    const v = Number(value);
+    if (!Number.isInteger(v)) return;
+    selRestString = v;
   }
 
   // Backspace deletes the selected note by turning it into a rest (doc.deleteNote
@@ -718,6 +874,10 @@
             count: () => (doc ? doc.count() : 0),
             stringCount: () => (doc ? doc.stringCount : 0),
             noteAt: (ordinal) => (doc ? doc.noteAt(ordinal) : null),
+            // Rest selection surface (#238), parallel to count/noteAt above -
+            // restCount/restAt address the rests, not the sounding notes.
+            restCount: () => (doc ? doc.restCount() : 0),
+            restAt: (restOrdinal) => (doc ? doc.restAt(restOrdinal) : null),
             text: () => (doc ? doc.text() : null),
             select: (ordinal) => {
               if (doc == null || ordinal == null || ordinal < 0 || ordinal >= doc.count()) return null;
@@ -725,11 +885,39 @@
               refreshSelection();
               return selectedOrdinal;
             },
+            selectRestOrdinal: (restOrdinal) => {
+              if (doc == null || restOrdinal == null || restOrdinal < 0 || restOrdinal >= doc.restCount()) return null;
+              selectRest(restOrdinal);
+              return selectedRest?.restOrdinal ?? null;
+            },
             audit: () => auditAllNotes(),
             // Apply one shipped edit op to `ordinal` through the real handler,
             // awaiting its reload/re-render, and report whether it applied, was
-            // refused, and the per-edit divergence flag afterwards.
+            // refused, and the per-edit divergence flag afterwards. `op ===
+            // "restToNote"` is the one exception to "ordinal is a sounding
+            // note" (#238): there `ordinal` addresses a REST (doc.restCount()),
+            // and `arg` is `{ string, fret }`, since converting a rest starts
+            // from no prior selection to cross the fuzz's uniform dispatch.
             async apply(ordinal, op, arg) {
+              if (op === "restToNote") {
+                if (doc == null || ordinal == null || ordinal < 0 || ordinal >= doc.restCount())
+                  return { applied: false, refused: false, reason: "rest-ordinal-out-of-range", divergenceOk };
+                editWarn = "";
+                const before = doc.text();
+                const { string, fret } = arg ?? {};
+                const newOrdinal = await applyRestToNote(ordinal, string, fret);
+                const after = doc ? doc.text() : before;
+                return {
+                  op,
+                  arg: arg ?? null,
+                  ordinal,
+                  applied: after !== before,
+                  refused: newOrdinal == null,
+                  warn: editWarn || null,
+                  selected: selectedOrdinal,
+                  divergenceOk,
+                };
+              }
               if (doc == null || ordinal == null || ordinal < 0 || ordinal >= doc.count())
                 return { applied: false, refused: false, reason: "ordinal-out-of-range", divergenceOk };
               selectedOrdinal = ordinal;
@@ -1067,17 +1255,21 @@
     // The keyboard core loop (#186) shares this one window handler with the
     // transport and the staff-profile switch, and must not fight them. The
     // arbitration rule: the editor claims arrows, digits and Backspace ONLY
-    // while a note is selected (editMode && selectedOrdinal != null); in every
-    // other state those keys fall through untouched to the switch below. So a
-    // digit sets the selected note's fret when one is selected and switches the
-    // staff profile when none is (keys "1"/"2"/"3" there); Backspace deletes the
-    // selected note when one is selected and stops the transport when none is;
+    // while a note OR A REST is selected (editMode && (selectedOrdinal != null
+    // || selectedRest != null) - #238 extends the same claim to a rest
+    // selection); in every other state those keys fall through untouched to
+    // the switch below. So a digit sets the selected note's fret (or turns a
+    // selected rest into a note) when one of the two is selected, and switches
+    // the staff profile when neither is (keys "1"/"2"/"3" there); Backspace
+    // deletes the selected note (a no-op on a rest - deleteSelected's own
+    // guard) when one is selected and stops the transport when neither is;
     // arrows move the selection when one is selected and move the playback
-    // cursor when none is. Every claimed key returns here, so it is handled once
-    // and never also by the switch. Space, L, S, N, C, T are never claimed - so
-    // the transport stays fully live while editing (a correction can be heard
-    // the instant it is made), which is why a note stays selected through it.
-    if (editMode && selectedOrdinal != null) {
+    // cursor when neither is. Every claimed key returns here, so it is handled
+    // once and never also by the switch. Space, L, S, N, C, T are never
+    // claimed - so the transport stays fully live while editing (a correction
+    // can be heard the instant it is made), which is why a selection stays put
+    // through it.
+    if (editMode && (selectedOrdinal != null || selectedRest != null)) {
       switch (e.key) {
         case "ArrowLeft":
         case "ArrowRight":
@@ -1200,6 +1392,12 @@
   data-editor-dirty={dirty}
   data-editor-can-undo={undoStack.length > 0}
   data-editor-can-redo={redoStack.length > 0}
+  data-editor-selected-rest={selectedRest?.restOrdinal}
+  data-editor-selected-rest-voice={selectedRest?.voice}
+  data-editor-selected-rest-duration={selectedRest?.duration}
+  data-editor-selected-rest-type={selectedRest?.type}
+  data-editor-selected-rest-dots={selectedRest ? selDots : null}
+  data-editor-selected-rest-string={selectedRest ? selRestString : null}
 >
   {#if gigMode}
     <!-- gig mode: hide the practice toolbar chrome, but playback and the way
@@ -1385,8 +1583,26 @@
     <div class="edit-panel">
       {#if editError}
         <p class="hint warn">{editError}</p>
+      {:else if selectedRest != null}
+        <!-- A rest, selected by arrow navigation (#238) - not by click; see
+             selectAt's own comment for why the renderer cannot hit-test one.
+             No fret/duration/voice fields to edit here (the no-gos rule out
+             structure editing) - only the target string for the note a digit
+             is about to make it, and the rest's own duration/voice as context. -->
+        <div class="edit-fields">
+          <span class="hint">Rest ({selectedRest.type ?? "?"}{"".padStart(selDots, "·")}), voice {selectedRest.voice}</span>
+          <label title="The string a typed digit will fret this rest onto, turning it into a note">
+            String
+            <select value={String(selRestString)} onchange={(e) => changeRestString(e.target.value)}>
+              {#each Array.from({ length: editStringCount }, (_, i) => i + 1) as s}
+                <option value={String(s)}>{s}</option>
+              {/each}
+            </select>
+          </label>
+          <span class="edit-hint">Type a fret digit to turn this rest into a note.</span>
+        </div>
       {:else if selectedOrdinal == null}
-        <p class="edit-hint">Click a note on the staff to select it, then change its fret, string or duration.</p>
+        <p class="edit-hint">Click a note on the staff to select it, then change its fret, string or duration. Arrow to a rest to select it.</p>
       {:else}
         <div class="edit-fields">
           <label>
