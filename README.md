@@ -27,8 +27,8 @@ them.
   switched between standard notation, tablature, or both staves at once, with
   audio playback, adjustable speed, and a moving cursor. Guitar Pro files are
   accepted by the scanner and handed to the same renderer's importer, which
-  reads that format natively; nothing in this repository covers that path
-  end to end, so it is untested here rather than proven. The built-in
+  reads that format natively; a browser spec carries an original Guitar Pro 7
+  fixture through that whole path (see the format table below). The built-in
   synthesizer also drives practice tools: drag-select a passage on the score
   to loop it, plus a count-in. The
   staff is themed to match the interface, lays itself out differently on a
@@ -234,7 +234,7 @@ structured formats — and to a transcription made from a PDF, which is what the
 side-by-side view is for. There's a bundled demo (sidebar → *Notation/tab
 demo*) if your library is PDF-only so far.
 
-[^gp]: Checked against a real, original fixture: `web/test-fixtures/guitar-pro-import-fixture.gp`, a few original bars built with alphaTab's own exporter from the alphaTeX source committed beside it, never a borrowed arrangement. `web/tests/browser/guitar-pro-import.spec.js` uploads it through the real `/api/upload` path and the real scanner, opens it through the real `Viewer` → `TabViewer` → `score-render.js` path, and checks the bar count, note count and tuning the real importer actually produced.
+[^gp]: Checked against a real, original Guitar Pro 7 (`.gp`) fixture: `web/test-fixtures/guitar-pro-import-fixture.gp`, a few original bars built with alphaTab's own exporter from the alphaTeX source committed beside it, never a borrowed arrangement. `web/tests/browser/guitar-pro-import.spec.js` uploads it through the real `/api/upload` path and the real scanner, opens it through the real `Viewer` → `TabViewer` → `score-render.js` path, and checks the bar count, note count and tuning the real importer actually produced.
 
 ## Roadmap
 
