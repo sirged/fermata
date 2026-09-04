@@ -3972,9 +3972,11 @@ EXPORT_FILES_DIR = "files"
 
 # Every table this feature carries, and the only tables it carries - a
 # manifest with a different set of keys under `tables` is refused rather than
-# read partially. Order matters only for readability here; `_apply_import`
-# decides the real insert order (instruments and tags before the scores that
-# reference them, scores before everything that references A SCORE).
+# read partially (see LEGACY_OPTIONAL_TABLES below for the one deliberate
+# exception, for archives written before this tuple grew). Order matters only
+# for readability here; `_apply_import` decides the real insert order
+# (instruments and tags before the scores that reference them, scores before
+# everything that references A SCORE).
 EXPORT_TABLE_NAMES = (
     "instruments",
     "tags",
@@ -3993,7 +3995,29 @@ EXPORT_TABLE_NAMES = (
     # new score), exactly as practice_sessions.score_id does.
     "setlists",
     "setlist_scores",
+    # #243's two: docs/practice-data.md already decided drill history is
+    # durable practice data - structured rows, kept for later reading, the
+    # same status practice_sessions has - so it rides the same export/import
+    # round trip practice_sessions does. Each ONLY references a
+    # practice_sessions row (`session_id`, nullable - most attempts are never
+    # linked to one, see db.py's note on that column), never a score
+    # directly, so on the way in `session_id` follows this import's id remap
+    # (the practice_sessions old-id to new-id map) exactly as
+    # setlist_scores.score_id follows the score map. Neither table is
+    # filtered by score the way practice_sessions/practice_goals are,
+    # because neither one references a score at all.
+    "trainer_attempts",
+    "trainer_chord_attempts",
 )
+
+# Tables added to EXPORT_TABLE_NAMES after some archives already on disk were
+# written. A manifest missing one of these under `tables` was produced by a
+# Fermata that predates the table, not a malformed archive - _apply_import
+# treats a missing one as an empty table, per #243 (refusing every backup
+# taken before today because a table it never knew about is absent would be
+# worse than importing with an empty drill history). Every OTHER name still
+# has to match exactly, per the comment above EXPORT_TABLE_NAMES.
+LEGACY_OPTIONAL_TABLES = ("trainer_attempts", "trainer_chord_attempts")
 
 
 def _dump_table(conn, sql: str, params=()) -> list[dict]:
@@ -4073,6 +4097,22 @@ def _build_export_manifest(conn, *, include_trash: bool) -> dict:
         if row["score_id"] in score_ids
     ]
 
+    # #243's two: every attempt either drill ever logged, in the order it was
+    # asked (ORDER BY id, the same order practice_sessions travels in).
+    # Neither table references a score - only `session_id`, nullable, into
+    # practice_sessions - so unlike practice_sessions/practice_goals above
+    # there is no score_id to null out here; practice_sessions itself is
+    # never filtered by score (or by anything but owner), so every session_id
+    # a row in either table could name is already in this export.
+    trainer_attempts = _dump_table(
+        conn, "SELECT * FROM trainer_attempts WHERE owner = ? ORDER BY id", (DEFAULT_OWNER,)
+    )
+    trainer_chord_attempts = _dump_table(
+        conn,
+        "SELECT * FROM trainer_chord_attempts WHERE owner = ? ORDER BY id",
+        (DEFAULT_OWNER,),
+    )
+
     return {
         "format": EXPORT_FORMAT,
         "schema_version": SCHEMA_VERSION,
@@ -4093,6 +4133,8 @@ def _build_export_manifest(conn, *, include_trash: bool) -> dict:
             "settings": _dump_table(conn, "SELECT * FROM settings ORDER BY owner, key"),
             "setlists": setlists,
             "setlist_scores": setlist_scores,
+            "trainer_attempts": trainer_attempts,
+            "trainer_chord_attempts": trainer_chord_attempts,
         },
     }
 
@@ -4106,9 +4148,10 @@ def _build_export_manifest(conn, *, include_trash: bool) -> dict:
 def export_library(include_trash: bool = True, include_files: bool = True):
     """Everything Fermata knows, as one zip archive: every score row,
     transcription (content, source and every disclosure field), practice
-    session, goal, tag, favourite, instrument, setting and setlist (with its
-    ordered membership), plus the score files themselves - see the module
-    comment above this section for the archive's exact shape.
+    session, goal, trainer attempt (both drills), tag, favourite, instrument,
+    setting and setlist (with its ordered membership), plus the score files
+    themselves - see the module comment above this section for the archive's
+    exact shape.
 
     `include_trash` (default true) decides whether a score currently in the
     trash - deleted but not yet destroyed, see #56 - travels too. Leaving it
@@ -4239,12 +4282,30 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile) -> dict:
             "has been changed.",
         )
     tables = manifest.get("tables")
-    if not isinstance(tables, dict) or set(tables) != set(EXPORT_TABLE_NAMES):
+    # A key this Fermata does not know at all, or a REQUIRED key missing
+    # entirely, is refused exactly as before. A key in LEGACY_OPTIONAL_TABLES
+    # missing entirely is the one deliberate exception (see that tuple's own
+    # comment): the archive predates the table, not a malformed manifest, so
+    # it is filled in here as an empty list and treated as such by every
+    # check and insert below - nothing downstream needs to know the
+    # difference between "this archive logged no attempts" and "this archive
+    # predates attempts".
+    if not isinstance(tables, dict):
         raise HTTPException(
             422,
             "the archive's manifest does not carry exactly the tables Fermata's export "
             f"writes ({', '.join(EXPORT_TABLE_NAMES)})",
         )
+    provided = set(tables)
+    required = set(EXPORT_TABLE_NAMES) - set(LEGACY_OPTIONAL_TABLES)
+    if provided - set(EXPORT_TABLE_NAMES) or not required <= provided:
+        raise HTTPException(
+            422,
+            "the archive's manifest does not carry exactly the tables Fermata's export "
+            f"writes ({', '.join(EXPORT_TABLE_NAMES)})",
+        )
+    for name in LEGACY_OPTIONAL_TABLES:
+        tables.setdefault(name, [])
     for name in EXPORT_TABLE_NAMES:
         if not isinstance(tables[name], list) or not all(isinstance(r, dict) for r in tables[name]):
             raise HTTPException(422, f"the archive's {name!r} table is not a list of objects")
@@ -4312,6 +4373,19 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile) -> dict:
                 raise HTTPException(
                     422,
                     f"the archive's {table_name} table names a score that is not in the archive",
+                )
+    # Every practice_sessions row needs a real id from here on - #243's two
+    # trainer tables reference one (`session_id`), the same way scores are
+    # required above for everything that names one.
+    session_ids = {_require_id(row, "practice_sessions") for row in tables["practice_sessions"]}
+    for table_name in ("trainer_attempts", "trainer_chord_attempts"):
+        for row in tables[table_name]:
+            sid = row.get("session_id")
+            if sid is not None and sid not in session_ids:
+                raise HTTPException(
+                    422,
+                    f"the archive's {table_name} table names a practice session that is not "
+                    "in the archive",
                 )
     for row in tables["settings"]:
         if not isinstance(row.get("key"), str) or not row["key"] or "value" not in row:
@@ -4473,9 +4547,14 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
             conn, "transcriptions", row, overrides={"score_id": score_id_map[row["score_id"]]}
         )
 
+    # #243's session_id_map: nothing referenced a practice_sessions row's own
+    # id before the trainer tables existed, so nothing needed its
+    # lastrowid - now trainer_attempts/trainer_chord_attempts do, the same
+    # way score_id_map exists for everything that references a score.
+    session_id_map: dict[int, int] = {}
     for row in tables["practice_sessions"]:
         sid = row.get("score_id")
-        _insert_row(
+        session_id_map[row["id"]] = _insert_row(
             conn,
             "practice_sessions",
             row,
@@ -4526,6 +4605,34 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
             },
         )
 
+    # #243's two, in logged order (see EXPORT_TABLE_NAMES' own comment):
+    # `session_id` follows the practice_sessions id remap exactly as
+    # setlist_scores.score_id follows the score one, and is None wherever it
+    # already was - most attempts are never linked to a session at all (see
+    # db.py's note on trainer_attempts.session_id).
+    for row in tables["trainer_attempts"]:
+        sid = row.get("session_id")
+        _insert_row(
+            conn,
+            "trainer_attempts",
+            row,
+            overrides={
+                "owner": DEFAULT_OWNER,
+                "session_id": session_id_map.get(sid) if sid is not None else None,
+            },
+        )
+    for row in tables["trainer_chord_attempts"]:
+        sid = row.get("session_id")
+        _insert_row(
+            conn,
+            "trainer_chord_attempts",
+            row,
+            overrides={
+                "owner": DEFAULT_OWNER,
+                "session_id": session_id_map.get(sid) if sid is not None else None,
+            },
+        )
+
     # The library just grew - see scanner.record_deliberate_shrink, which
     # (despite the name it was written under for #56's delete) only ever sets
     # the high-water mark to the library's current size. Left unset here, an
@@ -4552,6 +4659,8 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
         "settings_imported": len(tables["settings"]),
         "setlists_imported": len(tables["setlists"]),
         "setlist_scores_imported": len(tables["setlist_scores"]),
+        "trainer_attempts_imported": len(tables["trainer_attempts"]),
+        "trainer_chord_attempts_imported": len(tables["trainer_chord_attempts"]),
     }
 
 
@@ -4634,6 +4743,8 @@ async def import_library(file: UploadFile, dry_run: bool = True):
             "settings_imported": len(tables["settings"]),
             "setlists_imported": len(tables["setlists"]),
             "setlist_scores_imported": len(tables["setlist_scores"]),
+            "trainer_attempts_imported": len(tables["trainer_attempts"]),
+            "trainer_chord_attempts_imported": len(tables["trainer_chord_attempts"]),
         }
 
     _require_library()

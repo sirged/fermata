@@ -21,6 +21,7 @@ feature exists not to have.
 import hashlib
 import io
 import json
+import re
 import zipfile
 
 import pytest
@@ -321,6 +322,184 @@ def test_export_import_round_trip_is_lossless(client, library, add_score, tmp_pa
         s["id"] for s in client.get("/api/trash").json()
     }
     assert all(m["score"]["id"] in target_score_ids for m in actual_setlist["scores"])
+
+
+# ---------------------------------------------------------------------------
+# The guard #243 asks for: a table db.py's schema carries but this feature's
+# hand-enumerated tuple does not is exactly the bug that shipped for
+# trainer_attempts/trainer_chord_attempts (issue #243) - this derives the
+# expected table set from the schema ITSELF, so a future table forgotten here
+# fails this test rather than only being noticed by reading the tuple by eye.
+# ---------------------------------------------------------------------------
+
+
+def test_export_table_names_matches_every_table_the_schema_creates():
+    """Every `CREATE TABLE IF NOT EXISTS` name in db.SCHEMA, minus nothing -
+    there is no allow-list of deliberately-not-portable tables (no FTS
+    shadow table, no sqlite-internal table) anywhere in this schema, so the
+    two sets have to be exactly equal. If a future table needs a real
+    exception (kept out of exports on purpose), it belongs in a commented
+    allow-list subtracted here - not a silent gap in EXPORT_TABLE_NAMES."""
+    schema_tables = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", db.SCHEMA))
+    # Sanity check on the regex itself: fewer than this would mean the
+    # pattern stopped matching real CREATE TABLE statements, which would let
+    # this test pass for the wrong reason (an empty or tiny schema_tables
+    # trivially failing to catch anything left out of EXPORT_TABLE_NAMES).
+    assert len(schema_tables) >= 12
+    assert schema_tables == set(api.EXPORT_TABLE_NAMES)
+
+
+# ---------------------------------------------------------------------------
+# #243: drill history (trainer_attempts, trainer_chord_attempts) rides the
+# same export/import round trip practice_sessions does.
+# ---------------------------------------------------------------------------
+
+
+def test_export_import_round_trip_carries_trainer_attempts(client, tmp_path, monkeypatch):
+    """Log a row into both trainer tables, linked to a session that is NOT
+    the first one this library has ever seen (a decoy session comes first),
+    export, import into a fresh library that already has one session of its
+    own before the import runs. If `session_id` travelled as the raw
+    source-side id rather than through this import's own id remap, the
+    imported attempt would end up pointing at the wrong session (or, if the
+    raw id happens not to exist in the target at all, at a foreign-key
+    violation) rather than at the session the archive actually meant - this
+    checks the imported row points at the RIGHT session, not merely a valid
+    one.
+    """
+    decoy_session = client.post(
+        "/api/practice/sessions", json={"seconds": 60, "activity": "ear_training"}
+    ).json()
+    real_session = client.post(
+        "/api/practice/sessions", json={"seconds": 120, "activity": "fretboard"}
+    ).json()
+    assert real_session["id"] != decoy_session["id"]
+
+    attempt1 = client.post(
+        "/api/trainer/attempts",
+        json={
+            "session_id": real_session["id"],
+            "drill": "fret_to_note",
+            "direction": "position_to_note",
+            "target_string": 6,
+            "target_fret": 3,
+            "target_note": "G",
+            "given_note": "G",
+        },
+    ).json()
+    attempt2 = client.post(
+        "/api/trainer/attempts",
+        json={
+            "session_id": real_session["id"],
+            "drill": "fret_to_note",
+            "direction": "position_to_note",
+            "target_string": 1,
+            "target_fret": 0,
+            "target_note": "E",
+            "given_note": "F",
+        },
+    ).json()
+    chord_attempt = client.post(
+        "/api/trainer/chord-attempts",
+        json={
+            "session_id": real_session["id"],
+            "drill": "chord_flashcards",
+            "direction": "shape_to_name",
+            "target_root": "C",
+            "target_quality": "major",
+            "target_shape": [
+                {"string": 5, "fret": 3},
+                {"string": 4, "fret": 2},
+                {"string": 3, "fret": 0},
+                {"string": 2, "fret": 1},
+                {"string": 1, "fret": 0},
+            ],
+            "given_root": "C",
+            "given_quality": "major",
+        },
+    ).json()
+    assert chord_attempt["correct"] is True
+
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    # Logged order preserved in the archive.
+    assert [r["id"] for r in manifest["tables"]["trainer_attempts"]] == [
+        attempt1["id"], attempt2["id"],
+    ]
+    assert len(manifest["tables"]["trainer_chord_attempts"]) == 1
+
+    archive = client.get("/api/export").content
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    # A session that already exists in the TARGET before import runs, so the
+    # imported sessions cannot coincidentally land on the same ids they had
+    # in the source - a broken remap that carried the raw source id across
+    # would then point at THIS session, not the one the archive named.
+    preexisting = client.post(
+        "/api/practice/sessions", json={"seconds": 999, "activity": "ear_training"}
+    ).json()
+
+    import_resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert import_resp.status_code == 200, import_resp.text
+    summary = import_resp.json()
+    assert summary["trainer_attempts_imported"] == 2
+    assert summary["trainer_chord_attempts_imported"] == 1
+
+    target_sessions = client.get("/api/practice/sessions").json()["sessions"]
+    imported_real_session = next(
+        s for s in target_sessions if s["seconds"] == 120 and s["activity"] == "fretboard"
+    )
+    assert imported_real_session["id"] != preexisting["id"]
+    assert imported_real_session["id"] != real_session["id"]  # a fresh id, not the source's
+
+    new_attempts = sorted(
+        client.get("/api/trainer/attempts").json()["attempts"], key=lambda a: a["target_note"]
+    )
+    assert [a["target_note"] for a in new_attempts] == ["E", "G"]
+    for a in new_attempts:
+        assert a["session_id"] == imported_real_session["id"]
+        assert a["session_id"] != preexisting["id"]
+
+    new_chord_attempts = client.get("/api/trainer/chord-attempts").json()["attempts"]
+    assert len(new_chord_attempts) == 1
+    assert new_chord_attempts[0]["target_root"] == "C"
+    assert new_chord_attempts[0]["target_quality"] == "major"
+    assert new_chord_attempts[0]["correct"] is True
+    assert new_chord_attempts[0]["session_id"] == imported_real_session["id"]
+
+
+def test_import_accepts_an_archive_from_before_the_trainer_tables_existed(client, add_score):
+    """A manifest with a different set of keys under `tables` is refused
+    rather than read partially - EXCEPT for the two keys #243 added,
+    LEGACY_OPTIONAL_TABLES: an archive missing those entirely predates the
+    tables, not malformed, and refusing to restore every backup taken before
+    today would be strictly worse than importing one with an empty drill
+    history. This engineers exactly that ten-table archive by deleting the
+    two keys from an otherwise-real manifest, and asserts it still imports
+    (mutation-tested: see the PR text for the red count when the tolerance
+    for a missing key is removed)."""
+    add_score("Prelude.pdf", title="Prelude")
+    manifest = json.loads(
+        _zip_of(client.get("/api/export?include_files=false")).read("manifest.json")
+    )
+    assert set(manifest["tables"]) == set(api.EXPORT_TABLE_NAMES)
+    del manifest["tables"]["trainer_attempts"]
+    del manifest["tables"]["trainer_chord_attempts"]
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+
+    resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("legacy-ten-table.zip", archive, "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    summary = resp.json()
+    assert summary["trainer_attempts_imported"] == 0
+    assert summary["trainer_chord_attempts_imported"] == 0
+    assert client.get("/api/scores").json()[0]["title"] == "Prelude"
+    assert client.get("/api/trainer/attempts").json()["total"] == 0
+    assert client.get("/api/trainer/chord-attempts").json()["total"] == 0
 
 
 def test_export_can_leave_the_trash_out(client, add_score):
