@@ -153,15 +153,47 @@ test("a bulk pass over a mixed selection shows live progress and every score's r
     request, NON_EXTRACTABLE_PDF, "bad.pdf", "Uploads", "Not-extractable score",
   );
 
+  // "fresh.pdf" runs through its OWN dialog, with reconvert ticked, rather
+  // than alongside the other three below. #190 means uploading an
+  // extractable PDF now transcribes it automatically, almost immediately -
+  // upload()'s own wait for the scan to settle already gives that automatic
+  // pass time to run, so by the time Organise mode can select it, "fresh.pdf"
+  // already has an extracted transcription of its own. Reconvert is what
+  // still proves the "transcribed" outcome renders correctly here: it asks
+  // for exactly the re-extraction the automatic pass already did, and
+  // reports the same "transcribed" outcome a genuinely first-time pass
+  // would. (The automatic pass itself is asserted directly in
+  // zzzzz-library-scan-transcribes.spec.js, not here.)
   await organise(page);
   await choose(page, fresh);
+  await page.locator(".transcribe-open").click();
+  let dialog = page.locator(".dialog.transcribe");
+  await expect(dialog).toBeVisible();
+  await dialog.locator(".reconvert-option input").check();
+  await dialog.locator(".transcribe-apply").click();
+  await waitForBatchDone(page);
+  await expect(dialog.locator(".transcribe-line", { hasText: "Fresh score" })).toContainText(
+    "transcribed",
+  );
+  await expect(dialog.locator(".transcribe-progress").first()).toContainText("1 transcribed");
+  await dialog.locator(".dialog-cancel").click();
+  await expect(page.locator(".dialog.transcribe")).toHaveCount(0);
+
+  // The other three, in their own run with reconvert OFF - #190's automatic
+  // pass never touches "already.pdf" or "edited.pdf" in a way that matters
+  // here (they already carry a transcription of their own from the explicit
+  // POST /transcribe calls above, whichever pass happened to write it first)
+  // or "bad.pdf" (not extractable, so an automatic attempt has nothing to
+  // write) - and reconvert OFF is exactly what proves "already had one"
+  // rather than reconverting them regardless.
+  await organise(page);
   await choose(page, already);
   await choose(page, edited);
   await choose(page, bad);
-  await expect(page.locator(".selected-count")).toHaveText("4 selected");
+  await expect(page.locator(".selected-count")).toHaveText("3 selected");
 
   await page.locator(".transcribe-open").click();
-  const dialog = page.locator(".dialog.transcribe");
+  dialog = page.locator(".dialog.transcribe");
   await expect(dialog).toBeVisible();
   await dialog.locator(".transcribe-apply").click();
 
@@ -171,7 +203,6 @@ test("a bulk pass over a mixed selection shows live progress and every score's r
   await waitForBatchDone(page);
 
   const line = (title) => dialog.locator(".transcribe-line", { hasText: title });
-  await expect(line("Fresh score")).toContainText("transcribed");
   await expect(line("Already transcribed score")).toContainText("already had one");
   await expect(line("Already transcribed score")).toContainText("reconvert");
   await expect(line("Hand-edited score")).toContainText("already had one");
@@ -179,7 +210,7 @@ test("a bulk pass over a mixed selection shows live progress and every score's r
   await expect(line("Not-extractable score")).toContainText("not extractable");
 
   // The aggregate summary, not just the per-line detail.
-  await expect(dialog.locator(".transcribe-progress").first()).toContainText("1 transcribed");
+  await expect(dialog.locator(".transcribe-progress").first()).toContainText("0 transcribed");
   await expect(dialog.locator(".transcribe-progress").first()).toContainText(
     "2 already had one",
   );
@@ -189,7 +220,7 @@ test("a bulk pass over a mixed selection shows live progress and every score's r
 
   await dialog.locator(".dialog-cancel").click();
   await expect(page.locator(".dialog.transcribe")).toHaveCount(0);
-  await expect(page.locator(".notice")).toContainText("1 transcribed");
+  await expect(page.locator(".notice")).toContainText("2 already had one");
 
   // The edited score's hand-corrected content survived the run, literally.
   const stillEdited = await (
@@ -230,11 +261,13 @@ test("the sidebar's per-folder Transcribe button selects only that folder", asyn
   await expect(dialog.locator(".transcribe-line")).toHaveCount(1);
   await expect(dialog.locator(".transcribe-line")).toContainText("In the folder");
 
-  // elsewhere.pdf was never selected, so it has no transcription of its own.
+  // elsewhere.pdf was never selected for THIS bulk pass - already proven
+  // above by the dialog's own result count and title, not by
+  // has_transcription: an extractable PDF gains one on its own the moment a
+  // scan reaches it, whether or not anybody ever selects it for a bulk pass
+  // (#190), so has_transcription can no longer distinguish "selected here"
+  // from "scanned at some point".
   const scores = await (await request.get("/api/scores")).json();
-  const otherScore = scores.find((s) => s.path === "OtherFolder/elsewhere.pdf");
-  expect(otherScore.has_transcription).toBe(false);
-
   const inFolderNow = scores.find((s) => s.id === inFolder.id);
   expect(inFolderNow.has_transcription).toBe(true);
 });

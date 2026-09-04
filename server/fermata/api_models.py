@@ -813,6 +813,13 @@ class ScanStatusOut(BaseModel):
     last_error: str | None
     started_at: float | None
     finished_at: float | None
+    # Whether the bulk transcription pass this scan's own chain tried to
+    # start (over the ids it added) actually started - None until a chain
+    # that added at least one score finishes (#190). False means a bulk pass
+    # was already running by somebody's own hand; `transcribe_batch_note`
+    # says which, in words a person can read.
+    transcribe_batch_started: bool | None
+    transcribe_batch_note: str | None
 
 
 class ScanTriggerOut(ScanStatusOut):

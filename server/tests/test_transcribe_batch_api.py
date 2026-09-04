@@ -21,7 +21,13 @@ about a single POST /transcribe:
      held against one another, mirroring scanner.hold_library_still's
      reasoning for why upload() is not held against a scan either;
   6. a second batch refuses while one is already running, the same rule
-     scanner.start_scan applies to a second scan.
+     scanner.start_scan applies to a second scan;
+  7. issue #190's own scan-triggered hook: the LAST scan of a chain starts
+     one bulk pass over exactly the ids that chain added (never one per
+     pass), that hook is refused rather than interrupting a pass already
+     running by hand - recorded into the scan's own status in words - and an
+     upload (which triggers a scan) is covered by the same hook, proven
+     directly rather than only inferred.
 """
 import threading
 import time
@@ -81,6 +87,27 @@ def _wait_for_scan(timeout: float = 10.0) -> None:
     while scanner.scan_status()["scanning"]:
         if time.monotonic() > deadline:
             raise AssertionError("the scan did not finish")
+        time.sleep(0.02)
+
+
+def _wait_for_scan_chain_decision(timeout: float = 10.0) -> dict:
+    """Wait past the exact race zz-library-missing.spec.js's own scanAndWait
+    warns about, one layer further down (#190): `scanning` going false only
+    means the SCAN is done, not that its own chain-completion hook
+    (scanner._finish_scan_chain) has decided anything about a bulk pass yet.
+    `transcribe_batch_started` moving away from `None` IS that hook having
+    decided - only once it has is a read of transcribe_batch.batch_status()
+    actually about the pass THIS chain may have started, rather than one
+    left over from before."""
+    deadline = time.monotonic() + timeout
+    while True:
+        status = scanner.scan_status()
+        if not status["scanning"] and status["transcribe_batch_started"] is not None:
+            return status
+        if time.monotonic() > deadline:
+            raise AssertionError(
+                f"the scan's chain never finished deciding about a bulk pass: {status}"
+            )
         time.sleep(0.02)
 
 
@@ -499,3 +526,216 @@ def test_a_second_batch_refuses_while_one_is_running(app_env, extractable_pdf, m
     _wait_for_batch()
     # The first (only) pass completed normally once released.
     assert transcribe_batch.batch_status()["processed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 7. The scan's own scan-triggered hook (#190): a freshly scanned library
+#    transcribes itself, and says so.
+# ---------------------------------------------------------------------------
+
+
+def test_a_scan_that_adds_scores_starts_one_pass_over_exactly_those_ids(
+    library, extractable_pdf, non_extractable_pdf, monkeypatch
+):
+    """#190's core mechanism: at the end of a scan's own chain, exactly one
+    bulk transcription pass starts over exactly the ids that chain added -
+    not the whole library, and not one pass per file the scan touched."""
+    import shutil
+
+    shutil.copy(extractable_pdf, library / "good.pdf")
+    shutil.copy(non_extractable_pdf, library / "bad.pdf")
+
+    calls = []
+    real_start_batch = transcribe_batch.start_batch
+
+    def recording_start_batch(process_one, score_ids, reconvert=False):
+        calls.append(list(score_ids))
+        return real_start_batch(process_one, score_ids, reconvert)
+
+    monkeypatch.setattr(transcribe_batch, "start_batch", recording_start_batch)
+
+    scan_started = scanner.start_scan()
+    assert scan_started is True
+    status = _wait_for_scan_chain_decision()
+    _wait_for_batch()
+
+    assert len(calls) == 1, f"expected exactly one bulk pass, got {len(calls)}: {calls}"
+    conn = db.connect()
+    ids = {r["id"] for r in conn.execute("SELECT id FROM scores")}
+    assert len(ids) == 2
+    assert set(calls[0]) == ids
+
+    batch = transcribe_batch.batch_status()
+    assert batch["total"] == 2
+    assert batch["transcribed"] == 1
+    assert batch["non_extractable"] == 1
+
+    good_id = conn.execute("SELECT id FROM scores WHERE path='good.pdf'").fetchone()["id"]
+    bad_id = conn.execute("SELECT id FROM scores WHERE path='bad.pdf'").fetchone()["id"]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transcriptions WHERE score_id=?", (good_id,)
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transcriptions WHERE score_id=?", (bad_id,)
+    ).fetchone()[0] == 0
+
+    # Said in the scan's own status, in words - the one place anybody could
+    # read it, since the startup scan runs unattended.
+    assert status["transcribe_batch_started"] is True
+    assert "2" in status["transcribe_batch_note"]
+
+
+def test_a_scan_that_adds_a_score_does_not_interrupt_a_bulk_pass_already_running_by_hand(
+    library, extractable_pdf, monkeypatch
+):
+    """#190's own rabbit hole: a hand-started bulk pass takes priority over
+    the scan's own hook, not the other way round. The hook is refused the
+    same way transcribe_batch.start_batch already refuses a second manual
+    call - never a queue, never a retry - and the scan says so in its own
+    status, in words a person can read."""
+    import shutil
+
+    shutil.copy(extractable_pdf, library / "existing.pdf")
+    scanner._scan()
+    conn = db.connect()
+    existing_id = conn.execute(
+        "SELECT id FROM scores WHERE path='existing.pdf'"
+    ).fetchone()["id"]
+
+    release = threading.Event()
+
+    def blocking_process_one(score_id, reconvert):
+        release.wait(timeout=10)
+        return api._batch_process_one(score_id, reconvert)
+
+    hand_started = transcribe_batch.start_batch(blocking_process_one, [existing_id], False)
+    assert hand_started is True
+
+    try:
+        shutil.copy(extractable_pdf, library / "fresh.pdf")
+        scan_started = scanner.start_scan()
+        assert scan_started is True
+        status = _wait_for_scan_chain_decision()
+
+        assert status["transcribe_batch_started"] is False, status
+        assert status["transcribe_batch_note"]
+        assert "already running" in status["transcribe_batch_note"]
+
+        # The hand-started pass itself is untouched - still just the one
+        # score it was given, not the one the scan just added.
+        running = transcribe_batch.batch_status()
+        assert running["running"] is True
+        assert running["total"] == 1
+    finally:
+        release.set()
+        _wait_for_batch()
+
+    # No queue (#190's No-gos): the freshly scanned score really was not
+    # transcribed, not merely "not transcribed yet".
+    fresh_id = conn.execute("SELECT id FROM scores WHERE path='fresh.pdf'").fetchone()["id"]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transcriptions WHERE score_id=?", (fresh_id,)
+    ).fetchone()[0] == 0
+
+
+def test_a_chained_rescan_starts_one_bulk_pass_over_the_union_of_every_id_the_chain_added(
+    library, extractable_pdf, monkeypatch
+):
+    """#190: a scan whose chain has more than one pass - a second request
+    landing while the first is still walking the library, so
+    scanner._run_pending_rescan starts a follow-up pass over the library's
+    new state - must still start only ONE bulk pass, over every id ANY pass
+    in the chain added, never one pass per link.
+
+    Built the same way test_a_bulk_transcription_pass_runs_while_a_scan_is_
+    in_progress builds a scan slow enough to prove genuine overlap:
+    hash_file slowed down enough that a second start_scan() call, made
+    while the first pass is still hashing its only file, is genuinely
+    declined for re-entrancy (see scanner._rescan_pending) rather than
+    racing to go first.
+    """
+    import shutil
+
+    shutil.copy(extractable_pdf, library / "one.pdf")
+
+    calls = []
+    real_start_batch = transcribe_batch.start_batch
+
+    def recording_start_batch(process_one, score_ids, reconvert=False):
+        calls.append(list(score_ids))
+        return real_start_batch(process_one, score_ids, reconvert)
+
+    monkeypatch.setattr(transcribe_batch, "start_batch", recording_start_batch)
+
+    real_hash_file = scanner.hash_file
+
+    def slow_hash_file(path):
+        time.sleep(0.3)
+        return real_hash_file(path)
+
+    monkeypatch.setattr(scanner, "hash_file", slow_hash_file)
+
+    scan_started = scanner.start_scan()
+    assert scan_started is True
+    time.sleep(0.1)  # let it start hashing one.pdf
+    assert scanner.scan_status()["scanning"] is True
+
+    # A second file lands mid-pass, and the request made for it is declined
+    # rather than starting a scan of its own - the running pass already took
+    # its directory listing, before this file existed.
+    shutil.copy(extractable_pdf, library / "two.pdf")
+    second_call_started = scanner.start_scan()
+    assert second_call_started is False
+
+    _wait_for_scan_chain_decision()
+    _wait_for_batch()
+
+    assert len(calls) == 1, (
+        f"expected one bulk pass for the whole chain, got {len(calls)}: {calls}"
+    )
+    conn = db.connect()
+    ids = {r["id"] for r in conn.execute("SELECT id FROM scores")}
+    assert len(ids) == 2
+    assert set(calls[0]) == ids
+
+    batch = transcribe_batch.batch_status()
+    assert batch["total"] == 2
+    assert batch["transcribed"] == 2
+
+
+def test_an_upload_starts_exactly_one_bulk_pass_over_exactly_the_uploaded_scores_id(
+    client, library, extractable_pdf, monkeypatch
+):
+    """#190: POST /api/upload already triggers a scan (see api.upload) -
+    this is the one hook covering uploads too, proven directly through the
+    real endpoint rather than only inferred from the scan-triggered tests
+    above."""
+    calls = []
+    real_start_batch = transcribe_batch.start_batch
+
+    def recording_start_batch(process_one, score_ids, reconvert=False):
+        calls.append(list(score_ids))
+        return real_start_batch(process_one, score_ids, reconvert)
+
+    monkeypatch.setattr(transcribe_batch, "start_batch", recording_start_batch)
+
+    res = client.post(
+        "/api/upload?folder=Uploads",
+        files={"file": ("fresh.pdf", extractable_pdf.read_bytes(), "application/pdf")},
+    )
+    assert res.status_code == 200
+
+    _wait_for_scan_chain_decision()
+    _wait_for_batch()
+
+    conn = db.connect()
+    uploaded_id = conn.execute(
+        "SELECT id FROM scores WHERE path='Uploads/fresh.pdf'"
+    ).fetchone()["id"]
+
+    assert len(calls) == 1, f"expected exactly one bulk pass, got {len(calls)}: {calls}"
+    assert calls[0] == [uploaded_id]
+
+    status = transcribe_batch.batch_status()
+    assert status["total"] == 1
+    assert status["transcribed"] == 1

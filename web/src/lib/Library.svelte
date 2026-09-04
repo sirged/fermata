@@ -10,6 +10,7 @@
   let tag = $state("");
   let favorite = $state(false);
   let practiced = $state("");
+  let transcribed = $state("");
   let scan = $state(null);
   let loading = $state(true);
   let uploadInput;
@@ -272,11 +273,22 @@
     ["unknown", "Unsorted"],
   ];
 
+  // A freshly scanned library transcribes itself (#190), and this is how a
+  // person sees which of it that reached: narrow to "Transcribed" and the
+  // grid is exactly the scores a bulk pass could read; narrow to "Not
+  // transcribed" and it is exactly the complement - whatever a scan judged
+  // non-extractable, plus anything a manual pass has not reached yet.
+  const TRANSCRIBED = [
+    ["", "Any transcription"],
+    ["yes", "Transcribed"],
+    ["no", "Not transcribed"],
+  ];
+
   async function refresh() {
     loading = true;
     try {
       [scores, collections, tags] = await Promise.all([
-        api.scores({ search, collection, kind, tag, favorite, practiced }),
+        api.scores({ search, collection, kind, tag, favorite, practiced, transcribed }),
         api.collections(),
         api.tags(),
       ]);
@@ -287,7 +299,7 @@
 
   $effect(() => {
     // re-query whenever a filter changes
-    void search, collection, kind, tag, favorite, practiced;
+    void search, collection, kind, tag, favorite, practiced, transcribed;
     const t = setTimeout(refresh, 150);
     return () => clearTimeout(t);
   });
@@ -753,6 +765,11 @@
             <option {value}>{label}</option>
           {/each}
         </select>
+        <select class="transcribed-filter" bind:value={transcribed}>
+          {#each TRANSCRIBED as [value, label]}
+            <option {value}>{label}</option>
+          {/each}
+        </select>
         <button
           class="organise-toggle"
           class:on={organising}
@@ -817,6 +834,14 @@
                   <div class="sheet-icon">𝄞</div>
                 {/if}
                 <button class="fav" class:on={score.favorite} onclick={(e) => toggleFavorite(score, e)} title="Favorite">★</button>
+                {#if score.has_transcription}
+                  <!-- Whether it came from a scan's own bulk pass or a hand
+                       edit makes no difference here on purpose (#190's own
+                       No-gos) - this says only that a transcription exists,
+                       which is what the transcription filter beside it
+                       narrows the grid to. -->
+                  <span class="transcribed-mark" title="This score has a transcription">♪</span>
+                {/if}
                 {#if kindLabel[score.content_kind]}
                   <span class="kind">{kindLabel[score.content_kind]}</span>
                 {/if}
@@ -1301,6 +1326,20 @@
 
   .fav.on {
     color: var(--brass-bright);
+  }
+
+  /* Top-left is otherwise empty on a card: .fav sits top-right, .kind and
+     .missing-flag sit along the bottom. */
+  .transcribed-mark {
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    font-size: 13px;
+    line-height: 1;
+    background: rgba(22, 19, 14, 0.75);
+    color: var(--brass-bright);
+    padding: 4px 7px;
+    border-radius: 99px;
   }
 
   .kind {

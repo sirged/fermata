@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/zzzz-library-auto-transcribe.spec.js",
+  "count": 2,
+  "reason": "issue #190: an uploaded extractable score transcribes itself with no bulk-transcription click anywhere, the library card marks it, and the transcription filter narrows the grid to exactly that set and its exact complement."
+}
