@@ -9,6 +9,7 @@ that's enough. Every command below is meant to be copied and pasted as-is.
 - [Getting it running](#getting-it-running)
 - [Reaching it from another device](#reaching-it-from-another-device)
 - [Reverse proxy authentication](#reverse-proxy-authentication)
+- [The Model Context Protocol server](#the-model-context-protocol-server)
 - [Backups](#backups)
 - [Upgrading](#upgrading)
 - [Current limitations](#current-limitations)
@@ -452,6 +453,110 @@ services:
       default:
         ipv4_address: 172.28.1.11
 ```
+
+## The Model Context Protocol server
+
+Fermata can offer its library and practice history as a set of **read-only
+tools** over the Model Context Protocol — an open standard for describing
+tools to a program that reads them. It is a way to let an external tool ask
+"what's in the library" or "how much did I practise last week" without
+anyone writing HTTP requests by hand.
+
+**This is off by default, and stays off after an upgrade unless you turn it
+on.** Nothing below runs, and nothing listens, until you set `FERMATA_MCP`.
+
+### What it does and does not do
+
+- **Read only.** The tools list and search scores, read a score's metadata
+  and its transcription status, read practice history and summaries, read
+  goals, and read trainer attempts. There is no tool that changes anything —
+  not "log a session", not "rename a score", not "delete". That is not a
+  setting; there is no code path in it that can send anything but a `GET`.
+- **It wraps the REST API, it does not replace it.** Every tool is one
+  documented route from [the REST API](api.md), called over ordinary HTTP,
+  and every answer is that route's own JSON handed back unchanged. The tool
+  descriptions and their input schemas are generated from the same
+  `/openapi.json` the API serves, at startup, so a tool cannot describe a
+  route that no longer looks like that.
+- **It has no login of its own.** Anything that can reach the port can read
+  your whole library and practice history. That is the same trust model as
+  Fermata's own web interface (see [Current
+  limitations](#current-limitations)), and it is why the listener stays on
+  `127.0.0.1` — inside the container only — unless you deliberately move it.
+
+### Turning it on
+
+Add the environment variable to the `fermata` service in
+`docker-compose.yml` and publish a second port:
+
+```yaml
+services:
+  fermata:
+    # ... build, volumes, restart as in "Getting it running"
+    ports:
+      - "8080:8080"
+      - "8765:8765"
+    environment:
+      FERMATA_MCP: "1"
+      FERMATA_MCP_HOST: 0.0.0.0
+```
+
+Then rebuild and restart:
+
+```bash
+docker compose up -d
+```
+
+The tools are then reachable at **http://localhost:8765/mcp**, over the
+protocol's Streamable HTTP transport. Point a client that speaks the Model
+Context Protocol at that URL; it will list thirteen tools, each named after
+what it reads (`list_scores`, `get_practice_summary`, and so on).
+
+The four settings, only the first of which turns anything on:
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `FERMATA_MCP` | unset (off) | Set to `1` to run the server at all. Every other setting here is inert while this is unset. |
+| `FERMATA_MCP_HOST` | `127.0.0.1` | What the listener binds. Inside a container the default means "this container only" — set it to `0.0.0.0` if you are publishing the port, as above. |
+| `FERMATA_MCP_PORT` | `8765` | The port it listens on. |
+| `FERMATA_MCP_API_URL` | `http://127.0.0.1:8080` | Where it finds Fermata's own REST API. The default is right for the container; change it only if you are running from source and told `uvicorn` to use a different port. |
+
+`FERMATA_MCP_HOST` defaulting to loopback is deliberate: publishing this is
+two decisions (set the host, map the port), not one, so it is hard to expose
+by accident. Do not publish that port to the open internet — put it behind
+the same reverse proxy and login as everything else, or leave it on your own
+network.
+
+### Checking it, and what failure looks like
+
+You can see exactly which tools it would offer without connecting anything:
+
+```bash
+docker compose exec fermata python -m fermata.mcp_server
+```
+
+That prints each tool with the route it reads and the arguments it takes.
+
+If the port you chose is already taken, **the container will not start**,
+and `docker compose logs fermata` will say so in a sentence naming the port.
+That is on purpose: a container that came up healthy while the feature you
+just turned on silently did nothing is the worse outcome. Change
+`FERMATA_MCP_PORT`, or unset `FERMATA_MCP`, and it starts again — nothing in
+your library or your practice history is touched either way.
+
+### Running it from source
+
+The protocol library is an optional extra, so a source install needs it
+asked for by name:
+
+```bash
+pip install -e "server[mcp]"
+FERMATA_MCP=1 FERMATA_MCP_API_URL=http://127.0.0.1:8000 \
+  uvicorn fermata.main:app --port 8000 --no-proxy-headers
+```
+
+The container image already includes the extra, which is why turning the
+feature on there is an environment variable rather than a rebuild.
 
 ## Backups
 
