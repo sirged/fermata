@@ -144,9 +144,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_practice_goals_period
 # tidy fixture and lose the link between a session and whatever else ever
 # refers to it.
 _SCORES = [
-    (1, "To Zanarkand", "Patreon/To Zanarkand.pdf"),
-    (2, "Study in C", "Classical/Tarrega/Study in C.pdf"),
-    (7, "Clair de Lune", "Favorites/ClairDeLune.pdf"),
+    (1, "Second Score", "Patreon/SecondScore.pdf"),
+    (2, "Study in C", "Classical/Study in C.pdf"),
+    (7, "Third Score", "Favorites/ThirdScore.pdf"),
 ]
 
 _SESSIONS = [

@@ -212,10 +212,10 @@ def test_transcribe_rejects_non_extractable_pdf(app_env, non_extractable_pdf, mo
     assert exc_info.value.status_code == 422
 
 
-def test_transcription_analysis_endpoint(app_env, zanarkand_pdf, monkeypatch, insert_score):
-    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+def test_transcription_analysis_endpoint(app_env, score_a_pdf, monkeypatch, insert_score):
+    monkeypatch.setattr(api, "LIBRARY_DIR", score_a_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, zanarkand_pdf.name)
+    score_id = insert_score(conn, score_a_pdf.name)
     analysis = api.get_transcription_analysis(score_id)
     assert analysis["extractable"] is True
     assert analysis["tab_staff_count"] >= 5
@@ -699,21 +699,21 @@ def test_which_bars_were_not_read_from_glyphs_survives_a_reload(
     assert fetched["staves_dots_unassigned"] == 0
 
 
-def test_a_coincident_unsplit_pair_survives_a_reload(app_env, ronfaure_pdf, monkeypatch,
+def test_a_coincident_unsplit_pair_survives_a_reload(app_env, score_o_pdf, monkeypatch,
                                                      insert_score):
     """coincident_unsplit_pairs / staves_coincident_unsplit (issue #116) round
     trip against a score where they are non-zero, for the same reason the bar
     figures above are: all-zeros looks identical to a persistence bug that
-    dropped them. Ronfaure reads 15 unsplit pairs across 4 staves (see
+    dropped them. score_o reads 15 unsplit pairs across 4 staves (see
     test_a_coincident_pair_with_no_second_stem_is_disclosed_not_silently_doubled
     in test_tabextract.py) - reaching ExtractionResult and to_dict() with
     #116 itself, but neither _BAR_KEYS in api.py nor the confidence blob
     transcribe() writes ever picked them up (issue #143), so a reloaded
     transcription reported every other disclosure the decoder made except
     this one."""
-    monkeypatch.setattr(api, "LIBRARY_DIR", ronfaure_pdf.parent)
+    monkeypatch.setattr(api, "LIBRARY_DIR", score_o_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, ronfaure_pdf.name)
+    score_id = insert_score(conn, score_o_pdf.name)
 
     posted = api.transcribe(score_id, body=None)
     fetched = api.get_transcription(score_id)
@@ -809,7 +809,7 @@ def test_a_refused_meter_digit_survives_a_reload(app_env, engraved, monkeypatch,
                for w in fetched["warnings"]), fetched["warnings"]
 
 
-def test_an_unpaired_tie_end_survives_a_reload(app_env, courage_pdf, monkeypatch,
+def test_an_unpaired_tie_end_survives_a_reload(app_env, score_p_pdf, monkeypatch,
                                                insert_score):
     """`tie_ends_unpaired` (issue #81) round trips as a LITERAL non-zero, for
     the reason the two tests above give: a `posted[key] == fetched[key]` loop
@@ -819,12 +819,12 @@ def test_an_unpaired_tie_end_survives_a_reload(app_env, courage_pdf, monkeypatch
     HALF-matched tie - `tuplet_and_tie`'s split one is matched at neither end,
     which counts nothing - so every committed fixture reports zero, and a
     counter only ever asserted at zero cannot tell a working round trip from a
-    dropped field. Courage (FF XVI) writes 6 complete ties and leaves 4 ends
+    dropped field. score_p writes 6 complete ties and leaves 4 ends
     it could not close, in bars this asserts by number, and marks 19 harmonics
     beside them."""
-    monkeypatch.setattr(api, "LIBRARY_DIR", courage_pdf.parent)
+    monkeypatch.setattr(api, "LIBRARY_DIR", score_p_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, courage_pdf.name)
+    score_id = insert_score(conn, score_p_pdf.name)
 
     posted = api.transcribe(score_id, body=None)
     fetched = api.get_transcription(score_id)
@@ -1013,7 +1013,7 @@ def test_a_corrupt_blob_does_not_yield_a_bar_count(app_env, insert_score):
 
 
 def test_the_api_transcribes_a_real_engraved_score(
-    app_env, zanarkand_pdf, monkeypatch, insert_score
+    app_env, score_a_pdf, monkeypatch, insert_score
 ):
     """The whole path on material this project did not generate: a real
     Finale export, decoded through the Maestro glyph-ID fingerprint that no
@@ -1021,9 +1021,9 @@ def test_the_api_transcribes_a_real_engraved_score(
 
     Everything above this line now runs in CI against engraved fixtures.
     This one cannot, and it is the reason the library fixtures stay."""
-    monkeypatch.setattr(api, "LIBRARY_DIR", zanarkand_pdf.parent)
+    monkeypatch.setattr(api, "LIBRARY_DIR", score_a_pdf.parent)
     conn = db.connect()
-    score_id = insert_score(conn, zanarkand_pdf.name)
+    score_id = insert_score(conn, score_a_pdf.name)
 
     posted = api.transcribe(score_id, body=None)
     assert posted["source"] == "extracted"
@@ -1039,7 +1039,7 @@ def test_the_api_transcribes_a_real_engraved_score(
 
 
 def test_floored_note_durations_survive_the_api_round_trip(
-    app_env, hymn_of_the_fayth_pdf, monkeypatch, insert_score
+    app_env, score_h_pdf, monkeypatch, insert_score
 ):
     """`test_which_bars_were_not_read_from_glyphs_survives_a_reload` above only
     ever checks `notes_no_stem` / `staves_no_stem` against zero, on a fixture
@@ -1051,7 +1051,7 @@ def test_floored_note_durations_survive_the_api_round_trip(
     in anything engraved in this repository (see test_engraved_fixtures.py's
     "what these cannot reach" list), so this runs against the same real
     library score the extractor-level test does."""
-    pdf = hymn_of_the_fayth_pdf
+    pdf = score_h_pdf
     monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
     conn = db.connect()
     score_id = insert_score(conn, pdf.name)
@@ -1068,7 +1068,7 @@ def test_floored_note_durations_survive_the_api_round_trip(
 
 
 def test_unassigned_dots_survive_the_api_round_trip(
-    app_env, kaine_salvation_pdf, monkeypatch, insert_score
+    app_env, score_k_pdf, monkeypatch, insert_score
 ):
     """The same gap as `test_floored_note_durations_survive_the_api_round_trip`
     above, but for `dots_unassigned` / `dots_unassigned_no_candidate` /
@@ -1090,7 +1090,7 @@ def test_unassigned_dots_survive_the_api_round_trip(
     for them (see glyph_rhythm._pushed_down_pairs). The eight that remain are
     this score's repeat-barline dots and the like, which belong to no note and
     are meant to be counted."""
-    pdf = kaine_salvation_pdf
+    pdf = score_k_pdf
     monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
     conn = db.connect()
     score_id = insert_score(conn, pdf.name)
@@ -1112,7 +1112,7 @@ def test_unassigned_dots_survive_the_api_round_trip(
 
 
 def test_repeat_and_volta_disclosures_survive_the_api_round_trip(
-    app_env, tarrega_estudio_em_pdf, monkeypatch, insert_score
+    app_env, score_z_pdf, monkeypatch, insert_score
 ):
     """The same gap as the two round-trip tests above, but for the nine
     repeat/volta disclosure fields (issue #134 adversarial review, blocker
@@ -1133,7 +1133,7 @@ def test_repeat_and_volta_disclosures_survive_the_api_round_trip(
     (since a fix landed alongside this one - item 6 of the same review) no
     longer dropped outright either: the bar-style is still written, only the
     repeat is disclosed as unread."""
-    pdf = tarrega_estudio_em_pdf
+    pdf = score_z_pdf
     monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
     conn = db.connect()
     score_id = insert_score(conn, pdf.name)
@@ -1161,7 +1161,7 @@ def test_repeat_and_volta_disclosures_survive_the_api_round_trip(
 
 
 def test_a_lost_system_survives_the_api_round_trip(
-    app_env, dynamis_pdf, monkeypatch, insert_score
+    app_env, score_ac_pdf, monkeypatch, insert_score
 ):
     """Issue #152's counter, on a score whose count is genuinely nonzero.
 
@@ -1174,7 +1174,7 @@ def test_a_lost_system_survives_the_api_round_trip(
 
     Run against a nonzero score deliberately, for the reason the tests above
     state: a persistence bug that unconditionally wrote 0 and [] would pass
-    every zero-valued assertion in this file. Dynamis loses one system on
+    every zero-valued assertion in this file. score_ac loses one system on
     page 1 to a 7-line group (see the conftest note), and it is one of only
     two scores in the library that still lose one at all.
 
@@ -1184,7 +1184,7 @@ def test_a_lost_system_survives_the_api_round_trip(
     reached a reader and the number read back as None. Asserted here, in the
     same change that added the field, rather than left for a later review.
     """
-    pdf = dynamis_pdf
+    pdf = score_ac_pdf
     monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
     conn = db.connect()
     score_id = insert_score(conn, pdf.name)
@@ -1211,7 +1211,7 @@ def test_a_lost_system_survives_the_api_round_trip(
 
 
 def test_navigation_disclosures_survive_the_api_round_trip(
-    app_env, phantom_train_pdf, monkeypatch, insert_score
+    app_env, score_af_pdf, monkeypatch, insert_score
 ):
     """The same check for issue #134 phase 2's two navigation disclosures.
     Against a fixture with a genuinely nonzero count rather than the zero
@@ -1224,13 +1224,13 @@ def test_navigation_disclosures_survive_the_api_round_trip(
     written as the words the page prints, with no `<sound tocoda=>` beside
     it, and the bar is reported here.
 
-    It used to be Victory Fanfare, on the strength of its "D.S." having no
+    It used to be score_v, on the strength of its "D.S." having no
     segno to name - which was never true of that score, or of 82 others. Its
     segno was drawn in Finale's Maestro at the glyph ID this project's table
     labelled "simile", so the count this test needed to be nonzero was
     nonzero because of a bug, and the fix took it to 0. Picked for having
     nothing to do with the segno at all."""
-    pdf = phantom_train_pdf
+    pdf = score_af_pdf
     monkeypatch.setattr(api, "LIBRARY_DIR", pdf.parent)
     conn = db.connect()
     score_id = insert_score(conn, pdf.name)

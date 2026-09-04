@@ -16,7 +16,7 @@
 // The one thing here that WAS run against a real backend, by hand, before
 // this suite existed: the "structured field" shape and the save/revert
 // scenario below, against a real server built from fix/persist-bar-
-// conformance (PR #70 / #71) transcribing the real "To Zanarkand" PDF,
+// conformance (PR #70 / #71) transcribing a real library PDF (conftest score_a),
 // reloading, hand-editing, and reverting - see those PRs' discussion for
 // that run's output. The two-voice fixture below does not reproduce on any
 // of the 144 extractable scores in the real library; it exists because a
@@ -40,7 +40,7 @@ import {
 } from "./fixtures/transcription-warnings.js";
 
 // This bug and its fix were verified for real against fix/persist-bar-
-// conformance (commit 81532ec) and the real "To Zanarkand" PDF: transcribe
+// conformance (commit 81532ec) and a real library PDF (conftest score_a): transcribe
 // (headline shows real figures) -> hand-edit and save through the UI
 // (panel goes to nothing, not the pre-edit figures) -> revert to extracted
 // (real figures return, identical to the first transcribe). The scenario

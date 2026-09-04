@@ -90,7 +90,7 @@ available here produces them on purpose. The script builds all four, and their
 | `raster_scan` | `notation_and_tab` flattened to an image — refused as a scan |
 | `fake_music_font` | a page whose "music font" is an unembedded text font drawing the letters A–H, with a ToUnicode CMap claiming they are SMuFL music symbols as its only credential — refused |
 | `unmapped_meter_digit` | `multidigit_meter` with one entry of its music font's ToUnicode CMap rewritten, so the `2` of its 12/8 draws as a SMuFL codepoint outside the decoder's calibrated tables — what a Finale subset with an unmapped glyph ID, or a Sibelius one with an unmapped PUA name, looks like from this side (issue #129). The engraving, the outlines and every coordinate are the original's; only that one mapping differs. Before the refusal it read as a confident 1/8 "read directly from the time-signature digit glyphs" |
-| `harmonic_brackets` | `notation_and_tab` with four of its fret numbers wrapped in the single guillemets that mark a **harmonic** in tablature — `‹2›`, U+2039 and U+203A — at the horizontal offsets measured over the 896 real bracket pairs in the maintainer's library, and the vertical one measured on a page of Hymn of the Fayth. One of the four is a single member of a three-note chord, whose neighbours a string spacing away must not be swept up with it. MuseScore cannot engrave this: asked for a `<harmonic>` on a tab staff it draws a plain notehead and a plain digit, its own importer discarding the element (issue #63) |
+| `harmonic_brackets` | `notation_and_tab` with four of its fret numbers wrapped in the single guillemets that mark a **harmonic** in tablature — `‹2›`, U+2039 and U+203A — at the horizontal offsets measured over the 896 real bracket pairs in the maintainer's library, and the vertical one measured on a page of score_h. One of the four is a single member of a three-note chord, whose neighbours a string spacing away must not be swept up with it. MuseScore cannot engrave this: asked for a `<harmonic>` on a tab staff it draws a plain notehead and a plain digit, its own importer discarding the element (issue #63) |
 
 ## What they cannot cover
 
@@ -127,9 +127,11 @@ looks like coverage and is not is worse than none:
   (`musicxml.TYPE_NAMES`). IF a genuine 64th were engraved, it would be read
   as four levels and emitted as a 32nd - but the library holds no genuine
   64th to confirm that against: the only stems this decoder reads at four
-  levels are Troian Beauty p2's grace notes, which are a pre-existing,
-  unrelated over-count (a grace beam read past its own group), not a real
-  64th. `thirty_second_beams` deliberately does not contain a 64th either: a
+  levels are unpinned score 1's p2 grace notes (an unpinned score, not one
+  of the keyed fixtures `server/tests/conftest.py` pins by path), which are
+  a pre-existing, unrelated over-count (a grace beam read past its own
+  group), not a real 64th. `thirty_second_beams` deliberately does not
+  contain a 64th either: a
   bar asserting one would be pinning a different limit than the one measured
   here.
 - **A repeat bracket welded into a phantom staff line.** The engraver used

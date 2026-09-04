@@ -62,10 +62,10 @@ def _embedded_maestro_bytes(pdf_path):
     return None
 
 
-def test_fingerprint_accepts_the_calibrated_library_font(zanarkand_pdf):
+def test_fingerprint_accepts_the_calibrated_library_font(score_a_pdf):
     """The real thing must pass, or the check is just an outage."""
     TTFont = pytest.importorskip("fontTools.ttLib").TTFont
-    raw = _embedded_maestro_bytes(zanarkand_pdf)
+    raw = _embedded_maestro_bytes(score_a_pdf)
     assert raw, "expected an embedded Maestro in the reference file"
     ok, detail = G.maestro_fingerprint_ok(TTFont(io.BytesIO(raw), fontNumber=0))
     assert ok, detail
@@ -73,13 +73,13 @@ def test_fingerprint_accepts_the_calibrated_library_font(zanarkand_pdf):
     assert "match" in detail
 
 
-def test_fingerprint_rejects_altered_glyph_outlines(zanarkand_pdf):
+def test_fingerprint_rejects_altered_glyph_outlines(score_a_pdf):
     """A font that keeps the name "Maestro" but not the calibrated outlines
     must be refused. Otherwise a Maestro from another Finale version or
     another subsetting path silently mis-decodes every notehead, rest, flag
     and time-signature digit while still reporting high confidence."""
     TTFont = pytest.importorskip("fontTools.ttLib").TTFont
-    raw = _embedded_maestro_bytes(zanarkand_pdf)
+    raw = _embedded_maestro_bytes(score_a_pdf)
     assert raw
 
     tt = TTFont(io.BytesIO(raw), fontNumber=0)
@@ -155,21 +155,21 @@ class _FakeFontDoc:
         return self._content[xref]
 
 
-def test_a_renamed_maestro_is_still_loaded_by_its_fingerprint(zanarkand_pdf):
+def test_a_renamed_maestro_is_still_loaded_by_its_fingerprint(score_a_pdf):
     """Issue #154, on the real calibrated bytes rather than a synthesised
-    outline this test's own author might get wrong: 'Rito Village - Night
-    (The Legend of Zelda Breath of the Wild)' embeds its Maestro subset as a
+    outline this test's own author might get wrong: score_ah embeds
+    its Maestro subset as a
     PDF resource literally named 'CIDFont+F1' - every embedded font in that
     file was renamed generically - and load_music_fonts used to reject it by
     that name before maestro_fingerprint_ok ever ran, so the file read zero
     glyph events on all three of its pages.
 
     This takes real Maestro bytes from a DIFFERENT, correctly-named library
-    file (zanarkand_pdf) and hands them to _load_one_font exactly the way
+    file (score_a_pdf) and hands them to _load_one_font exactly the way
     load_music_fonts now does for a resource whose basefont it does not
     recognise: named=False. A font that passes maestro_fingerprint_ok is
     Maestro whatever it is called."""
-    raw = _embedded_maestro_bytes(zanarkand_pdf)
+    raw = _embedded_maestro_bytes(score_a_pdf)
     assert raw, "expected an embedded Maestro in the reference file"
 
     mf, warn = G._load_one_font(_FakeFontDoc({11: raw}), xref=11, base="F1",
@@ -183,13 +183,13 @@ def test_a_renamed_maestro_is_still_loaded_by_its_fingerprint(zanarkand_pdf):
     assert mf.category(157) == "notehead_filled"
 
 
-def test_load_music_fonts_recognises_a_renamed_maestro_resource(zanarkand_pdf):
+def test_load_music_fonts_recognises_a_renamed_maestro_resource(score_a_pdf):
     """The same fix one level up: load_music_fonts itself, given a page
-    whose only font resource is named the way Rito Village's is, must still
+    whose only font resource is named the way score_ah's is, must still
     find the Maestro subset in it - and file it under the RENAMED key, since
     that is the same basefont-derived name extract_glyph_events's `fname`
     will look candidates up by (see load_music_fonts' own docstring)."""
-    raw = _embedded_maestro_bytes(zanarkand_pdf)
+    raw = _embedded_maestro_bytes(score_a_pdf)
     assert raw
 
     doc = _FakeFontDoc({11: raw})
@@ -199,7 +199,7 @@ def test_load_music_fonts_recognises_a_renamed_maestro_resource(zanarkand_pdf):
 
         def get_fonts(self, full=True):
             # (xref, ext, ftype, basefont, name, encoding, flags) - the exact
-            # shape Rito Village's own PDF reports for its Maestro resource.
+            # shape score_ah's own PDF reports for its Maestro resource.
             return [(11, "ttf", "Type0", "CIDFont+F1", "F1", "Identity-H", 0)]
 
     fonts, warnings = G.load_music_fonts(doc, _FakePage())
@@ -235,9 +235,9 @@ def test_an_unrelated_renamed_font_is_not_mistaken_for_maestro(engraved):
         doc.close()
 
 
-def test_rito_village_night_draws_glyph_events_on_every_page(rito_village_pdf):
+def test_a_generically_renamed_font_resource_still_draws_glyph_events_on_every_page(score_ah_pdf):
     """The library-gated acceptance case for issue #154: before the fix,
-    'Rito Village - Night (The Legend of Zelda Breath of the Wild)' read
+    score_ah read
     ZERO glyph events on every one of its 3 pages, because its Maestro
     subset is embedded as a PDF resource named 'CIDFont+F1' and
     load_music_fonts rejected it by that name before its fingerprint was
@@ -249,11 +249,11 @@ def test_rito_village_night_draws_glyph_events_on_every_page(rito_village_pdf):
     the first page."""
     import fitz
 
-    doc = fitz.open(rito_village_pdf)
+    doc = fitz.open(score_ah_pdf)
     try:
         assert doc.page_count == 3, (
             "the reference score is expected to be exactly 3 pages - if this "
-            "fails, the wrong file is configured as the rito_village fixture")
+            "fails, the wrong file is configured as the score_ah fixture")
         counts = [len(G.extract_glyph_events(doc[pno]).events)
                   for pno in range(doc.page_count)]
         assert all(c > 0 for c in counts), (
@@ -377,8 +377,8 @@ def test_a_beam_offset_inside_tolerance_that_rounds_outside_is_still_counted():
     outside it and got rejected.
 
     At this library's most common staff spacing (REF, 5.125pt) beam_y_tol
-    is 1.17 * 5.125 == 5.99625pt. 5.9711pt - the measured offset on "Our
-    Terms" (Final Fantasy XVI) - is inside that window unrounded, but
+    is 1.17 * 5.125 == 5.99625pt. 5.9711pt - the measured offset on
+    unpinned score 1 - is inside that window unrounded, but
     round(5.9711, 1) == 6.0, which is outside it. Comparing the rounded
     value cost that stem its ONLY level: a note that should read as an
     eighth would silently read as a quarter."""
@@ -498,7 +498,7 @@ def test_a_melody_note_over_a_chord_keeps_its_own_stem_not_the_chords():
 
 
 def test_an_up_stem_is_not_measured_from_the_advance_width():
-    """Measured off page 2 of Dalza's Recercar, score measure 11: a filled
+    """Measured off page 2 of score_d, score measure 11: a filled
     eighth with its own up-stem, one staff space above a stem-down half-note
     chord. This is the same figure as the test above with the font's side
     bearing added on top - Opus's notehead box overhangs its ink by 0.324
@@ -1114,8 +1114,8 @@ def test_a_coincident_pair_with_only_one_candidate_stem_stays_bound_and_says_so(
 def test_a_runner_up_stem_at_a_different_onset_is_not_this_pairs_other_voice(monkeypatch):
     """A unison is two voices sounding the SAME PITCH AT THE SAME MOMENT, so
     a geometrically close second candidate stem is not enough on its own -
-    it has to stand at the SAME onset as the winner. Measured on Spanish
-    Romance and The Cosmic Wheel: a coincident pair's runner-up candidate can
+    it has to stand at the SAME onset as the winner. Measured on
+    score_r and score_q: a coincident pair's runner-up candidate can
     be a real, OTHER note's own stem - there, a bass note written far below
     the staff whose long stem the vector pass splits into abutting segments,
     one of which lands in the pair's search window at the SAME x as the
@@ -1601,11 +1601,11 @@ def test_a_stemless_notehead_that_cannot_carry_a_flag_is_not_counted(monkeypatch
     assert stats["no_stem_noteheads"] == 0
 
 
-def test_the_stemless_count_is_zero_when_every_head_found_its_stem(zanarkand_pdf):
+def test_the_stemless_count_is_zero_when_every_head_found_its_stem(score_a_pdf):
     """The counter has to be able to report nothing, or it says nothing. This
     score's noteheads all attach, so a counter wired to fire on every filled
     head - or on the wrong branch - shows up here rather than in the aggregate."""
-    result = tabextract.extract(str(zanarkand_pdf))
+    result = tabextract.extract(str(score_a_pdf))
     assert result.notes_no_stem == 0
     assert result.staves_no_stem == 0
     assert result.rhythm_provenance == {tabextract.PROV_GLYPHS: 10}
@@ -1742,7 +1742,7 @@ def test_an_eliminated_dot_is_distinct_from_one_with_no_candidate():
 
 
 def test_a_three_note_chord_gives_one_dot_to_each_notehead():
-    """A three-note chord, geometry taken from "Courage" (Final Fantasy XVI)
+    """A three-note chord, geometry taken from score_p
     rather than invented: three half notes a third and a fourth apart, each
     with its own raised dot. The middle note's own dot and the bottom note's
     own dot are each unambiguous - only one note is close enough to fit
@@ -1816,7 +1816,7 @@ def test_a_repeat_barlines_dot_pair_is_not_taken_by_the_note_after_it():
     arrive here indistinguishable from a note's except by geometry - and
     issue #138 reads them off this same stream. What keeps them apart is
     reach, and reach alone: these coordinates are the opening repeat of
-    "Kaine Salvation", where the lower of the two dots sits at the exact
+    score_k, where the lower of the two dots sits at the exact
     height of the first chord's lowest notehead (0.003 spaces off its centre,
     a perfect tier-0 fit) and is saved from it only by sitting 2.92 spaces to
     its LEFT.
@@ -1956,7 +1956,7 @@ def test_two_notes_one_after_the_other_do_not_lend_each_other_an_anchor():
 
 
 def test_a_pushed_down_pair_gives_each_member_its_own_dot():
-    """Coordinates from "Storm's Past" (New World), rescaled to this fixture's
+    """Coordinates from score_l, rescaled to this fixture's
     column: a displaced seconds pair where BOTH members are dotted.
 
     Their dots cannot both be printed at the default offsets - the two heads
@@ -2096,7 +2096,7 @@ def _off_grid(y, staff):
     return abs(steps - round(steps)) / 2
 
 
-def test_glyph_positions_land_on_the_staffs_own_grid(zanarkand_pdf):
+def test_glyph_positions_land_on_the_staffs_own_grid(score_a_pdf):
     """The defect behind finding 88, measured in the domain that shows it.
 
     The box the text trace reports is metrics-based: its top and bottom are
@@ -2111,7 +2111,7 @@ def test_glyph_positions_land_on_the_staffs_own_grid(zanarkand_pdf):
     """
     import fitz
 
-    doc = fitz.open(zanarkand_pdf)
+    doc = fitz.open(score_a_pdf)
     ink, metrics = [], []
     try:
         for page in doc:
