@@ -10,7 +10,11 @@
 // bytes and hand them to `api.load()` - alphaTab's own importer, never a
 // re-implementation), and asserts what that importer actually produced:
 // the score rendered at all, the right number of bars, the right number of
-// notes, and the right tuning.
+// notes, and the right tuning - read as the MIDI pitches
+// score-render.js's data-score-tuning attribute reports from the loaded
+// score's own staff.tuning, not the separate staff.tuningName label, which
+// a file can carry unchanged even when its strings were edited - see "WHY
+// TUNING IS READ OFF data-score-tuning" below.
 //
 // THE FIXTURE. web/test-fixtures/guitar-pro-import-fixture.gp is original
 // content written for this test - a four-bar scale-fragment-and-chord
@@ -42,6 +46,20 @@
 // fretted note (its fret number) on the tab staff - both confirmed by
 // dumping `.at-host svg text` against this exact fixture before writing the
 // assertions below, not assumed from another fixture's shape.
+//
+// WHY TUNING IS READ OFF data-score-tuning, NOT DRAWN TEXT. A tuning glyph
+// draws the STORED NAME (e.g. "Standard Tuning"), and a .gp file's stored
+// name is just a string field - nothing stops it from surviving unchanged
+// after the actual string pitches were edited underneath it. A fixture
+// regenerated in Drop D with the name left as "Standard Tuning" still draws
+// that same text and would still pass a check that only looked for the
+// label, while proving nothing about the pitches the importer put in the
+// score model. score-render.js's `data-score-tuning` attribute instead
+// reports `staff.tuning` - the MIDI numbers alphaTab's importer actually
+// resolved - so this spec's tuning assertion is pinned to the pitches, not
+// the label. Confirmed to catch exactly that failure: regenerating the
+// fixture with the low string dropped to D (MIDI 38, name untouched) turns
+// this assertion red naming data-score-tuning, before being reverted.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,6 +73,8 @@ const SCORE_NAME = "guitar-pro-import-fixture.gp";
 const EXPECTED_BARS = 4;
 const EXPECTED_NOTES = 18;
 const EXPECTED_TUNING_TEXT = "Guitar Standard Tuning";
+const EXPECTED_TUNING_MIDI = "64,59,55,50,45,40";
+const EXPECTED_TRACKS = "1";
 
 const OWN_PATH = `Uploads/${SCORE_NAME}`;
 
@@ -168,6 +188,14 @@ test.describe("a real Guitar Pro file loads through the real importer", () => {
     const texts = await drawnText(page);
     expect(barCount(texts), `bar-number text nodes: ${JSON.stringify(texts)}`).toBe(EXPECTED_BARS);
     expect(noteCount(texts), `fret-number text nodes: ${JSON.stringify(texts)}`).toBe(EXPECTED_NOTES);
+    // The pitches the importer actually resolved (staff.tuning), not the
+    // separate stored label asserted below - see "WHY TUNING IS READ OFF
+    // data-score-tuning" in the file header.
+    await expect(host(page)).toHaveAttribute("data-score-tuning", EXPECTED_TUNING_MIDI);
+    await expect(host(page)).toHaveAttribute("data-score-tracks", EXPECTED_TRACKS);
+    // Kept alongside the pitch check above: this only proves the stored
+    // label, not the strings themselves (see file header), but it is still
+    // real evidence the tuning glyph drew the tuning this fixture declares.
     expect(texts).toContain(EXPECTED_TUNING_TEXT);
 
     // The fixture's own alphaTeX staff supports every profile (like the
