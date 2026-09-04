@@ -118,14 +118,21 @@ jobs:
       # playwright.config.js refuses to load without it).
       #
       # What it guards: run-browser-tests.mjs used to hand its argv to a
-      # shell, and on Windows a shell joins argv into a single command line
-      # whose quoting does not cover internal spaces. A multi-word --grep
-      # came out the far side as separate bare words, so Playwright saw only
-      # the first one and ran a wider set than the caller asked for -
-      # silently, with a green run to show for it. Six tests in this file
-      # have "gig mode" in their title and seven have "gig", so a --grep that
-      # loses its second word lists seven and this step goes red. Proven
-      # against that exact revert before it was added.
+      # shell, and a shell spawn joins argv into one unquoted command line
+      # (on every platform, not only Windows), so a multi-word --grep came
+      # out the far side as separate bare words. Playwright saw only the
+      # first one and ran a wider set than the caller asked for - silently,
+      # with a green run to show for it. Six composed titles in this file
+      # match "gig mode" (one directly, five through their describe block)
+      # and seven match "gig", so a --grep that loses its second word lists
+      # seven and this step goes red. Proven against that exact revert
+      # before it was added.
+      #
+      # Both counts are pinned, not just the good one: if the titles ever
+      # converged so that "gig" and "gig mode" listed the same six, the
+      # first assertion would stay green while proving nothing. The second
+      # makes that convergence red instead of quiet. Adding or renaming a
+      # test whose title contains "gig" moves these numbers on purpose.
       #
       # PLAYWRIGHT_ALLOW_PARTIAL because --list executes nothing at all: every
       # spec file reports zero tests run, which the runner's spec-floor guard
@@ -139,6 +146,8 @@ jobs:
             tests/browser/practice-shortcuts.spec.js --grep "gig mode" --list)
           echo "$listed"
           echo "$listed" | grep -qx "Total: 6 tests in 1 file"
+          wider=$(node scripts/run-browser-tests.mjs             tests/browser/practice-shortcuts.spec.js --grep "gig" --list)
+          echo "$wider" | grep -qx "Total: 7 tests in 1 file"
 
   browser:
     name: Browser tests
