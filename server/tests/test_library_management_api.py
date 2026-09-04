@@ -252,13 +252,13 @@ def test_a_move_re_derives_where_a_score_is_but_not_what_it_is(client, library, 
 def test_renaming_a_score_renames_the_file_and_leaves_it_where_it_is(
     client, library, add_score
 ):
-    score_id = add_score("Classical/tarrega-study.pdf")
+    score_id = add_score("Classical/sample-study.pdf")
 
     res = client.post(f"/api/scores/{score_id}/move", json={"filename": "Study in E minor.pdf"})
 
     assert res.json()["score"]["path"] == "Classical/Study in E minor.pdf"
     assert (library / "Classical/Study in E minor.pdf").is_file()
-    assert not (library / "Classical/tarrega-study.pdf").exists()
+    assert not (library / "Classical/sample-study.pdf").exists()
 
 
 def test_a_rename_must_keep_an_extension_fermata_can_read(client, add_score):

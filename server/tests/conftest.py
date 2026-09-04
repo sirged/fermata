@@ -28,59 +28,59 @@ import pytest
 ENGRAVED_DIR = Path(__file__).resolve().parent / "fixtures" / "engraved"
 
 _FIXTURE_RELATIVE_PATHS = {
-    "zanarkand": "Patreon/John Oeth/Final Fantasy/FF X/To Zanarkand (Final Fantasy X).pdf",
-    "tarrega": "Classical/Tarrega/Tarrega-Study-in-C-Guitar-Free.pdf",
-    "claire_de_lune": "Favorites/ClairDeLuneGuitar.pdf",
+    "score_a": "Patreon/John Oeth/Final Fantasy/FF X/To Zanarkand (Final Fantasy X).pdf",
+    "score_b": "Classical/Tarrega/Tarrega-Study-in-C-Guitar-Free.pdf",
+    "score_c": "Favorites/ClairDeLuneGuitar.pdf",
     # Two-voice writing where a melody note shares a beat with a stem-down
     # chord: the figure notehead-to-stem attachment gets wrong, and an Opus
     # engraving, so it also exercises the side bearing that only that font has.
-    "dalza": "Classical/PrimoGuitar Misc/Dalza-Recercar-Guitar-2019.pdf",
-    # Issue #174 anacrusis cases. Sad Song opens on a two-eighth-note pickup and
+    "score_d": "Classical/PrimoGuitar Misc/Dalza-Recercar-Guitar-2019.pdf",
+    # Issue #174 anacrusis cases. score_e opens on a two-eighth-note pickup and
     # is otherwise clean, so recognising the pickup takes it to zero defective
-    # bars. Singing Mountain opens on a one-beat pickup but ALSO carries an
+    # bars. score_f opens on a one-beat pickup but ALSO carries an
     # unrelated short bar (19), so recognising the pickup lifts bar 1 while its
-    # demotion remains. Far Promise is the adversarial non-pickup: its first bar
+    # demotion remains. score_g is the adversarial non-pickup: its first bar
     # is short in ONE voice while another fills it (a dropped note), and its
     # final bar IS a complete measure - so the "wholly short" guard has to keep
     # it defective even though the final-bar half of the pairing holds.
-    "sad_song": "Patreon/John Oeth/Super Mario/Sad Song (Super Mario RPG).pdf",
-    "singing_mountain": "Patreon/John Oeth/Chrono Trigger/Singing Mountain (Chrono Trigger).pdf",
-    "far_promise": "Patreon/John Oeth/Chrono Cross/Far Promise (Radical Dreamers).pdf",
+    "score_e": "Patreon/John Oeth/Super Mario/Sad Song (Super Mario RPG).pdf",
+    "score_f": "Patreon/John Oeth/Chrono Trigger/Singing Mountain (Chrono Trigger).pdf",
+    "score_g": "Patreon/John Oeth/Chrono Cross/Far Promise (Radical Dreamers).pdf",
     # Filled noteheads whose stems the vector pass never sees, on every one of
     # its notation staves. Nothing engraved in this repository reproduces that
     # - MuseScore draws every stem as a clean vector line, so all twelve
     # committed fixtures report zero - and it is the state that floors a
     # notehead's duration at a quarter, so the counter for it needs a real
     # score to be exercised on at all.
-    "hymn_of_the_fayth": (
+    "score_h": (
         "Patreon/John Oeth/Final Fantasy/FF X/Hymn of the Fayth (Final Fantasy X).pdf"),
     # Meter changes engraved part-way ALONG a system, over and over, on a
     # system compressed enough that a stem lands within reading distance of
     # the next meter's digits. Nothing engraved here reproduces that
     # crowding - see test_a_meter_further_along_a_bar_is_not_a_meter_at_this_barline.
-    "mitsuha": "Patreon/John Oeth/Anime/Your Name/Theme of Mitsuha (Your Name.).pdf",
+    "score_i": "Patreon/John Oeth/Anime/Your Name/Theme of Mitsuha (Your Name.).pdf",
     # A meter change printed part-way along a system, behind a key change at
     # the SAME barline: three flats push the numerator's left edge to 6.18
     # staff spaces past the barline, past the flat reach a mid-system reader
     # sized only for "nothing between the barline and the meter" allows.
     # Nothing engraved here carries a key change at a mid-system barline at
     # all - see test_a_key_change_at_a_mid_system_barline_does_not_hide_the_meter.
-    "wild_arms": "Patreon/John Oeth/Wild Arms/Into the Wilderness (Wild Arms).pdf",
+    "score_j": "Patreon/John Oeth/Wild Arms/Into the Wilderness (Wild Arms).pdf",
     # A courtesy time signature - the key and meter for the NEXT system,
     # printed as the last thing on THIS one - behind four sharps, about 7
     # staff spaces past the system's own last barline. Widening the
     # mid-system window enough to read a key change at a barline (see
-    # `wild_arms` above) also brings this within reach, and reading it there
+    # `score_j` above) also brings this within reach, and reading it there
     # would start the change a system early - see
     # test_a_courtesy_meter_at_the_end_of_a_system_is_not_applied_early.
-    "kaine_salvation": "Patreon/John Oeth/NieR/Kaine Salvation (NieR).pdf",
+    "score_k": "Patreon/John Oeth/NieR/Kaine Salvation (NieR).pdf",
     # A five-note chord whose dots the engraver pushed down a step, over a
     # notehead that already carries a dot of its own further up the same
     # column (issues #111/#112). Nothing engraved in this repository produces
     # a chord that deep, and the exemption that keeps such a head from
     # refuting the pushed-down reading has no other real score to be
     # exercised on - see glyph_rhythm._pushed_down_pairs.
-    "storms_past": "Patreon/John Oeth/New World/Storm_s Past (New World).pdf",
+    "score_l": "Patreon/John Oeth/New World/Storm_s Past (New World).pdf",
     # Issue #160: a chord whose members share ONE dot column, not the pushed-down
     # arrangement above. Five noteheads, five printed dots in a single column;
     # the undisplaced members sit a full notehead width too far from the column
@@ -98,20 +98,20 @@ _FIXTURE_RELATIVE_PATHS = {
     # dot (read 3 of 4). Page 3 (0-based page index 2) isolates it.
     "pushed_down_cascade": "Patreon/John Oeth/Suikoden/Reminiscence (Suikoden II).pdf",
     # Two of the four scores the #116 research had a guitarist check against
-    # the printed page. Born a Stranger's flagged spot is a genuine unison
+    # the printed page. score_m's flagged spot is a genuine unison
     # shared by two voices - two notes drawn adjacent on the same row, the
     # lower stem-left and the higher swapped stem-right - and must survive as
-    # two notes in two voices. Carulli's flagged spots looked like single
+    # two notes in two voices. score_n's flagged spots looked like single
     # notes on the page but are ALSO two-voice unisons underneath (a melody
     # note and a bass note sharing one position); the guitarist's read was of
     # the ink, not the content stream, so the correct fix emits one note per
     # voice there rather than doubling one note into two.
-    "born_a_stranger": "Patreon/John Oeth/To the Moon/Born a Stranger (To the Moon).pdf",
-    "carulli_moderato": "Classical/PrimoGuitar Misc/Carulli-Moderato-Op192-Free.pdf",
+    "score_m": "Patreon/John Oeth/To the Moon/Born a Stranger (To the Moon).pdf",
+    "score_n": "Classical/PrimoGuitar Misc/Carulli-Moderato-Op192-Free.pdf",
     # Carries coincident duplicate pairs with only ONE candidate stem between
     # them (issue #116) - the residue nothing can split - so the disclosure
     # counter (coincident_unsplit_pairs) has a real score to be exercised on.
-    "ronfaure": "Patreon/John Oeth/Final Fantasy/FF XI/Ronfaure (Final Fantasy XI).pdf",
+    "score_o": "Patreon/John Oeth/Final Fantasy/FF XI/Ronfaure (Final Fantasy XI).pdf",
     # Ties, in both of the states that matter for issue #81, and harmonics
     # beside them. Nothing engraved in this repository has a HALF-matched
     # tie - `tuplet_and_tie`'s split one is matched at neither end, which is
@@ -120,7 +120,7 @@ _FIXTURE_RELATIVE_PATHS = {
     # tell a working round trip from a dropped field that reads back as
     # None... which compares equal to nothing and unequal to 0. This score
     # writes 6 ties, leaves 4 tie ends unpaired, and marks 19 harmonics.
-    "courage": "Patreon/John Oeth/Final Fantasy/FF XVI/Courage (Final Fantasy XVI).pdf",
+    "score_p": "Patreon/John Oeth/Final Fantasy/FF XVI/Courage (Final Fantasy XVI).pdf",
     # Issue #210's top-member half of the coincident unison: bar 18 writes an
     # upper voice's open string in unison with the lower voice's own two-note
     # chord top, and the chord's distinct lower member (fret 2, sixth string)
@@ -134,18 +134,18 @@ _FIXTURE_RELATIVE_PATHS = {
     # chord's own two positions and the third copy - the lower voice's own
     # note - was left with none. The only score in the library where the
     # shape occurs more than four times.
-    "cosmic_wheel": "Patreon/John Oeth/Final Fantasy/FF XI/The Cosmic Wheel (Final Fantasy XI).pdf",
+    "score_q": "Patreon/John Oeth/Final Fantasy/FF XI/The Cosmic Wheel (Final Fantasy XI).pdf",
     # #116's abutting-stem-segment case, and issue #137's largest population
     # of the arrangement its sharing CANNOT reach: 34 onsets where the
     # coincident copy is a chord's TOP member rather than its lowest, so the
     # leftover head has no twin at its own position. Pinned to prove #137
     # leaves that family exactly as it found it (see issue #141).
-    "spanish_romance": "Classical/PrimoGuitar Misc/Spanish-Romance-Guitar-Free.pdf",
+    "score_r": "Classical/PrimoGuitar Misc/Spanish-Romance-Guitar-Free.pdf",
     # The phase-1 repeat-structure acceptance case (issue #134): a forward
     # repeat, two endings (one closed with a hook, one left open), and the
     # phantom-measure defect that used to shift its numbering from bar 9
     # onward - the score the project's one human tester checked by hand.
-    "zelda_lullaby": (
+    "score_s": (
         "Patreon/John Oeth/The Legend of Zelda/"
         "Zelda_s Lullaby (The Legend of Zelda Series).pdf"),
     # The adversarial review's own acid test for issue #134's blocker 1
@@ -153,16 +153,16 @@ _FIXTURE_RELATIVE_PATHS = {
     # single bar, and ending 2 opens on the very next bar, which used to be
     # rejected by the nearest_barline guard running before _anchor_mark ever
     # got a chance to place it.
-    "lenna_theme": (
+    "score_t": (
         "Patreon/John Oeth/Final Fantasy/FF V/Lenna_s Theme (Final Fantasy V).pdf"),
-    # Issue #87, which is the same bug as #152 on a sibling of Lenna's Theme:
+    # Issue #87, which is the same bug as #152 on a score related to score_t:
     # page 1's last two bands each print two systems side by side, ruled 0.6pt
     # apart in y so their lines interleave. Before #152's column split those
     # bands came back as a 10-line and a 12-line group and were discarded whole,
-    # the "anomaly lines=10/12" the issue reports. This fixture pins that the
-    # named score's side-by-side systems are read, so #87 cannot silently
-    # regress - see test_sorrows_of_parting_reads_its_side_by_side_systems.
-    "sorrows_of_parting": (
+    # the "anomaly lines=10/12" the issue reports. This fixture pins that
+    # score_u's side-by-side systems are read, so #87 cannot silently
+    # regress - see test_a_score_with_ruled_close_side_by_side_systems_reads_them.
+    "score_u": (
         "Patreon/John Oeth/Final Fantasy/FF V/Sorrows of Parting (Final Fantasy V).pdf"),
     # A "2." bracket with no matching "1." anywhere - genuinely, not from a
     # dropped candidate: the only mark near where a "1." would be sits 1.93
@@ -174,26 +174,26 @@ _FIXTURE_RELATIVE_PATHS = {
     # form_marks_unanchored are all 0 - so it is the case that proves
     # `structure` confidence actually reads `endings_incomplete` (issue #134
     # adversarial review, blocker 2).
-    "victory_fanfare": (
+    "score_v": (
         "Patreon/John Oeth/Final Fantasy/FF VII/Victory Fanfare (Final Fantays VII).pdf"),
     # Two numbered segnos and two numbered D.S. jumps (issue #167): the page
     # draws a segno printing "1" at bar 16 and one printing "2" at bar 32, and
     # "D.S. 1"/"D.S. 2" then name one each. Before #167 both segno signs and
     # both jumps emitted the single shared id "segno", so a numbered D.S.
     # landed at whichever segno a reader found first.
-    "melodies_of_life": (
+    "score_w": (
         "Patreon/John Oeth/Final Fantasy/FF IX/Melodies of Life (Final Fantasy IX).pdf"),
     # The adversarial case for #167: this page prints its segno "2" on the
     # HIGHER system (bar 2) and its segno "1" LOWER (bar 10), so numbering by
     # appearance order gets both backwards. The id has to come from the
     # printed digit, which is what this fixture proves.
-    "agnea_the_dancer": (
+    "score_x": (
         "Patreon/John Oeth/Octopath Traveler/Agnea, the Dancer (Octopath Traveler II).pdf"),
     # Numbered codas drawn as a music-font digit BEFORE the sign ("1 (sign)
     # Coda" @19, "2 (sign) Coda" @27) rather than as the word "Coda 1" (issue
     # #167). Also the "To Coda 1 & 2" @10 that names both, which a single-id
     # tocoda cannot express and so is disclosed.
-    "hinata_vs_neji": (
+    "score_y": (
         "Patreon/John Oeth/Anime/Naruto/Hinata vs Neji (Naruto).pdf"),
     # Two thick strokes ("tHHt") with no repeat dots found anywhere nearby -
     # neither resolved to a direction nor unread for want of a thick stroke,
@@ -204,7 +204,7 @@ _FIXTURE_RELATIVE_PATHS = {
     # whole barline group - not just its repeat, its bar-style too - was
     # dropped silently. The only real fixture in the library with this shape
     # (2 instances, both on this one barline group's two measure sides).
-    "tarrega_estudio_em": "Classical/Tarrega/Tarrega-Estudio-Em-Werner.pdf",
+    "score_z": "Classical/Tarrega/Tarrega-Estudio-Em-Werner.pdf",
     # The coda-system layout, in the two shapes issue #152 covers. In both,
     # the coda is engraved as a short system to the RIGHT of the last full
     # system, on the same horizontal band.
@@ -214,20 +214,20 @@ _FIXTURE_RELATIVE_PATHS = {
     # staff detection at all and the system was invisible: no staff, no
     # anomaly, no bars, nothing said. 40 files library-wide. The page prints
     # 18 bars and the extractor reported 17.
-    "one_am": "Patreon/John Oeth/Animal Crossing/1 AM (Animal Crossing New Leaf).pdf",
+    "score_aa": "Patreon/John Oeth/Animal Crossing/1 AM (Animal Crossing New Leaf).pdf",
     # The same shape with a D.C. rather than a D.S.: the page prints 37 bars
     # and the extractor reported 36.
-    "kakariko_village": (
+    "score_ab": (
         "Patreon/John Oeth/The Legend of Zelda/"
         "Kakariko Village (The Legend of Zelda Series).pdf"),
     # SHAPE 2 - both systems on the band are long enough to be seen, but
     # they are ruled 1.5-1.7pt apart, so their rows interleave inside the
     # 15.0pt cluster gap and the pair came back as ONE group with twice the
-    # lines, which was discarded whole. Imprisoned Town's last band is a
+    # lines, which was discarded whole. score_ad's last band is a
     # 12-line tab group (its two notation staves, ruled at the SAME y,
     # having silently merged into one full-width staff instead); the page
     # prints 35 bars and the extractor reported 31.
-    "imprisoned_town": "Patreon/John Oeth/Suikoden/Imprisoned Town (Suikoden II).pdf",
+    "score_ad": "Patreon/John Oeth/Suikoden/Imprisoned Town (Suikoden II).pdf",
     # A system that is STILL lost after issue #152, and lost for a different
     # reason - so `systems_unread` has a score with a genuinely nonzero count
     # to be exercised on. Page 1's third band comes back as a 7-line group:
@@ -236,7 +236,7 @@ _FIXTURE_RELATIVE_PATHS = {
     # systems side by side - the stray rule spans the same full width the
     # staff does - so no split by x extent can separate them, and the group
     # is discarded whole with its bars.
-    "dynamis": (
+    "score_ac": (
         "Patreon/John Oeth/Final Fantasy/FF XIV/Dynamis (Final Fantasy XIV Endwalker).pdf"),
     # The same shape showing BOTH halves of it at once: a 10-line group (two
     # notation staves) and a 12-line group (two tab staves) on one band,
@@ -245,17 +245,17 @@ _FIXTURE_RELATIVE_PATHS = {
     # was measured against spanned the whole page width. The page prints 58
     # bars - a three-bar system opening at 54 and a two-bar coda system
     # opening at 57 beside it - and the extractor reported 53.
-    "nautilus_knoweth": (
+    "score_ae": (
         "Patreon/John Oeth/Final Fantasy/FF XIV/"
         "The Nautilus Knoweth (Final Fantasy XIV Endwalker).pdf"),
     # A "To Coda" on a score that draws no coda sign and prints no coda
     # label anywhere - so `nav_marks_unresolved` is genuinely 1, on a score
     # whose every other structure figure is 0 (issue #134 phase 2).
-    "phantom_train": "Patreon/John Oeth/Final Fantasy/FF VI/Phantom Train (Final Fantasy VI).pdf",
+    "score_af": "Patreon/John Oeth/Final Fantasy/FF VI/Phantom Train (Final Fantasy VI).pdf",
     # "To Coda (sign)": the coda glyph printed INSIDE the instruction's own
     # text line, which was read as a coda section head on the To Coda's own
     # bar (issue #134 phase 2 adversarial review, blocker 4).
-    "bygone_days": (
+    "score_ag": (
         "Patreon/John Oeth/Octopath Traveler/Bygone Days (Octopath Traveler II).pdf"),
     # Issue #154: every embedded font in this PDF is renamed generically
     # ("CIDFont+F1".."CIDFont+F9"), including its Maestro subset - none of
@@ -263,10 +263,10 @@ _FIXTURE_RELATIVE_PATHS = {
     # Maestro resource by that name before its fingerprint was ever
     # consulted, so this fully engraved, 3-page score read zero glyph events:
     # no noteheads, no rhythm, and its segno/coda signs invisible with it.
-    "rito_village": (
+    "score_ah": (
         "Patreon/John Oeth/The Legend of Zelda/TLOZ Breath of the Wild/"
         "Rito Village - Night (The Legend of Zelda Breath of the Wild).pdf"),
-    # Issue #180: bar 16 (the Scarborough Fair setting, last system on PDF page
+    # Issue #180: bar 16 (a traditional-song setting, last system on PDF page
     # 84) prints a whole-measure rest in the melody staff - the melody is silent
     # for the bar - over a six-eighth arpeggio in the tablature that fills the
     # 3/4 bar on its own. The tab staff draws no stems for the silent melody, so
@@ -274,7 +274,7 @@ _FIXTURE_RELATIVE_PATHS = {
     # stacked onto the arpeggio's voice, reading the bar as 7.0 quarters. Now
     # read as two voices of 3.0. Nothing committed here reproduces a
     # whole-measure rest sharing a bar with a voice that already fills it.
-    "classical_guitar_method_vol1": (
+    "score_ai": (
         "Method Books/Classical-Guitar-Method-Vol1-2020.pdf"),
 }
 
@@ -294,7 +294,7 @@ def skip_without_library(reason: str):
 # Skips for want of `node` or the web project's installed alphaTab build get
 # the same treatment, for the same reason (issue #134 adversarial review,
 # item 7): a run with `web/node_modules` missing quietly skipped nine tests -
-# including the Zelda's Lullaby and playback-order headline cases - and
+# including score_s's and playback-order headline cases - and
 # nothing said so unless a reader compared this run's summary against CI's by
 # hand. See test_tabextract._parse_with_alphatab /
 # _load_musicxml_with_alphatab, the two places that actually skip.
@@ -388,112 +388,112 @@ def _fixture_path(name: str) -> Path | None:
 
 
 @pytest.fixture
-def zanarkand_pdf() -> Path:
-    p = _fixture_path("zanarkand")
+def score_a_pdf() -> Path:
+    p = _fixture_path("score_a")
     if p is None:
-        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing 'To Zanarkand' fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing the 'score_a' fixture)")
     return p
 
 
 @pytest.fixture
-def tarrega_pdf() -> Path:
-    p = _fixture_path("tarrega")
+def score_b_pdf() -> Path:
+    p = _fixture_path("score_b")
     if p is None:
-        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Tarrega fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing the 'score_b' fixture)")
     return p
 
 
 @pytest.fixture
-def claire_de_lune_pdf() -> Path:
-    p = _fixture_path("claire_de_lune")
+def score_c_pdf() -> Path:
+    p = _fixture_path("score_c")
     if p is None:
-        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Clair de Lune fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing the 'score_c' fixture)")
     return p
 
 
 @pytest.fixture
-def dalza_pdf() -> Path:
-    p = _fixture_path("dalza")
+def score_d_pdf() -> Path:
+    p = _fixture_path("score_d")
     if p is None:
-        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Dalza fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing the 'score_d' fixture)")
     return p
 
 
 @pytest.fixture
-def sad_song_pdf() -> Path:
-    p = _fixture_path("sad_song")
+def score_e_pdf() -> Path:
+    p = _fixture_path("score_e")
     if p is None:
-        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing 'Sad Song' fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing the 'score_e' fixture)")
     return p
 
 
 @pytest.fixture
-def singing_mountain_pdf() -> Path:
-    p = _fixture_path("singing_mountain")
+def score_f_pdf() -> Path:
+    p = _fixture_path("score_f")
     if p is None:
-        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing 'Singing Mountain' fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing the 'score_f' fixture)")
     return p
 
 
 @pytest.fixture
-def far_promise_pdf() -> Path:
-    p = _fixture_path("far_promise")
+def score_g_pdf() -> Path:
+    p = _fixture_path("score_g")
     if p is None:
-        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing 'Far Promise' fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing the 'score_g' fixture)")
     return p
 
 
 @pytest.fixture
-def hymn_of_the_fayth_pdf() -> Path:
-    p = _fixture_path("hymn_of_the_fayth")
+def score_h_pdf() -> Path:
+    p = _fixture_path("score_h")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Hymn of the Fayth' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_h' fixture)")
     return p
 
 
 @pytest.fixture
-def courage_pdf() -> Path:
-    p = _fixture_path("courage")
+def score_p_pdf() -> Path:
+    p = _fixture_path("score_p")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Courage' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_p' fixture)")
     return p
 
 
 @pytest.fixture
-def mitsuha_pdf() -> Path:
-    p = _fixture_path("mitsuha")
+def score_i_pdf() -> Path:
+    p = _fixture_path("score_i")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Theme of Mitsuha' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_i' fixture)")
     return p
 
 
 @pytest.fixture
-def wild_arms_pdf() -> Path:
-    p = _fixture_path("wild_arms")
+def score_j_pdf() -> Path:
+    p = _fixture_path("score_j")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Into the Wilderness' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_j' fixture)")
     return p
 
 
 @pytest.fixture
-def kaine_salvation_pdf() -> Path:
-    p = _fixture_path("kaine_salvation")
+def score_k_pdf() -> Path:
+    p = _fixture_path("score_k")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Kaine Salvation' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_k' fixture)")
     return p
 
 
 @pytest.fixture
-def storms_past_pdf() -> Path:
-    p = _fixture_path("storms_past")
+def score_l_pdf() -> Path:
+    p = _fixture_path("score_l")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Storm's Past' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_l' fixture)")
     return p
 
 
@@ -502,7 +502,7 @@ def chord_shared_dot_column_a_pdf() -> Path:
     p = _fixture_path("chord_shared_dot_column_a")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing shared-dot-column fixture A)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'chord_shared_dot_column_a' fixture)")
     return p
 
 
@@ -511,7 +511,7 @@ def chord_shared_dot_column_b_pdf() -> Path:
     p = _fixture_path("chord_shared_dot_column_b")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing shared-dot-column fixture B)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'chord_shared_dot_column_b' fixture)")
     return p
 
 
@@ -520,51 +520,51 @@ def pushed_down_cascade_pdf() -> Path:
     p = _fixture_path("pushed_down_cascade")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing pushed-down-cascade fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'pushed_down_cascade' fixture)")
     return p
 
 
 @pytest.fixture
-def born_a_stranger_pdf() -> Path:
-    p = _fixture_path("born_a_stranger")
+def score_m_pdf() -> Path:
+    p = _fixture_path("score_m")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Born a Stranger' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_m' fixture)")
     return p
 
 
 @pytest.fixture
-def carulli_moderato_pdf() -> Path:
-    p = _fixture_path("carulli_moderato")
+def score_n_pdf() -> Path:
+    p = _fixture_path("score_n")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing Carulli-Moderato fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_n' fixture)")
     return p
 
 
 @pytest.fixture
-def ronfaure_pdf() -> Path:
-    p = _fixture_path("ronfaure")
+def score_o_pdf() -> Path:
+    p = _fixture_path("score_o")
     if p is None:
-        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Ronfaure fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing the 'score_o' fixture)")
     return p
 
 
 @pytest.fixture
-def cosmic_wheel_pdf() -> Path:
-    p = _fixture_path("cosmic_wheel")
-    if p is None:
-        skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'The Cosmic Wheel' fixture)")
-    return p
-
-
-@pytest.fixture
-def spanish_romance_pdf() -> Path:
-    p = _fixture_path("spanish_romance")
+def score_q_pdf() -> Path:
+    p = _fixture_path("score_q")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Spanish Romance' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_q' fixture)")
+    return p
+
+
+@pytest.fixture
+def score_r_pdf() -> Path:
+    p = _fixture_path("score_r")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_r' fixture)")
     return p
 
 
@@ -573,158 +573,157 @@ def top_member_unison_pdf() -> Path:
     p = _fixture_path("top_member_unison")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing top-member unison fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'top_member_unison' fixture)")
     return p
 
 
 @pytest.fixture
-def zelda_lullaby_pdf() -> Path:
-    p = _fixture_path("zelda_lullaby")
+def score_s_pdf() -> Path:
+    p = _fixture_path("score_s")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing Zelda's Lullaby fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_s' fixture)")
     return p
 
 
 @pytest.fixture
-def lenna_theme_pdf() -> Path:
-    p = _fixture_path("lenna_theme")
+def score_t_pdf() -> Path:
+    p = _fixture_path("score_t")
     if p is None:
-        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing Lenna's Theme fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing the 'score_t' fixture)")
     return p
 
 
 @pytest.fixture
-def sorrows_of_parting_pdf() -> Path:
-    p = _fixture_path("sorrows_of_parting")
-    if p is None:
-        skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Sorrows of Parting' fixture)")
-    return p
-
-
-@pytest.fixture
-def victory_fanfare_pdf() -> Path:
-    p = _fixture_path("victory_fanfare")
+def score_u_pdf() -> Path:
+    p = _fixture_path("score_u")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Victory Fanfare' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_u' fixture)")
     return p
 
 
 @pytest.fixture
-def melodies_of_life_pdf() -> Path:
-    p = _fixture_path("melodies_of_life")
+def score_v_pdf() -> Path:
+    p = _fixture_path("score_v")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Melodies of Life' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_v' fixture)")
     return p
 
 
 @pytest.fixture
-def agnea_the_dancer_pdf() -> Path:
-    p = _fixture_path("agnea_the_dancer")
+def score_w_pdf() -> Path:
+    p = _fixture_path("score_w")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Agnea, the Dancer' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_w' fixture)")
     return p
 
 
 @pytest.fixture
-def hinata_vs_neji_pdf() -> Path:
-    p = _fixture_path("hinata_vs_neji")
+def score_x_pdf() -> Path:
+    p = _fixture_path("score_x")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Hinata vs Neji' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_x' fixture)")
     return p
 
 
 @pytest.fixture
-def tarrega_estudio_em_pdf() -> Path:
-    p = _fixture_path("tarrega_estudio_em")
+def score_y_pdf() -> Path:
+    p = _fixture_path("score_y")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing Tarrega-Estudio-Em fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_y' fixture)")
     return p
 
 
 @pytest.fixture
-def one_am_pdf() -> Path:
-    p = _fixture_path("one_am")
-    if p is None:
-        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing '1 AM' fixture)")
-    return p
-
-
-@pytest.fixture
-def kakariko_village_pdf() -> Path:
-    p = _fixture_path("kakariko_village")
+def score_z_pdf() -> Path:
+    p = _fixture_path("score_z")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Kakariko Village' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_z' fixture)")
     return p
 
 
 @pytest.fixture
-def dynamis_pdf() -> Path:
-    p = _fixture_path("dynamis")
+def score_aa_pdf() -> Path:
+    p = _fixture_path("score_aa")
     if p is None:
-        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing 'Dynamis' fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing the 'score_aa' fixture)")
     return p
 
 
 @pytest.fixture
-def imprisoned_town_pdf() -> Path:
-    p = _fixture_path("imprisoned_town")
-    if p is None:
-        skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Imprisoned Town' fixture)")
-    return p
-
-
-@pytest.fixture
-def nautilus_knoweth_pdf() -> Path:
-    p = _fixture_path("nautilus_knoweth")
+def score_ab_pdf() -> Path:
+    p = _fixture_path("score_ab")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'The Nautilus Knoweth' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_ab' fixture)")
     return p
 
 
 @pytest.fixture
-def phantom_train_pdf() -> Path:
-    p = _fixture_path("phantom_train")
+def score_ac_pdf() -> Path:
+    p = _fixture_path("score_ac")
     if p is None:
-        skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Phantom Train' fixture)")
+        skip_without_library("FERMATA_TEST_LIBRARY not set (or missing the 'score_ac' fixture)")
     return p
 
 
 @pytest.fixture
-def bygone_days_pdf() -> Path:
-    p = _fixture_path("bygone_days")
+def score_ad_pdf() -> Path:
+    p = _fixture_path("score_ad")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Bygone Days' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_ad' fixture)")
     return p
 
 
 @pytest.fixture
-def rito_village_pdf() -> Path:
-    p = _fixture_path("rito_village")
+def score_ae_pdf() -> Path:
+    p = _fixture_path("score_ae")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing 'Rito Village - Night' fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_ae' fixture)")
     return p
 
 
 @pytest.fixture
-def classical_guitar_method_vol1_pdf() -> Path:
-    p = _fixture_path("classical_guitar_method_vol1")
+def score_af_pdf() -> Path:
+    p = _fixture_path("score_af")
     if p is None:
         skip_without_library(
-            "FERMATA_TEST_LIBRARY not set (or missing "
-            "Classical-Guitar-Method-Vol1 fixture)")
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_af' fixture)")
+    return p
+
+
+@pytest.fixture
+def score_ag_pdf() -> Path:
+    p = _fixture_path("score_ag")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_ag' fixture)")
+    return p
+
+
+@pytest.fixture
+def score_ah_pdf() -> Path:
+    p = _fixture_path("score_ah")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_ah' fixture)")
+    return p
+
+
+@pytest.fixture
+def score_ai_pdf() -> Path:
+    p = _fixture_path("score_ai")
+    if p is None:
+        skip_without_library(
+            "FERMATA_TEST_LIBRARY not set (or missing the 'score_ai' fixture)")
     return p
 
 

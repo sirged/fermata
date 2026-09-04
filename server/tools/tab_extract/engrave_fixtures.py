@@ -1235,7 +1235,7 @@ HARMONIC_BRACKETS_SIZE_RATIO = 1.64
 HARMONIC_BRACKETS_GAP_LEFT = 0.06     # tab-staff line spacings
 HARMONIC_BRACKETS_GAP_RIGHT = 0.12
 # And how far ABOVE the digit's own centre the mark's box centre sits, in the
-# same spacings: measured on "Hymn of the Fayth (Final Fantasy X)" page 1,
+# same spacings: measured on conftest score_h page 1,
 # where a 15.38pt mark's box spans y 494.72-511.74 (centre 503.23) beside a
 # 9.4pt digit's 500.34-510.84 (centre 505.59) on a 7.7pt staff. A bigger glyph
 # set against a smaller one does not share its baseline.

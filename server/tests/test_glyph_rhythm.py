@@ -62,10 +62,10 @@ def _embedded_maestro_bytes(pdf_path):
     return None
 
 
-def test_fingerprint_accepts_the_calibrated_library_font(zanarkand_pdf):
+def test_fingerprint_accepts_the_calibrated_library_font(score_a_pdf):
     """The real thing must pass, or the check is just an outage."""
     TTFont = pytest.importorskip("fontTools.ttLib").TTFont
-    raw = _embedded_maestro_bytes(zanarkand_pdf)
+    raw = _embedded_maestro_bytes(score_a_pdf)
     assert raw, "expected an embedded Maestro in the reference file"
     ok, detail = G.maestro_fingerprint_ok(TTFont(io.BytesIO(raw), fontNumber=0))
     assert ok, detail
@@ -73,13 +73,13 @@ def test_fingerprint_accepts_the_calibrated_library_font(zanarkand_pdf):
     assert "match" in detail
 
 
-def test_fingerprint_rejects_altered_glyph_outlines(zanarkand_pdf):
+def test_fingerprint_rejects_altered_glyph_outlines(score_a_pdf):
     """A font that keeps the name "Maestro" but not the calibrated outlines
     must be refused. Otherwise a Maestro from another Finale version or
     another subsetting path silently mis-decodes every notehead, rest, flag
     and time-signature digit while still reporting high confidence."""
     TTFont = pytest.importorskip("fontTools.ttLib").TTFont
-    raw = _embedded_maestro_bytes(zanarkand_pdf)
+    raw = _embedded_maestro_bytes(score_a_pdf)
     assert raw
 
     tt = TTFont(io.BytesIO(raw), fontNumber=0)
@@ -155,7 +155,7 @@ class _FakeFontDoc:
         return self._content[xref]
 
 
-def test_a_renamed_maestro_is_still_loaded_by_its_fingerprint(zanarkand_pdf):
+def test_a_renamed_maestro_is_still_loaded_by_its_fingerprint(score_a_pdf):
     """Issue #154, on the real calibrated bytes rather than a synthesised
     outline this test's own author might get wrong: 'Rito Village - Night
     (The Legend of Zelda Breath of the Wild)' embeds its Maestro subset as a
@@ -165,11 +165,11 @@ def test_a_renamed_maestro_is_still_loaded_by_its_fingerprint(zanarkand_pdf):
     glyph events on all three of its pages.
 
     This takes real Maestro bytes from a DIFFERENT, correctly-named library
-    file (zanarkand_pdf) and hands them to _load_one_font exactly the way
+    file (score_a_pdf) and hands them to _load_one_font exactly the way
     load_music_fonts now does for a resource whose basefont it does not
     recognise: named=False. A font that passes maestro_fingerprint_ok is
     Maestro whatever it is called."""
-    raw = _embedded_maestro_bytes(zanarkand_pdf)
+    raw = _embedded_maestro_bytes(score_a_pdf)
     assert raw, "expected an embedded Maestro in the reference file"
 
     mf, warn = G._load_one_font(_FakeFontDoc({11: raw}), xref=11, base="F1",
@@ -183,13 +183,13 @@ def test_a_renamed_maestro_is_still_loaded_by_its_fingerprint(zanarkand_pdf):
     assert mf.category(157) == "notehead_filled"
 
 
-def test_load_music_fonts_recognises_a_renamed_maestro_resource(zanarkand_pdf):
+def test_load_music_fonts_recognises_a_renamed_maestro_resource(score_a_pdf):
     """The same fix one level up: load_music_fonts itself, given a page
     whose only font resource is named the way Rito Village's is, must still
     find the Maestro subset in it - and file it under the RENAMED key, since
     that is the same basefont-derived name extract_glyph_events's `fname`
     will look candidates up by (see load_music_fonts' own docstring)."""
-    raw = _embedded_maestro_bytes(zanarkand_pdf)
+    raw = _embedded_maestro_bytes(score_a_pdf)
     assert raw
 
     doc = _FakeFontDoc({11: raw})
@@ -235,7 +235,7 @@ def test_an_unrelated_renamed_font_is_not_mistaken_for_maestro(engraved):
         doc.close()
 
 
-def test_rito_village_night_draws_glyph_events_on_every_page(rito_village_pdf):
+def test_rito_village_night_draws_glyph_events_on_every_page(score_ah_pdf):
     """The library-gated acceptance case for issue #154: before the fix,
     'Rito Village - Night (The Legend of Zelda Breath of the Wild)' read
     ZERO glyph events on every one of its 3 pages, because its Maestro
@@ -249,11 +249,11 @@ def test_rito_village_night_draws_glyph_events_on_every_page(rito_village_pdf):
     the first page."""
     import fitz
 
-    doc = fitz.open(rito_village_pdf)
+    doc = fitz.open(score_ah_pdf)
     try:
         assert doc.page_count == 3, (
             "the reference score is expected to be exactly 3 pages - if this "
-            "fails, the wrong file is configured as the rito_village fixture")
+            "fails, the wrong file is configured as the score_ah fixture")
         counts = [len(G.extract_glyph_events(doc[pno]).events)
                   for pno in range(doc.page_count)]
         assert all(c > 0 for c in counts), (
@@ -1601,11 +1601,11 @@ def test_a_stemless_notehead_that_cannot_carry_a_flag_is_not_counted(monkeypatch
     assert stats["no_stem_noteheads"] == 0
 
 
-def test_the_stemless_count_is_zero_when_every_head_found_its_stem(zanarkand_pdf):
+def test_the_stemless_count_is_zero_when_every_head_found_its_stem(score_a_pdf):
     """The counter has to be able to report nothing, or it says nothing. This
     score's noteheads all attach, so a counter wired to fire on every filled
     head - or on the wrong branch - shows up here rather than in the aggregate."""
-    result = tabextract.extract(str(zanarkand_pdf))
+    result = tabextract.extract(str(score_a_pdf))
     assert result.notes_no_stem == 0
     assert result.staves_no_stem == 0
     assert result.rhythm_provenance == {tabextract.PROV_GLYPHS: 10}
@@ -2096,7 +2096,7 @@ def _off_grid(y, staff):
     return abs(steps - round(steps)) / 2
 
 
-def test_glyph_positions_land_on_the_staffs_own_grid(zanarkand_pdf):
+def test_glyph_positions_land_on_the_staffs_own_grid(score_a_pdf):
     """The defect behind finding 88, measured in the domain that shows it.
 
     The box the text trace reports is metrics-based: its top and bottom are
@@ -2111,7 +2111,7 @@ def test_glyph_positions_land_on_the_staffs_own_grid(zanarkand_pdf):
     """
     import fitz
 
-    doc = fitz.open(zanarkand_pdf)
+    doc = fitz.open(score_a_pdf)
     ink, metrics = [], []
     try:
         for page in doc:

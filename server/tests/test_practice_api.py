@@ -63,7 +63,7 @@ def other_score(client):
     conn = db.connect()
     cur = conn.execute(
         """INSERT INTO scores(title, path, file_type, hash, size, mtime)
-           VALUES ('To Zanarkand', 'Patreon/Zanarkand.pdf', 'pdf', 'cafebabe', 1, 0.0)"""
+           VALUES ('Second Score', 'Patreon/SecondScore.pdf', 'pdf', 'cafebabe', 1, 0.0)"""
     )
     conn.commit()
     return cur.lastrowid
@@ -291,7 +291,7 @@ def test_history_says_where_the_time_went_over_a_long_window(client, score, othe
     assert body["days_practised"] == 2
     assert body["seconds"] == 6000
     assert [(r["title"], r["seconds"]) for r in body["by_score"]] == [
-        ("To Zanarkand", 3600),
+        ("Second Score", 3600),
         ("Study in C", 1800),
     ]
     assert [(r["activity"], r["seconds"]) for r in body["by_activity"]] == [
@@ -470,7 +470,7 @@ def test_the_review_states_what_happened_in_each_recent_week(client, score, othe
     assert this_week["goal"]["progress"]["days_practised"] == 2
     assert this_week["goal"]["progress"]["met_days"] is False
     assert this_week["facts"]["seconds"] == 3600
-    assert [r["title"] for r in this_week["by_score"]] == ["Study in C", "To Zanarkand"]
+    assert [r["title"] for r in this_week["by_score"]] == ["Study in C", "Second Score"]
 
 
 def test_a_week_with_no_goal_still_appears_with_its_facts(client, score):

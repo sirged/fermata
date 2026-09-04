@@ -74,7 +74,7 @@ def other_score(client):
     conn = db.connect()
     cur = conn.execute(
         """INSERT INTO scores(title, path, file_type, hash, size, mtime)
-           VALUES ('To Zanarkand', 'Patreon/Zanarkand.pdf', 'pdf', 'cafebabe', 1, 0.0)"""
+           VALUES ('Second Score', 'Patreon/SecondScore.pdf', 'pdf', 'cafebabe', 1, 0.0)"""
     )
     conn.commit()
     return cur.lastrowid
