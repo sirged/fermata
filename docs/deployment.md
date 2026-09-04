@@ -484,6 +484,36 @@ on.** Nothing below runs, and nothing listens, until you set `FERMATA_MCP`.
   limitations](#current-limitations)), and it is why the listener stays on
   `127.0.0.1` — inside the container only — unless you deliberately move it.
 
+### It does not work with reverse-proxy authentication
+
+**Fermata refuses to start if you set both `FERMATA_MCP` and
+`FERMATA_AUTH_HEADER`**, and will tell you so by name in the log. The two
+are not supported together in this release.
+
+The reason is the first bullet above, from the other side. The tools read
+the REST API as an ordinary anonymous client over loopback — that is what
+"wraps the documented routes" means, and it is what keeps this layer from
+being a second copy of the API. With
+[reverse-proxy authentication](#reverse-proxy-authentication) turned on,
+every request that did not come from your trusted proxy carrying the
+identity header is refused, and the tools' requests are exactly that. So
+every tool would answer `401` while the tool list went on advertising
+thirteen working tools — a failure with no symptom except an emptiness that
+looks like an empty library.
+
+The two obvious workarounds are both worse than the fault, which is why
+neither is offered. Adding `127.0.0.1` to `FERMATA_TRUSTED_PROXIES` does not
+fix it (the internal client still sends no identity header, so the request
+is refused a second time) and it does mean anything else running on that
+machine can now set the identity header itself and be believed. Having
+Fermata's own internal client send an identity header is worse still: it
+would turn the trusted header into something a process on the box can mint,
+which is the exact forgery reverse-proxy authentication exists to prevent.
+
+So: pick one. Keep your login and leave `FERMATA_MCP` unset, or use the
+tools and leave `FERMATA_AUTH_HEADER` unset with the port reachable only
+from somewhere you trust.
+
 ### Turning it on
 
 Add the environment variable to the `fermata` service in
@@ -495,11 +525,17 @@ services:
     # ... build, volumes, restart as in "Getting it running"
     ports:
       - "8080:8080"
-      - "8765:8765"
+      - "127.0.0.1:8765:8765"
     environment:
       FERMATA_MCP: "1"
       FERMATA_MCP_HOST: 0.0.0.0
 ```
+
+Note the `127.0.0.1:` on the second port — without it Docker publishes that
+port to your whole local network, the way port 8080 above is published, and
+this one has no login in front of it at all. Start with it reachable only
+from the machine running the container, and widen it deliberately (drop the
+prefix) once you have decided who should be able to read your library.
 
 Then rebuild and restart:
 

@@ -209,10 +209,11 @@ def start(document: dict, *, host: str, port: int, api_base_url: str) -> Listene
     runner.should_exit = True
     raise RuntimeError(
         f"Fermata cannot start: FERMATA_MCP is on, but the Model Context Protocol server "
-        f"could not listen on {host}:{port}. The usual cause is that something else already "
-        f"has that port - set FERMATA_MCP_PORT to a free one, or unset FERMATA_MCP to turn "
-        "the feature off. See docs/deployment.md's 'The Model Context Protocol server' "
-        "section.\n"
+        f"could not listen on {host}:{port}. Either something else already has that port - "
+        "set FERMATA_MCP_PORT to a free one - or FERMATA_MCP_HOST names an address this "
+        f"machine does not have ({host!r}); inside a container that is usually 0.0.0.0 or "
+        "127.0.0.1 and nothing else. Unsetting FERMATA_MCP turns the feature off. See "
+        "docs/deployment.md's 'The Model Context Protocol server' section.\n"
         "\n"
         "Nothing has been changed. Your sheet music and your practice history are both as "
         "they were."

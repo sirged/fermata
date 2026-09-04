@@ -61,7 +61,18 @@ FLAG = "FERMATA_MCP"
 # value left in the ambient environment (a developer who exported the flag
 # in their shell) cannot make the flag-off tests pass or fail for the wrong
 # reason.
-FEATURE_ENV = (FLAG, "FERMATA_MCP_HOST", "FERMATA_MCP_PORT", "FERMATA_MCP_API_URL")
+FEATURE_ENV = (
+    FLAG,
+    "FERMATA_MCP_HOST",
+    "FERMATA_MCP_PORT",
+    "FERMATA_MCP_API_URL",
+    # Not this feature's own, but the one setting that changes what it does:
+    # with reverse-proxy auth on, the two together are refused at startup
+    # (see the group below), so an ambient value would turn every spawn in
+    # this file into a test of that refusal instead.
+    "FERMATA_AUTH_HEADER",
+    "FERMATA_TRUSTED_PROXIES",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +235,7 @@ def test_the_application_imports_with_the_protocol_library_absent():
         "class Absent:\n"
         "    def find_spec(self, name, path=None, target=None):\n"
         "        if name == 'mcp' or name.startswith('mcp.'):\n"
-        "            raise ImportError('not installed in this deployment')\n"
+        "            raise ModuleNotFoundError(f'No module named {name!r}', name=name)\n"
         "        return None\n"
         "sys.meta_path.insert(0, Absent())\n"
         "try:\n"
@@ -245,6 +256,107 @@ def test_the_application_imports_with_the_protocol_library_absent():
     # The tool table is derivable without the protocol library too - that is
     # what keeps group 2 below runnable on a machine without the extra.
     assert lines[-2] == str(len(mcp_tools.READ_TOOLS)), result.stdout
+
+
+def test_the_flag_on_without_the_extra_says_so_instead_of_a_traceback():
+    """Turning the flag on in a source install that never asked for the
+    optional extra is an ordinary mistake. It has to arrive as this
+    application's own kind of startup failure - a RuntimeError carrying a
+    sentence, routed through the lifespan's handler - and not as the bare
+    ModuleNotFoundError traceback that sends a worried operator reaching for
+    the previous image tag.
+
+    The module is blocked rather than uninstalled, and the blocker raises
+    ModuleNotFoundError specifically (what a genuinely absent package
+    raises, carrying `.name`) rather than a plain ImportError, so what is
+    caught here is what would really happen.
+    """
+    snippet = (
+        "import sys\n"
+        "class Absent:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name == 'mcp' or name.startswith('mcp.'):\n"
+        "            raise ModuleNotFoundError(f'No module named {name!r}', name=name)\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, Absent())\n"
+        "from fermata import config, main\n"
+        "config.MCP_ENABLED = True\n"
+        "config.MCP_PORT = 1\n"
+        "try:\n"
+        "    main._start_mcp_server(main.app)\n"
+        "except RuntimeError as exc:\n"
+        "    print('RUNTIMEERROR')\n"
+        "    print(exc)\n"
+        "except ModuleNotFoundError:\n"
+        "    print('RAW-TRACEBACK-ESCAPED')\n"
+        "    raise SystemExit(3)\n"
+        "else:\n"
+        "    print('NOTHING-RAISED')\n"
+        "    raise SystemExit(4)\n"
+    )
+    result = _python(snippet)
+    assert result.returncode == 0, result.stdout + result.stderr
+    # `in`, not startswith: importing fermata prints a third-party
+    # deprecation warning to stdout first, and that is not this test's
+    # business.
+    assert "RUNTIMEERROR" in result.stdout, result.stdout
+    assert "'mcp' is not installed" in result.stdout, result.stdout
+    assert 'server[mcp]' in result.stdout, result.stdout
+
+
+def test_the_feature_and_reverse_proxy_auth_are_refused_together(tmp_path):
+    """Both on is not a working deployment: the tools read the API as an
+    anonymous loopback client, so reverse-proxy auth would 401 every one of
+    them while the tool list still advertised thirteen. Refusing to start
+    says that out loud - see
+    authproxy.check_mcp_is_not_configured_behind_proxy_auth for why neither
+    workaround is offered instead.
+    """
+    api_port = _free_port()
+    mcp_port = _free_port()
+    proc = _spawn(
+        tmp_path, api_port,
+        {
+            FLAG: "1",
+            "FERMATA_MCP_PORT": str(mcp_port),
+            "FERMATA_MCP_API_URL": f"http://127.0.0.1:{api_port}",
+            "FERMATA_AUTH_HEADER": "X-Remote-User",
+            "FERMATA_TRUSTED_PROXIES": "203.0.113.9/32",
+        },
+    )
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            "the server started with both the protocol server and reverse-proxy auth on - "
+            "every tool would answer 401 while advertising itself as working:\n"
+            + _terminate(proc)
+        )
+    finally:
+        output = _terminate(proc)
+    # Both variables named, so the log says which two settings to choose
+    # between rather than merely that something is wrong.
+    assert FLAG in output, output
+    assert "FERMATA_AUTH_HEADER" in output, output
+    assert not _accepts_a_connection(mcp_port), "a listener was opened before the refusal"
+    assert not _accepts_a_connection(api_port), "the API is still serving after that refusal"
+
+
+def test_reverse_proxy_auth_alone_still_starts(tmp_path):
+    """The refusal above must be about the COMBINATION. Reverse-proxy auth
+    on its own is a supported deployment and this is what stops the new
+    check quietly breaking it."""
+    api_port = _free_port()
+    proc = _spawn(
+        tmp_path, api_port,
+        {"FERMATA_AUTH_HEADER": "X-Remote-User", "FERMATA_TRUSTED_PROXIES": "203.0.113.9/32"},
+    )
+    try:
+        assert _wait_until_serving(api_port), (
+            "reverse-proxy auth alone stopped the server:\n" + _terminate(proc)
+        )
+    finally:
+        _terminate(proc)
 
 
 def test_nothing_listens_with_the_flag_off(tmp_path):

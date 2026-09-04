@@ -35,7 +35,26 @@ def _start_mcp_server(app: FastAPI):
     """
     if not config.MCP_ENABLED:
         return None
-    from . import mcp_server
+    try:
+        from . import mcp_server
+    except ModuleNotFoundError as exc:
+        # Turning the flag on in a source install that never asked for the
+        # optional extra is an ordinary mistake, and without this it arrives
+        # as a bare ModuleNotFoundError traceback - the one shape of startup
+        # failure this application does not use, and the one that sends a
+        # worried operator reaching for the previous image tag (see the
+        # lifespan's own comment on why that is the dangerous move). Same
+        # treatment as a bad port: a sentence naming what to do.
+        raise RuntimeError(
+            f"Fermata cannot start: FERMATA_MCP is on, but {exc.name!r} is not installed. "
+            "The Model Context Protocol server is an optional extra - install it with "
+            "`pip install -e \"server[mcp]\"` (the container image already includes it), or "
+            "unset FERMATA_MCP to turn the feature off. See docs/deployment.md's 'The Model "
+            "Context Protocol server' section.\n"
+            "\n"
+            "Nothing has been changed. Your sheet music and your practice history are both "
+            "as they were."
+        ) from exc
 
     return mcp_server.start(
         app.openapi(),
@@ -78,6 +97,14 @@ async def lifespan(app: FastAPI):
         # FERMATA_MCP is on; see that function's own docstring for why it
         # parses either way.
         config.load_mcp_settings()
+        # Also fatal, same bucket as the two checks above: with reverse-proxy
+        # auth on, every tool the protocol server offers would answer 401
+        # while advertising itself as working, and the workarounds an
+        # operator would reach for are each worse than the fault. See
+        # authproxy.check_mcp_is_not_configured_behind_proxy_auth's own
+        # docstring. Runs BEFORE _start_mcp_server so a refused combination
+        # never opens a listener at all.
+        authproxy.check_mcp_is_not_configured_behind_proxy_auth()
         init_db()
         mcp_listener = _start_mcp_server(app)
     except RuntimeError as exc:
