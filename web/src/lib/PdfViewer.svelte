@@ -227,7 +227,28 @@
       rerendering = false;
       // wait for the final scrollIntoView to actually paint before trusting
       // the observer again, so it doesn't fire on the mid-resize layout
-      requestAnimationFrame(() => requestAnimationFrame(() => (suppressTracking = false)));
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (cancelled) return;
+          suppressTracking = false;
+          // Handing the observer back is not enough on its own: the geometry
+          // it was blanked THROUGH is the geometry now on screen, and an
+          // IntersectionObserver only ever fires on a CHANGE. Every crossing
+          // the resize caused was delivered while suppressed and thrown
+          // away, and nothing re-delivers them - so the indicator kept
+          // saying whatever it last said before the pane changed shape,
+          // with no scroll left to come and correct it. Measured on a
+          // 2-page score entering gig mode with a tap inside the 200ms
+          // debounce: at the narrow pre-render geometry the tap put page two
+          // at ratio 0.63 and the indicator at "2 / 2"; the re-render then
+          // left the reader at scrollTop 547 - 47% down page ONE, page two
+          // down to 0.11 - and the HUD read "2 / 2" for as long as the score
+          // stayed open. Re-deriving it once, here, is what closes that:
+          // there is no crossing left to wait for.
+          const seen = visiblePage();
+          if (seen !== null) trackVisible(seen);
+        }),
+      );
     }
 
     (async () => {
@@ -251,20 +272,7 @@
               best = e;
             }
           }
-          if (best) {
-            const seen = Number(best.target.dataset.page);
-            // A turn this component performed is already recorded (see
-            // intendedPage). Until that scroll settles, the frames it passes
-            // through are not the reader going anywhere - taking them would
-            // drag the indicator back onto the page being LEFT, which is the
-            // same wrong answer by a different route. The arrival itself is
-            // what hands tracking back to the reader.
-            if (intendedPage !== null) {
-              if (seen === intendedPage) intendedPage = null;
-              return;
-            }
-            setPage(seen);
-          }
+          if (best) trackVisible(Number(best.target.dataset.page));
         },
         { root: container, threshold: 0.4 },
       );
@@ -328,6 +336,49 @@
     currentPage = n;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => api.patch(score.id, { last_page: currentPage }).catch(() => {}), 1200);
+  }
+
+  // Which page the pane is actually showing, read straight off the rects: of
+  // the pages intersecting the scroller, the one showing the largest fraction
+  // of ITSELF, which is what an intersection ratio measures. null when the
+  // pane has nothing on screen (no canvases yet).
+  //
+  // Deliberately the same answer the observer's callback arrives at from its
+  // entries - most visible of the intersecting ones - and the same answer
+  // re-observing every canvas would deliver, since a fresh observation
+  // reports every target at once. The 0.4 threshold decides WHEN the observer
+  // is run, not which page it then picks, so leaving it out here is not a
+  // second opinion about what "visible" means; it is the same opinion asked
+  // at a moment when there is no crossing left to be delivered.
+  function visiblePage() {
+    const view = container.getBoundingClientRect();
+    let best = null;
+    for (const canvas of container.querySelectorAll(".pdf-page")) {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.height) continue;
+      const overlap = Math.min(rect.bottom, view.bottom) - Math.max(rect.top, view.top);
+      if (overlap <= 0) continue;
+      const ratio = overlap / rect.height;
+      if (!best || ratio > best.ratio) best = { page: Number(canvas.dataset.page), ratio };
+    }
+    return best ? best.page : null;
+  }
+
+  // A page seen to be the one on screen, whichever route noticed it - an
+  // observer crossing, or the re-derive after a resize re-render. One
+  // function so the two cannot come to differ over the case below, which is
+  // the whole of why the indicator is not simply assigned at either site.
+  function trackVisible(seen) {
+    // A turn this component performed is already recorded (see intendedPage).
+    // Until that scroll settles, the frames it passes through are not the
+    // reader going anywhere - taking them would drag the indicator back onto
+    // the page being LEFT, which is the same wrong answer by a different
+    // route. The arrival itself is what hands tracking back to the reader.
+    if (intendedPage !== null) {
+      if (seen === intendedPage) intendedPage = null;
+      return;
+    }
+    setPage(seen);
   }
 
   // Where a page's top edge sits in the scroller's own coordinates. Read off
