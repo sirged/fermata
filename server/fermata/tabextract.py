@@ -3139,7 +3139,7 @@ _CHORD_SPLIT_SPACINGS = 0.6
 # Guitar fingerstyle and classical writing is usually a melody over an
 # accompaniment, but classical guitar arrangements genuinely go to three: a
 # melody, an arpeggiated inner voice and a sustained bass, each with its own
-# rhythm (Spanish-Romance-Guitar-Free.pdf, measured for issue #133 - with a
+# rhythm (conftest score_r, measured for issue #133 - with a
 # ceiling of two the bass had nowhere to live and folded into the melody's
 # chord). Measured across the whole library at the coincident-notehead
 # binding this project currently has, a literal three-way onset collision -
@@ -3451,7 +3451,7 @@ def _share_unison_digits(heads, digits, taken, per_group):
     member left starved is a different notehead with no twin at all. That is
     a distinct, pre-existing mis-ranking rather than a case this refuses -
     across the library it is 48 of the 65 in-chord onsets (47 with the unison
-    on the top member, 1 in the middle; 34 of them on Spanish-Romance alone),
+    on the top member, 1 in the middle; 34 of them on score_r alone),
     and every one of them reads exactly as it did before this existed. See
     issue #141.
 
