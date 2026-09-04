@@ -96,8 +96,16 @@ _chain_added_ids: list[int] = []
 # transcribing 1", chain A's own count. _decide_and_settle_chain captures
 # this alongside `ids`, under the same lock; _finish_scan_chain checks it
 # again immediately before writing and simply does not write if a newer
-# chain has since been accepted - that newer chain will report its own
-# result, accurately, when it finishes.
+# chain has since been accepted.
+#
+# STATED PLAINLY, because it is a real trade rather than a clean win: if the
+# newer chain adds nothing of its own, ITS _finish_scan_chain also returns
+# early (see `if not ids`) and never writes anything either - so the OLDER
+# chain's genuinely real, genuinely running pass simply goes unreported.
+# `transcribe_batch_started`/`note` stay None, which understates what is
+# actually happening (a pass IS running), rather than misattributing it to
+# a scan that never asked for it. Losing that one note is the accepted cost
+# of never showing a person a number that belongs to the wrong scan.
 _scan_generation = 0
 
 # Where a deleted score's file goes, as a folder name directly under the library
@@ -1144,8 +1152,15 @@ def _finish_scan_chain(ids: list[int], generation: int) -> None:
             # ids were captured - it has its own fresh None waiting for its
             # own result, and writing this chain's numbers over it would
             # misattribute them to a scan that has not decided anything yet
-            # (#190 review, F2-1). That newer chain reports its own result,
-            # accurately, when it finishes.
+            # (#190 review, F2-1). If that newer chain goes on to add
+            # something of its own, IT reports its own result accurately
+            # when it finishes - but if it adds nothing, its own
+            # _finish_scan_chain also returns early (see `if not ids`
+            # above) and writes nothing either, so THIS chain's genuinely
+            # running pass simply goes unreported: transcribe_batch_started/
+            # note stay None rather than say anything at all. See
+            # `_scan_generation`'s own comment for why that understatement
+            # is the accepted trade against the misattribution.
             return
         _state["transcribe_batch_started"] = started
         _state["transcribe_batch_note"] = (

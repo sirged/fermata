@@ -766,17 +766,27 @@ def test_a_scan_landing_right_after_the_chain_decision_does_not_lose_the_chains_
     real ids - not whatever the intruder leaves behind - are what actually
     reach transcribe_batch.
 
-    ALSO PINS F2-1 (#190 review, third pass), for free, from this exact
-    construction: the intruding start_scan() (scan B) is accepted and bumps
-    `scanner._scan_generation` SYNCHRONOUSLY, before `real_finish` (scan A's
-    own) ever gets to check it - deterministic regardless of when B's own
-    background thread gets around to actually walking the library - so
-    scan A's write of transcribe_batch_started/note is guaranteed stale by
-    the time it tries. B adds nothing new (the file scan A already added is
-    still the only one on disk), so B's own _finish_scan_chain is a no-op
-    too (`ids` empty) - meaning the FINAL status, once both chains settle,
-    must be exactly what B's own `_scan()` reset left it (None/None), never
-    scan A's "started transcribing 1", the clobber the review measured.
+    ALSO ASSERTS the FINAL status, once both chains settle, is None/None
+    (#190 review, third pass) - but this does NOT pin F2-1 on its own, and
+    is not claimed to: measured by dropping the generation check itself
+    (`if False:` in _finish_scan_chain), this assertion still passes, 8/8.
+    Why: scan B's own `_scan()` pass resets transcribe_batch_started/note to
+    None UNCONDITIONALLY, as the very first thing it does, regardless of
+    whether scan A's write was ever skipped - so if B's reset happens to run
+    AFTER scan A's write (which, un-fixed, lands scan A's stale "started
+    transcribing 1"), B's reset simply overwrites it right back to None
+    before this test's own assertion ever reads it. The status the
+    assertion sees is what B's reset guarantees either way, not evidence
+    that scan A's write was actually prevented from landing. What this test
+    DOES still pin, on its own construction: the ids atomicity fix above
+    (`calls[0] == [one_id]`) - the status assertion is left in as a
+    consistency check on the observable end state, not a substitute proof
+    of F2-1. See test_a_newer_chain_accepted_after_start_batch_returns_
+    does_not_have_its_status_clobbered below for the actual F2-1 pin, which
+    forces the ORDER that matters (the newer chain's generation bump lands
+    before scan A's own write is even attempted, with nothing after it to
+    launder the result) rather than relying on the value both orders happen
+    to produce.
     """
     import shutil
 
