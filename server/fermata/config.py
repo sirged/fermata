@@ -133,20 +133,34 @@ MCP_PORT = 0
 def load_mcp_settings() -> None:
     """Parse FERMATA_MCP_PORT into MCP_PORT. Called once from main.py's
     lifespan, inside the same try/except every other startup
-    misconfiguration is reported through. A no-op when the feature is off,
-    so an operator who never turned it on cannot be stopped by a stale value
-    left in their environment."""
+    misconfiguration is reported through.
+
+    The PARSE happens whether or not the feature is on; only the COMPLAINT
+    is conditional. Two reasons, and the second is the load-bearing one. An
+    operator who never turned this on should not be stopped by a stale value
+    left in their environment - so a bad value with the flag off is ignored
+    rather than fatal. But MCP_PORT still ends up holding the port that
+    WOULD be used, which is what makes the flag the only thing standing
+    between "off" and "listening": if the gate in main._start_mcp_server
+    were ever removed, the server would bind the real configured port and
+    test_nothing_listens_with_the_flag_off would notice. Short-circuiting
+    this function on the flag as well would leave MCP_PORT at 0, uvicorn
+    would bind an arbitrary free port, and that test could pass with the
+    gate gone - a guard that cannot fail.
+    """
     global MCP_PORT
-    if not MCP_ENABLED:
-        return
     try:
         port = int(MCP_PORT_RAW)
     except ValueError as exc:
+        if not MCP_ENABLED:
+            return
         raise RuntimeError(
             f"FERMATA_MCP_PORT is {MCP_PORT_RAW!r}, which is not a port number. See "
             "docs/deployment.md's 'The Model Context Protocol server' section."
         ) from exc
     if not 1 <= port <= 65535:
+        if not MCP_ENABLED:
+            return
         raise RuntimeError(
             f"FERMATA_MCP_PORT is {port}, which is not a port number between 1 and 65535. "
             "See docs/deployment.md's 'The Model Context Protocol server' section."

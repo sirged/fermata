@@ -292,6 +292,68 @@ def test_the_listener_is_there_with_the_flag_on(tmp_path):
         _terminate(proc)
 
 
+def test_a_port_already_taken_stops_the_server_loudly(tmp_path):
+    """An operator who turned this on and published a port deserves a
+    failure, not a healthy-looking container with nothing on that port. The
+    port is genuinely occupied here - by a socket this test holds open - so
+    the bind really does fail.
+    """
+    api_port = _free_port()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as squatter:
+        squatter.bind(("127.0.0.1", 0))
+        squatter.listen(1)
+        taken = squatter.getsockname()[1]
+        proc = _spawn(
+            tmp_path, api_port,
+            {
+                FLAG: "1",
+                "FERMATA_MCP_PORT": str(taken),
+                "FERMATA_MCP_API_URL": f"http://127.0.0.1:{api_port}",
+            },
+        )
+        try:
+            # It must EXIT, not merely fail to serve: a half-started
+            # deployment - API up, published protocol port dead - is exactly
+            # what the loud failure exists to prevent.
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            pytest.fail(
+                "the server kept running even though the protocol server could not bind:\n"
+                + _terminate(proc)
+            )
+        finally:
+            output = _terminate(proc)
+    assert not _accepts_a_connection(api_port), "the API is still serving after that failure"
+    assert str(taken) in output, output
+    assert "Model Context Protocol server" in output, output
+
+
+def test_an_unusable_port_setting_is_harmless_while_the_flag_is_off(tmp_path):
+    """The other side of that loudness: a stale, nonsensical value in the
+    environment of a deployment that never turned the feature on must not
+    stop it starting."""
+    api_port = _free_port()
+    proc = _spawn(tmp_path, api_port, {"FERMATA_MCP_PORT": "not-a-port"})
+    try:
+        assert _wait_until_serving(api_port), (
+            "a bad FERMATA_MCP_PORT stopped a server that never turned the feature on:\n"
+            + _terminate(proc)
+        )
+    finally:
+        _terminate(proc)
+
+
+def test_the_documented_defaults_are_the_real_ones():
+    """docs/deployment.md's settings table names a default port and a
+    default host; this is what stops that table becoming fiction."""
+    result = _python(
+        "from fermata import config; "
+        "print(config.MCP_HOST, config.MCP_PORT_RAW, config.MCP_API_URL)"
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "127.0.0.1 8765 http://127.0.0.1:8080"
+
+
 def test_turning_the_flag_on_changes_the_rest_contract_not_at_all(tmp_path):
     """Two real servers, one with the flag off and one with it on, and their
     served OpenAPI documents compared byte for byte.
