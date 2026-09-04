@@ -110,6 +110,12 @@ async function noteElementAt(page, xml, index) {
       const pitch = el.getElementsByTagName("pitch")[0];
       const technical = el.getElementsByTagName("technical")[0];
       return {
+        // The element's own child ELEMENT names in order. MusicXML's <note> is
+        // an ordered sequence, so this is what an XSD check on the saved
+        // document is actually looking at - asserted here because the browser
+        // suite stubs the transport and never reaches the server's own
+        // schema validation.
+        children: [...el.children].map((c) => c.tagName),
         isRest: !!el.getElementsByTagName("rest")[0],
         duration: Number(el.getElementsByTagName("duration")[0]?.textContent) || 0,
         voice: el.getElementsByTagName("voice")[0]?.textContent ?? null,
@@ -343,6 +349,15 @@ test.describe("note editor - a rest back to a note (#238)", () => {
     const persisted = await noteElementAt(page, saved.content, 1);
     expect(persisted).toMatchObject({ isRest: false, duration: 480, voice: "1", type: "quarter", string: 2, fret: 9 });
     expect(await measureShape(page, saved.content, 1)).toEqual({ 1: 1920 });
+    // The children the conversion left behind are in MusicXML's own order for a
+    // pitched note - <pitch> where the <rest/> was, the printed <accidental>
+    // before the <notations> it belongs before, <notations> last - which is
+    // what the server's schema check would reject if the new elements were
+    // merely appended. A rest that never carried <notations> or an
+    // <accidental> is exactly where an out-of-order insert would go unnoticed
+    // until a validating save. (String 2 fret 9 is MIDI 68, which C major
+    // spells A flat, so this note does carry a printed accidental.)
+    expect(persisted.children).toEqual(["pitch", "duration", "voice", "type", "accidental", "notations"]);
     // Every <octave> stays inside MusicXML's 0-9 range, so the saved document
     // is not one a validating consumer would reject (Rule 11).
     expect(saved.content).not.toMatch(/<octave>(1\d|\d\d\d)<\/octave>/);
