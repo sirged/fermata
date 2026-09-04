@@ -235,62 +235,53 @@ async function pdfScrollSettlesAt(page, target, what) {
 }
 
 /**
- * Waits for a gig-mode half turn to be WHERE IT ASKED TO BE, once the pane
- * has finished re-rendering underneath it.
+ * Waits for the PDF pane's scroll to come to REST, without naming where.
  *
- * `pdfScrollSettlesAt` above is the right barrier when the test knows the one
- * target. The gig-mode-re-render test below deliberately does not: it presses
- * INTO a live re-render, and the two orderings of that race land the reader on
- * two different offsets, both correct. So this names BOTH, computed from
- * geometry rather than restated as numbers:
+ * `pdfScrollSettlesAt` above is the right barrier when the test knows the
+ * target. The two gig-mode tests below deliberately do not: they press INTO a
+ * live re-render, and where that leaves the reader depends on which page
+ * height the press was measured against - the narrow pre-render one, the
+ * settled one, or, on a slow machine, an intermediate one the pane was
+ * rendered at while the layout was still changing. Measured: 547 and 559 on
+ * this box at 1280 wide, and 473 on a CI runner, all of them inside the band
+ * those tests assert and none of them a number a barrier could name in
+ * advance.
  *
- *   - `landedAsMeasured`: the press was measured against the pre-render page
- *     (half of the narrow page plus its gap), and the re-render then restored
- *     that as a FRACTION against the new page height - PdfViewer's
- *     requestScroll / positionAt pair, which is what makes a turn survive the
- *     pages changing size at all.
- *   - `landedAsRendered`: the press was measured against the settled page,
- *     and there is nothing left to restore.
+ * What every one of them has in common is that the pane stops moving, and
+ * that is worth waiting for because nothing else in those tests does (#234).
+ * The settled-width barrier is about canvas WIDTHS, which reach their final
+ * value inside PdfViewer's re-render loop - each canvas is sized before its
+ * page is drawn - while the loop restores the scroll only after the LAST page
+ * has finished drawing. The indicator poll agrees trivially all the way down
+ * page one (the HUD says "1 / 2" and page one is the most visible page at
+ * every scrollTop these turns pass through). So between the two sits a window
+ * where the pages are already their settled size but the reader is still at
+ * the offset the narrow geometry produced, and a fraction read there is a
+ * pre-render offset over a post-render page height. Measured at the earliest
+ * frame the width barrier can legally return, 20 of 20 runs: 0.2627, under
+ * the 0.35 those tests assert.
  *
- * Measured locally at a 1280-wide viewport: 547 and 559 respectively, both
- * about half of page one down, and the test's band holds for either.
- *
- * Why a barrier at all (#234). The two lines above this one in that test do
- * not wait for the turn: the settled-width barrier is about canvas WIDTHS,
- * which reach their final value inside the re-render loop - before it restores
- * the scroll, which it only does after the last page has finished drawing -
- * and the indicator poll agrees trivially all the way down page one (the HUD
- * says "1 / 2" and page one is the most visible page at every scrollTop this
- * turn passes through). Between those two facts sits a window where the pages
- * are already their settled size but the reader is still at the offset the
- * narrow geometry produced, and a fraction read there is measured against the
- * wrong page height. Measured at the earliest frame the width barrier can
- * legally return, 20 of 20 runs: 313 px, read as 0.2627 of a page - under the
- * 0.35 the test asserts. That is the shape of the CI failure this covers.
- *
- * Waiting for the pane merely to stop moving does not close that: inside the
- * window it IS stopped, for as long as the last page takes to draw. Naming
- * the offsets does, and it makes a genuinely wrong turn fail with the two
- * places it could have legitimately been rather than with two numbers.
+ * Two consecutive animation frames with an unchanged scrollTop is what this
+ * waits for, and it rejected that window in 20 of 20 of those runs. Its
+ * limit, stated because it is real: inside the window the pane is not moving,
+ * so a window that outlasts two frames - a last page slow enough to draw -
+ * would satisfy this barrier too. It is a narrower hole than the one it
+ * closes, not the absence of one.
  */
-async function pdfHalfTurnSettles(page, before) {
+async function pdfScrollComesToRest(page) {
   await expect
-    .poll(async () => {
-      const at = await pdfGeometry(page);
-      // Half the narrow page and its gap, kept as the fraction of that page
-      // it left the reader at, then re-measured against the settled page.
-      const step = (before.pageTwoTop - before.pageOneTop) / 2;
-      const fraction = (before.scrollTop + step - before.pageOneTop) / before.pageHeight;
-      const landedAsMeasured = at.pageOneTop + fraction * at.pageHeight;
-      // Half the settled page and its gap, from where the reader started.
-      const landedAsRendered = before.scrollTop + (at.pageTwoTop - at.pageOneTop) / 2;
-      // A pixel of tolerance, for the reason pdfScrollSettlesAt states.
-      return Math.abs(at.scrollTop - landedAsMeasured) <= 1 || Math.abs(at.scrollTop - landedAsRendered) <= 1
-        ? "half a page on"
-        : `at ${Math.round(at.scrollTop)}, not half a page on (${Math.round(landedAsMeasured)} measured against the ` +
-            `pre-render page, ${Math.round(landedAsRendered)} against the settled one)`;
-    })
-    .toBe("half a page on");
+    .poll(() =>
+      page.evaluate(async () => {
+        const scroller = document.querySelector(".pages");
+        if (!scroller) return "no pane yet";
+        const before = scroller.scrollTop;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return scroller.scrollTop === before
+          ? "at rest"
+          : `still moving (${Math.round(before)} to ${Math.round(scroller.scrollTop)})`;
+      }),
+    )
+    .toBe("at rest");
 }
 
 async function openDemo(page) {
@@ -1142,7 +1133,7 @@ test.describe("a page turn pressed before the PDF has rendered", () => {
     // (#234): the line above waits for canvas widths, which are final before
     // the re-render restores the scroll, so the fraction can otherwise be
     // read off a reader still at the pre-render offset.
-    await pdfHalfTurnSettles(page, before);
+    await pdfScrollComesToRest(page);
     const after = await pdfGeometry(page);
     expect(after.pageHeight).toBeLessThan(before.pageHeight);
     // Half a page on from where the tap was taken, give or take which
@@ -1322,10 +1313,6 @@ test.describe("gig mode itself", () => {
     });
     await expect(page.locator(".pdf-page")).toHaveCount(2);
     await pdfPagesRenderedAtSettledWidth(page);
-    // The pane the turn may be measured against, read while nothing is
-    // moving: one of the two offsets below is half of THIS page, carried
-    // across the re-render as a fraction.
-    const before = await pdfGeometry(page);
 
     await page.keyboard.press("f");
     await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
@@ -1335,14 +1322,9 @@ test.describe("gig mode itself", () => {
 
     await pdfPagesRenderedAtSettledWidth(page);
     // The turn's own barrier, and the only one here that is about the SCROLL
-    // rather than the render (#234). The line above waits for canvas WIDTHS,
-    // which are final inside the re-render loop - before it restores the
-    // scroll, which it only does once the last page has drawn - and the
-    // indicator poll below agrees at every scrollTop this turn passes
-    // through. Without this, the fraction is read in that window, off a
-    // reader still at the offset the narrow geometry produced: measured at
-    // the earliest frame the width barrier can return, 20 of 20 runs, 0.2627.
-    await pdfHalfTurnSettles(page, before);
+    // rather than the render (#234) - see pdfScrollComesToRest for what the
+    // two lines around it do not cover, and what this one does and does not.
+    await pdfScrollComesToRest(page);
     await pdfIndicatorAgrees(page, 2);
 
     // And the geometry that makes the line above worth asserting: the reader
