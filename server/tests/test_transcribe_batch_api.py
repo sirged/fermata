@@ -739,3 +739,235 @@ def test_an_upload_starts_exactly_one_bulk_pass_over_exactly_the_uploaded_scores
     status = transcribe_batch.batch_status()
     assert status["total"] == 1
     assert status["transcribed"] == 1
+
+
+def test_a_scan_landing_right_after_the_chain_decision_does_not_lose_the_chains_ids(
+    library, extractable_pdf, monkeypatch
+):
+    """#190 review, F2. `scanning` used to clear (and the lock release)
+    BEFORE anything decided whether the chain continues or ends, so an
+    ordinary start_scan() landing in exactly that gap reset
+    `_chain_added_ids` before the chain's own decision ever read it - see
+    scanner._decide_and_settle_chain's own comment for the full argument.
+
+    Pinned deterministically, not by racing real threads against real lock
+    timing (tried first: spawning a genuinely concurrent intruder thread
+    almost never wins against the SAME thread's own uninterrupted
+    continuation under CPython's GIL, which favours whichever thread is
+    already running - the fix's own atomicity could not be shown to matter
+    that way without an artificial sleep inside production code). Instead:
+    wrap scanner._finish_scan_chain - the first thing that runs once the
+    decision's lock is released - and have the wrapper call a SECOND,
+    intruding start_scan() SYNCHRONOUSLY, in the same thread, before
+    calling through to the real _finish_scan_chain. This is exactly the
+    reproduction shape a gap between "clear scanning" and "decide the
+    ids" has: whatever runs immediately once the lock opens gets first
+    claim on `_chain_added_ids`, and the assertion below is that the
+    real ids - not whatever the intruder leaves behind - are what actually
+    reach transcribe_batch.
+    """
+    import shutil
+
+    shutil.copy(extractable_pdf, library / "one.pdf")
+
+    calls = []
+    real_start_batch = transcribe_batch.start_batch
+
+    def recording_start_batch(process_one, score_ids, reconvert=False):
+        calls.append(list(score_ids))
+        return real_start_batch(process_one, score_ids, reconvert)
+
+    monkeypatch.setattr(transcribe_batch, "start_batch", recording_start_batch)
+
+    real_finish = scanner._finish_scan_chain
+    intruder_started = []
+    fired = False
+
+    def intruding_finish(ids):
+        # Fires exactly ONCE - the intruder's own chain finishes through
+        # this same wrapper too (it is patched module-wide), and without
+        # the guard each intruder would start another, cascading forever
+        # and never letting the scan settle.
+        nonlocal fired
+        if not fired:
+            fired = True
+            intruder_started.append(scanner.start_scan())
+        return real_finish(ids)
+
+    monkeypatch.setattr(scanner, "_finish_scan_chain", intruding_finish)
+
+    scan_started = scanner.start_scan()
+    assert scan_started is True
+    _wait_for_scan()
+    _wait_for_scan()  # the intruder's own scan, started from inside the wrapper
+    _wait_for_batch()
+
+    assert intruder_started == [True], "the intruding scan never actually ran"
+    assert len(calls) == 1, f"expected exactly one bulk pass, got {len(calls)}: {calls}"
+    conn = db.connect()
+    one_id = conn.execute("SELECT id FROM scores WHERE path='one.pdf'").fetchone()["id"]
+    assert calls[0] == [one_id]
+
+
+def test_a_scan_that_adds_one_score_does_not_transcribe_a_pre_existing_untranscribed_one(
+    library, extractable_pdf, monkeypatch
+):
+    """#190 review, F5, mutation C: _finish_scan_chain must hand
+    transcribe_batch exactly the ids THIS CHAIN added - never every live
+    score in the library. Every earlier test of this claim scanned a
+    library that started EMPTY, so "everything the chain added" and
+    "every live score" were the same set and a mutation broadening the
+    scope to the latter would have passed unnoticed. Pinned here with a
+    score already on record, untranscribed, before this scan runs at all.
+    """
+    import shutil
+
+    pre_existing_path = "pre-existing.pdf"
+    shutil.copy(extractable_pdf, library / pre_existing_path)
+    scanner._scan()
+    conn = db.connect()
+    pre_existing_id = conn.execute(
+        "SELECT id FROM scores WHERE path=?", (pre_existing_path,)
+    ).fetchone()["id"]
+
+    calls = []
+    real_start_batch = transcribe_batch.start_batch
+
+    def recording_start_batch(process_one, score_ids, reconvert=False):
+        calls.append(list(score_ids))
+        return real_start_batch(process_one, score_ids, reconvert)
+
+    monkeypatch.setattr(transcribe_batch, "start_batch", recording_start_batch)
+
+    shutil.copy(extractable_pdf, library / "fresh.pdf")
+    scan_started = scanner.start_scan()
+    assert scan_started is True
+    _wait_for_scan_chain_decision()
+    _wait_for_batch()
+
+    assert len(calls) == 1, f"expected exactly one bulk pass, got {len(calls)}: {calls}"
+    fresh_id = conn.execute("SELECT id FROM scores WHERE path='fresh.pdf'").fetchone()["id"]
+    assert calls[0] == [fresh_id], (
+        f"expected the pass to run over exactly the added id, got {calls[0]} - "
+        f"the pre-existing score's id was {pre_existing_id}"
+    )
+
+    # The pre-existing score was never part of this chain's own pass, and
+    # stays exactly as untranscribed as it started.
+    assert conn.execute(
+        "SELECT COUNT(*) FROM transcriptions WHERE score_id=?", (pre_existing_id,)
+    ).fetchone()[0] == 0
+
+
+def test_the_chain_never_reconverts_a_score_transcribed_out_of_band_before_it_finishes(
+    library, extractable_pdf, monkeypatch
+):
+    """#190 review, F5, mutation D: the hook must call transcribe_batch.
+    start_batch with reconvert=False (the default), never True. Ordinarily
+    every id a chain adds is a brand-new row with no transcription of its
+    own yet, so reconvert cannot make an observable difference for it -
+    except across a CHAINED rescan (#190's own subject): a score added by
+    an early pass sits in `_chain_added_ids` until the chain's LAST pass
+    finishes, and something else can genuinely transcribe it by hand in
+    that window. reconvert=True would silently replace that real content;
+    reconvert=False (correct) reports it as already_transcribed and
+    leaves it alone.
+
+    Built the same way test_a_chained_rescan_starts_one_bulk_pass_over_
+    the_union_of_every_id_the_chain_added builds a chain of two passes:
+    hash_file slowed down enough that a second file's own start_scan()
+    call is genuinely declined for re-entrancy (see
+    scanner._rescan_pending) and picked up by a follow-up pass in the
+    same chain, giving a real window between "one.pdf" being added and
+    the chain finishing.
+    """
+    import shutil
+
+    shutil.copy(extractable_pdf, library / "one.pdf")
+
+    real_hash_file = scanner.hash_file
+
+    def slow_hash_file(path):
+        time.sleep(0.3)
+        return real_hash_file(path)
+
+    monkeypatch.setattr(scanner, "hash_file", slow_hash_file)
+
+    scan_started = scanner.start_scan()
+    assert scan_started is True
+    time.sleep(0.1)  # let it start hashing one.pdf
+    assert scanner.scan_status()["scanning"] is True
+
+    shutil.copy(extractable_pdf, library / "two.pdf")
+    second_call_started = scanner.start_scan()
+    assert second_call_started is False  # declined - merges into the same chain
+
+    # one.pdf is added by the FIRST pass and sits in _chain_added_ids while
+    # the SECOND pass (hashing two.pdf, also slowed) is still running - the
+    # window this test needs. Waited for by polling for its row rather than
+    # assumed from a sleep: the first pass's own 0.3s hash is itself only a
+    # lower bound on when the row actually lands.
+    conn = db.connect()
+    deadline = time.monotonic() + 5.0
+    one_id = None
+    while one_id is None:
+        row = conn.execute("SELECT id FROM scores WHERE path='one.pdf'").fetchone()
+        if row:
+            one_id = row["id"]
+            break
+        if time.monotonic() > deadline:
+            raise AssertionError("one.pdf's row never appeared")
+        time.sleep(0.02)
+    # Transcribed by hand, out of band, right now - while the chain is
+    # still mid-flight on its second pass.
+    api.transcribe(one_id, body=None)
+    hand_made = api.get_transcription(one_id)
+    assert hand_made["source"] == "extracted"
+
+    _wait_for_scan_chain_decision()
+    _wait_for_batch()
+
+    status = transcribe_batch.batch_status()
+    two_id = conn.execute("SELECT id FROM scores WHERE path='two.pdf'").fetchone()["id"]
+    by_id = {line["score_id"]: line for line in status["results"]}
+    assert set(by_id) == {one_id, two_id}, by_id
+    # one.pdf reports already_transcribed, not transcribed a second time -
+    # the reconvert=False claim, in the one scenario that can tell the
+    # difference.
+    assert by_id[one_id]["outcome"] == "already_transcribed", by_id[one_id]
+    assert by_id[two_id]["outcome"] == "transcribed", by_id[two_id]
+
+    # And the hand-made content genuinely survived, not merely the outcome
+    # label.
+    still = api.get_transcription(one_id)
+    assert still["source"] == "extracted"
+    assert still["updated_at"] == hand_made["updated_at"]
+    assert still["content"] == hand_made["content"]
+
+
+def test_a_chain_with_no_hook_registered_still_clears_its_own_ids(
+    library, extractable_pdf, monkeypatch
+):
+    """#190 review nit: _finish_scan_chain does nothing when nobody has
+    registered a transcribe hook (see register_transcribe_hook - a test
+    that imports scanner.py without api.py has nothing to call this
+    with), but the chain's own ids must still be consumed by
+    _decide_and_settle_chain regardless of whether a hook exists - or a
+    LATER chain (once a hook is registered, e.g. because api.py gets
+    imported later in the same process) would inherit ids from a chain
+    that already finished, as though that later chain had added them."""
+    import shutil
+
+    monkeypatch.setattr(scanner, "_transcribe_process_one", None)
+    shutil.copy(extractable_pdf, library / "one.pdf")
+
+    scan_started = scanner.start_scan()
+    assert scan_started is True
+    _wait_for_scan()  # not _wait_for_scan_chain_decision - with no hook,
+    # transcribe_batch_started/note never leave None for this chain
+
+    assert scanner._chain_added_ids == []
+    assert transcribe_batch.batch_status()["running"] is False
+    status = scanner.scan_status()
+    assert status["transcribe_batch_started"] is None
+    assert status["transcribe_batch_note"] is None

@@ -330,6 +330,33 @@
     return () => clearTimeout(timer);
   });
 
+  // The same shape as the scan poll above, for a bulk pass THIS page never
+  // started (#190 review, F3) - a scan's own automatic one, or one started
+  // from another tab or client. Without this the library page polled
+  // nothing and showed nothing while such a pass ran, so the one moment a
+  // person's own click here would be refused (startTranscribeBatch's
+  // `!result.started` branch) was invisible until they tried.
+  $effect(() => {
+    let timer;
+    async function poll() {
+      const status = await api.transcribeBatchStatus();
+      if (status.running) {
+        backgroundBatch = status;
+        timer = setTimeout(poll, 1500);
+      } else {
+        backgroundBatch = null;
+        refresh();
+      }
+    }
+    api.transcribeBatchStatus().then((s) => {
+      if (s.running) {
+        backgroundBatch = s;
+        poll();
+      }
+    });
+    return () => clearTimeout(timer);
+  });
+
   async function triggerScan() {
     await api.scan();
     scan = { ...(scan ?? {}), scanning: true };
@@ -363,6 +390,13 @@
   let transcribeError = $state("");
   let transcribeStatus = $state(null);
   let transcribePollTimer;
+  // A pass this page did not start - a scan's own automatic one (#190), or
+  // someone else's - running right now. Polled independently of the dialog
+  // above, which only ever knows about a pass THIS page started: without
+  // this, the one moment a click here would be refused (see
+  // startTranscribeBatch's own `!result.started` branch) was invisible until
+  // the click itself failed.
+  let backgroundBatch = $state(null);
 
   const OUTCOME_LABEL = {
     already_transcribed: "already had one",
@@ -416,7 +450,23 @@
       const opts = { reconvert: transcribeReconvert };
       if (transcribeTarget.kind === "collection") opts.collection = transcribeTarget.collection;
       const ids = transcribeTarget.kind === "ids" ? transcribeTarget.ids : null;
-      transcribeStatus = await api.transcribeBatch(ids, opts);
+      const result = await api.transcribeBatch(ids, opts);
+      if (!result.started) {
+        // Refused - a pass is already running, and what came back is THAT
+        // pass's own status (api.transcribeBatch's own shape: "the status
+        // left behind by whichever pass - this one, or one already running -
+        // is current"), not one for the selection just made. Adopting it
+        // here would show somebody else's progress and results as though
+        // they belonged to this selection, and close having silently
+        // transcribed nothing this person chose - reachable with one click
+        // right after an upload or a boot scan starts its own pass (#190).
+        transcribeError =
+          `a pass over ${result.total} score${result.total === 1 ? "" : "s"} is already ` +
+          "running in the background - your selection was not started. Try again once it " +
+          "finishes.";
+        return;
+      }
+      transcribeStatus = result;
       pollTranscribeBatch();
     } catch (err) {
       transcribeError = err?.message ?? "Fermata could not start that.";
@@ -672,6 +722,29 @@
       <p class="scan-note">
         Last scan: {scan.restored} score{scan.restored === 1 ? "" : "s"} found again
         {scan.restored === 1 ? "at the path it" : "at the paths they"} went missing from.
+      </p>
+    {/if}
+
+    {#if !scan?.scanning && scan?.transcribe_batch_note}
+      <!-- A freshly scanned library transcribes itself (#190) - what its
+           chain's own bulk pass decided, said the same way the scan's other
+           after-the-fact notes are: attributed to the LAST SCAN, because the
+           note is replaced the next time a chain decides anything. Produced
+           since the feature shipped but never rendered anywhere until this
+           review (F3) - the one place a person could otherwise learn a
+           background pass was declined was by noticing nothing got marked. -->
+      <p class="scan-note">Last scan: {scan.transcribe_batch_note}.</p>
+    {/if}
+
+    {#if backgroundBatch && !transcribeOpen}
+      <!-- Live, not after-the-fact: a bulk pass is running RIGHT NOW that
+           this page did not start (#190 review, F3) - the scan's own
+           automatic one, or one from another tab or client. Unobtrusive on
+           purpose - this is ambient awareness, not the dialog's own detailed
+           progress, which is why it steps aside while that dialog is open. -->
+      <p class="scan-note">
+        Transcribing {backgroundBatch.total} score{backgroundBatch.total === 1 ? "" : "s"} in
+        the background…
       </p>
     {/if}
 

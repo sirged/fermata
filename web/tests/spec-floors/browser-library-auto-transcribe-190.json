@@ -1,5 +1,5 @@
 {
   "file": "tests/browser/zzzz-library-auto-transcribe.spec.js",
-  "count": 2,
-  "reason": "issue #190: an uploaded extractable score transcribes itself with no bulk-transcription click anywhere, the library card marks it, and the transcription filter narrows the grid to exactly that set and its exact complement."
+  "count": 4,
+  "reason": "issue #190: an uploaded extractable score transcribes itself with no bulk-transcription click anywhere, the library card marks it, and the transcription filter narrows the grid to exactly that set and its exact complement; review round also adds F1 (a refused POST /transcribe/batch is never adopted as this selection's own progress) and F3 (a pass this page did not start is visible, both while running and after a scan's own chain is refused)."
 }
