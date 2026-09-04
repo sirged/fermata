@@ -64,8 +64,17 @@ expectations are:
   should not infer "this will become non-null once the feature is finished".
 - **This is a single-owner, self-hosted server**, not a multi-tenant service.
   `owner` fields exist in several tables for a future multi-account version
-  and are always `'local'` today; nothing in the API takes or checks
-  credentials yet (see [SECURITY.md](../SECURITY.md)).
+  and are always `'local'` today, and no endpoint has a login, a token or a
+  credential of its own. The one identity this API knows about comes from
+  outside it: with reverse-proxy authentication configured, a request that
+  did not arrive from a trusted proxy carrying the configured header is
+  refused with `401` (`GET /api/health` alone stays open, so a load balancer
+  can probe it), and `GET /api/me` reads back the username the proxy
+  vouched for. That is off by default — unset, every request behaves exactly
+  as it did before it existed, `GET /api/me` answers `{"enabled": false,
+  "username": null}`, and nothing else in the API acts on an identity either
+  way. See [SECURITY.md](../SECURITY.md) and
+  [docs/deployment.md](deployment.md#reverse-proxy-authentication).
 
 The data model behind the practice endpoints specifically - what a session
 and a goal mean, what is derived versus stored, and what deliberately has no

@@ -21,7 +21,7 @@ import json
 from typing import Any
 
 # The one drill that writes here today. A widened tuple, not a migration, is
-# how a second one (#26, #29) arrives - the table itself is drill-agnostic
+# how a second one arrives - the table itself is drill-agnostic
 # already (db.py's _TRAINER_ATTEMPTS_COLUMNS).
 DRILLS = ("fret_to_note",)
 

@@ -374,7 +374,7 @@ One table, `trainer_attempts`, independent of `practice_sessions`:
 | `id` | Stable for the life of the row. |
 | `owner` | `'local'`, same as everywhere else. |
 | `session_id` | The `practice_sessions` row logging the surrounding drill's TIME, when there is one yet - `NULL` otherwise. See below for why that is the ordinary case, not an edge one. |
-| `drill` | Which exercise asked it. `'fret_to_note'` today; a second fretboard drill (#26, #29) widens this, not a migration. |
+| `drill` | Which exercise asked it. `'fret_to_note'` today; a second fretboard drill would widen this tuple, not require a migration. |
 | `direction` | `position_to_note` (shown a position, asked for its note) or `note_to_position` (shown a note, asked to find a position). |
 | `target_string`, `target_fret` | The position a question NAMED - set only on `position_to_note`, where there is one. A note prompt has no single expected position (most notes sound in several places), so these stay `NULL` on `note_to_position`. |
 | `target_note` | The note being tested, always set. |
