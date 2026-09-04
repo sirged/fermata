@@ -97,26 +97,27 @@
   let scrollRequestSeq = 0;
 
   // Read-only test instrumentation, in the same spirit as the `data-page`
-  // attribute each canvas already carries: a counter stamped on the scroller
-  // every time this pane has finished moving on its own account, and removed
-  // again the moment it asks to move. Nothing in here reads it back - it is
-  // written for the browser suite, which otherwise has to guess at frames to
-  // know whether a resize re-render's scroll restore has happened yet.
+  // attribute each canvas already carries. Nothing in here reads it back - it
+  // is written for the browser suite, which otherwise has to guess at frames
+  // to know whether a resize re-render's scroll restore has happened yet.
   //
-  // "Finished moving" is the component's own claim, made at exactly two
-  // places: the re-render's restore having been assigned and painted (see
-  // flushResize), and the scroller having gone quiet with no re-render in
-  // flight (see stampWhenQuiet). Both are after any `behavior: "smooth"`
-  // scroll this component started has stopped - the restore is a direct
-  // scrollTop assignment, which aborts one outright, and a running smooth
-  // scroll keeps firing scroll events, which is what the quiet timer waits
-  // out.
-  let settleSeq = 0;
-  function markUnsettled() {
-    container?.removeAttribute("data-settle-seq");
-  }
-  function markSettled() {
-    if (container) container.dataset.settleSeq = String(++settleSeq);
+  // It says ONE thing, and it is deliberately not "the pane is at rest": a
+  // resize re-render HAS RESTORED THE SCROLL and painted it. There is exactly
+  // one place it is written, the post-restore double-rAF in flushResize, and
+  // it is never removed - a test compares it against a value taken before
+  // whatever it is waiting on, so a stale stamp cannot satisfy the wait and
+  // an absent one means no re-render has ever restored.
+  //
+  // An earlier version of this counted rest instead, stamping both here and
+  // from a quiet-scroll timer, and the two are not the same claim: measured
+  // on the half-page-turn-across-a-re-render test, the quiet stamp landed 46ms
+  // BEFORE the re-render even started and 54ms before the restore, so a
+  // barrier waiting on it returned on its first poll at the pre-render offset.
+  // Rest is cheap and frequent; having restored is the property the suite
+  // needs, so that is the only one written here.
+  let renderSettleSeq = 0;
+  function markRenderSettled() {
+    if (container) container.dataset.renderSettleSeq = String(++renderSettleSeq);
   }
 
   // half-page advance defaults on each time gig mode is entered, but the
@@ -142,21 +143,14 @@
     // transient, inconsistent layout while a re-render is in flight - ignore
     // its callbacks until the final scroll restore has settled
     let suppressTracking = false;
-    // Which scroll request the last re-render's restore actually assigned,
-    // so the settle stamp can tell "nothing has been asked for since" from
-    // "a turn landed after the restore and is still travelling".
+    // Which scroll request this flush's restore actually assigned, or -1 for
+    // "this flush has not restored anything". Reset at the top of every
+    // flush, so a stamp is never written off a previous flush's restore, and
+    // compared against scrollRequestSeq at stamp time so a turn that landed
+    // AFTER the restore - and is therefore still travelling - does not get
+    // called a finished restore either. scrollRequestSeq only ever counts up
+    // from 0, so -1 also serves as the "did not restore" guard.
     let restoredAtSeq = -1;
-    let stampTimer;
-    // The scroller has gone quiet: 200ms with no scroll event, which a
-    // running smooth scroll cannot satisfy because it keeps firing them, and
-    // no re-render in flight - whose restore is about to move the pane again
-    // and stamps for itself when it has.
-    function stampWhenQuiet() {
-      clearTimeout(stampTimer);
-      stampTimer = setTimeout(() => {
-        if (!cancelled && !rerendering) markSettled();
-      }, 200);
-    }
 
     function computeWidth() {
       return Math.min(container.clientWidth - 32, 1100);
@@ -258,6 +252,8 @@
     async function flushResize() {
       rerendering = true;
       suppressTracking = true;
+      // Nothing this flush has restored yet, so nothing for it to stamp.
+      restoredAtSeq = -1;
       while (pendingWidth !== null && Math.abs(pendingWidth - renderedWidth) >= 2) {
         const width = pendingWidth;
         pendingWidth = null;
@@ -328,12 +324,14 @@
             if (seen !== currentPage) setPage(seen);
           }
           // Last, so the stamp means the indicator is final too: the restore
-          // has been assigned and painted, and this frame's re-derivation
-          // has run. Only when nothing has been asked for since the restore
-          // was assigned - a turn that landed after it is still travelling,
-          // and the quiet timer is what stamps that one.
-          if (scrollRequestSeq === restoredAtSeq) markSettled();
-          else stampWhenQuiet();
+          // has been assigned and painted, and this frame's re-derivation has
+          // run. Only when this flush restored at all, and nothing has been
+          // asked for since it did - a turn that landed after the restore is
+          // still travelling, and this flush has no business calling that
+          // finished. There is nothing else to stamp it: the next re-render
+          // is the next thing that writes here, which is the whole meaning of
+          // the attribute.
+          if (restoredAtSeq >= 0 && scrollRequestSeq === restoredAtSeq) markRenderSettled();
         }),
       );
     }
@@ -395,14 +393,12 @@
     function onScroll() {
       clearTimeout(settleTimer);
       settleTimer = setTimeout(() => (intendedPage = null), 200);
-      stampWhenQuiet();
     }
 
     return () => {
       cancelled = true;
       container?.removeEventListener("scroll", onScroll);
       clearTimeout(settleTimer);
-      clearTimeout(stampTimer);
       intendedPage = null;
       // both belong to the document this pass loaded; a re-run (a different
       // score) must not inherit a turn pressed against the old one, nor its
@@ -519,9 +515,6 @@
     if (!position) return;
     requestedScroll = position;
     scrollRequestSeq += 1;
-    // The pane is about to move, so whatever it last said about having
-    // settled is stale until it stops again.
-    markUnsettled();
   }
 
   function goto(page) {

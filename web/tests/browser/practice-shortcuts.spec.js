@@ -235,18 +235,18 @@ async function pdfScrollSettlesAt(page, target, what) {
 }
 
 /**
- * The PDF pane's own settle counter, or null while it says it is moving.
- * `PdfViewer` stamps `data-settle-seq` on the scroller when it has finished
- * moving on its own account, and removes it again the moment it asks to move
- * (see the comment on markSettled there for the two places it is written).
+ * The PDF pane's count of re-render scroll restores completed so far, or null
+ * if none has ever completed. `PdfViewer` writes `data-render-settle-seq` on
+ * the scroller in exactly one place - the post-restore double-rAF in its
+ * flushResize - and never removes it.
  */
-async function pdfSettleStamp(page) {
-  return page.evaluate(() => document.querySelector(".pages")?.dataset.settleSeq ?? null);
+async function pdfRenderSettleStamp(page) {
+  return page.evaluate(() => document.querySelector(".pages")?.dataset.renderSettleSeq ?? null);
 }
 
 /**
- * Waits for the PDF pane to say IT has finished moving, past a stamp taken
- * BEFORE whatever was going to move it.
+ * Waits for a re-render's scroll restore to COMPLETE, past a count taken
+ * before whatever was going to cause it.
  *
  * `pdfScrollSettlesAt` above is the right barrier when the test knows the
  * target. The tests below deliberately do not: they press INTO a live
@@ -268,14 +268,29 @@ async function pdfSettleStamp(page) {
  * the last page's draw, 5 of 5 runs: scrollTop 313 over an 1100px page,
  * 0.2627 - under the 0.35 the indicator test asserts.
  *
- * An earlier version of this barrier waited instead for two consecutive
- * animation frames with an unchanged scrollTop, and that was decorative:
- * inside that window the pane is perfectly still, so it returned "at rest" on
- * its first evaluation. Stillness is not the property that matters; having
- * restored is. This waits for the counter to ADVANCE past a value captured
- * before the press, so a stamp left over from an earlier settle cannot
- * satisfy it, and it throws on timeout naming the attribute rather than
- * falling through to the assertion.
+ * Two earlier versions of this barrier waited on something weaker, and both
+ * are worth naming because both LOOKED like they worked:
+ *
+ * - two consecutive animation frames with an unchanged scrollTop. Decorative:
+ *   inside the delayed-restore window the pane is perfectly still, so it
+ *   returned "at rest" on its first evaluation.
+ * - the viewer's rest counter, which was also stamped by a quiet-scroll timer
+ *   200ms after the last scroll event. That timer has nothing to do with a
+ *   re-render, and on the clean head it fired BEFORE one. Traced on the
+ *   half-page-turn test, 8 of 8 runs, milliseconds from the same clock:
+ *   `690 restore | 707 stamp | 883 turn starts | 1086 QUIET STAMP | 1132
+ *   re-render starts | 1140 restore | 1173 stamp`. The barrier's baseline was
+ *   absent in 8 of 8 (the turn had just removed the attribute), so any stamp
+ *   satisfied it, and the one at 1086 is the turn going quiet - 46ms before
+ *   the re-render started and 54ms before the restore this barrier exists to
+ *   wait for. It returned on its first poll, at the pre-render offset.
+ *
+ * Stillness is not the property that matters, and neither is rest; having
+ * restored is. So the viewer now writes that and nothing else, this waits for
+ * the count to ADVANCE past a value captured before the press, and an absent
+ * baseline counts as 0 - safe, because the only thing that ever writes this
+ * attribute is a restore that has completed and painted. It throws on timeout
+ * naming the attribute rather than falling through to the assertion.
  *
  * One thing worth saying about the indicator test in particular, because it
  * was previously written down the wrong way round: its `pdfIndicatorAgrees`
@@ -290,18 +305,20 @@ async function pdfSettleStamp(page) {
  * reads 0.2627 in 5 of 5 runs and fails on the band. This barrier is what
  * makes the screening deliberate and independent of the threshold.
  */
-async function pdfSettlesPast(page, stamp, timeout) {
-  const was = stamp === null ? "absent" : stamp;
+async function pdfRestoreSettlesPast(page, stamp, timeout) {
+  const was = stamp === null ? "none yet" : stamp;
   await expect
     .poll(
       async () => {
-        const now = await pdfSettleStamp(page);
-        if (now === null) return `data-settle-seq absent, the pane is still moving (was ${was})`;
-        return Number(now) > Number(stamp ?? -1) ? "settled" : `data-settle-seq still ${now} (was ${was})`;
+        const now = await pdfRenderSettleStamp(page);
+        if (now === null) return `data-render-settle-seq absent, no re-render has restored (was ${was})`;
+        return Number(now) > Number(stamp ?? 0)
+          ? "restored"
+          : `data-render-settle-seq still ${now} (was ${was})`;
       },
       timeout ? { timeout } : undefined,
     )
-    .toBe("settled");
+    .toBe("restored");
 }
 
 async function openDemo(page) {
@@ -1147,16 +1164,17 @@ test.describe("a page turn pressed before the PDF has rendered", () => {
     await page.setViewportSize({ width: 900, height: 720 });
     await page.waitForTimeout(230);
     // Captured before the press, so the barrier below cannot be satisfied by
-    // a settle that already happened.
-    const settled = await pdfSettleStamp(page);
+    // a restore that had already completed.
+    const restores = await pdfRenderSettleStamp(page);
     await page.keyboard.press("ArrowRight");
 
     await pdfPagesRenderedAtSettledWidth(page, 15_000);
     // The same exposure as the indicator test below, and the same barrier
     // (#234): the line above waits for canvas widths, which are final before
     // the re-render restores the scroll, so the fraction can otherwise be
-    // read off a reader still at the pre-render offset.
-    await pdfSettlesPast(page, settled, 15_000);
+    // read off a reader still at the pre-render offset. The read below
+    // follows a re-render, so this is the barrier it needs.
+    await pdfRestoreSettlesPast(page, restores, 15_000);
     const after = await pdfGeometry(page);
     expect(after.pageHeight).toBeLessThan(before.pageHeight);
     // Half a page on from where the tap was taken, give or take which
@@ -1293,7 +1311,7 @@ test.describe("gig mode itself", () => {
 
     // Narrower pane -> shorter pages -> a re-render, the same one entering
     // gig mode causes, with the reader already mid-page.
-    const settled = await pdfSettleStamp(page);
+    const restores = await pdfRenderSettleStamp(page);
     await page.setViewportSize({ width: 900, height: 720 });
     await pdfPagesRenderedAtSettledWidth(page);
     // Same early-read exposure as the two tests above - canvas widths are
@@ -1302,7 +1320,7 @@ test.describe("gig mode itself", () => {
     // for the viewer to say it HAS restored, and the assertions below are
     // about WHERE it restored to. The old restore, which aimed at the page's
     // top, stamps exactly the same and is caught by the same three lines.
-    await pdfSettlesPast(page, settled);
+    await pdfRestoreSettlesPast(page, restores);
     const after = await pdfGeometry(page);
     expect(after.pageHeight).toBeLessThan(before.pageHeight);
 
@@ -1349,17 +1367,17 @@ test.describe("gig mode itself", () => {
     await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
     // Deliberately no barrier before the press: this is the tap a performer
     // actually makes, straight into the pane that is still about to
-    // re-render. The stamp is only read, not waited on.
-    const settled = await pdfSettleStamp(page);
+    // re-render. The count is only read, not waited on.
+    const restores = await pdfRenderSettleStamp(page);
     await page.keyboard.press("ArrowRight");
 
     await pdfPagesRenderedAtSettledWidth(page);
-    // The turn's own barrier, and the only one here that is about the SCROLL
-    // rather than the render (#234). The indicator poll below happens to
-    // screen the same early read at this threshold and this geometry; see
-    // pdfSettlesPast for the measurement, and for why that is an accident
-    // worth not depending on.
-    await pdfSettlesPast(page, settled);
+    // The turn's own barrier, and the only one here that is about where the
+    // re-render put the reader rather than about the canvases (#234). The
+    // indicator poll below happens to screen the same early read at this
+    // threshold and this geometry; see pdfRestoreSettlesPast for the
+    // measurement, and for why that is an accident worth not depending on.
+    await pdfRestoreSettlesPast(page, restores);
     await pdfIndicatorAgrees(page, 2);
 
     // And the geometry that makes the line above worth asserting: the reader
