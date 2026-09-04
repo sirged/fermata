@@ -85,18 +85,22 @@ test("with no attempts anywhere yet, the panel shows its empty state", async ({
 });
 
 // ---------------------------------------------------------------------------
-// Ten answers, three incorrect on one position (issue #235's own falsifiable
-// claim), lists that position first with its count - ahead of a smaller
-// count elsewhere - and keeps updating without a reload.
+// Ten answers, misses split across two frets of the SAME string plus one
+// elsewhere (issue #235's own falsifiable claim, made sharp enough to tell
+// (target_string, target_fret) grouping apart from grouping by target_string
+// alone - a bug that would silently merge the two frets below into one row
+// of four). Lists the most-missed position first with its count, keeps a
+// smaller-count position on the same string as its own separate row, and
+// keeps updating without a reload.
 // ---------------------------------------------------------------------------
 
-test("ten answers with three incorrect on one position lists that position first with its count, and keeps updating live", async ({
+test("misses on two different frets of the same string stay in separate rows, most-missed first, and keep updating live", async ({
   page,
   request,
 }) => {
   // A miss elsewhere, seeded directly rather than through the drill, so the
   // panel's sort order (largest count first) is checked against something
-  // real rather than a list of exactly one entry.
+  // real rather than a list with only the drilled string in it.
   const noise = await request.post("/api/trainer/attempts", {
     data: {
       drill: "fret_to_note",
@@ -120,52 +124,84 @@ test("ten answers with three incorrect on one position lists that position first
   await expect(rows(page).first()).toHaveAttribute("data-fret", "3");
   await expect(rows(page).first()).toHaveAttribute("data-count", "1");
 
-  // Narrow the scope to exactly one position: with only (string 1, fret 7)
-  // in the pool, pickQuestion's own "never repeat the last one" rule falls
-  // back to the whole pool, so every question this drill asks from here on
-  // is that same position.
-  for (const n of [6, 5, 4, 3, 2]) {
+  // Narrow to string 3 alone, then drill one fret at a time below: with only
+  // one fret in scope at a time, pickQuestion's own "never repeat the last
+  // one" rule falls back to the whole (one-position) pool, so every question
+  // asked during a phase is that phase's own position - the same trick the
+  // single-position version of this test used, applied twice on one string.
+  for (const n of [6, 5, 4, 2, 1]) {
     await page.locator(".string-choice", { hasText: new RegExp(`^${n}$`) }).click();
   }
-  await page.selectOption(".scope-start-fret", "7");
-  await page.selectOption(".scope-end-fret", "7");
-  await expect(drill(page)).toHaveAttribute("data-askable", "1");
 
-  await startButton(page).click();
-  await expect(drill(page)).toHaveAttribute("data-direction", "position_to_note");
+  async function drillFret(fret, correctCount, incorrectCount) {
+    await page.selectOption(".scope-start-fret", String(fret));
+    await page.selectOption(".scope-end-fret", String(fret));
+    await expect(drill(page)).toHaveAttribute("data-askable", "1");
 
-  async function answer(wantCorrect) {
-    const q = await question(page);
-    expect(q.string).toBe(1);
-    expect(q.fret).toBe(7);
-    const note = wantCorrect ? q.note : q.note === "C" ? "C#" : "C";
-    await page.locator(`.choice[data-note="${note}"]`).click();
-    await expect(drill(page)).toHaveAttribute("data-attempt-log-failures", "0");
-    await page.locator(".next-question").click();
+    await startButton(page).click();
+    await expect(drill(page)).toHaveAttribute("data-direction", "position_to_note");
+
+    async function answer(wantCorrect) {
+      const q = await question(page);
+      expect(q.string).toBe(3);
+      expect(q.fret).toBe(fret);
+      const note = wantCorrect ? q.note : q.note === "C" ? "C#" : "C";
+      await page.locator(`.choice[data-note="${note}"]`).click();
+      await expect(drill(page)).toHaveAttribute("data-attempt-log-failures", "0");
+    }
+
+    for (let i = 0; i < correctCount; i++) {
+      await answer(true);
+      await page.locator(".next-question").click();
+    }
+    for (let i = 0; i < incorrectCount; i++) {
+      await answer(false);
+      if (i < incorrectCount - 1) await page.locator(".next-question").click();
+    }
+
+    // Ends this phase's session without drawing a further question from this
+    // fret's narrowed scope - the next phase (or the live-update check below)
+    // re-narrows the scope before starting again.
+    await page.locator(".stop-drill").click();
+    await expect(startButton(page)).toBeVisible();
   }
 
-  // Seven answered correctly, three answered incorrectly - ten answers,
-  // three misses on one position, in as many words as the issue states it.
-  for (let i = 0; i < 7; i++) await answer(true);
-  for (let i = 0; i < 3; i++) await answer(false);
+  // Three misses at fret 5, one at fret 7 - two different frets on the same
+  // string, ten answers total (7 + 3), four misses in as many words as the
+  // issue states it.
+  await drillFret(5, 4, 3);
+  await drillFret(7, 2, 1);
 
-  await expect(rows(page)).toHaveCount(2);
+  await expect(rows(page)).toHaveCount(3);
   const first = rows(page).first();
-  const second = rows(page).nth(1);
-  await expect(first).toHaveAttribute("data-string", "1");
-  await expect(first).toHaveAttribute("data-fret", "7");
+  await expect(first).toHaveAttribute("data-string", "3");
+  await expect(first).toHaveAttribute("data-fret", "5");
   await expect(first).toHaveAttribute("data-count", "3");
-  await expect(second).toHaveAttribute("data-string", "5");
-  await expect(second).toHaveAttribute("data-count", "1");
+
+  // The smaller-count position on the SAME string is its own row, not folded
+  // into the one above - this is exactly what a grouping keyed on
+  // target_string alone (rather than target_string AND target_fret) would
+  // get wrong.
+  const fretSeven = panel(page).locator('li[data-string="3"][data-fret="7"]');
+  await expect(fretSeven).toHaveCount(1);
+  await expect(fretSeven).toHaveAttribute("data-count", "1");
 
   const firstText = await first.textContent();
-  expect(firstText).toContain("String 1, fret 7");
+  expect(firstText).toContain("String 3, fret 5");
   expect(firstText).toContain("3 times");
   expect(forbiddenWord(firstText), firstText).toBeNull();
   expect(firstText).not.toMatch(/%/);
 
-  // One more incorrect answer on the same position updates the panel's
-  // count live - nothing in this test reloads or navigates the page.
-  await answer(false);
+  // One more incorrect answer on the most-missed position updates the
+  // panel's count live - nothing in this test reloads or navigates the page.
+  await page.selectOption(".scope-start-fret", "5");
+  await page.selectOption(".scope-end-fret", "5");
+  await expect(drill(page)).toHaveAttribute("data-askable", "1");
+  await startButton(page).click();
+  const q = await question(page);
+  expect(q.string).toBe(3);
+  expect(q.fret).toBe(5);
+  await page.locator(`.choice[data-note="${q.note === "C" ? "C#" : "C"}"]`).click();
+  await expect(drill(page)).toHaveAttribute("data-attempt-log-failures", "0");
   await expect(first).toHaveAttribute("data-count", "4");
 });
