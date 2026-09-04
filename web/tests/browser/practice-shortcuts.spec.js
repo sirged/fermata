@@ -234,6 +234,47 @@ async function pdfScrollSettlesAt(page, target, what) {
     .toBe(what);
 }
 
+/**
+ * Waits for the PDF pane's scroll to come to REST, without naming where.
+ *
+ * `pdfScrollSettlesAt` above is the right barrier when the test knows the
+ * target. The gig-mode-re-render test below deliberately does not: it presses
+ * INTO a live re-render, and the two orderings of that race land the reader
+ * on two different offsets, both correct. A gig turn records the position it
+ * asked for as a fraction of the page it lands on (PdfViewer's requestScroll
+ * / positionAt), and the re-render restores that fraction against the NEW
+ * page height - so a press that lands before the re-render carries a fraction
+ * measured on the narrow pre-render page, and one that lands after carries a
+ * fraction measured on the wide settled page. Measured locally, 60 runs: 523
+ * of 1100 px past page one's top for the first ordering, 535 of 1100 for the
+ * second. A single target would be wrong for one of them.
+ *
+ * What both have in common is that the pane stops moving. `scrollBy({
+ * behavior: "smooth" })` animates over several frames, and NOTHING else in
+ * that test waits for it: the settled-width barrier is about canvas widths,
+ * and the indicator poll agrees trivially all the way down page one (the HUD
+ * says "1 / 2" and page one is the most visible page at every scrollTop the
+ * turn passes through), so a read taken straight after them can land
+ * mid-animation on a loaded machine. Two consecutive animation frames with an
+ * unchanged scrollTop is a smooth scroll that has finished - an in-flight one
+ * moves every frame.
+ */
+async function pdfScrollComesToRest(page) {
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const scroller = document.querySelector(".pages");
+        if (!scroller) return "no pane yet";
+        const before = scroller.scrollTop;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return scroller.scrollTop === before
+          ? "at rest"
+          : `still moving (${Math.round(before)} to ${Math.round(scroller.scrollTop)})`;
+      }),
+    )
+    .toBe("at rest");
+}
+
 async function openDemo(page) {
   await page.goto("/#/demo");
   // All three profile buttons is the signal the sample actually finished
@@ -1267,11 +1308,26 @@ test.describe("gig mode itself", () => {
 
     await pdfPagesRenderedAtSettledWidth(page);
     await pdfIndicatorAgrees(page, 2);
+    // The turn's own barrier, and the only one in this test that is about the
+    // SCROLL rather than the render (#234). Neither line above waits for it:
+    // the width barrier is about canvas widths, and the indicator poll agrees
+    // at every scrollTop this turn passes through, so without this the
+    // fraction below is read off a smooth scroll that may still be in flight.
+    // On CI, once, it was: 384 of 1100 px past page one's top, 0.349, against
+    // the 535 the same turn comes to rest at - a scroll caught 72% of the way
+    // there, not a turn that went the wrong distance.
+    await pdfScrollComesToRest(page);
 
     // And the geometry that makes the line above worth asserting: the reader
     // really is mid-page-one, not parked somewhere the two would agree
     // trivially. Half a page on, whichever geometry the step was measured
     // against, with page two left well under the 0.4 threshold.
+    //
+    // The band stays 0.35 to 0.65. Measured at rest, 60 local runs across
+    // three CPU throttling rates, it takes exactly two values - 0.4755 and
+    // 0.4864, the two orderings of the race this test presses into - and the
+    // nearer edge is 0.125 away. Widening it would only hide the next early
+    // read; the band was never the loose part.
     const at = await pdfGeometry(page);
     const fraction = (at.scrollTop - at.pageOneTop) / at.pageHeight;
     expect(fraction).toBeGreaterThan(0.35);
