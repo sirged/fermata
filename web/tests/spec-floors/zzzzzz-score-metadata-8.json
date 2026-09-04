@@ -1,5 +1,5 @@
 {
-  "file": "tests/browser/viewer-score-metadata.spec.js",
+  "file": "tests/browser/zzzzzz-score-metadata.spec.js",
   "count": 4,
   "reason": "issue #8: setting a difficulty from the score view writes it through a real PATCH and survives a reload, an explicit clear writes null rather than zero or the empty string, and the library's difficulty and key filters (including key=0, the falsy-value trap) narrow a real grid to the exact match."
 }

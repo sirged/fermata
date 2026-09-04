@@ -503,7 +503,7 @@
             class="difficulty-select"
             value={score.difficulty === null || score.difficulty === undefined ? "" : String(score.difficulty)}
             onchange={setDifficulty}
-            title="How hard this piece is - nothing here infers one, it is only ever set by hand"
+            title="How hard this piece is - nothing here infers one, so it is always set by hand"
           >
             {#each DIFFICULTY_OPTIONS as [value, label]}
               <option {value}>{label}</option>

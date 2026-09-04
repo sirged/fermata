@@ -12,16 +12,27 @@
 // the filter query in isolation but never that the SAME select element on
 // the SAME page a person actually uses drives either one.
 //
-// WHY IT IS NAMED TO SORT NEAR viewer-practice.spec.js, NOT ANY zz*-PREFIXED
-// FILE. Like that spec, this one puts two files in the throwaway library and
-// leaves their rows behind rather than deleting them afterwards (issue #95 -
-// a deleted file's row stays, marked, and cleaning up by deleting through the
-// API would exercise a different code path than what this file is actually
-// testing). Every ordinary spec's own refusal guard (see zz-library-
-// missing.spec.js's comment on its own OWN/Uploads check) tolerates anything
-// already sitting under Uploads/, which is where every spec here uploads to -
-// so this does not, in fact, need to sort last to be safe, and sorting
-// beside viewer-practice.spec.js is only for a reader's sake.
+// WHY IT IS NAMED TO SORT LAST, AFTER EVEN zzzzz-setlists.spec.js. Like
+// viewer-practice.spec.js, this one puts two files in the throwaway library
+// and leaves their rows behind rather than deleting them afterwards (issue
+// #95 - a deleted file's row stays, marked, and cleaning up by deleting
+// through the API would exercise a different code path than what this file
+// is actually testing). Every ordinary spec's own refusal guard (see
+// zz-library-missing.spec.js's comment on its own OWN/Uploads check)
+// tolerates anything already sitting under Uploads/, so leaving these rows
+// behind is safe for every spec that checks WHICH scores are present.
+//
+// It is not safe for zz-library-missing.spec.js's own "a refused scan says
+// so" test, which is not about which scores exist but about how MANY: a
+// scan refuses to reconcile when it can account for half or fewer of the
+// library's high-water mark (scanner.py's LOSS_FRACTION), and that mark is a
+// persisted, monotonically-increasing count for the whole run - discovered
+// the hard way, by running the full suite and watching that one test go red
+// once this file's own two rows were added on top of viewer-practice.spec.js's
+// two. Sorting after every spec that depends on that mark's exact size is
+// what keeps this file's own two permanent rows from ever being counted
+// against it - a second reason "leaves rows behind" specs sort late, beside
+// the OWN_PATHS-refusal reason viewer-practice.spec.js's own header gives.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
