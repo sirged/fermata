@@ -39,6 +39,8 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test } from "@playwright/test";
 
+import { WIDTHS, clippingAudit, tap } from "./responsive-audit.js";
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(here, "..", "..", "test-fixtures", "notation-only.musicxml");
 
@@ -146,6 +148,81 @@ test("clearing a difficulty from the score view writes null, not zero or the emp
   expect(stored.difficulty).toBeNull();
 });
 
+// The tempo control: an out-of-range value is refused before it ever reaches
+// the network, a fractional one is rounded (setTempo's own numberOrNull),
+// and an ordinary value sends exactly one PATCH - see Viewer.svelte's
+// setTempo for the client-side bounds this mirrors (api.MIN_TEMPO_BPM /
+// MAX_TEMPO_BPM). A number input's min/max attributes are advice a browser
+// does not enforce on a typed value - a page listener for uncaught errors is
+// what proves the fix actually stops the previously-uncaught ApiError, not
+// merely that the box LOOKS right afterwards.
+test("typing an out-of-range tempo is refused: the box reverts to the server's value, an error is shown, and nothing reaches the page as an uncaught error", async ({
+  page,
+}) => {
+  const pageErrors = [];
+  page.on("pageerror", (e) => pageErrors.push(String(e)));
+
+  await page.goto(`/#/score/${scoreA.id}`);
+  const tempo = page.locator(".tempo-input");
+  await expect(tempo).toHaveValue("");
+
+  let patchSent = false;
+  page.on("request", (r) => {
+    if (r.url().includes(`/api/scores/${scoreA.id}`) && r.method() === "PATCH") patchSent = true;
+  });
+
+  await tempo.fill("500");
+  await tempo.dispatchEvent("change");
+
+  // The box is put back to what the server actually holds (still unset, in
+  // this test) rather than left showing the rejected 500.
+  await expect(tempo).toHaveValue("");
+  await expect(page.locator(".tempo-error")).toContainText("must be between 20 and 400");
+  expect(patchSent, "an out-of-range value must never reach the network").toBe(false);
+  expect(pageErrors, `uncaught page error(s): ${pageErrors.join("; ")}`).toEqual([]);
+});
+
+test("a fractional tempo is rounded and saved, in one PATCH", async ({ page }) => {
+  await page.goto(`/#/score/${scoreA.id}`);
+  const tempo = page.locator(".tempo-input");
+
+  const [request] = await Promise.all([
+    page.waitForRequest(
+      (r) => r.url().includes(`/api/scores/${scoreA.id}`) && r.method() === "PATCH",
+    ),
+    (async () => {
+      await tempo.fill("76.5");
+      await tempo.dispatchEvent("change");
+    })(),
+  ]);
+  expect(request.postDataJSON()).toEqual({ tempo: 77 });
+  await expect(tempo).toHaveValue("77");
+});
+
+test("an ordinary in-range tempo sends exactly one PATCH", async ({ page }) => {
+  await page.goto(`/#/score/${scoreA.id}`);
+  const tempo = page.locator(".tempo-input");
+
+  const patches = [];
+  page.on("request", (r) => {
+    if (r.url().includes(`/api/scores/${scoreA.id}`) && r.method() === "PATCH") {
+      patches.push(r.postDataJSON());
+    }
+  });
+
+  await Promise.all([
+    page.waitForResponse(
+      (r) => r.url().includes(`/api/scores/${scoreA.id}`) && r.request().method() === "PATCH",
+    ),
+    (async () => {
+      await tempo.fill("120");
+      await tempo.dispatchEvent("change");
+    })(),
+  ]);
+  await expect(tempo).toHaveValue("120");
+  expect(patches).toEqual([{ tempo: 120 }]);
+});
+
 test("the difficulty filter on the library grid narrows to an exact match", async ({
   page,
   request,
@@ -179,4 +256,53 @@ test("the key filter on the library grid narrows to an exact match, including 0 
   await page.locator("select.key-filter").selectOption("0");
   await expect(page.locator(".card", { hasText: SCORE_A_TITLE })).toBeVisible();
   await expect(page.locator(".card", { hasText: SCORE_B_TITLE })).toHaveCount(0);
+});
+
+// The score view's own controls row - a second row that stopped fitting for
+// the same reason .toolbar (issue #106) and the library's own filter row
+// (toolbar-responsive.spec.js) did: three new controls (key, difficulty,
+// tempo) added to a row that already held tags, content-kind, the practice
+// timer, the history link, favorite and gig-mode, with nothing in it able to
+// shrink to fit. Fixed the same way - wrap, not shrink (Viewer.svelte's
+// `header` and `.controls` rules) - and checked the same two ways:
+// clippingAudit/tap are shared with toolbar-responsive.spec.js via
+// ./responsive-audit.js rather than re-derived here.
+test.describe("the score view's controls row has zero clipping and the page never overflows horizontally", () => {
+  for (const width of WIDTHS) {
+    test(`at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`/#/score/${scoreA.id}`);
+      await page.waitForSelector(".controls");
+      const audit = await clippingAudit(page, ".controls");
+      expect(audit.rootMissing, ".controls was not found at all").toBeFalsy();
+      expect(audit.clipped, `clipped controls: ${JSON.stringify(audit.clipped)}`).toEqual([]);
+      expect(audit.pageOverflow, "page grew a horizontal scrollbar").toBe(0);
+    });
+  }
+});
+
+test.describe("every score view control is reachable by an actual click, not merely present", () => {
+  for (const width of [768, 430]) {
+    test(`at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`/#/score/${scoreA.id}`);
+      await page.waitForSelector(".controls");
+
+      const keySelect = page.locator("select.key-select");
+      await tap(page, keySelect, "key select");
+      await keySelect.selectOption("2");
+      await expect(keySelect).toHaveValue("2");
+
+      const difficultySelect = page.locator("select.difficulty-select");
+      await tap(page, difficultySelect, "difficulty select");
+      await difficultySelect.selectOption("4");
+      await expect(difficultySelect).toHaveValue("4");
+
+      const tempoInput = page.locator(".tempo-input");
+      await tap(page, tempoInput, "tempo input");
+      await tempoInput.fill("120");
+      await tempoInput.dispatchEvent("change");
+      await expect(tempoInput).toHaveValue("120");
+    });
+  }
 });

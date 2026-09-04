@@ -302,11 +302,22 @@
   // mirrors VALID_KINDS - nothing here asks the server what is valid, so a
   // number offered here that the server would refuse is a drift bug, not a
   // possibility this file defends against at runtime.
+  // keySignatureLabel(0) reads "no key signature" - a true statement about
+  // the VALUE, but sitting directly under "Any key" it reads as a second way
+  // to say "no filter" rather than the exact, real filter it is (fifths = 0,
+  // which excludes every score whose key is unset). This is the one fifths
+  // value the FILTER wording has to disambiguate from "unset"; every other
+  // value is already unambiguous, so keySignatureLabel's own wording is kept
+  // for them rather than replaced everywhere.
+  function keyFilterLabel(fifths) {
+    return fifths === 0 ? "No sharps or flats (0)" : keySignatureLabel(fifths);
+  }
+
   const KEY_FILTERS = [
     ["", "Any key"],
     ...Array.from({ length: 15 }, (_, i) => i - 7).map((fifths) => [
       String(fifths),
-      keySignatureLabel(fifths),
+      keyFilterLabel(fifths),
     ]),
   ];
   const DIFFICULTY_FILTERS = [
@@ -954,7 +965,7 @@
         </div>
       {/if}
     {:else}
-      <header>
+      <header class="filter-row">
         <input class="search" type="search" placeholder="Search title, composer, source…" bind:value={search} />
         <select bind:value={kind}>
           {#each KINDS as [value, label]}
@@ -966,16 +977,18 @@
             <option {value}>{label}</option>
           {/each}
         </select>
-        <select class="key-filter" bind:value={key} title="Filter by key">
-          {#each KEY_FILTERS as [value, label]}
-            <option {value}>{label}</option>
-          {/each}
-        </select>
-        <select class="difficulty-filter" bind:value={difficulty} title="Filter by difficulty">
-          {#each DIFFICULTY_FILTERS as [value, label]}
-            <option {value}>{label}</option>
-          {/each}
-        </select>
+        <div class="metadata-filters">
+          <select class="key-filter" bind:value={key} title="Filter by key">
+            {#each KEY_FILTERS as [value, label]}
+              <option {value}>{label}</option>
+            {/each}
+          </select>
+          <select class="difficulty-filter" bind:value={difficulty} title="Filter by difficulty">
+            {#each DIFFICULTY_FILTERS as [value, label]}
+              <option {value}>{label}</option>
+            {/each}
+          </select>
+        </div>
         <button
           class="organise-toggle"
           class:on={organising}
@@ -1407,6 +1420,16 @@
 
   header {
     display: flex;
+    /* #8's two filters are the first controls this row could not shrink to
+       fit at a tablet's portrait width - it already held the search box,
+       three selects, Organise and the result count, unshrinkable the same
+       way TabViewer's .toolbar was (issue #106). WRAPPING rather than
+       shrinking is that same fix applied here: nothing in this row loses
+       width, a row that no longer fits simply grows a second line, and every
+       control stays at a real, clickable size instead of some of them being
+       squeezed toward zero or pushed off the page's own right edge with no
+       horizontal scrollbar to reach them by. */
+    flex-wrap: wrap;
     align-items: center;
     gap: 12px;
     position: sticky;
@@ -1414,6 +1437,26 @@
     padding: 8px 0 14px;
     background: linear-gradient(var(--bg) 75%, transparent);
     z-index: 2;
+  }
+
+  /* key-filter and difficulty-filter move to a new line TOGETHER, never
+     separated from one another by anything ELSE in the row - two
+     independent flex items wrapping individually against the OTHER
+     controls here would let the row split between them, landing "Any key"
+     at the end of one line and "Any difficulty" alone at the start of the
+     next, which reads as two unrelated controls rather than the pair they
+     are. Its OWN flex-wrap is a second, narrower case: `main`'s
+     `overflow-y: auto` (below) makes its overflow-x compute to `auto` too
+     (the standard CSS quirk - a non-visible overflow on one axis pulls the
+     other off `visible`), so at a phone width even these two selects
+     together do not fit main's content width and the second one was
+     clipped away entirely rather than merely narrow - measured at 430px,
+     where this group is still allowed to stack the pair onto two lines of
+     its own rather than spill past `main`'s edge into that clip. */
+  .metadata-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
   }
 
   .search {
