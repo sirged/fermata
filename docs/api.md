@@ -126,6 +126,21 @@ have been corrected by hand, and are edited with `PATCH /api/scores/{id}`
 instead - which is why renaming a file and renaming a piece are two different
 requests here.
 
+**Key, tempo and difficulty (issue #8).** Three more fields `PATCH
+/api/scores/{id}` accepts, each within a closed range and each clearable with
+an explicit `null` the same way `instrument_id` already is: `key` is a
+MusicXML `fifths` count (-7..7) - the same number a transcription's
+`key_fifths` carries, not a key name such as "D", because a key signature
+alone never says major or minor and this API states only what it actually
+knows; `tempo` is a manual bpm (20-400), never copied from a transcription's
+own tempo reading, which carries no confidence figure to trust; `difficulty`
+is a manual 1-5 rating nothing here infers. `GET /api/scores` filters on all
+three - `key`, `difficulty` (exact match) and `tempo_min`/`tempo_max` (either
+or both) - composing with every filter already documented above. Transcribing
+a score (single or in bulk) opportunistically copies its glyph-decoded key
+onto a score whose `key` is still null; a hand-set key, or one filled in this
+way already, is never overwritten by a later (re-)transcription.
+
 A move or a delete is refused with `409` while a library scan is running, and a
 scan declines to start while one is being applied. One thing that **moves or
 removes an existing file** runs at a time: a scan decides what to write from a

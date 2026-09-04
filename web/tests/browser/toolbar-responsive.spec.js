@@ -46,7 +46,7 @@
 //     tells the two apart.
 import { expect, test } from "@playwright/test";
 
-const WIDTHS = [1280, 1024, 834, 768, 430];
+import { WIDTHS, clippingAudit, tap } from "./responsive-audit.js";
 
 /** Loads the bundled demo score, which - unlike most real library scores -
  * supports all three profiles on one staff (alphaTeX's default staff shows
@@ -67,95 +67,12 @@ async function enterGigMode(page) {
   await page.waitForSelector(".gig-hud", { timeout: 5_000 });
 }
 
-/** Audits every button/select/input under `selector` for two kinds of
- * overflow: the page growing a horizontal scrollbar, and a control being
- * clipped away by some ancestor's non-visible overflow (the `.seg` failure
- * mode above) even though the page itself never overflowed. Returns the
- * clipped fraction (0 = fully visible, 1 = entirely clipped) for anything
- * more than 40% cut off, by name, so a failure says which control and by
- * how much rather than just "something overflowed". */
-async function clippingAudit(page, selector) {
-  return page.evaluate((sel) => {
-    function clippedFraction(node) {
-      const rect = node.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return 1;
-      let visible = { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
-      let ancestor = node.parentElement;
-      while (ancestor) {
-        const cs = getComputedStyle(ancestor);
-        if (cs.overflow !== "visible" || cs.overflowX !== "visible" || cs.overflowY !== "visible") {
-          const ar = ancestor.getBoundingClientRect();
-          visible = {
-            left: Math.max(visible.left, ar.left),
-            right: Math.min(visible.right, ar.right),
-            top: Math.max(visible.top, ar.top),
-            bottom: Math.min(visible.bottom, ar.bottom),
-          };
-        }
-        ancestor = ancestor.parentElement;
-      }
-      visible.left = Math.max(visible.left, 0);
-      visible.top = Math.max(visible.top, 0);
-      visible.right = Math.min(visible.right, window.innerWidth);
-      visible.bottom = Math.min(visible.bottom, window.innerHeight);
-      const visArea = Math.max(0, visible.right - visible.left) * Math.max(0, visible.bottom - visible.top);
-      const fullArea = rect.width * rect.height;
-      return fullArea === 0 ? 1 : 1 - visArea / fullArea;
-    }
-
-    const root = document.querySelector(sel);
-    if (!root) return { pageOverflow: 0, clipped: [], rootMissing: true };
-    const clipped = [];
-    for (const el of root.querySelectorAll("button, select, input")) {
-      const frac = clippedFraction(el);
-      if (frac > 0.4) {
-        clipped.push({ text: (el.textContent || el.tagName).trim().slice(0, 24), clippedFraction: frac });
-      }
-    }
-    return {
-      pageOverflow: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
-      clipped,
-    };
-  }, selector);
-}
-
-/** The real reachability check, and the reason it does not simply call
- * Playwright's own `locator.click()`.
- *
- * `.seg`'s own `overflow: hidden` clips "Tab" and "Both" away below the wrap
- * breakpoint (pre-fix) hard enough that `document.elementFromPoint()` at
- * their own geometric center resolves to the theme-picker select sitting
- * next to them instead - confirmed by hand against the pre-fix build. A
- * real fingertip tapping that spot would hit the select, not the button
- * underneath. Playwright's `locator.click()`, though, still succeeded and
- * still fired the button's handler in that exact state - its own
- * actionability check is more forgiving of this particular clip than a real
- * tap is, which makes it the wrong tool here: it is one of the "passes
- * against both the working and broken layout" tests this project has
- * shipped before.
- *
- * So this asserts the honest thing directly - that the point a finger would
- * land on resolves, via the same DOM API a real tap's hit-test agrees with,
- * to the control itself or one of its descendants - and then drives the
- * interaction with `page.mouse.click(x, y)` at that exact point, which (see
- * the same hand-check) does NOT fire the covered button's handler when the
- * assertion above would have failed. */
-async function tap(page, locator, label) {
-  const box = await locator.boundingBox();
-  expect(box, `${label}: no bounding box (detached or display:none)`).not.toBeNull();
-  const x = box.x + box.width / 2;
-  const y = box.y + box.height / 2;
-  const handle = await locator.elementHandle();
-  const hit = await page.evaluate(
-    ({ x, y, el }) => {
-      const found = document.elementFromPoint(x, y);
-      return !!found && (found === el || el.contains(found) || found.contains(el));
-    },
-    { x, y, el: handle },
-  );
-  expect(hit, `${label} is not the real hit-test target at its own center - something else covers it`).toBe(true);
-  await page.mouse.click(x, y);
-}
+// clippingAudit and tap moved to ./responsive-audit.js (issue #8), so the
+// library header and Viewer controls row checks in this file's own new
+// describe block below, and in zzzzzz-score-metadata.spec.js, can share
+// them rather than re-deriving the same two functions. See that file's own
+// header comment for the reachability reasoning behind `tap` - unchanged
+// from what stood here before the move.
 
 for (const width of WIDTHS) {
   test.describe(`at ${width}px`, () => {
@@ -296,4 +213,67 @@ test("below the wrap breakpoint, the transport row (Play/Speed/Loop) renders abo
     playerBox.y + playerBox.height,
     `.player (bottom ${playerBox.y + playerBox.height}) must not vertically overlap .seg (top ${segBox.y}) - they have to be on separate rows, not just centered unevenly within one`,
   ).toBeLessThanOrEqual(segBox.y);
+});
+
+// The library's own filter row (issue #8) - a second row that stopped
+// fitting for the same reason .toolbar did above: two more selects
+// (key-filter, difficulty-filter) added to a row that already held the
+// search box, two selects, Organise and the result count, with nothing in
+// it able to shrink to fit either. Fixed the same way - wrap, not shrink -
+// and checked the same two ways: no clipping and no page overflow at every
+// width, every control reachable by a real click at the two narrowest ones.
+// No library or upload needed: `header.filter-row` renders unconditionally,
+// with zero scores, so this needs no upload and therefore cannot disturb
+// zz-library-missing.spec.js's own high-water-mark calibration the way
+// leaving rows behind in the library would (see
+// zzzzzz-score-metadata.spec.js's header comment for that story in full).
+test.describe("the library filter row has zero clipping and the page never overflows horizontally", () => {
+  for (const width of WIDTHS) {
+    test(`at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/#/");
+      await page.waitForSelector("header.filter-row");
+      const audit = await clippingAudit(page, "header.filter-row");
+      expect(audit.rootMissing, "header.filter-row was not found at all").toBeFalsy();
+      expect(audit.clipped, `clipped controls: ${JSON.stringify(audit.clipped)}`).toEqual([]);
+      expect(audit.pageOverflow, "page grew a horizontal scrollbar").toBe(0);
+    });
+  }
+});
+
+test.describe("every library filter control is reachable by an actual click, not merely present", () => {
+  for (const width of [768, 430]) {
+    test(`at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/#/");
+      await page.waitForSelector("header.filter-row");
+
+      const search = page.locator("header.filter-row .search");
+      await tap(page, search, "search");
+      await search.fill("a probe that matches nothing");
+      await expect(search).toHaveValue("a probe that matches nothing");
+      await search.fill("");
+
+      const keyFilter = page.locator("select.key-filter");
+      await tap(page, keyFilter, "key filter");
+      await keyFilter.selectOption("2");
+      await expect(keyFilter).toHaveValue("2");
+      await keyFilter.selectOption("");
+
+      const difficultyFilter = page.locator("select.difficulty-filter");
+      await tap(page, difficultyFilter, "difficulty filter");
+      await difficultyFilter.selectOption("3");
+      await expect(difficultyFilter).toHaveValue("3");
+      await difficultyFilter.selectOption("");
+
+      const organise = page.locator("button.organise-toggle");
+      await tap(page, organise, "Organise");
+      await expect(organise).toHaveText(/Done organising/);
+      // Left the way it was found - "organising" is client-only state, but a
+      // test that leaves the page in it is still a worse citizen than one
+      // that does not.
+      await tap(page, organise, "Done organising");
+      await expect(organise).toHaveText(/^Organise$/);
+    });
+  }
 });

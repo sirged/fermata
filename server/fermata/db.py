@@ -374,6 +374,30 @@ _TRAINER_CHORD_SCHEMA = (
 # references instruments(id), and that table is created further down this same
 # script, so a forward reference in the CREATE TABLE would depend on the order
 # of two statements rather than on anything either one says.
+#
+# key / tempo / difficulty (#8): musical metadata about the PIECE, nullable,
+# carrying no foreign key and needing no backfill - NULL is already true of
+# every row that exists, because nothing before this wrote any of the three -
+# so, like missing_since and #56's pair above, they arrive here for a fresh
+# install and through COLUMN_ADDITIONS for an upgrade.
+#
+# `key` is a MusicXML `fifths` count (-7..7), the SAME number
+# glyph_rhythm.decode_key_signature already produces and api._store_extraction_
+# result already stores as a transcription's key_fifths - not a key NAME such
+# as "D" or "Bm". A key signature of two sharps is D major and B minor alike;
+# nothing this application reads off the page (or anywhere else) says which,
+# so storing a name would state a mode this application does not know. Fifths
+# is exactly what the decoder is willing to claim, and is filterable exactly
+# the same way. `tempo` is a manual bpm - the decoder's own tempo reading is a
+# text regex over whatever words are printed (see tabextract.py) with no
+# confidence figure attached, so it is never copied here (see #8's Rabbit
+# holes). `difficulty` is a manual 1-5 rating; nothing in this codebase infers
+# one. See api.VALID_KEY_FIFTHS / MIN_TEMPO_BPM / MAX_TEMPO_BPM / VALID_
+# DIFFICULTIES for the closed ranges the API enforces over these three, and
+# api._store_extraction_result for the one place `key` is ever written by
+# anything other than a person: copied from a transcription's key_fifths only
+# when it was actually glyph-decoded (never an assumed 0) and only onto a row
+# whose key is still NULL, so a hand-set key is never overwritten.
 _SCORES_COLUMNS = """(
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL,
@@ -393,7 +417,10 @@ _SCORES_COLUMNS = """(
     missing_since TEXT,
     deleted_at TEXT,
     deleted_from TEXT,
-    added_at TEXT NOT NULL DEFAULT (datetime('now'))
+    added_at TEXT NOT NULL DEFAULT (datetime('now')),
+    key INTEGER,
+    tempo INTEGER,
+    difficulty INTEGER
 )"""
 
 SCHEMA = (
@@ -772,6 +799,12 @@ COLUMN_ADDITIONS = {
         # Fermata before there was a way to delete anything.
         "deleted_at": "TEXT",
         "deleted_from": "TEXT",
+        # #8's three, arriving the same way and for the same reason: nullable,
+        # no foreign key, needing no backfill because NULL is already true of
+        # every row that exists - see the comment over _SCORES_COLUMNS.
+        "key": "INTEGER",
+        "tempo": "INTEGER",
+        "difficulty": "INTEGER",
     },
 }
 

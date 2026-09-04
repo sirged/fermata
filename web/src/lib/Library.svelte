@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
 
   import { api } from "./api.js";
+  import { keySignatureLabel } from "./provenance.js";
 
   let scores = $state([]);
   let collections = $state([]);
@@ -13,6 +14,16 @@
   let favorite = $state(false);
   let practiced = $state("");
   let transcribed = $state("");
+  // #8: filters on the two fields worth narrowing a grid by. `key`/`difficulty`
+  // travel as STRINGS, the same way every other select on this page does (kind,
+  // transcribed, practiced) - "" means unset, and every real value (including
+  // "0", the common "no sharps or flats" key) is a non-empty string, so the
+  // truthy check api.scores() already does to drop unset filters never mistakes
+  // a real, falsy-looking NUMBER for one. Tempo has no filter control here: #8's
+  // Done-when asks for key and difficulty in the interface, and a range needs a
+  // pair of inputs a single "beside the existing filter row" select cannot be.
+  let key = $state("");
+  let difficulty = $state("");
   let scan = $state(null);
   let loading = $state(true);
   let uploadInput;
@@ -286,11 +297,49 @@
     ["no", "Not transcribed"],
   ];
 
+  // #8: the server's own closed ranges (api.MIN_KEY_FIFTHS..MAX_KEY_FIFTHS,
+  // api.MIN_DIFFICULTY..MAX_DIFFICULTY) mirrored the same way KINDS above
+  // mirrors VALID_KINDS - nothing here asks the server what is valid, so a
+  // number offered here that the server would refuse is a drift bug, not a
+  // possibility this file defends against at runtime.
+  // keySignatureLabel(0) reads "no key signature" - a true statement about
+  // the VALUE, but sitting directly under "Any key" it reads as a second way
+  // to say "no filter" rather than the exact, real filter it is (fifths = 0,
+  // which excludes every score whose key is unset). This is the one fifths
+  // value the FILTER wording has to disambiguate from "unset"; every other
+  // value is already unambiguous, so keySignatureLabel's own wording is kept
+  // for them rather than replaced everywhere.
+  function keyFilterLabel(fifths) {
+    return fifths === 0 ? "No sharps or flats (0)" : keySignatureLabel(fifths);
+  }
+
+  const KEY_FILTERS = [
+    ["", "Any key"],
+    ...Array.from({ length: 15 }, (_, i) => i - 7).map((fifths) => [
+      String(fifths),
+      keyFilterLabel(fifths),
+    ]),
+  ];
+  const DIFFICULTY_FILTERS = [
+    ["", "Any difficulty"],
+    ...[1, 2, 3, 4, 5].map((n) => [String(n), "★".repeat(n) + "☆".repeat(5 - n)]),
+  ];
+
   async function refresh() {
     loading = true;
     try {
       [scores, collections, tags] = await Promise.all([
-        api.scores({ search, collection, kind, tag, favorite, practiced, transcribed }),
+        api.scores({
+          search,
+          collection,
+          kind,
+          tag,
+          favorite,
+          practiced,
+          transcribed,
+          key,
+          difficulty,
+        }),
         api.collections(),
         api.tags(),
       ]);
@@ -301,7 +350,7 @@
 
   $effect(() => {
     // re-query whenever a filter changes
-    void search, collection, kind, tag, favorite, practiced, transcribed;
+    void search, collection, kind, tag, favorite, practiced, transcribed, key, difficulty;
     const t = setTimeout(refresh, 150);
     return () => clearTimeout(t);
   });
@@ -916,7 +965,7 @@
         </div>
       {/if}
     {:else}
-      <header>
+      <header class="filter-row">
         <input class="search" type="search" placeholder="Search title, composer, source…" bind:value={search} />
         <select bind:value={kind}>
           {#each KINDS as [value, label]}
@@ -928,6 +977,18 @@
             <option {value}>{label}</option>
           {/each}
         </select>
+        <div class="metadata-filters">
+          <select class="key-filter" bind:value={key} title="Filter by key">
+            {#each KEY_FILTERS as [value, label]}
+              <option {value}>{label}</option>
+            {/each}
+          </select>
+          <select class="difficulty-filter" bind:value={difficulty} title="Filter by difficulty">
+            {#each DIFFICULTY_FILTERS as [value, label]}
+              <option {value}>{label}</option>
+            {/each}
+          </select>
+        </div>
         <button
           class="organise-toggle"
           class:on={organising}
@@ -1359,6 +1420,16 @@
 
   header {
     display: flex;
+    /* #8's two filters are the first controls this row could not shrink to
+       fit at a tablet's portrait width - it already held the search box,
+       three selects, Organise and the result count, unshrinkable the same
+       way TabViewer's .toolbar was (issue #106). WRAPPING rather than
+       shrinking is that same fix applied here: nothing in this row loses
+       width, a row that no longer fits simply grows a second line, and every
+       control stays at a real, clickable size instead of some of them being
+       squeezed toward zero or pushed off the page's own right edge with no
+       horizontal scrollbar to reach them by. */
+    flex-wrap: wrap;
     align-items: center;
     gap: 12px;
     position: sticky;
@@ -1366,6 +1437,26 @@
     padding: 8px 0 14px;
     background: linear-gradient(var(--bg) 75%, transparent);
     z-index: 2;
+  }
+
+  /* key-filter and difficulty-filter move to a new line TOGETHER, never
+     separated from one another by anything ELSE in the row - two
+     independent flex items wrapping individually against the OTHER
+     controls here would let the row split between them, landing "Any key"
+     at the end of one line and "Any difficulty" alone at the start of the
+     next, which reads as two unrelated controls rather than the pair they
+     are. Its OWN flex-wrap is a second, narrower case: `main`'s
+     `overflow-y: auto` (below) makes its overflow-x compute to `auto` too
+     (the standard CSS quirk - a non-visible overflow on one axis pulls the
+     other off `visible`), so at a phone width even these two selects
+     together do not fit main's content width and the second one was
+     clipped away entirely rather than merely narrow - measured at 430px,
+     where this group is still allowed to stack the pair onto two lines of
+     its own rather than spill past `main`'s edge into that clip. */
+  .metadata-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
   }
 
   .search {

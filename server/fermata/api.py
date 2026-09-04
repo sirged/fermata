@@ -136,6 +136,31 @@ VALID_PRACTICED = {"recent", "neglected"}
 # what a scan could not read".
 VALID_TRANSCRIBED = {"yes", "no"}
 
+# scores.key/tempo/difficulty (#8): closed ranges, each enforced the same way
+# on both PATCH /scores/{id} and GET /scores' filters, so a value the one
+# would reject the other never silently accepts.
+#
+# `key` is a MusicXML `fifths` count, not a key NAME - see the comment over
+# _SCORES_COLUMNS in db.py for why a name (which would have to state a mode
+# nothing here ever determines) is not what this column holds. -7..7 is
+# every fifths count MusicXML can express as a plain key signature.
+MIN_KEY_FIFTHS = -7
+MAX_KEY_FIFTHS = 7
+# practice.MIN_TEMPO_BPM / MAX_TEMPO_BPM (20..400) - the same bounds a
+# practice session's own tempo_bpm already enforces, reused rather than
+# reinvented so a number this column refuses is refused everywhere else in
+# the application for the same reason.
+MIN_TEMPO_BPM = practice.MIN_TEMPO_BPM
+MAX_TEMPO_BPM = practice.MAX_TEMPO_BPM
+# A 1-5 rating, the same shape as a practice session's own `rating` - nothing
+# infers one (#8's No-gos); it is only ever set by hand.
+MIN_DIFFICULTY = 1
+MAX_DIFFICULTY = 5
+
+KeyFifths = Annotated[StrictInt, Field(ge=MIN_KEY_FIFTHS, le=MAX_KEY_FIFTHS)]
+Tempo = Annotated[StrictInt, Field(ge=MIN_TEMPO_BPM, le=MAX_TEMPO_BPM)]
+Difficulty = Annotated[StrictInt, Field(ge=MIN_DIFFICULTY, le=MAX_DIFFICULTY)]
+
 # A user setting, not a per-score one - kept server-side (not browser storage)
 # so it follows a person between devices. Defaults are what a fresh install
 # with nothing stored behaves as. `SETTINGS_CHOICES` is optional per key: a
@@ -539,6 +564,10 @@ def list_scores(
     favorite: bool = False,
     practiced: str = "",
     transcribed: str = "",
+    key: Annotated[int | None, Query(ge=MIN_KEY_FIFTHS, le=MAX_KEY_FIFTHS)] = None,
+    difficulty: Annotated[int | None, Query(ge=MIN_DIFFICULTY, le=MAX_DIFFICULTY)] = None,
+    tempo_min: Annotated[int | None, Query(ge=MIN_TEMPO_BPM, le=MAX_TEMPO_BPM)] = None,
+    tempo_max: Annotated[int | None, Query(ge=MIN_TEMPO_BPM, le=MAX_TEMPO_BPM)] = None,
 ):
     """The library, filtered and searched. `search` matches title, composer,
     source or series; `practiced` is 'recent' (practised in the last 14 days)
@@ -548,6 +577,12 @@ def list_scores(
     is 'yes' (has a transcription, extracted or hand-edited - this filter
     draws no distinction between the two) or 'no' (its exact complement,
     which is also every score a scan judged non-extractable) (#190).
+
+    `key` is an exact match on the stored `fifths` count (#8) - -7..7, never a
+    key name (see ScorePatch.key). `difficulty` is an exact match on the 1-5
+    rating. `tempo_min`/`tempo_max` bound the manual bpm, either or both -
+    plain column comparisons, so composing them with every other filter here
+    costs nothing extra.
 
     A DELETED SCORE IS NEVER HERE, under any filter - it is in GET /api/trash
     until it is restored or destroyed. A score whose FILE has gone missing is a
@@ -586,6 +621,18 @@ def list_scores(
         where.append("NOT EXISTS (SELECT 1 FROM transcriptions t WHERE t.score_id = s.id)")
     if favorite:
         where.append("s.favorite = 1")
+    if key is not None:
+        where.append("s.key = ?")
+        params.append(key)
+    if difficulty is not None:
+        where.append("s.difficulty = ?")
+        params.append(difficulty)
+    if tempo_min is not None:
+        where.append("s.tempo >= ?")
+        params.append(tempo_min)
+    if tempo_max is not None:
+        where.append("s.tempo <= ?")
+        params.append(tempo_max)
     # Windowed on the practice DAY, not on the UTC timestamp. These two views
     # and the practice page have to agree about when a piece was last worked
     # on, and the library is the view a person sees first - so "practised
@@ -731,13 +778,35 @@ class ScorePatch(BaseModel):
     # Which of the player's instruments this score is for. Explicit null clears
     # it - see patch_score.
     instrument_id: int | None = Field(default=None, ge=1, le=SQLITE_MAX_INTEGER)
+    # #8: musical metadata about the piece. A `fifths` count, never a key
+    # NAME - see the comment over db._SCORES_COLUMNS. Explicit null clears it,
+    # the same as instrument_id - see patch_score - which is how a wrong hand
+    # entry (or an opportunistically-filled one, see
+    # api._store_extraction_result) comes off again.
+    key: KeyFifths | None = None
+    # Manual bpm - never written by anything but this endpoint. Explicit null
+    # clears it.
+    tempo: Tempo | None = None
+    # Manual 1-5 rating - nothing infers one. Explicit null clears it.
+    difficulty: Difficulty | None = None
+
+
+# Fields where an explicit null is itself a request ("clear this") rather
+# than an omission, so the omit-nulls rule every other field needs (a title
+# cannot be cleared - the column is NOT NULL) must not swallow it. instrument_id
+# was the first (#72); key/tempo/difficulty are #8's three, nullable for
+# exactly the same reason - a wrong hand entry, or a key
+# _store_extraction_result filled in, has to be sayable as gone rather than
+# only ever replaceable by another value.
+NULLABLE_PATCH_FIELDS = ("instrument_id", "key", "tempo", "difficulty")
 
 
 @router.patch("/scores/{score_id}", tags=[TAG_LIBRARY], response_model=ScoreOut)
 def patch_score(score_id: RowId, patch: ScorePatch):
     """Change one or more fields on a score. `tags` replaces the whole tag
-    set when present; an explicit `instrument_id: null` clears it, which is
-    different from omitting the field entirely."""
+    set when present; an explicit null on `instrument_id`, `key`, `tempo` or
+    `difficulty` clears it, which is different from omitting the field
+    entirely."""
     if patch.content_kind is not None and patch.content_kind not in VALID_KINDS:
         raise HTTPException(422, f"content_kind must be one of {sorted(VALID_KINDS)}")
     with write_tx() as conn:
@@ -747,14 +816,11 @@ def patch_score(score_id: RowId, patch: ScorePatch):
         fields = {
             k: v
             for k, v in patch.model_dump(exclude_none=True).items()
-            if k not in ("tags", "instrument_id")
+            if k not in ("tags", *NULLABLE_PATCH_FIELDS)
         }
-        # instrument_id is the one field where an explicit null is a request
-        # rather than an omission: "this score is for no particular instrument"
-        # has to be sayable, and the omit-nulls rule the other fields need
-        # (a title cannot be cleared - the column is NOT NULL) would swallow it.
-        if "instrument_id" in patch.model_fields_set:
-            fields["instrument_id"] = patch.instrument_id
+        for field in NULLABLE_PATCH_FIELDS:
+            if field in patch.model_fields_set:
+                fields[field] = getattr(patch, field)
         if "favorite" in fields:
             fields["favorite"] = int(fields["favorite"])
         if fields:
@@ -2089,6 +2155,25 @@ def _store_extraction_result(score_id: int, result) -> dict:
                    confidence = excluded.confidence, updated_at = datetime('now')""",
             (score_id, TRANSCRIPTION_FORMAT, result.musicxml, confidence_json),
         )
+        # Opportunistic fill (#8): copy the key onto the score row, but only
+        # when it was actually READ off the page (key_signature_source ==
+        # "glyph-decoded" - see tabextract._key_fifths_and_source, the only
+        # place that string is written) rather than the 0-fifths fallback
+        # every non-decoded page reports, which would otherwise plant a false
+        # "no sharps or flats" on every score this extractor could not read a
+        # key from. `AND key IS NULL` is the entire guarantee that a hand-set
+        # key - or one this same fill already made on an earlier
+        # (re-)transcription - is never overwritten; this INSERT...ON CONFLICT
+        # runs on every re-transcription of an already-extracted score, so
+        # without that guard a rescan would silently clobber a correction.
+        # Never touches tempo or difficulty - #8's No-gos rule out inferring
+        # either, and this is the one path that writes `key` for anything
+        # other than a person.
+        if result.key_fifths is not None and result.key_signature_source == "glyph-decoded":
+            tx_conn.execute(
+                "UPDATE scores SET key = ? WHERE id = ? AND key IS NULL",
+                (result.key_fifths, score_id),
+            )
 
     conn = connect()
     saved = conn.execute(

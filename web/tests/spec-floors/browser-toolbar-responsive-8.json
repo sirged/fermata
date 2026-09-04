@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/toolbar-responsive.spec.js",
+  "count": 7,
+  "reason": "issue #8 review round: the library's own filter row (issue #8's key/difficulty selects, added beside Organise and the result count) stopped fitting a tablet's portrait width the same way #106's .toolbar did - checked for zero clipping and zero page overflow at five widths, and every filter control reachable by a real click at the two narrowest ones, sharing clippingAudit/tap with the .toolbar checks above via the new tests/browser/responsive-audit.js rather than re-deriving them."
+}

@@ -1,6 +1,7 @@
 <script>
   import { api } from "./api.js";
   import { formatDuration } from "./practice.js";
+  import { keySignatureLabel } from "./provenance.js";
   import PdfViewer from "./PdfViewer.svelte";
   import TabViewer from "./TabViewer.svelte";
   import ScoreCompare from "./ScoreCompare.svelte";
@@ -9,6 +10,14 @@
 
   let score = $state(null);
   let error = $state("");
+  // A refused or failed tempo change, shown beside the tempo control itself -
+  // deliberately NOT the page-level `error` above, which gates an
+  // {#if error}/{:else if score} chain that replaces the whole score view
+  // with just its own message. Reusing it for one field's validation would
+  // hide the score behind a tempo typo, which is a worse failure than the
+  // uncaught ApiError this exists to fix. Same shape as detailError below,
+  // scoped the same way: near the control it is about.
+  let tempoError = $state("");
   let editingTags = $state(false);
   let tagsDraft = $state("");
 
@@ -374,11 +383,17 @@
   // typed into it afterwards was PATCHed onto the previous score's session -
   // writing an opinion against practice that did not happen. The session it
   // belonged to is already stored; only the offer to say more about it ends.
+  //
+  // tempoError is cleared here for the same reason (#8 review): it is a
+  // statement about the PREVIOUS score's tempo control ("500 was refused"),
+  // and surviving the navigation left it sitting over a different score's
+  // empty tempo box, describing a refusal that never happened there.
   $effect(() => {
     void id;
     return () => {
       flushPractice();
       dismissDetail();
+      tempoError = "";
     };
   });
 
@@ -397,6 +412,83 @@
 
   async function setKind(ev) {
     score = await api.patch(score.id, { content_kind: ev.target.value });
+  }
+
+  // #8: the server's own closed ranges, mirrored the same way setKind's
+  // <select> above already mirrors VALID_KINDS - see api.MIN_KEY_FIFTHS /
+  // MAX_KEY_FIFTHS / MIN_DIFFICULTY / MAX_DIFFICULTY.
+  //
+  // keySignatureLabel(0) reads "no key signature" - true of the value, but
+  // beside "Key: unset" it is one more way of saying the box is empty rather
+  // than the exact, real value it is (fifths = 0). Same disambiguation
+  // Library.svelte's own key-filter options need, for the same reason.
+  function keyOptionLabel(fifths) {
+    return fifths === 0 ? "No sharps or flats (0)" : keySignatureLabel(fifths);
+  }
+
+  const KEY_OPTIONS = [
+    ["", "Key: unset"],
+    ...Array.from({ length: 15 }, (_, i) => i - 7).map((fifths) => [
+      String(fifths),
+      keyOptionLabel(fifths),
+    ]),
+  ];
+  const DIFFICULTY_OPTIONS = [
+    ["", "Difficulty: unset"],
+    ...[1, 2, 3, 4, 5].map((n) => [String(n), "★".repeat(n) + "☆".repeat(5 - n)]),
+  ];
+
+  // Every one of these three is independently clearable (an empty select /
+  // input sends `null`, not 0 or "") - see ScorePatch on the server, where an
+  // explicit null is the one way a wrong hand entry, or a key
+  // _store_extraction_result filled in on its own, comes off again.
+  async function setKey(ev) {
+    const v = ev.target.value;
+    score = await api.patch(score.id, { key: v === "" ? null : Number(v) });
+  }
+
+  async function setDifficulty(ev) {
+    const v = ev.target.value;
+    score = await api.patch(score.id, { difficulty: v === "" ? null : Number(v) });
+  }
+
+  // Mirrors api.MIN_TEMPO_BPM / MAX_TEMPO_BPM (20-400) - the same bounds
+  // practice.MIN_TEMPO_BPM / MAX_TEMPO_BPM already uses, and the same range
+  // the input's own min/max attributes below advertise. A number input's
+  // min/max are advice, not enforcement: typing 500 leaves the box reading
+  // 500 regardless of what the attribute says, so this is checked here too,
+  // before anything is sent - the same wording pattern Instruments.svelte's
+  // reference-pitch check uses.
+  const MIN_TEMPO_BPM = 20;
+  const MAX_TEMPO_BPM = 400;
+
+  async function setTempo(ev) {
+    // numberOrNull rounds - typing 76.5 saves as 77, the same rounding a
+    // practice session's own tempo_bpm field already accepts silently
+    // (saveDetail, above) rather than refusing a value the server would
+    // otherwise reject outright for not being a whole number.
+    const value = numberOrNull(ev.target.value);
+    if (value !== null && (value < MIN_TEMPO_BPM || value > MAX_TEMPO_BPM)) {
+      // Refused before it ever reaches the network, and the box is put back
+      // to what the server actually holds - a rejected value must not sit in
+      // the control looking saved. ev.target.value directly, not `score`:
+      // this input is not bound to `score.tempo`, so reassigning `score` to
+      // itself would not touch what the browser is showing.
+      tempoError = `Tempo must be between ${MIN_TEMPO_BPM} and ${MAX_TEMPO_BPM} - it has not been changed.`;
+      ev.target.value = score.tempo ?? "";
+      return;
+    }
+    try {
+      score = await api.patch(score.id, { tempo: value });
+      tempoError = "";
+    } catch (e) {
+      // A rejection reaching here despite the check above means the server's
+      // own bounds disagree with the ones mirrored here - report it exactly
+      // like any other failed patch, rather than letting it surface as an
+      // unhandled promise rejection, and put the box back the same way.
+      tempoError = e?.message ?? "Could not save that.";
+      ev.target.value = score.tempo ?? "";
+    }
   }
 
   async function toggleFavorite() {
@@ -454,6 +546,36 @@
             <option value="tab">tab</option>
             <option value="both">notation + tab</option>
           </select>
+          <select
+            class="key-select"
+            value={score.key === null || score.key === undefined ? "" : String(score.key)}
+            onchange={setKey}
+            title="Key signature - filled in from a transcription's decoded key when one is transcribed, or set by hand"
+          >
+            {#each KEY_OPTIONS as [value, label]}
+              <option {value}>{label}</option>
+            {/each}
+          </select>
+          <select
+            class="difficulty-select"
+            value={score.difficulty === null || score.difficulty === undefined ? "" : String(score.difficulty)}
+            onchange={setDifficulty}
+            title="How hard this piece is - nothing here infers one, so it is always set by hand"
+          >
+            {#each DIFFICULTY_OPTIONS as [value, label]}
+              <option {value}>{label}</option>
+            {/each}
+          </select>
+          <input
+            class="tempo-input"
+            type="number"
+            min={MIN_TEMPO_BPM}
+            max={MAX_TEMPO_BPM}
+            placeholder="bpm"
+            value={score.tempo ?? ""}
+            onchange={setTempo}
+            title="Tempo (manual - the decoder's own reading has no confidence figure to trust)"
+          />
           <button
             class="ghost timer"
             class:on={practiceStart != null}
@@ -487,6 +609,13 @@
     <p class="practice-error" role="status">
       {practiceError}
       <button class="ghost" onclick={() => (practiceError = "")}>Dismiss</button>
+    </p>
+  {/if}
+
+  {#if tempoError && !gigMode}
+    <p class="tempo-error" role="status">
+      {tempoError}
+      <button class="ghost" onclick={() => (tempoError = "")}>Dismiss</button>
     </p>
   {/if}
 
@@ -583,6 +712,15 @@
 
   header {
     display: flex;
+    /* #8's three new controls (key, difficulty, tempo) are what pushed this
+       row past what a tablet's portrait width can hold without something
+       being squeezed or pushed off the page - the same failure TabViewer's
+       .toolbar had (issue #106), fixed the same way: WRAP, never shrink.
+       Once .titles and .controls no longer fit side by side, .controls
+       drops to its own line below rather than either one being squeezed
+       toward unreadable or pushed past the viewport's right edge with no
+       horizontal scrollbar to reach it by. */
+    flex-wrap: wrap;
     align-items: center;
     gap: 16px;
     padding: 10px 16px;
@@ -623,8 +761,16 @@
 
   .controls {
     display: flex;
+    /* Its own second (or third) line once even a full-width row below
+       .titles is not enough - see the header rule above for why wrap and
+       not shrink. */
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
+  }
+
+  .tempo-input {
+    width: 4.5em;
   }
 
   .ghost {
@@ -726,7 +872,8 @@
 
   /* This one IS a failure - a session that did not save - so unlike anything on
      the practice page it is allowed to look like one. */
-  .practice-error {
+  .practice-error,
+  .tempo-error {
     display: flex;
     align-items: center;
     gap: 12px;
