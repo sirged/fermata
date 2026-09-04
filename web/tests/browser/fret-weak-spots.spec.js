@@ -100,13 +100,19 @@ test("misses on two different frets of the same string stay in separate rows, mo
 }) => {
   // A miss elsewhere, seeded directly rather than through the drill, so the
   // panel's sort order (largest count first) is checked against something
-  // real rather than a list with only the drilled string in it.
+  // real rather than a list with only the drilled string in it. Placed on
+  // fret 5 - the SAME fret the drilling below hits three times on string 3,
+  // but a DIFFERENT string - rather than a fret unique across the whole test:
+  // a grouping key that dropped the string and kept only the fret (review's
+  // own candidate bug) would merge this row into string 3's fret-5 count
+  // instead of leaving it as its own row, and a fret that never collided with
+  // anything drilled could not have caught that.
   const noise = await request.post("/api/trainer/attempts", {
     data: {
       drill: "fret_to_note",
       direction: "position_to_note",
-      target_string: 5,
-      target_fret: 3,
+      target_string: 6,
+      target_fret: 5,
       target_note: "A",
       given_note: "B",
     },
@@ -120,8 +126,8 @@ test("misses on two different frets of the same string stay in separate rows, mo
   // list - proof the panel reads real stored rows, not only ones this test
   // itself goes on to write.
   await expect(rows(page)).toHaveCount(1);
-  await expect(rows(page).first()).toHaveAttribute("data-string", "5");
-  await expect(rows(page).first()).toHaveAttribute("data-fret", "3");
+  await expect(rows(page).first()).toHaveAttribute("data-string", "6");
+  await expect(rows(page).first()).toHaveAttribute("data-fret", "5");
   await expect(rows(page).first()).toHaveAttribute("data-count", "1");
 
   // Narrow to string 3 alone, then drill one fret at a time below: with only
@@ -204,4 +210,88 @@ test("misses on two different frets of the same string stay in separate rows, mo
   await page.locator(`.choice[data-note="${q.note === "C" ? "C#" : "C"}"]`).click();
   await expect(drill(page)).toHaveAttribute("data-attempt-log-failures", "0");
   await expect(first).toHaveAttribute("data-count", "4");
+});
+
+// ---------------------------------------------------------------------------
+// Review's own finding on PR #247: the panel asked GET /api/trainer/attempts
+// for `limit: 1000` and destructured only `{ attempts }`, throwing away
+// `total` and `truncated` - so a record with more incorrect answers than one
+// fetch could return looked identical to a complete one. Proven here against
+// the REAL server's own flag (no route is stubbed): a small position seeded
+// FIRST, old enough to fall entirely outside the most-recent window once a
+// large batch pushes the total well past the fetch limit.
+// ---------------------------------------------------------------------------
+
+test("when the record holds more incorrect answers than one fetch can return, the panel says exactly how much it counted and claims nothing more", async ({
+  page,
+  request,
+}) => {
+  // Seeded first, so these rows are the OLDEST incorrect fret_to_note
+  // attempts in the database once the large batch below is added - the
+  // server orders newest first, so a fetch capped below the total leaves
+  // exactly these out.
+  const SMALL_COUNT = 3;
+  for (let i = 0; i < SMALL_COUNT; i++) {
+    const r = await request.post("/api/trainer/attempts", {
+      data: {
+        drill: "fret_to_note",
+        direction: "position_to_note",
+        target_string: 7,
+        target_fret: 7,
+        target_note: "E",
+        given_note: "F",
+      },
+    });
+    expect(r.ok(), await r.text()).toBe(true);
+  }
+
+  // Comfortably over the server's own MAX_SESSION_LIMIT (1000 -
+  // server/fermata/practice.py, mirrored as ATTEMPT_FETCH_LIMIT in
+  // position-counts.js) with ten rows of margin, so the small position above
+  // is excluded regardless of how many incorrect fret_to_note attempts the
+  // earlier tests in this file already left behind.
+  const LARGE_COUNT = 1010;
+  for (let i = 0; i < LARGE_COUNT; i++) {
+    const r = await request.post("/api/trainer/attempts", {
+      data: {
+        drill: "fret_to_note",
+        direction: "position_to_note",
+        target_string: 1,
+        target_fret: 1,
+        target_note: "E",
+        given_note: "F",
+      },
+    });
+    expect(r.ok(), await r.text()).toBe(true);
+  }
+
+  // The server's own answer, read directly - the panel's own numbers are
+  // checked against THIS, not against a guess at what they should be.
+  const server = await (
+    await request.get("/api/trainer/attempts?drill=fret_to_note&correct=false&limit=1000")
+  ).json();
+  expect(
+    server.truncated,
+    `server did not report truncation: total=${server.total} returned=${server.attempts.length}`,
+  ).toBe(true);
+
+  await page.goto("/#/fretboard");
+  await expect(drill(page)).toBeVisible();
+  await expect(panel(page)).toHaveAttribute("data-loaded", "1");
+  await expect(panel(page)).toHaveAttribute("data-truncated", "1");
+
+  const expected =
+    `Counted over the most recent ${server.attempts.length} of ${server.total} ` +
+    "incorrect answers.";
+  await expect(panel(page).locator(".truncated")).toHaveText(expected);
+
+  // The small position seeded first fell entirely outside the most-recent
+  // window fetched - it must not appear anywhere in the panel.
+  await expect(panel(page).locator('li[data-string="7"][data-fret="7"]')).toHaveCount(0);
+
+  // Same vocabulary rule the rest of this panel already holds to, checked on
+  // the truncation line itself - no verdict, no claim that this is complete.
+  const text = await panel(page).textContent();
+  expect(forbiddenWord(text), text).toBeNull();
+  expect(text).not.toMatch(/%/);
 });

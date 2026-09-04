@@ -1,5 +1,5 @@
 {
   "file": "tests/unit/position-counts.spec.js",
-  "count": 7,
-  "reason": "issue #235: grouping stored attempts by (target_string, target_fret) with the largest count first, a note_to_position row (no target position) never being grouped in, a deterministic tie-break, a display limit keeping the largest counts, and every string this module produces - including the empty state - passing the vocabulary check."
+  "count": 10,
+  "reason": "issue #235: grouping stored attempts by (target_string, target_fret) with the largest count first, a note_to_position row (no target position) never being grouped in, a deterministic tie-break, a display limit keeping the largest counts, and every string this module produces - including the empty state - passing the vocabulary check. Post-review (PR #247): the panel's own fetch limit is pinned to the server's MAX_SESSION_LIMIT, and the truncation line states counts only, whether or not the fetch it describes actually stopped early."
 }

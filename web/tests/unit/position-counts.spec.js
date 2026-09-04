@@ -4,9 +4,11 @@ import { expect, test } from "@playwright/test";
 
 import { forbiddenWord } from "../../src/lib/practice.js";
 import {
+  ATTEMPT_FETCH_LIMIT,
   NO_POSITIONS_STATEMENT,
   positionCounts,
   positionStatement,
+  truncationStatement,
 } from "../../src/lib/trainer/position-counts.js";
 
 function attempt(target_string, target_fret, over = {}) {
@@ -95,4 +97,38 @@ test("every string this module produces passes the vocabulary check", () => {
   expect(forbiddenWord(stated), stated).toBeNull();
   const one = positionStatement({ string: 6, fret: 0, count: 1 });
   expect(forbiddenWord(one), one).toBeNull();
+});
+
+// ------------------------------------------------------------ the truncation
+
+// GET /api/trainer/attempts answers `truncated` when the server had more rows
+// than one fetch's `limit` could bring back - a list that stops early looks
+// identical to a complete one unless something says so (docs/practice-data.md,
+// ScoreProgress.svelte's own sessions_truncated). This panel's own fetch asks
+// for ATTEMPT_FETCH_LIMIT rows, which review found being requested and then
+// silently dropped: PositionCounts.svelte destructured only `attempts` and
+// threw the rest of the response away.
+test("the fetch limit this panel asks the server for is pinned, not just documented", () => {
+  // Pinned literal rather than an import from the server, because the two
+  // cannot share one across the Python/JS boundary - see this constant's own
+  // comment in position-counts.js. A silent change here would desync from
+  // server/fermata/practice.py's MAX_SESSION_LIMIT without either file's own
+  // test noticing.
+  expect(ATTEMPT_FETCH_LIMIT).toBe(1000);
+});
+
+test("a truncated fetch says exactly how much of the record it counted, counts only", () => {
+  const stated = truncationStatement({ returned: 1000, total: 1007 });
+  expect(stated).toBe("Counted over the most recent 1000 of 1007 incorrect answers.");
+  expect(forbiddenWord(stated), stated).toBeNull();
+  expect(stated).not.toMatch(/%/);
+});
+
+test("an untruncated fetch's own numbers would say so plainly too, if ever rendered", () => {
+  // Not rendered by the panel (truncated is false, so this line never shows)
+  // - but the statement itself makes no claim of completeness either way, so
+  // it stays honest even if a caller ever asked for it directly.
+  const stated = truncationStatement({ returned: 3, total: 3 });
+  expect(stated).toBe("Counted over the most recent 3 of 3 incorrect answers.");
+  expect(forbiddenWord(stated), stated).toBeNull();
 });

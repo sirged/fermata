@@ -53,3 +53,20 @@ export function positionStatement({ string, fret, count }) {
 
 /** What the panel says when there is nothing to group yet. */
 export const NO_POSITIONS_STATEMENT = "Nothing has been answered incorrectly yet.";
+
+/** The `limit` PositionCounts.svelte asks GET /api/trainer/attempts for. This
+ * is the server's own MAX_SESSION_LIMIT (server/fermata/practice.py) - the
+ * most that route will ever answer in one response, so asking for more would
+ * only ever get clamped back to this anyway. The two files cannot share an
+ * import across the Python/JS boundary, so this literal has to be kept in
+ * step by hand if the server's own limit ever moves. */
+export const ATTEMPT_FETCH_LIMIT = 1000;
+
+/** The line shown when the server had more matching rows than one fetch could
+ * bring back (`truncated` on GET /api/trainer/attempts) - same shape as
+ * ScoreProgress's own "the most recent N of M" line, so a list that stops
+ * early always says so the same way. Counts only, per this module's header:
+ * no percentage, no claim that what follows is complete. */
+export function truncationStatement({ returned, total }) {
+  return `Counted over the most recent ${returned} of ${total} incorrect answers.`;
+}
