@@ -229,7 +229,13 @@
       // the observer again, so it doesn't fire on the mid-resize layout
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
-          if (cancelled) return;
+          // Not this flush's frame any more if another resize has started one
+          // of its own in the two frames since: it would hand the observer
+          // back in the middle of somebody else's re-render, and re-derive
+          // the page off canvases that are being resized one at a time as it
+          // reads them. That flush schedules its own frame and does both when
+          // its own geometry is final.
+          if (cancelled || rerendering) return;
           suppressTracking = false;
           // Handing the observer back is not enough on its own: the geometry
           // it was blanked THROUGH is the geometry now on screen, and an
@@ -246,7 +252,31 @@
           // stayed open. Re-deriving it once, here, is what closes that:
           // there is no crossing left to wait for.
           const seen = visiblePage();
-          if (seen !== null) trackVisible(seen);
+          if (seen !== null) {
+            // Deliberately NOT deferred to a turn still marked in flight,
+            // the way the observer's own crossings are (see trackVisible).
+            // The restore above assigns scrollTop, which aborts any scroll
+            // that was still running, so by this frame the pane is AT REST:
+            // its geometry is the whole truth and there is no arrival left
+            // to hand tracking back. Deferring here would leave the
+            // indicator waiting on a scroll that was cancelled - which is
+            // this bug again, one route further along - so the flag is
+            // cleared rather than obeyed.
+            //
+            // In this suite's browser the two spellings cannot be told
+            // apart, and that is a fact about the geometry rather than a
+            // gap in the tests: the restore lands on the requested page's
+            // TOP, where that page is by construction the most visible one
+            // (it fills the pane from the top down, and a tie goes to the
+            // lower page number), so `seen` always equals the turn's target
+            // when a turn is in flight at all. It is a browser that animates
+            // `behavior: "smooth"` - which this one does not, measured: a
+            // 6910px scrollIntoView is complete in the frame it is issued -
+            // where a turn can still be travelling when the flush ends, and
+            // there the two differ.
+            intendedPage = null;
+            setPage(seen);
+          }
         }),
       );
     }
@@ -333,6 +363,15 @@
   // including the debounced last_page write, which used to live only on the
   // observer's path and so was skipped for any turn the observer missed.
   function setPage(n) {
+    // Only when it actually moves. The write below is what makes this worth
+    // stating: the re-derive after a resize (see flushResize) asks this
+    // question after EVERY re-render, where the observer only ever spoke on
+    // a crossing - which is a change by definition. Without this, a reader
+    // who never leaves page one still writes the page they are already on
+    // once per resize (measured: 10 writes for 10 resizes, against none on
+    // main). Every other caller is a turn, and a turn that does not move the
+    // page has nothing to save either.
+    if (n === currentPage) return;
     currentPage = n;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => api.patch(score.id, { last_page: currentPage }).catch(() => {}), 1200);
@@ -350,6 +389,22 @@
   // is run, not which page it then picks, so leaving it out here is not a
   // second opinion about what "visible" means; it is the same opinion asked
   // at a moment when there is no crossing left to be delivered.
+  //
+  // Two places where "the same" is a statement about this pane rather than
+  // about the two rules in general, both worth saying out loud:
+  //
+  //   - the ratio here is vertical overlap over height, where the observer's
+  //     is an AREA ratio. They agree because a canvas is centred in the
+  //     scroller and never wider than it (computeWidth subtracts the
+  //     padding), so no page is ever clipped horizontally and the widths
+  //     cancel. A page wider than the pane would need this to measure area.
+  //   - an exact tie goes to the lower page number here (`>` keeps the first
+  //     seen, and pages are walked in document order), where the observer's
+  //     callback ties to the first such entry in a batch whose order is not
+  //     defined. A tie means the pane is split precisely down the middle of
+  //     the gap; the reader is arriving at the lower page's end rather than
+  //     the upper page's start, so this is the better of the two answers
+  //     anyway, and it is at least always the SAME answer.
   function visiblePage() {
     const view = container.getBoundingClientRect();
     let best = null;
@@ -364,10 +419,10 @@
     return best ? best.page : null;
   }
 
-  // A page seen to be the one on screen, whichever route noticed it - an
-  // observer crossing, or the re-derive after a resize re-render. One
-  // function so the two cannot come to differ over the case below, which is
-  // the whole of why the indicator is not simply assigned at either site.
+  // What the observer does with a crossing it has just been handed. Kept
+  // apart from the callback so the rule can be stated once and read at the
+  // one other place that has to reason about it - the re-derive above, which
+  // deliberately does NOT follow it, and says why.
   function trackVisible(seen) {
     // A turn this component performed is already recorded (see intendedPage).
     // Until that scroll settles, the frames it passes through are not the
