@@ -50,7 +50,14 @@ const wrap = (page) => page.locator(".staff-render .wrap");
 const host = (page) => page.locator(".staff-render .at-host");
 
 const SEED = Number(process.env.FERMATA_FUZZ_SEED ?? 0x1a2b3c);
-const N = Number(process.env.FERMATA_FUZZ_N ?? 40);
+// Raised from 40 when restToNote joined the menu (#238): the menu is drawn
+// from uniformly, but the draw is not a fair one over a short run - at this
+// seed the first 40 steps happen never to pick the eighth op at all, measured,
+// so the "restToNote was attempted" assertion below could not hold. The SEED is
+// deliberately unchanged, which makes the first 40 steps byte-for-byte the
+// sequence this guard has always run and the extra 20 a strict addition to it,
+// rather than a different sequence chosen to make a new assertion pass.
+const N = Number(process.env.FERMATA_FUZZ_N ?? 60);
 
 async function renderedOk(page) {
   await expect(host(page)).toHaveAttribute("data-score-render-ok", "true");
