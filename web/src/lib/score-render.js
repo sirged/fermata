@@ -183,15 +183,20 @@ function canDraw(track, staff, profileKey) {
  *
  * EVERY track renders now, not just the first (issue #93: load()/tex() ask
  * for ALL_TRACKS, and this function is handed `api.tracks` - see its call
- * site - which is that same resolved, now-plural list). So the OR above is
- * exercised across tracks as well as across one track's staves: a two-part
- * document where each part supports a different single profile (see
- * web/test-fixtures/multi-part.musicxml and score-multi-part.spec.js) has to
- * offer both, the same way multi-staff.musicxml's two staves do within one
- * track. Before that fix, a second track was never part of the pairs this
- * function saw at all - only the first track rendered by default - so that
- * cross-track case could not have exercised this OR no matter how the
- * fixture was built.
+ * site - which is that same resolved, now-plural list). So a second track's
+ * staves are among the pairs this function ORs across, where before that fix
+ * they never were - only the first track rendered by default, so a second
+ * track could not have reached this OR no matter how a fixture was built.
+ * web/test-fixtures/multi-part.musicxml (two parts, both plain notation
+ * staves) and score-multi-part.spec.js prove exactly that much: every track
+ * is now among the pairs, and both are rendered. They do NOT exercise the
+ * cross-track OR itself - both parts support the same profiles, so
+ * `data-score-profiles` reads identically whether the second part is present
+ * or dropped ("score,scoretab" either way) - that is a claim this comment is
+ * not making. No fixture in this repo yet has two tracks that each support a
+ * different single profile; multi-staff.musicxml remains the only fixture
+ * that exercises the OR itself, and it does so within one track's staves,
+ * not across tracks.
  */
 export function supportedProfiles(tracks) {
   // The whole body is inside the try, not just the canDraw loop: a malformed
@@ -2044,7 +2049,7 @@ export function createScoreView(host, opts = {}) {
   // walks track 0 only, so only notes in the first part are selectable or
   // editable at all; clicking a note drawn in a second part has nothing here
   // to find it. That is a pre-existing gap this fix does not close - tracked
-  // as its own issue rather than folded into #93's track-aware-editor-is-out-
+  // as issue #226, rather than folded into #93's track-aware-editor-is-out-
   // of-scope decision.
   function buildNoteOrdinals() {
     noteOrdinals = new Map();
@@ -3285,8 +3290,8 @@ export function createScoreView(host, opts = {}) {
         // drawing only the first part after an edit, on a document that drew
         // every part before it. buildNoteOrdinals() above still only builds
         // ordinals for track 0, so a second part's notes render but are not
-        // selectable - a pre-existing gap, tracked as its own issue, that
-        // this call is not attempting to close.
+        // selectable - a pre-existing gap, tracked as issue #226, that this
+        // call is not attempting to close.
         api.load(new TextEncoder().encode(text), ALL_TRACKS);
       } catch (e) {
         pendingEditResolve = null;

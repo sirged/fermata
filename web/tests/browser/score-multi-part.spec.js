@@ -79,19 +79,27 @@ test.describe("a multi-part score draws every part, not just the first", () => {
     // a dozen digit/accidental-adjacent glyphs from four notes per bar) and
     // 30 with both, so ">10" already passes against the unfixed page -
     // measured directly, not assumed. What a second STAFF adds that a longer
-    // label never could is a second row of five staff lines, drawn as a
-    // distinct group of `<rect>`s at a `y` no first staff system ever uses -
-    // rendering one track always draws exactly one such group (5 distinct y
-    // values, one per staff line), so a second group is unambiguous proof a
-    // second staff was laid out, not merely that more text happened to print.
+    // label never could is a second row of five staff lines: this fixture
+    // (web/test-fixtures/multi-part.musicxml, two parts) draws 5 distinct
+    // staff-line rows with only track 0 rendered and 10 with both - a second
+    // group is unambiguous proof a second staff was laid out, not merely
+    // that more text happened to print. (Not a claim about every fixture:
+    // multi-staff.musicxml - one part, two STAVES - draws 11 rows by itself,
+    // for reasons that have nothing to do with this bug.)
     await stubMultiPartScore(page);
     await openScore(page, 30);
     const staffLineRowCount = await page.evaluate(() => {
-      // Staff lines are the thin horizontal rects alphaTab draws in its own
-      // muted staff-line colour; anything taller (a beam, an eighth-note
-      // flag stroke) shares that same fill but is thicker, so height alone
-      // separates a staff line from everything else painted with it.
-      const lines = [...document.querySelectorAll('.at-host svg rect[fill="#B3A284"]')].filter(
+      // Staff lines are the thin horizontal rects alphaTab draws - not by
+      // colour, which is a per-theme setting (score-render.js's
+      // THEME_TOKENS) and must not be hardcoded here: staff_theme is a
+      // server-side setting shared by the whole suite, so a spec that ran
+      // earlier and left it on something other than the default would make a
+      // colour-specific selector match zero elements for the wrong reason
+      // entirely. Height is what actually separates a staff line from
+      // everything else alphaTab paints at a comparable size (a beam or an
+      // eighth-note flag stroke is taller), and height does not change with
+      // theme.
+      const lines = [...document.querySelectorAll(".at-host svg rect")].filter(
         (r) => Number(r.getAttribute("height")) < 1.3,
       );
       return new Set(lines.map((r) => Number(r.getAttribute("y")).toFixed(1))).size;
