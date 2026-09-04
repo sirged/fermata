@@ -554,7 +554,7 @@ CREATE INDEX IF NOT EXISTS idx_instruments_owner ON instruments(owner);
 -- AUTOINCREMENT, for the same reason instruments and goals have it: a setlist
 -- is routinely deleted, and a plain INTEGER PRIMARY KEY hands a deleted row's
 -- id to the next one - so a rename typed into an open tab, or an id held by a
--- second reader (the planned MCP server #31, a bookmarked gig-mode URL), could
+-- second reader (the MCP server #31, a bookmarked gig-mode URL), could
 -- silently act on a different setlist than the one it meant.
 --
 -- `owner` mirrors settings, instruments and the practice tables: unused today,

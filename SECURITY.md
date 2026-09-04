@@ -31,6 +31,15 @@ your own browser. The interesting attack surface is roughly:
   the configured user header, or getting an untrusted peer address to test as a
   trusted proxy — is worth reporting. See
   [docs/deployment.md](docs/deployment.md#reverse-proxy-authentication).
+- The Model Context Protocol server, when it has been turned on. It is off by
+  default and, once on, it is a **second listening port with no
+  authentication of its own** — the same "anyone who can reach it can read
+  the library" model as the web interface, on a port of its own, which is
+  why it binds loopback unless deliberately moved and why Fermata refuses to
+  start with it and reverse proxy authentication both on. Its tools are
+  read-only; anything that gets a write through them, or that reads outside
+  the documented routes they wrap, is worth reporting. See
+  [docs/deployment.md](docs/deployment.md#the-model-context-protocol-server).
 
 ## What isn't
 

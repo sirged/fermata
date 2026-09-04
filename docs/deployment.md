@@ -9,6 +9,7 @@ that's enough. Every command below is meant to be copied and pasted as-is.
 - [Getting it running](#getting-it-running)
 - [Reaching it from another device](#reaching-it-from-another-device)
 - [Reverse proxy authentication](#reverse-proxy-authentication)
+- [The Model Context Protocol server](#the-model-context-protocol-server)
 - [Backups](#backups)
 - [Upgrading](#upgrading)
 - [Current limitations](#current-limitations)
@@ -298,8 +299,10 @@ but reaching this endpoint through a different path than your proxy, that is
 Fermata acts on this identity today** — there are no per-user permissions,
 no filtering of what a given username can see, and this does not turn
 Fermata into a multi-user application. It is read, logged, and left there
-for a future consumer — the practice-data MCP server this project is heading
-toward, or a possible sharing layer — to build on. (A few database tables
+for a consumer that might one day act on it — a sharing layer, say. The
+[Model Context Protocol server](#the-model-context-protocol-server) is not
+one: it leaves this identity inert, and Fermata refuses to run the two
+features together in any case. (A few database tables
 already carry an `owner` column reserved for that future, every row
 currently written as the single placeholder owner `local` — wiring a real
 username into it today would only orphan your own data from the very
@@ -452,6 +455,146 @@ services:
       default:
         ipv4_address: 172.28.1.11
 ```
+
+## The Model Context Protocol server
+
+Fermata can offer its library and practice history as a set of **read-only
+tools** over the Model Context Protocol — an open standard for describing
+tools to a program that reads them. It is a way to let an external tool ask
+"what's in the library" or "how much did I practise last week" without
+anyone writing HTTP requests by hand.
+
+**This is off by default, and stays off after an upgrade unless you turn it
+on.** Nothing below runs, and nothing listens, until you set `FERMATA_MCP`.
+
+### What it does and does not do
+
+- **Read only.** The tools list and search scores, read a score's metadata
+  and its transcription status, read practice history and summaries, read
+  goals, and read trainer attempts. There is no tool that changes anything —
+  not "log a session", not "rename a score", not "delete". That is not a
+  setting; there is no code path in it that can send anything but a `GET`.
+- **It wraps the REST API, it does not replace it.** Every tool is one
+  documented route from [the REST API](api.md), called over ordinary HTTP,
+  and every answer is that route's own JSON handed back unchanged. The tool
+  descriptions and their input schemas are generated from the same
+  `/openapi.json` the API serves, at startup, so a tool cannot describe a
+  route that no longer looks like that.
+- **It has no login of its own.** Anything that can reach the port can read
+  your whole library and practice history. That is the same trust model as
+  Fermata's own web interface (see [Current
+  limitations](#current-limitations)), and it is why the listener stays on
+  `127.0.0.1` — inside the container only — unless you deliberately move it.
+
+### It does not work with reverse-proxy authentication
+
+**Fermata refuses to start if you set both `FERMATA_MCP` and
+`FERMATA_AUTH_HEADER`**, and will tell you so by name in the log. The two
+are not supported together in this release.
+
+The reason is the first bullet above, from the other side. The tools read
+the REST API as an ordinary anonymous client over loopback — that is what
+"wraps the documented routes" means, and it is what keeps this layer from
+being a second copy of the API. With
+[reverse-proxy authentication](#reverse-proxy-authentication) turned on,
+every request that did not come from your trusted proxy carrying the
+identity header is refused, and the tools' requests are exactly that. So
+every tool would answer `401` while the tool list went on advertising
+thirteen working tools — a failure with no symptom except an emptiness that
+looks like an empty library.
+
+The two obvious workarounds are both worse than the fault, which is why
+neither is offered. Adding `127.0.0.1` to `FERMATA_TRUSTED_PROXIES` does not
+fix it (the internal client still sends no identity header, so the request
+is refused a second time) and it does mean anything else running on that
+machine can now set the identity header itself and be believed. Having
+Fermata's own internal client send an identity header is worse still: it
+would turn the trusted header into something a process on the box can mint,
+which is the exact forgery reverse-proxy authentication exists to prevent.
+
+So: pick one. Keep your login and leave `FERMATA_MCP` unset, or use the
+tools and leave `FERMATA_AUTH_HEADER` unset with the port reachable only
+from somewhere you trust.
+
+### Turning it on
+
+Add the environment variable to the `fermata` service in
+`docker-compose.yml` and publish a second port:
+
+```yaml
+services:
+  fermata:
+    # ... build, volumes, restart as in "Getting it running"
+    ports:
+      - "8080:8080"
+      - "127.0.0.1:8765:8765"
+    environment:
+      FERMATA_MCP: "1"
+      FERMATA_MCP_HOST: 0.0.0.0
+```
+
+Note the `127.0.0.1:` on the second port — without it Docker publishes that
+port to your whole local network, the way port 8080 above is published, and
+this one has no login in front of it at all. Start with it reachable only
+from the machine running the container, and widen it deliberately (drop the
+prefix) once you have decided who should be able to read your library.
+
+Then rebuild and restart:
+
+```bash
+docker compose up -d
+```
+
+The tools are then reachable at **http://127.0.0.1:8765/mcp**, over the
+protocol's Streamable HTTP transport. Point a client that speaks the Model
+Context Protocol at that URL; it will list thirteen tools, each named after
+what it reads (`list_scores`, `get_practice_summary`, and so on).
+
+The four settings, only the first of which turns anything on:
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `FERMATA_MCP` | unset (off) | Set to `1` to run the server at all. Every other setting here is inert while this is unset. |
+| `FERMATA_MCP_HOST` | `127.0.0.1` | What the listener binds. Inside a container the default means "this container only" — set it to `0.0.0.0` if you are publishing the port, as above. |
+| `FERMATA_MCP_PORT` | `8765` | The port it listens on. |
+| `FERMATA_MCP_API_URL` | `http://127.0.0.1:8080` | Where it finds Fermata's own REST API. The default is right for the container; change it only if you are running from source and told `uvicorn` to use a different port. |
+
+`FERMATA_MCP_HOST` defaulting to loopback is deliberate: publishing this is
+two decisions (set the host, map the port), not one, so it is hard to expose
+by accident. Do not publish that port to the open internet — put it behind
+the same reverse proxy and login as everything else, or leave it on your own
+network.
+
+### Checking it, and what failure looks like
+
+You can see exactly which tools it would offer without connecting anything:
+
+```bash
+docker compose exec fermata python -m fermata.mcp_server
+```
+
+That prints each tool with the route it reads and the arguments it takes.
+
+If the port you chose is already taken, **the container will not start**,
+and `docker compose logs fermata` will say so in a sentence naming the port.
+That is on purpose: a container that came up healthy while the feature you
+just turned on silently did nothing is the worse outcome. Change
+`FERMATA_MCP_PORT`, or unset `FERMATA_MCP`, and it starts again — nothing in
+your library or your practice history is touched either way.
+
+### Running it from source
+
+The protocol library is an optional extra, so a source install needs it
+asked for by name:
+
+```bash
+pip install -e "server[mcp]"
+FERMATA_MCP=1 FERMATA_MCP_API_URL=http://127.0.0.1:8000 \
+  uvicorn fermata.main:app --port 8000 --no-proxy-headers
+```
+
+The container image already includes the extra, which is why turning the
+feature on there is an environment variable rather than a rebuild.
 
 ## Backups
 
