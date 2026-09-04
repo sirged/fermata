@@ -175,13 +175,23 @@ function canDraw(track, staff, profileKey) {
  * pair in the rendered set fails a profile's check - the renderer loops over
  * all of them building one staff system - so a profile is supported the
  * moment any single pair can draw it: this ORs canDraw across every pair, it
- * does not decide from one staff. A score with two staves in the one track
- * that gets rendered - one notation-only, one tab-only - still has to offer
- * both "score" and "tab", each justified by only one of the two staves; see
+ * does not decide from one staff. A score with two staves in one track -
+ * one notation-only, one tab-only - still has to offer both "score" and
+ * "tab", each justified by only one of the two staves; see
  * multi-staff.musicxml in web/test-fixtures for a fixture built to reach
- * exactly this (deliberately one track, not two - only the first track
- * renders by default, so a second track would never be part of the pairs
- * this function is given at all, and would not exercise the OR here).
+ * exactly this within a single track's staves.
+ *
+ * EVERY track renders now, not just the first (issue #93: load()/tex() ask
+ * for ALL_TRACKS, and this function is handed `api.tracks` - see its call
+ * site - which is that same resolved, now-plural list). So the OR above is
+ * exercised across tracks as well as across one track's staves: a two-part
+ * document where each part supports a different single profile (see
+ * web/test-fixtures/multi-part.musicxml and score-multi-part.spec.js) has to
+ * offer both, the same way multi-staff.musicxml's two staves do within one
+ * track. Before that fix, a second track was never part of the pairs this
+ * function saw at all - only the first track rendered by default - so that
+ * cross-track case could not have exercised this OR no matter how the
+ * fixture was built.
  */
 export function supportedProfiles(tracks) {
   // The whole body is inside the try, not just the canDraw loop: a malformed
@@ -2015,24 +2025,27 @@ export function createScoreView(host, opts = {}) {
   // redraw the way an editor step needs to before re-reading bounds.
   let pendingEditResolve = null;
 
-  // Walk the one rendered track's model in document order - bar, then each
-  // voice in turn, then each beat, then each chord member - skipping rests, so
-  // the ordinal assigned here matches document.js's sounding-note order beat
-  // for beat. One part, one staff is this profile's scope (Rule 17); a second
-  // staff or track would need an axis this walk does not name, exactly as
-  // Rule 17's own uniqueness note says of its id formula.
+  // Walk track 0's model in document order - bar, then each voice in turn,
+  // then each beat, then each chord member - skipping rests, so the ordinal
+  // assigned here matches document.js's sounding-note order beat for beat.
+  // One part, one staff is this profile's scope (Rule 17); a second staff or
+  // track would need an axis this walk does not name, exactly as Rule 17's
+  // own uniqueness note says of its id formula.
   //
-  // Still `tracks[0]` on purpose after issue #93, which made every OTHER
-  // load()/tex() call in this file render every track: this editor seam is
-  // reachable only from ScoreCompare.svelte's `editable` prop, fed
-  // `transcription.content` - Fermata's own tabextract output - and
-  // server/fermata/musicxml.py's emitter hard-codes that output to a single
-  // `<part>` (issue #93's own Occurrence note). So `tracks[0]` is not just
-  // "the first of several" here, it is currently the only track that exists
-  // for anything this function is ever called on. A multi-track document
-  // reaching the editor would need the axis Rule 17 already says this id
-  // formula does not name - that is the track-selector work the issue calls
-  // out of scope, not a gap this comment is papering over.
+  // NOT limited to single-part documents by anything upstream - issue #93's
+  // fix made load()/reloadScore() render every track, and the editor has no
+  // gate of its own that keeps a multi-part document out: ScoreCompare.svelte
+  // passes `editable` on a free-text textarea whose save PUTs arbitrary
+  // content, TabViewer.svelte's canEditNotes() checks only `format ===
+  // "musicxml"`, and the server's XSD validation is a no-op unless
+  // FERMATA_MUSICXML_XSD is configured. So a hand-pasted two-part document
+  // reaching this editor is a real, reachable case, not a hypothetical one -
+  // it renders every part (the view is fixed), but this ordinal map still
+  // walks track 0 only, so only notes in the first part are selectable or
+  // editable at all; clicking a note drawn in a second part has nothing here
+  // to find it. That is a pre-existing gap this fix does not close - tracked
+  // as its own issue rather than folded into #93's track-aware-editor-is-out-
+  // of-scope decision.
   function buildNoteOrdinals() {
     noteOrdinals = new Map();
     notesInOrder = [];
@@ -3261,15 +3274,19 @@ export function createScoreView(host, opts = {}) {
       pendingUnreadReason = null;
       try {
         // ALL_TRACKS (issue #93), for consistency with every other load()
-        // call in this file. The editor only ever reaches this path for
-        // Fermata's own transcription output (ScoreCompare.svelte's
-        // `editable` prop is fed `transcription.content`), which
-        // server/fermata/musicxml.py's emitter hard-codes to a single part
-        // today - so this is currently a no-op change, not a fix - but a
-        // reload that silently dropped back to track 0 the moment that
-        // emitter grew a second part would be a second, easy-to-miss version
-        // of the same bug, and there is no reason for this call to be the one
-        // load() site in the file that still defaults.
+        // call in this file - and not a no-op here either. Nothing gates a
+        // multi-part document out of this editor: ScoreCompare.svelte's
+        // `editable` prop sits on a free-text textarea whose save PUTs
+        // arbitrary content, and TabViewer.svelte's canEditNotes() checks
+        // only `format === "musicxml"`, with the server's XSD validation a
+        // no-op unless FERMATA_MUSICXML_XSD is configured - so a hand-pasted
+        // two-part document reaching this reload is real, not hypothetical.
+        // Without ALL_TRACKS here, that reload would silently drop back to
+        // drawing only the first part after an edit, on a document that drew
+        // every part before it. buildNoteOrdinals() above still only builds
+        // ordinals for track 0, so a second part's notes render but are not
+        // selectable - a pre-existing gap, tracked as its own issue, that
+        // this call is not attempting to close.
         api.load(new TextEncoder().encode(text), ALL_TRACKS);
       } catch (e) {
         pendingEditResolve = null;

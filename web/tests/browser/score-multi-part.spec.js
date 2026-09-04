@@ -70,17 +70,34 @@ test.describe("a multi-part score draws every part, not just the first", () => {
     expect(consoleErrors).toEqual([]);
   });
 
-  test("the second part's own notation actually draws, not just its label", async ({ page }) => {
+  test("the second part's own staff actually draws, not just its label", async ({ page }) => {
     // The label alone does not prove the STAFF drew - alphaTab prints a
     // track's name once per staff system regardless of whether the staff
-    // beneath it holds any glyphs. Both parts here are pitched, non-percussion
-    // treble/bass staves with four notes per bar for three bars, so a
-    // genuinely rendered second track draws real glyph volume, not just a
-    // name. Measured on a fixed page: comfortably more than a bare label and
-    // an empty staff would ever produce.
+    // beneath it holds any glyphs. A bare glyph-count threshold does not
+    // discriminate here either: this fixture draws 17 SVG text nodes with
+    // only the first part rendered (title, three bar numbers, one track name,
+    // a dozen digit/accidental-adjacent glyphs from four notes per bar) and
+    // 30 with both, so ">10" already passes against the unfixed page -
+    // measured directly, not assumed. What a second STAFF adds that a longer
+    // label never could is a second row of five staff lines, drawn as a
+    // distinct group of `<rect>`s at a `y` no first staff system ever uses -
+    // rendering one track always draws exactly one such group (5 distinct y
+    // values, one per staff line), so a second group is unambiguous proof a
+    // second staff was laid out, not merely that more text happened to print.
     await stubMultiPartScore(page);
     await openScore(page, 30);
-    const glyphCount = await page.evaluate(() => document.querySelectorAll(".at-host svg text").length);
-    expect(glyphCount).toBeGreaterThan(10);
+    const staffLineRowCount = await page.evaluate(() => {
+      // Staff lines are the thin horizontal rects alphaTab draws in its own
+      // muted staff-line colour; anything taller (a beam, an eighth-note
+      // flag stroke) shares that same fill but is thicker, so height alone
+      // separates a staff line from everything else painted with it.
+      const lines = [...document.querySelectorAll('.at-host svg rect[fill="#B3A284"]')].filter(
+        (r) => Number(r.getAttribute("height")) < 1.3,
+      );
+      return new Set(lines.map((r) => Number(r.getAttribute("y")).toFixed(1))).size;
+    });
+    // Pre-fix (tracks[0] only): exactly 5 - one staff, one system. Post-fix:
+    // 10 - two staves, one per part, five lines each.
+    expect(staffLineRowCount).toBe(10);
   });
 });
