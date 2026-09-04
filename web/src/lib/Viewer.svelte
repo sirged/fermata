@@ -383,11 +383,17 @@
   // typed into it afterwards was PATCHed onto the previous score's session -
   // writing an opinion against practice that did not happen. The session it
   // belonged to is already stored; only the offer to say more about it ends.
+  //
+  // tempoError is cleared here for the same reason (#8 review): it is a
+  // statement about the PREVIOUS score's tempo control ("500 was refused"),
+  // and surviving the navigation left it sitting over a different score's
+  // empty tempo box, describing a refusal that never happened there.
   $effect(() => {
     void id;
     return () => {
       flushPractice();
       dismissDetail();
+      tempoError = "";
     };
   });
 

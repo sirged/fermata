@@ -223,6 +223,34 @@ test("an ordinary in-range tempo sends exactly one PATCH", async ({ page }) => {
   expect(patches).toEqual([{ tempo: 120 }]);
 });
 
+test("a tempo refusal shown for one score does not survive navigating to another (#8 review)", async ({
+  page,
+}) => {
+  // Viewer.svelte:386's own teardown effect already flushes the practice
+  // timer and dismisses the session-detail panel on an `id` swap for exactly
+  // this reason - the route changes `id` on the SAME component instance
+  // rather than remounting it, so nothing tied to the previous score is
+  // cleared for free. tempoError is a statement about scoreA's tempo box
+  // ("500 was refused"); left standing over scoreB's it describes a refusal
+  // that never happened there.
+  await page.goto(`/#/score/${scoreA.id}`);
+  const tempo = page.locator(".tempo-input");
+  await tempo.fill("500");
+  await tempo.dispatchEvent("change");
+  await expect(page.locator(".tempo-error")).toContainText("must be between 20 and 400");
+
+  // Navigated by changing the hash from inside the page, not with goto() -
+  // see viewer-practice.spec.js's identical choice and its own comment: a
+  // full document load would unmount the component and clear tempoError
+  // along with everything else, whatever Viewer.svelte's own teardown did,
+  // which would be a test that passes for the wrong reason.
+  await page.evaluate((id) => {
+    window.location.hash = `#/score/${id}`;
+  }, scoreB.id);
+  await expect(page.locator("header .title")).toContainText(SCORE_B_TITLE);
+  await expect(page.locator(".tempo-error")).toHaveCount(0);
+});
+
 test("the difficulty filter on the library grid narrows to an exact match", async ({
   page,
   request,
