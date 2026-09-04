@@ -140,6 +140,52 @@ const pdfGeometry = (page) =>
   });
 
 /**
+ * What the PDF pane is showing, and what its indicator says about it, read
+ * in ONE evaluate so the two can never be sampled either side of a change.
+ *
+ * "Showing" is measured here rather than asked of the component: the page
+ * displaying the largest fraction of itself, which is what an intersection
+ * ratio is and what PdfViewer's own observer ranks its entries by. Reading
+ * it off the rects is what makes an assertion that the two agree an
+ * assertion about the pane rather than the indicator being compared with
+ * itself.
+ */
+const pdfIndicatorState = (page) =>
+  page.evaluate(() => {
+    const scroller = document.querySelector(".pages");
+    const view = scroller.getBoundingClientRect();
+    const ratios = [...document.querySelectorAll(".pdf-page")].map((canvas) => {
+      const rect = canvas.getBoundingClientRect();
+      const overlap = Math.min(rect.bottom, view.bottom) - Math.max(rect.top, view.top);
+      return { page: Number(canvas.dataset.page), ratio: rect.height ? Math.max(0, overlap) / rect.height : 0 };
+    });
+    const best = ratios.reduce((a, b) => (b.ratio > a.ratio ? b : a));
+    return {
+      hud: document.querySelector(".hud span").textContent.trim(),
+      shown: best.page,
+      ratios: ratios.map((r) => `${r.page}:${r.ratio.toFixed(2)}`).join(" "),
+    };
+  });
+
+/**
+ * Waits for the PDF pane's indicator to agree with the page the pane is
+ * actually showing, reporting both when it does not. Polled rather than read
+ * once, because the correction is made a couple of frames after the
+ * re-render's own scroll restore; a disagreement that is never corrected -
+ * the bug this covers - simply never agrees.
+ */
+async function pdfIndicatorAgrees(page, pageCount) {
+  await expect
+    .poll(async () => {
+      const at = await pdfIndicatorState(page);
+      return at.hud === `${at.shown} / ${pageCount}`
+        ? "agrees"
+        : `HUD reads "${at.hud}" over a pane showing page ${at.shown} (ratios ${at.ratios})`;
+    })
+    .toBe("agrees");
+}
+
+/**
  * Waits for the PDF pane to have finished re-rendering its canvases at the
  * width it is going to keep - the readiness barrier the page-turn tests
  * below need and #168's did not.
@@ -804,6 +850,59 @@ test.describe("a page turn pressed before the PDF has rendered", () => {
     await expect(page.locator(".hud span")).toHaveText("2 / 2");
   });
 
+  // The write that turn owes the library, which is not the same claim as the
+  // page it lands on (#229 review).
+  //
+  // A turn pressed before any canvas exists is remembered and honoured, and
+  // honouring it also REVOKES the stored-page restore (turnedBeforeRestore):
+  // the reader asked to be somewhere, so they are not to be yanked off it.
+  // On a score stored at page eight, ArrowLeft resolves to page one - which
+  // is the page the indicator already named - so the turn moves the reader
+  // without moving the indicator, and only the debounced save records that
+  // the reader is no longer where the database thinks. Skip that save and
+  // the two disagree silently until the score is reopened, at which point
+  // the reader is thrown to page eight by a restore that is now wrong.
+  //
+  // Held open, not raced: the PDF body is released only after the press.
+  test("a turn honoured before the pages existed is saved, even when it names the page already shown", async ({
+    page,
+  }) => {
+    await stubScoreApi(page, transcriptionResponse({ warnings: [], confidence: CLEAN_CONFIDENCE }));
+    // Overrides stubScoreApi's own /api/scores/1 route (most recent wins) to
+    // give the score a stored page far from page one, and to record what the
+    // viewer writes back to it.
+    const written = [];
+    await page.route("**/api/scores/1", (route) => {
+      if (route.request().method() === "PATCH") written.push(route.request().postDataJSON());
+      return route.fulfill({ json: { ...SCORE, last_page: 8 } });
+    });
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    await page.route("**/api/scores/1/file", async (route) => {
+      await held;
+      await route.fulfill({ body: buildMultiPagePdf(20), contentType: "application/pdf" });
+    });
+    await page.goto("/#/score/1");
+    await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+    await expect(page.locator(".pdf-page")).toHaveCount(0);
+
+    // Backwards from page one: goto() clamps it to page one, so this is the
+    // turn that asks for the page the indicator is already showing.
+    await page.keyboard.press("ArrowLeft");
+    release();
+
+    await expect(page.locator(".pdf-page")).toHaveCount(20, { timeout: 15_000 });
+    await expect(page.locator(".hud span")).toHaveText("1 / 20");
+    // The turn was honoured: page one, not the stored page eight.
+    const at = await pdfGeometry(page);
+    expect(Math.abs(at.scrollTop - at.pageOneTop)).toBeLessThanOrEqual(2);
+    // And the library was told, which is the half a page-turn that does not
+    // move the indicator can still lose. Polled: the save is debounced.
+    await expect
+      .poll(() => written.map((body) => body.last_page).join(","))
+      .toBe("1");
+  });
+
   // The same press, in gig mode, which is where it actually comes from: a
   // pedal tap on a score that has just been opened, with no mouse to fall
   // back on (issue #106's reasoning, and #92's).
@@ -1126,6 +1225,101 @@ test.describe("gig mode itself", () => {
     // Stated the blunt way too: not scrolled back to the top of page one,
     // which is where the old restore put it on every run.
     expect(after.scrollTop).toBeGreaterThan(after.pageOneTop + 1);
+  });
+
+  // Issue #229, and the half of a page turn the test above does not look at:
+  // it proves where the reader ENDS UP, and says nothing about what the
+  // indicator claims about that place. The two came apart here.
+  //
+  // A tap taken before gig mode's own re-render is measured against the
+  // narrow pre-render geometry, where half a page is short enough to bring
+  // page two past the 0.4 intersection threshold - so the observer sets the
+  // indicator to "2 / 2", correctly, for the pane as it stands. The
+  // re-render then blanks the observer (suppressTracking) and doubles every
+  // page's height underneath it: the reader is left half way down page ONE
+  // with page two barely on screen. That change was delivered as a crossing
+  // while the observer was blanked and dropped, and an IntersectionObserver
+  // only ever fires on a change, so nothing re-delivered it. Measured on
+  // main before this fix, 3 of 3: the pane at scrollTop 547 - 47% down page
+  // one, page one at ratio 0.52 against page two's 0.11 - and the HUD
+  // reading "2 / 2" for as long as the score stayed open.
+  //
+  // Not a race, despite pressing without a barrier. The assertion is that
+  // the indicator matches the pane's OWN geometry, which is true of a
+  // correct viewer whichever side of the re-render the press lands on - all
+  // three orderings (before the 200ms debounce fires, inside the re-render,
+  // after it) leave the reader half a page down page one. Winning the race
+  // is what makes this test reach the dropped crossing; losing it can only
+  // make it prove less, never fail.
+  test("the page indicator matches the pane after a turn taken inside gig mode's re-render", async ({ page }) => {
+    // Windowed gig mode, for the reason the test above states.
+    await page.evaluate(() => {
+      Element.prototype.requestFullscreen = () => Promise.reject(new Error("denied"));
+    });
+    await expect(page.locator(".pdf-page")).toHaveCount(2);
+    await pdfPagesRenderedAtSettledWidth(page);
+
+    await page.keyboard.press("f");
+    await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
+    // Deliberately no barrier: this is the tap a performer actually makes,
+    // straight into the pane that is still about to re-render.
+    await page.keyboard.press("ArrowRight");
+
+    await pdfPagesRenderedAtSettledWidth(page);
+    await pdfIndicatorAgrees(page, 2);
+
+    // And the geometry that makes the line above worth asserting: the reader
+    // really is mid-page-one, not parked somewhere the two would agree
+    // trivially. Half a page on, whichever geometry the step was measured
+    // against, with page two left well under the 0.4 threshold.
+    const at = await pdfGeometry(page);
+    const fraction = (at.scrollTop - at.pageOneTop) / at.pageHeight;
+    expect(fraction).toBeGreaterThan(0.35);
+    expect(fraction).toBeLessThan(0.65);
+    const state = await pdfIndicatorState(page);
+    expect(state.shown).toBe(1);
+    await expect(page.locator(".hud span")).toHaveText("1 / 2");
+  });
+
+  // The same defect reached without pressing anything into a live re-render,
+  // so it fails on every run rather than on a run that wins a race: the turn
+  // is fully settled and correct BEFORE the pane changes shape, and it is
+  // the resize alone that moves which page is on screen.
+  //
+  // A window resized mid-set is the ordinary way this happens off the stand.
+  test("a resize that changes which page is on screen moves the indicator with it", async ({ page }) => {
+    await page.evaluate(() => {
+      Element.prototype.requestFullscreen = () => Promise.reject(new Error("denied"));
+    });
+    await page.keyboard.press("f");
+    await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
+    await expect(page.locator(".pdf-page")).toHaveCount(2);
+    await pdfPagesRenderedAtSettledWidth(page);
+
+    // A narrow pane renders short pages, and half of a short page is enough
+    // to bring page two past the threshold - which is what gives the resize
+    // below something to change its mind about.
+    await page.setViewportSize({ width: 700, height: 720 });
+    await pdfPagesRenderedAtSettledWidth(page);
+    const before = await pdfGeometry(page);
+    await page.keyboard.press("ArrowRight");
+    await pdfScrollSettlesAt(page, before.scrollTop + (before.pageTwoTop - before.pageOneTop) / 2, "half a page on");
+    // Right, and asserted as such: page two IS the page most of the pane is
+    // showing here. Without this the test could not tell the indicator being
+    // re-derived from it never having moved at all.
+    await pdfIndicatorAgrees(page, 2);
+    await expect(page.locator(".hud span")).toHaveText("2 / 2");
+
+    // Widen: the pages grow back, the reader keeps their place half way down
+    // page one (#224), and page two drops off the bottom of the pane.
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await pdfPagesRenderedAtSettledWidth(page);
+    await pdfIndicatorAgrees(page, 2);
+    const after = await pdfGeometry(page);
+    expect(after.pageHeight).toBeGreaterThan(before.pageHeight);
+    const state = await pdfIndicatorState(page);
+    expect(state.shown).toBe(1);
+    await expect(page.locator(".hud span")).toHaveText("1 / 2");
   });
 
   test("from the staff layout, gig mode keeps the staff pane and Space still plays/pauses it", async ({ page }) => {
