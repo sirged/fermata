@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/practice-shortcuts.spec.js",
+  "count": 1,
+  "reason": "issue #219: a gig-mode half-page turn survives the pane being re-rendered at a new width, rather than the re-render's scroll restore aiming at the page's top and throwing the half turn away."
+}

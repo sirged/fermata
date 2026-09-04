@@ -293,8 +293,9 @@ def skip_without_library(reason: str):
 
 # Skips for want of `node` or the web project's installed alphaTab build get
 # the same treatment, for the same reason (issue #134 adversarial review,
-# item 7): a run with `web/node_modules` missing quietly skipped nine tests -
-# including score_s's and playback-order headline cases - and
+# item 7): a run with `web/node_modules` missing quietly skipped a
+# double-digit slice of the suite - including score_s's and playback-order
+# headline cases - and
 # nothing said so unless a reader compared this run's summary against CI's by
 # hand. See test_tabextract._parse_with_alphatab /
 # _load_musicxml_with_alphatab, the two places that actually skip.
@@ -343,8 +344,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
     Without this the only way to notice was to compare a CI log against a
     local run by hand, which is why 36 skipped extraction tests sat
-    unnoticed - and, separately, nine more that skip on missing
-    `web/node_modules` (issue #134 adversarial review, item 7) went
+    unnoticed - and, separately, a double-digit slice of tests that skip on
+    missing `web/node_modules` (issue #134 adversarial review, item 7) went
     unannounced the same way. A count that has to be read off the screen is
     not a guarantee, but silence was not one either."""
     if not _library_skips:
