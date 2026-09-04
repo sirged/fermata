@@ -227,12 +227,14 @@ it — see [the tab profile](docs/musicxml-tab-profile.md#checking-a-file).
 | PDF, engraved without tab | Practice reader; nothing to transcribe from |
 | PDF, scanned | Practice reader only — a scan holds no text or glyphs to read |
 | MusicXML (`.musicxml`, `.mxl`) | Interactive: notation / tab / both, audio, full fidelity |
-| Guitar Pro (`.gp3`–`.gp5`, `.gpx`, `.gp`) | Scanned and indexed, then handed to the renderer's own importer, which reads the format natively — **untested here**: no fixture, no end-to-end test |
+| Guitar Pro (`.gp3`–`.gp5`, `.gpx`, `.gp`) | Scanned and indexed, then handed to the renderer's own importer, which reads the format natively[^gp] |
 
 A PDF is a fixed rendering, so the notation/tab toggle belongs to the
 structured formats — and to a transcription made from a PDF, which is what the
 side-by-side view is for. There's a bundled demo (sidebar → *Notation/tab
 demo*) if your library is PDF-only so far.
+
+[^gp]: Checked against a real, original fixture: `web/test-fixtures/guitar-pro-import-fixture.gp`, a few original bars built with alphaTab's own exporter from the alphaTeX source committed beside it, never a borrowed arrangement. `web/tests/browser/guitar-pro-import.spec.js` uploads it through the real `/api/upload` path and the real scanner, opens it through the real `Viewer` → `TabViewer` → `score-render.js` path, and checks the bar count, note count and tuning the real importer actually produced.
 
 ## Roadmap
 
