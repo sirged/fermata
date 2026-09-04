@@ -90,9 +90,11 @@ jobs:
   browser:
     name: Browser tests
     runs-on: ubuntu-latest
-    # Well above the ~75s this takes, and below the six-hour default a hung
-    # browser would otherwise sit burning.
-    timeout-minutes: 15
+    # The suite itself takes about 7.6 minutes; 25 covers that plus a
+    # worst-observed 7.7-minute setup, with headroom. The caching below is
+    # the fix for that setup variance - this is only the floor under it, not
+    # a substitute for it.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -103,6 +105,18 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
+      # setup-node's cache above only persists npm's download cache, which
+      # still leaves `npm ci` making per-package registry calls whose
+      # latency varies run to run. Caching the installed tree itself, keyed
+      # on the lockfile so any dependency change invalidates it, lets a hit
+      # skip the network entirely and land on PR branches the same as main
+      # pushes.
+      - name: Cache node_modules
+        id: node-modules-cache
+        uses: actions/cache@v4
+        with:
+          path: web/node_modules
+          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('web/package-lock.json') }}
       # This suite drives the real backend serving the real build, because a
       # passing build proves nothing about whether anything rendered - so both
       # halves are installed here. Playwright starts the server itself; see
@@ -111,16 +125,29 @@ jobs:
         working-directory: server
         run: pip install -e .
       - name: Install web
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
         working-directory: web
         run: npm ci
       - name: Build
         working-directory: web
         run: npm run build
+      # Keyed on Playwright's own version rather than the whole lockfile, so
+      # a change to an unrelated dependency doesn't force a re-download of
+      # the browser binaries this cache exists to avoid.
+      - name: Read Playwright version
+        id: playwright-version
+        working-directory: web
+        run: |
+          version=$(node -p "require('./package-lock.json').packages['node_modules/playwright'].version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Cache browser
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+      # --with-deps installs OS packages (fonts, libgtk, ...) that live
+      # outside the cached path above, so this always has to run - a browser
+      # cache hit only skips the binary download inside it, not this step.
       - name: Install browser
         working-directory: web
         run: npx playwright install --with-deps chromium
