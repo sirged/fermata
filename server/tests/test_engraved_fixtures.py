@@ -2582,12 +2582,28 @@ def _reset_skip_counters(monkeypatch):
     counters are module-level state shared across the whole run, not reset
     between tests by pytest itself. Discovering every `*_skips` list on
     `conftest` rather than naming them one at a time means a counter added
-    later is covered without anyone remembering to touch this fixture too."""
+    later is covered without anyone remembering to touch this fixture too -
+    PROVIDED it keeps to the `*_skips`-list convention. A counter that
+    doesn't (a differently named attribute, or one typed as a set rather
+    than a list) would narrow this fixture's coverage silently, which is the
+    same failure mode this fixture exists to close - so the two counters
+    `pytest_terminal_summary` is known to read today are asserted found
+    below, not just discovered ones cleared."""
     import conftest
 
+    found = set()
     for name in dir(conftest):
         if name.endswith("_skips") and isinstance(getattr(conftest, name), list):
             monkeypatch.setattr(conftest, name, [])
+            found.add(name)
+
+    known = {"_library_skips", "_node_modules_skips"}
+    assert known <= found, (
+        f"expected skip counters {sorted(known - found)} were not discovered by the "
+        "'*_skips list' convention this fixture relies on - renamed, retyped (e.g. a "
+        "set instead of a list), or removed from conftest without updating this "
+        "fixture's assumption"
+    )
 
 
 def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(
@@ -2640,8 +2656,8 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(
 def test_the_summary_says_how_many_tests_skipped_for_want_of_node_modules(
         monkeypatch, _reset_skip_counters):
     """The same loud skip as the library one above, for `web/node_modules`
-    (issue #134 adversarial review, item 7): nine tests - including
-    score_s's and playback-order headline cases - used to skip in
+    (issue #134 adversarial review, item 7): a double-digit slice of tests -
+    including score_s's and playback-order headline cases - used to skip in
     total silence when `npm ci` had not been run in web/, and nothing said
     so unless a reader compared this run's summary against CI's by hand."""
     import conftest
@@ -2666,14 +2682,12 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_node_modules(
     assert "2 test(s) skipped for want of web/node_modules" in reporter.lines[0]
 
 
-def test_the_summary_reports_node_modules_skips_alone_when_the_library_ran_clean(
+def test_the_summary_says_one_test_skipped_for_want_of_node_modules(
         monkeypatch, _reset_skip_counters):
-    """The mixed case neither test above covers: a library counter that is
-    empty because the run genuinely exercised it (or never needed it) beside
-    a node_modules counter that is not, because `web/node_modules` really is
-    missing. The summary must carry exactly the node_modules line and say
-    nothing about the library - the two counters are independent and the
-    summary must not conflate an empty one with a suppressed other."""
+    """The single-skip boundary of the node_modules counter. The sibling test
+    above only ever exercises it at 2, so a hook that special-cased "more
+    than one" (or otherwise mishandled the count=1 case) would pass there and
+    still be wrong - this pins the line at its smallest non-zero count."""
     import conftest
 
     monkeypatch.delenv("FERMATA_TEST_LIBRARY", raising=False)
