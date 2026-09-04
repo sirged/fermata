@@ -52,6 +52,15 @@ npm ci
 npm run build
 ```
 
+Frontend tests — unit specs and the browser suite, which drives a real backend
+serving the build, so `npm run build` has to have run first:
+
+```bash
+cd web
+npx playwright install --with-deps chromium
+npm run test:browser
+```
+
 Whole thing, as it actually ships:
 
 ```bash

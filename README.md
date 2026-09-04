@@ -23,10 +23,13 @@ them.
 - **PDF practice reader** — continuous or paged reading, keyboard/pedal page
   turns (any Bluetooth pedal that sends arrow keys works), remembers your last
   page per piece, and a dark "practice room" inversion mode.
-- **Notation / tab / both** — MusicXML and Guitar Pro files render
-  interactively and can be switched between standard notation, tablature, or
-  both staves at once, with audio playback, adjustable speed, and a moving
-  cursor. The built-in synthesizer also drives practice tools: drag-select a
+- **Notation / tab / both** — MusicXML files render interactively and can be
+  switched between standard notation, tablature, or both staves at once, with
+  audio playback, adjustable speed, and a moving cursor. Guitar Pro files are
+  accepted by the scanner and handed to the same renderer's importer, which
+  reads that format natively; nothing in this repository covers that path
+  end to end, so it is untested here rather than proven. The built-in
+  synthesizer also drives practice tools: drag-select a
   passage on the score to loop it, plus a count-in. The
   staff is themed to match the interface, lays itself out differently on a
   phone, a tablet on a stand and a desktop, and can be drawn dark for
@@ -54,7 +57,9 @@ them.
   read and are not transcribed. A tie is written where the curve joining its
   two notes was matched, and a note the engraving marks as a harmonic is
   written as one; a tie drawn across a system break is not matched, and the
-  ends of it that were found are counted rather than half-written.
+  ends of it that were found are counted rather than half-written. A whole
+  library, or one collection, transcribes in a single background pass rather
+  than one score at a time.
 - **Instruments** — define what you actually play: any number of strings, any
   tuning including reentrant ones, a capo, and a reference pitch other than
   A440. Each string shows the note and frequency it sounds and can be played,
@@ -96,6 +101,14 @@ them.
   accuracy percentage and no streak, and a note you could not name is what the
   practice consists of. The time lands in your practice history as ear training
   and counts towards a weekly goal like anything else.
+- **Fretboard drills** — *Fret to note* asks in both directions: a position is
+  shown and you name what it sounds, or a note is named and you tap where it
+  lies. *Chord flash cards* does the same for major, minor and seventh shapes.
+  Either can be narrowed to the strings, the fret range and the key you are
+  actually working on, and every answered question is stored as a structured
+  row — which positions and which chords were missed, counted, never divided
+  into an accuracy percentage ([the data model](docs/practice-data.md)). The
+  time lands in your practice history like anything else.
 - **Weekly goals, and an honest review** — how many days you mean to practise
   and for how long, on what. While the week runs it says where you stand so the
   goal can still change it; afterwards it states plainly what happened and asks
@@ -214,7 +227,7 @@ it — see [the tab profile](docs/musicxml-tab-profile.md#checking-a-file).
 | PDF, engraved without tab | Practice reader; nothing to transcribe from |
 | PDF, scanned | Practice reader only — a scan holds no text or glyphs to read |
 | MusicXML (`.musicxml`, `.mxl`) | Interactive: notation / tab / both, audio, full fidelity |
-| Guitar Pro (`.gp3`–`.gp5`, `.gpx`, `.gp`) | Interactive: notation / tab / both, audio |
+| Guitar Pro (`.gp3`–`.gp5`, `.gpx`, `.gp`) | Scanned and indexed, then handed to the renderer's own importer, which reads the format natively — **untested here**: no fixture, no end-to-end test |
 
 A PDF is a fixed rendering, so the notation/tab toggle belongs to the
 structured formats — and to a transcription made from a PDF, which is what the
@@ -234,12 +247,15 @@ demo*) if your library is PDF-only so far.
 - **Instrument-aware transcription** — reading a score against the instrument it
   is written for, instead of assuming standard six-string tuning whatever the
   score says
-- **Score creation and editing** — build a staff from scratch in the browser,
-  instrument-agnostic with first-class guitar tablature support
+- **Score creation from scratch** — a blank staff built in the browser,
+  instrument-agnostic with first-class guitar tablature support. Editing the
+  notes, rhythms and spellings of a staff that already exists works today;
+  starting from nothing does not
 - **More import formats** — MIDI and plain-text tab in particular, since those
   accompany most freely-licensed sheet music you can download
-- **A fretboard trainer** — note finding, chord flash cards and reach drills,
-  scoped to the strings and frets you are working on
+- **Interval and reach drills** — finding the third, the fifth or the octave
+  from a given position, and widening a fret span on purpose. The fretboard
+  drills that exist today test recall, not reach
 - Recognition for what you have accomplished over time
 - Annotations on PDFs (fingerings, markings)
 - Multi-user accounts (reverse proxy authentication - trusting a login a
