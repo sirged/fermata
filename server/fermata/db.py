@@ -209,7 +209,7 @@ _PRACTICE_SCHEMA = (
 #
 # `drill` is a free second axis on purpose, alongside `direction`: fret to
 # note is the first trainer to write here, and is not assumed to be the last
-# fretboard exercise this table will ever hold (#26, #29). Widening the
+# fretboard exercise this table will ever hold. Widening the
 # CHECK in trainer.py's DRILLS is how a second one arrives; the table itself
 # needs no migration for that.
 #

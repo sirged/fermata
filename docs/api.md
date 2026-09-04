@@ -68,7 +68,8 @@ expectations are:
   credential of its own. The one identity this API knows about comes from
   outside it: with reverse-proxy authentication configured, a request that
   did not arrive from a trusted proxy carrying the configured header is
-  refused with `401`, and `GET /api/me` reads back the username the proxy
+  refused with `401` (`GET /api/health` alone stays open, so a load balancer
+  can probe it), and `GET /api/me` reads back the username the proxy
   vouched for. That is off by default — unset, every request behaves exactly
   as it did before it existed, `GET /api/me` answers `{"enabled": false,
   "username": null}`, and nothing else in the API acts on an identity either
