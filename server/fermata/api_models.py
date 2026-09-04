@@ -184,6 +184,15 @@ class ScoreOut(BaseModel):
     deleted_from: str | None
     added_at: str
     instrument_id: int | None
+    # #8: musical metadata about the piece. `key` is a MusicXML `fifths`
+    # count (-7..7), never a key NAME - see the comment over db._SCORES_COLUMNS
+    # for why a name would state a mode nothing here determines. `tempo` is a
+    # manual bpm and `difficulty` a manual 1-5 rating; neither is ever
+    # inferred. See api.ScorePatch and api._store_extraction_result for how
+    # each is written.
+    key: int | None
+    tempo: int | None
+    difficulty: int | None
     tags: list[str]
     has_transcription: bool
     practice_seconds: int
