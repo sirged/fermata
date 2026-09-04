@@ -29,8 +29,8 @@ them.
   accepted by the scanner and handed to the same renderer's importer, which
   reads that format natively; nothing in this repository covers that path
   end to end, so it is untested here rather than proven. The built-in
-  synthesizer also drives practice tools: drag-select a
-  passage on the score to loop it, plus a count-in. The
+  synthesizer also drives practice tools: drag-select a passage on the score
+  to loop it, plus a count-in. The
   staff is themed to match the interface, lays itself out differently on a
   phone, a tablet on a stand and a desktop, and can be drawn dark for
   practising in the dark — see [how scores are rendered](docs/rendering.md) for
