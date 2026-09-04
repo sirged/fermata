@@ -256,31 +256,39 @@ async function pdfSettleStamp(page) {
  * neither of the two offsets this box produces - that number is unexplained,
  * NOT a measured pane geometry, and no barrier can name it in advance.
  *
- * So the barrier waits for the viewer's own claim instead. Nothing else in
- * these tests waits for the scroll at all (#234):
+ * So the barrier waits for the viewer's own claim instead. The settled-width
+ * barrier these tests already had cannot stand in for it: it is about canvas
+ * WIDTHS, which reach their final value INSIDE PdfViewer's re-render loop -
+ * each canvas is sized before its page is drawn - while the loop restores the
+ * scroll only after the LAST page has finished drawing. After it sits a
+ * window where the pages are already their settled size but the reader is
+ * still at the offset the pre-render geometry produced, and a fraction read
+ * there is a pre-render offset over a post-render page height. Measured at
+ * the moment that barrier returns, with the restore delayed 40 frames past
+ * the last page's draw, 5 of 5 runs: scrollTop 313 over an 1100px page,
+ * 0.2627 - under the 0.35 the indicator test asserts.
  *
- *   - the settled-width barrier is about canvas WIDTHS, which reach their
- *     final value INSIDE PdfViewer's re-render loop - each canvas is sized
- *     before its page is drawn - while the loop restores the scroll only
- *     after the LAST page has finished drawing;
- *   - the indicator poll agrees trivially all the way down page one (the HUD
- *     says "1 / 2" and page one is the most visible page at every scrollTop
- *     these turns pass through).
+ * An earlier version of this barrier waited instead for two consecutive
+ * animation frames with an unchanged scrollTop, and that was decorative:
+ * inside that window the pane is perfectly still, so it returned "at rest" on
+ * its first evaluation. Stillness is not the property that matters; having
+ * restored is. This waits for the counter to ADVANCE past a value captured
+ * before the press, so a stamp left over from an earlier settle cannot
+ * satisfy it, and it throws on timeout naming the attribute rather than
+ * falling through to the assertion.
  *
- * Between them sits a window where the pages are already their settled size
- * but the reader is still at the offset the pre-render geometry produced, and
- * a fraction read there is a pre-render offset over a post-render page
- * height: 0.2627, under the 0.35 those tests assert.
- *
- * An earlier version of this barrier waited for two consecutive animation
- * frames with an unchanged scrollTop. That was shown to be decorative: with
- * the restore delayed 40 frames past the last page's draw, the pane is
- * perfectly still for the whole window, the barrier returned "at rest" on its
- * first evaluation and the test read 0.2627 anyway. Stillness is not the
- * property that matters; having restored is. This waits for the counter to
- * ADVANCE past a value captured before the press, so a stamp left over from
- * an earlier settle cannot satisfy it, and it throws on timeout naming the
- * attribute rather than falling through to the assertion.
+ * One thing worth saying about the indicator test in particular, because it
+ * was previously written down the wrong way round: its `pdfIndicatorAgrees`
+ * poll does NOT agree trivially there. Measured at the pre-restore offset,
+ * 3 of 3: the HUD reads "2 / 2" over a pane showing page one, because at the
+ * narrow pre-render geometry a half turn brought page two past the 0.4
+ * intersection threshold and the observer said so. The poll therefore waits
+ * for the re-derivation in flushResize, which happens in the same frame this
+ * stamp is written - so today it screens the early read by accident. That
+ * accident is geometric: raise the threshold so the observer never fires
+ * mid-turn and the HUD agrees at once, and with this barrier removed the test
+ * reads 0.2627 in 5 of 5 runs and fails on the band. This barrier is what
+ * makes the screening deliberate and independent of the threshold.
  */
 async function pdfSettlesPast(page, stamp, timeout) {
   const was = stamp === null ? "absent" : stamp;
@@ -1347,8 +1355,10 @@ test.describe("gig mode itself", () => {
 
     await pdfPagesRenderedAtSettledWidth(page);
     // The turn's own barrier, and the only one here that is about the SCROLL
-    // rather than the render (#234) - see pdfSettlesPast for what the two
-    // lines around it do not cover.
+    // rather than the render (#234). The indicator poll below happens to
+    // screen the same early read at this threshold and this geometry; see
+    // pdfSettlesPast for the measurement, and for why that is an accident
+    // worth not depending on.
     await pdfSettlesPast(page, settled);
     await pdfIndicatorAgrees(page, 2);
 
