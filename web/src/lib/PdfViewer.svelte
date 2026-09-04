@@ -82,6 +82,19 @@
   // indicator independent of whether that one callback survives.
   let intendedPage = null;
   let settleTimer;
+  // The scroll position this component last asked for on the reader's
+  // behalf, as a page plus a fraction down it, and a counter of how many
+  // times that has happened.
+  //
+  // intendedPage above answers "which page does the INDICATOR belong on
+  // while a turn settles". This answers the different question a resize
+  // re-render has to ask: "did the reader ask to be somewhere else while I
+  // was busy, and where". A whole-page turn and a half-page one are both
+  // recorded here, in the same shape, so the re-render's restore does not
+  // have to know which kind it is putting back - which is the reason the
+  // half-page branch went uncovered by #169 and #175 in the first place.
+  let requestedScroll = null;
+  let scrollRequestSeq = 0;
 
   // half-page advance defaults on each time gig mode is entered, but the
   // performer can still turn it off without it snapping back mid-set
@@ -147,21 +160,11 @@
       }
     }
 
-    // Where a page's top edge sits in the scroller's own coordinates. Read
-    // off rects rather than offsetTop, which is measured against whichever
-    // ancestor happens to be positioned - .wrap here, not the scroller - and
-    // so would carry that element's own offset into the arithmetic below.
-    function pageTop(canvas) {
-      return (
-        canvas.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
-      );
-    }
-
     async function rerenderAtWidth(width) {
       renderedWidth = width;
       const dpr = window.devicePixelRatio || 1;
-      // How far down the current page the reader actually is, as a fraction
-      // of that page's height, captured BEFORE the canvases change size.
+      // Where the reader is, as a page plus a fraction down it, captured
+      // BEFORE the canvases change size.
       //
       // The restore below used to aim at the page's TOP, which discards
       // every within-page position there is - and in gig mode that is most
@@ -171,12 +174,21 @@
       // turned to, with nothing left to retry it: the same shape as #168 and
       // #175, on the one branch of turn() neither of them covered, and
       // entering gig mode is exactly the moment both happen together
-      // (widening the pane forces the re-render). Measured on this branch, a
-      // 2-page score entering gig mode: the tap left the scroller at 313px
-      // and the re-render's restore put it back to 24px, page one's top.
-      const anchor = container.querySelector(`[data-page="${currentPage}"]`);
-      const anchorHeight = anchor ? anchor.getBoundingClientRect().height : 0;
-      const fractionDownPage = anchorHeight ? (container.scrollTop - pageTop(anchor)) / anchorHeight : 0;
+      // (widening the pane forces the re-render). Measured, a 2-page score
+      // entering gig mode: the tap left the scroller at 313px and the
+      // restore put it back to 24px, page one's top.
+      //
+      // Read off the geometry rather than off currentPage, which is a moving
+      // target: the awaits below take hundreds of milliseconds, a key press
+      // inside them runs goto() and changes currentPage synchronously, and
+      // measuring the fraction against the page BEFORE and restoring against
+      // the page AFTER silently adds one page's intra-page offset to a
+      // different page's top. Measured on a 20-page score, reader a third
+      // down page one and a turn pressed mid-re-render: the restore landed
+      // 140px past page two's top, scaling with how far down page one they
+      // had been.
+      const before = positionAt(container.scrollTop);
+      const seqBefore = scrollRequestSeq;
       // re-render the existing canvases in place (same elements, same
       // order) so the IntersectionObserver's page tracking keeps working
       // without needing to be torn down and reattached
@@ -188,12 +200,19 @@
         await renderPageInto(page, canvas, width, dpr);
       }
       if (cancelled) return;
-      // canvases changed height, so restore scroll to wherever the reader
-      // was rather than let it drift to an arbitrary pixel offset - to the
-      // same fraction down the same page, not merely to that page's top
-      const restored = container.querySelector(`[data-page="${currentPage}"]`);
+      // A turn taken DURING the re-render outranks where the reader was when
+      // it started - it is the most recent thing they asked for, and it is
+      // the one with nothing to retry it if this restore overwrites it. A
+      // whole-page turn asks for that page's top; a half-page one asks for
+      // an offset within a page, and both say so the same way, so this does
+      // not have to know which kind it was.
+      const target = scrollRequestSeq !== seqBefore ? requestedScroll : before;
+      // canvases changed height, so restore scroll to wherever that position
+      // now is rather than let it drift to an arbitrary pixel offset - the
+      // same fraction down the same page, not merely that page's top
+      const restored = target && container.querySelector(`[data-page="${target.page}"]`);
       if (restored) {
-        container.scrollTop = pageTop(restored) + fractionDownPage * restored.getBoundingClientRect().height;
+        container.scrollTop = pageTop(restored) + target.fraction * restored.getBoundingClientRect().height;
       }
     }
 
@@ -293,6 +312,7 @@
       // permission to skip the new one's last_page restore
       pendingPage = null;
       turnedBeforeRestore = false;
+      requestedScroll = null;
       observer?.disconnect();
       resizeObserver?.disconnect();
       clearTimeout(saveTimer);
@@ -310,6 +330,41 @@
     saveTimer = setTimeout(() => api.patch(score.id, { last_page: currentPage }).catch(() => {}), 1200);
   }
 
+  // Where a page's top edge sits in the scroller's own coordinates. Read off
+  // rects rather than offsetTop, which is measured against whichever
+  // ancestor happens to be positioned - .wrap here, not the scroller - and
+  // so would carry that element's own offset into the arithmetic.
+  function pageTop(canvas) {
+    return canvas.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+  }
+
+  // A scroll offset said as a page plus a fraction down it, which is the
+  // only form that survives the pages being re-rendered at another height.
+  // The gap between two pages is attributed to the one above it (a fraction
+  // slightly over 1) so that every offset belongs to exactly one page and
+  // the mapping stays monotonic.
+  function positionAt(scrollTop) {
+    for (let n = pageCount; n >= 1; n--) {
+      const canvas = container.querySelector(`[data-page="${n}"]`);
+      if (!canvas) continue;
+      const top = pageTop(canvas);
+      if (scrollTop >= top || n === 1) {
+        const height = canvas.getBoundingClientRect().height;
+        return { page: n, fraction: height ? (scrollTop - top) / height : 0 };
+      }
+    }
+    return null;
+  }
+
+  // Records a scroll this component is about to perform, so a resize
+  // re-render already in flight puts the reader where they just asked to be
+  // rather than back where they were when it started.
+  function requestScroll(position) {
+    if (!position) return;
+    requestedScroll = position;
+    scrollRequestSeq += 1;
+  }
+
   function goto(page) {
     // pageCount is 0 until the document's metadata has parsed. Clamping
     // against it then would fold every early turn onto page 1 - which is
@@ -325,6 +380,8 @@
       // asked for rather than the last one that happened to be seen.
       intendedPage = target;
       setPage(target);
+      // The top of that page, which is what scrollIntoView below asks for.
+      requestScroll({ page: target, fraction: 0 });
       canvas.scrollIntoView({ block: "start", behavior: "smooth" });
     } else {
       pendingPage = target;
@@ -342,7 +399,13 @@
       // step off the current page's actual rendered height (plus its share
       // of the gap) rather than the viewport, so repeated half-turns track
       // bar lines instead of drifting against page/container padding
-      container.scrollBy({ top: dir * (current.getBoundingClientRect().height + 18) * 0.5, behavior: "smooth" });
+      const step = dir * (current.getBoundingClientRect().height + 18) * 0.5;
+      // Where that leaves the reader, recorded before the scroll is asked
+      // for. Same reason goto() records its own target: a resize re-render
+      // in flight will otherwise put them back where this step started, and
+      // a pedal tap has nothing to retry it with.
+      requestScroll(positionAt(container.scrollTop + step));
+      container.scrollBy({ top: step, behavior: "smooth" });
     } else {
       goto(currentPage + dir);
     }

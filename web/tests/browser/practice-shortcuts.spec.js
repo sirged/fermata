@@ -158,7 +158,7 @@ const pdfGeometry = (page) =>
  * fact about the render having completed, not an interval hoped to be long
  * enough.
  */
-async function pdfPagesRenderedAtSettledWidth(page) {
+async function pdfPagesRenderedAtSettledWidth(page, timeout) {
   await expect
     .poll(() =>
       page.evaluate(() => {
@@ -168,7 +168,7 @@ async function pdfPagesRenderedAtSettledWidth(page) {
         const want = Math.min(scroller.clientWidth - 32, 1100);
         const widths = [...new Set(pages.map((p) => Math.round(p.getBoundingClientRect().width)))];
         return widths.length === 1 && widths[0] === want ? "settled" : `rendered ${widths} of ${want}`;
-      }),
+      }, timeout ? { timeout } : undefined),
     )
     .toBe("settled");
 }
@@ -804,6 +804,47 @@ test.describe("a page turn pressed before the PDF has rendered", () => {
     await expect(page.locator(".hud span")).toHaveText("2 / 2");
   });
 
+  // The same press, in gig mode, which is where it actually comes from: a
+  // pedal tap on a score that has just been opened, with no mouse to fall
+  // back on (issue #106's reasoning, and #92's).
+  //
+  // Gig mode is not the same code path. turn() takes its half-page branch
+  // there, and only falls through to goto() - the one that can remember a
+  // turn it cannot yet perform - while no canvas exists to measure a half
+  // page against. So "a press is honoured once the pane settles" has to be
+  // held open in gig mode too rather than inferred from the side-by-side
+  // test above. #219's rewrite of the gig page-turn test deliberately waits
+  // for the pane before pressing, which is right for what that test is
+  // about and leaves nothing standing here; this is that cover, and unlike
+  // the press it replaces it is held open rather than raced for.
+  test("is honoured in gig mode too, where a pedal tap comes from", async ({ page }) => {
+    await stubScoreApi(page, transcriptionResponse({ warnings: [], confidence: CLEAN_CONFIDENCE }));
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    await page.route("**/api/scores/1/file", async (route) => {
+      await held;
+      await route.fulfill({ body: buildMultiPagePdf(2), contentType: "application/pdf" });
+    });
+    await page.goto("/#/score/1");
+    await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+
+    await page.keyboard.press("f");
+    // The layout picker only renders outside gig mode, so its disappearance
+    // is the evidence gig mode is genuinely on - same check, same reason, as
+    // the gig describe below.
+    await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
+    // Nothing of the document has been read yet: no page count, no canvases,
+    // and so nothing for a half page to be measured against.
+    await expect(page.locator(".hud span")).toHaveText("1 / …");
+    await expect(page.locator(".pdf-page")).toHaveCount(0);
+
+    await page.keyboard.press("ArrowRight");
+    release();
+
+    await expect(page.locator(".pdf-page")).toHaveCount(2);
+    await expect(page.locator(".hud span")).toHaveText("2 / 2");
+  });
+
   // The residual the test above does not reach, and the one that took CI on
   // #173's branch three times running. That test proves a turn pressed
   // before any canvas EXISTS is remembered. This one is about a turn pressed
@@ -841,6 +882,113 @@ test.describe("a page turn pressed before the PDF has rendered", () => {
     await page.keyboard.press("ArrowRight");
 
     await expect(page.locator(".hud span")).toHaveText("2 / 20");
+  });
+
+  // The same press, but from a reader who was PART WAY DOWN a page when it
+  // landed - which the test above never is, and which is what tells a
+  // restore that puts the reader back where they were from one that puts
+  // them where they asked to go.
+  //
+  // A re-render measures where to put the reader back before it starts and
+  // acts on it several hundred milliseconds later, after every canvas has
+  // been redrawn. A turn pressed inside that gap moves the reader between
+  // the two, so the two halves have to be talking about the same place: a
+  // fraction measured down page one and then applied to page two's top puts
+  // them a third of a page past where they asked to be, and the error grows
+  // with how far down the previous page they had been. A whole-page turn
+  // asks for the TOP of its page and has to arrive there exactly.
+  test("a turn pressed mid-re-render lands on the top of the page it asked for", async ({ page }) => {
+    await stubScoreApi(page, transcriptionResponse({ warnings: [], confidence: CLEAN_CONFIDENCE }));
+    await page.route("**/api/scores/1/file", (route) =>
+      route.fulfill({ body: buildMultiPagePdf(20), contentType: "application/pdf" }),
+    );
+    await page.goto("/#/score/1");
+    await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+    await expect(page.locator(".pdf-page")).toHaveCount(20, { timeout: 15_000 });
+    await expect(page.locator(".hud span")).toHaveText("1 / 20");
+    await page.waitForTimeout(600);
+
+    // A third of the way down page one, the way a reader who has been
+    // reading gets there. Nothing about the turn below depends on the exact
+    // fraction; it only has to be a position the old restore could smear
+    // onto the next page's top, which any non-zero one is.
+    const start = await pdfGeometry(page);
+    await page.evaluate((to) => (document.querySelector(".pages").scrollTop = to), start.pageOneTop + start.pageHeight / 3);
+    await expect(page.locator(".hud span")).toHaveText("1 / 20");
+
+    await page.setViewportSize({ width: 900, height: 720 });
+    await page.waitForTimeout(230);
+    await page.keyboard.press("ArrowRight");
+
+    await pdfPagesRenderedAtSettledWidth(page);
+    await expect(page.locator(".hud span")).toHaveText("2 / 20");
+    const after = await pdfGeometry(page);
+    expect(after.pageHeight).toBeLessThan(start.pageHeight);
+    await pdfScrollSettlesAt(page, after.pageTwoTop, "the top of page two");
+  });
+
+  // The gig-mode counterpart, and the order a pedal actually produces. The
+  // two tests above press a WHOLE-page turn, which asks for a page's top; a
+  // gig-mode tap asks for an offset half way down one, and that is a
+  // different thing for a restore to preserve. It is also the sequence
+  // entering gig mode creates all by itself: widening the pane starts a
+  // re-render, so the first tap of the set lands inside it.
+  //
+  // Preserving where the reader WAS is not enough here. That position is
+  // half a page behind where the tap just asked to be, so putting them back
+  // there is the press being thrown away by a second route, after the one
+  // #219's first commit closed. Measured against that commit: the tap left
+  // the reader at -0.022 of a page down, the same place a restore aiming at
+  // the page's top leaves them.
+  //
+  // Twenty pages, and the resize is issued 230ms before the key, for the
+  // same reason as the test above it: so the re-render is provably still in
+  // flight when the press lands rather than only on a slow runner. A
+  // two-page score re-renders faster than the press arrives and proves
+  // nothing - checked, and it passes against the very commit it is meant to
+  // fail.
+  test("a half-page gig turn pressed mid-re-render is honoured, not rolled back", async ({ page }) => {
+    await stubScoreApi(page, transcriptionResponse({ warnings: [], confidence: CLEAN_CONFIDENCE }));
+    await page.route("**/api/scores/1/file", (route) =>
+      route.fulfill({ body: buildMultiPagePdf(20), contentType: "application/pdf" }),
+    );
+    await page.goto("/#/score/1");
+    await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+    await expect(page.locator(".pdf-page")).toHaveCount(20, { timeout: 15_000 });
+    await expect(page.locator(".hud span")).toHaveText("1 / 20");
+    await page.waitForTimeout(600);
+
+    // Windowed gig mode - the path Viewer.svelte already carries a catch for
+    // ("fullscreen denied or unavailable; gig mode still works windowed"),
+    // and the only one a test can resize: a fullscreen window refuses
+    // setViewportSize outright. Half-page turning, the pane widening and the
+    // re-render this is about are all the same either way.
+    await page.evaluate(() => {
+      Element.prototype.requestFullscreen = () => Promise.reject(new Error("denied"));
+    });
+    await page.keyboard.press("f");
+    await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
+    // Gig mode's own re-render, out of the way before the one under test.
+    await pdfPagesRenderedAtSettledWidth(page, 15_000);
+    const before = await pdfGeometry(page);
+    // Still at the start of page one, so the offset measured at the end is
+    // the tap's own doing and not somewhere the reader already was.
+    expect((before.scrollTop - before.pageOneTop) / before.pageHeight).toBeLessThan(0.05);
+
+    await page.setViewportSize({ width: 900, height: 720 });
+    await page.waitForTimeout(230);
+    await page.keyboard.press("ArrowRight");
+
+    await pdfPagesRenderedAtSettledWidth(page, 15_000);
+    const after = await pdfGeometry(page);
+    expect(after.pageHeight).toBeLessThan(before.pageHeight);
+    // Half a page on from where the tap was taken, give or take which
+    // canvases had already been redrawn when it measured its step. Bounded
+    // on BOTH sides: below 0.35 the tap was rolled back, above 0.65 it would
+    // have been counted twice.
+    const fraction = (after.scrollTop - after.pageOneTop) / after.pageHeight;
+    expect(fraction).toBeGreaterThan(0.35);
+    expect(fraction).toBeLessThan(0.65);
   });
 });
 
@@ -914,6 +1062,11 @@ test.describe("gig mode itself", () => {
     // The key reached the PDF pane, and moved it by exactly a half turn.
     await pdfScrollSettlesAt(page, before.scrollTop + step, "half a page on");
     // Deliberately still page one: half a page in, with half of it left.
+    // This one line does depend on the geometry it is asserting about - half
+    // a page leaves page two under PdfViewer's 0.4 intersection threshold at
+    // this viewport, so a change to that threshold, to the 18px inter-page
+    // gap, or to the suite's viewport reds it for a reason that has nothing
+    // to do with the keys. The scroll assertions either side of it do not.
     await expect(page.locator(".hud span")).toHaveText("1 / 2");
 
     await page.keyboard.press("ArrowRight");
