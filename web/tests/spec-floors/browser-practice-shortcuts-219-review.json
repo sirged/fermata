@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/practice-shortcuts.spec.js",
+  "count": 3,
+  "reason": "issue #219 review: a whole-page turn pressed mid-re-render lands on its page's top rather than one page's intra-page offset added to another page's top; a half-page turn pressed mid-re-render is honoured rather than rolled back to where the re-render started; and a gig-mode page turn pressed before the pane has rendered at all is honoured once it does, which the rewritten gig page-turn test no longer covers because it waits for the pane on purpose."
+}
