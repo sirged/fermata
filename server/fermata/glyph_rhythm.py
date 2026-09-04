@@ -192,7 +192,7 @@ MAESTRO_GID_MAP = {
     # presumably how the wrong label was arrived at; the segno adds the
     # S-curve through the slash, and at 900 dpi there is no mistaking one for
     # the other. Rendered from the page - not from the font in isolation - at
-    # its drawn size for score_aa p1 and "Score A" (a real library score) p1:
+    # its drawn size for score_aa p1 and "unpinned score 1" (a real library score) p1:
     # an unmistakable segno both times.
     # Corroborated by what the pages say: this library draws GID 4 88 times
     # across 84 files, and all 84 print a "D.S." somewhere; not one file
@@ -208,7 +208,7 @@ MAESTRO_GID_MAP = {
     # claims for itself and the standard the two entries below were held to.
     #
     # GID 68 was likewise labelled "trill" and is an ARPEGGIO wiggle segment:
-    # rendered from "Score B" (a real library score) p1,
+    # rendered from "unpinned score 2" (a real library score) p1,
     # where its 15 occurrences stand in three vertical stacks of five, each
     # stack drawn immediately before a chord and spanning it - which is how
     # an arpeggio roll is engraved, and is nothing like the horizontal "tr"
@@ -217,8 +217,8 @@ MAESTRO_GID_MAP = {
     #
     # digit7 (22) and digit9 (24) confirmed by rendering the actual glyph
     # outlines from real library files and eyeballing them: 22 from
-    # "Score C" (a real library score, a 7/8 signature), 24 from
-    # "Score D" (a real library score, a 9/8 signature) - same visual
+    # "unpinned score 3" (a real library score, a 7/8 signature), 24 from
+    # "unpinned score 4" (a real library score, a 9/8 signature) - same visual
     # verification method the rest of this table was built with. digit0 is
     # NOT mapped: it never turned up in a scan of the whole library's
     # Maestro-subset pages (Finale only embeds glyphs actually used, and no
@@ -2223,7 +2223,7 @@ def _beam_count_near(beams, stem, notehead_yc, tol):
     version of this function once rounded the tip offset to 0.1pt BEFORE
     comparing it against beam_y_tol, rather than after. Rounding units are
     points (see _Tol), and a genuine offset can sit inside the tolerance
-    while its rounded form sits outside it: "Score E" (a real library score),
+    while its rounded form sits outside it: "unpinned score 5" (a real library score),
     at this library's most common staff spacing of 5.125pt, has a stroke at
     offset -5.9711pt against a tolerance of 5.99625pt - inside the window
     unrounded, but rounds to -6.0pt and would be rejected. That is a level

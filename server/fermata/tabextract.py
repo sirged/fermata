@@ -428,7 +428,7 @@ class ExtractionResult:
     # is counted here rather than left unsaid, the same honesty pattern as
     # coincident_unsplit_pairs above. Expected to be small and specific: 16
     # across the library's 293 extractable scores, 12 of them on score_q
-    # and 4 on Score K, and 0 everywhere else.
+    # and 4 on unpinned score 11, and 0 everywhere else.
     unison_digits_shared: int = 0
     # Repeat barlines and volta brackets that were read only partly, and so
     # were omitted from the emitted MusicXML rather than written as a guess
@@ -672,7 +672,7 @@ STAFF_LINE_SIBLING_TOLERANCE = 2.0
 # finds 54 groups, and all 54 are real: every one comes back with exactly 11
 # rows - a 5-line notation staff and a 6-line tab staff ruled to the same x -
 # which is a side-by-side system and cannot be anything else. Their lengths
-# run from 0.1235 (Score A, 75.6pt) to 0.2488 (score_w), and
+# run from 0.1235 (unpinned score 1, 75.6pt) to 0.2488 (score_w), and
 # BELOW 0.1235 the scan finds nothing whatsoever down to 0.04. So the floor
 # is not separating staves from decorations - the sibling and spacing tests
 # are - and 0.10 is placed in the empty band under the smallest real staff,
@@ -689,10 +689,11 @@ SHORT_STAFF_LEN_RATIO = 0.10
 # floor and the sibling test is much tighter than either.
 #
 # Measured over the library at the floor above: 89 same-extent sibling groups
-# clear both of those tests and are refused here, from six files. Four draw a
-# title-block ornament whose rows alternate 2.5 and 1.3pt (Score M,
-# Score N, Score O, Score P); two method books draw
-# chord-grid rows at 2.4-2.7pt (Score Q, score_ai). Every real staff admitted alongside them has a minimum row
+# clear both of those tests and are refused here, from six files. Four draw
+# a title-block ornament whose rows alternate 2.5 and 1.3pt (unpinned
+# score 13, unpinned score 14, unpinned score 15, unpinned score 16); two
+# method books draw chord-grid rows at 2.4-2.7pt (unpinned score 17,
+# score_ai). Every real staff admitted alongside them has a minimum row
 # gap of 5.00pt or more, so 3.0 sits in a clear band: worst admitted 5.00,
 # closest refused 2.60.
 #
@@ -703,7 +704,7 @@ SHORT_STAFF_LEN_RATIO = 0.10
 # through the overlap would throw away real systems to catch ornaments it
 # would still miss. A future tuner should move this constant, not that one.
 #
-# Admitting them is not merely noisy, it costs real music: on Score M
+# Admitting them is not merely noisy, it costs real music: on unpinned score 13
 # p3 the ornament's rows fall in the same 15.0pt band as the page's first
 # notation staff and swallow it into an 11-line group, which is then
 # discarded.
@@ -989,7 +990,7 @@ def _detect_staves(page):
     READING ORDER IS NOT TOP ORDER, and that is why this returns an order at
     all. Two side-by-side systems have nearly equal `top`, and which of them
     is the smaller number is decided by the 1.5pt engraving offset above -
-    on Score M p3 the RIGHT-hand system is the higher one. Sorting
+    on unpinned score 13 p3 the RIGHT-hand system is the higher one. Sorting
     staves by `top` would therefore have put the coda system's bars BEFORE
     the bars of the system printed to its left. Callers order by
     (band, x0) - see _Staff.band.
@@ -1630,7 +1631,7 @@ def _read_volta_brackets(page, band_top, spacing, x0=None, x1=None):
     above a staff runs the width of the page: without this, the "2." bracket
     drawn over the left-hand system was found AGAIN for the right-hand one
     and written a second time onto the coda system's bar. Measured on
-    Score B, which emitted ending 2 over both bar 27 and
+    unpinned score 2, which emitted ending 2 over both bar 27 and
     bar 28. A page with one system per band passes its full width here and
     nothing is excluded.
     brackets is (left_x, right_x, line_y, number) left-to-right; hooks is
@@ -1905,8 +1906,8 @@ def _associate_voltas(brackets, hooks, barline_recs, bounds, lo, hi, staff_first
 # "simile" - so a census that swept the mapped glyphs and then swept the
 # UNMAPPED ones, twice over, could not see them either time. The consequence
 # here was not cosmetic: 86 files print a "D.S.", and (as of issue #154)
-# 84 of them do draw the sign it names. Only two do not - Score C and
-# Score D - written as
+# 84 of them do draw the sign it names. Only two do not - unpinned score 3 and
+# unpinned score 4 - written as
 # the words the page prints, with no <sound> jump attached, and counted
 # (nav_marks_unresolved). Inventing a segno at bar 1 for the other 84 would
 # have been the wrong fix for a problem that was a mislabelled table row.
@@ -2146,8 +2147,8 @@ def _read_navigation_marks(page):
     # A coda sign drawn INSIDE a "To Coda" instruction's own text line is
     # that instruction's reference glyph - the page is printing "To Coda ⊕",
     # naming the sign it sends the player to - and not a coda section head.
-    # 6 files in this library engrave it that way (Score E, score_ag,
-    # Score F, Score G, Score H, Score I), and reading it as a section head
+    # 6 files in this library engrave it that way (unpinned score 5, score_ag,
+    # unpinned score 6, unpinned score 7, unpinned score 8, unpinned score 9), and reading it as a section head
     # put the coda on the "To
     # Coda"'s own bar, whereupon that instruction pointed the player at
     # itself and `coda="coda"` was written twice in the same score. The test
@@ -2386,7 +2387,7 @@ def _apply_nav_marks(marks, bounds, staff_first_bar, spacing):
     reach it: the staff record it is measured against spans the whole page.
 
     Library-wide, bars carrying both a coda sign and a jump therefore go from
-    43 to 2 - score_ae's bar 52, above, and Score J
+    43 to 2 - score_ae's bar 52, above, and unpinned score 10
     bar 71, which is not a defect at all: that page really
     does print a one-bar system carrying both "(sign) Coda 1" and "D.S. 2".
 
@@ -3425,7 +3426,7 @@ def _share_unison_digits(heads, digits, taken, per_group):
     alone over one digit split across two voices, against 65 that are a
     coincident copy inside a fully named chord. Of those 65: 16 have their
     twin in ANOTHER voice and take the shared digit (12 on score_q,
-    4 on Score K), 48 have no coincident twin at the leftover
+    4 on unpinned score 11), 48 have no coincident twin at the leftover
     head's own position at all (see the limitation below - a different
     defect, not one this refuses), and exactly 1 is a pair both of whose
     copies stayed in one voice, refused below (Kids Run Through the City
@@ -4509,7 +4510,7 @@ def _resolve_ties(measures) -> _TieReport:
     THE HELD NOTE TAKES THE STRUCK NOTE'S STRING AND FRET, always, whatever
     the tab-matching pass gave it. That is not a repair of a defect elsewhere;
     it is what a tie IS. The second note of a tie is not plucked, so the
-    engraving prints no fret number under it - measured on Score L bar 6,
+    engraving prints no fret number under it - measured on unpinned score 12 bar 6,
     where the tab draws `0` under the
     struck sixteenth and nothing at all under the half note it is held into -
     and the rank match, which hands out whatever digits are near an onset,
