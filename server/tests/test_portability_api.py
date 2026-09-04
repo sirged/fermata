@@ -21,7 +21,7 @@ feature exists not to have.
 import hashlib
 import io
 import json
-import re
+
 import zipfile
 
 import pytest
@@ -333,20 +333,31 @@ def test_export_import_round_trip_is_lossless(client, library, add_score, tmp_pa
 # ---------------------------------------------------------------------------
 
 
-def test_export_table_names_matches_every_table_the_schema_creates():
-    """Every `CREATE TABLE IF NOT EXISTS` name in db.SCHEMA, minus nothing -
-    there is no allow-list of deliberately-not-portable tables (no FTS
-    shadow table, no sqlite-internal table) anywhere in this schema, so the
-    two sets have to be exactly equal. If a future table needs a real
-    exception (kept out of exports on purpose), it belongs in a commented
-    allow-list subtracted here - not a silent gap in EXPORT_TABLE_NAMES."""
-    schema_tables = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", db.SCHEMA))
-    # Sanity check on the regex itself: fewer than this would mean the
-    # pattern stopped matching real CREATE TABLE statements, which would let
-    # this test pass for the wrong reason (an empty or tiny schema_tables
-    # trivially failing to catch anything left out of EXPORT_TABLE_NAMES).
-    assert len(schema_tables) >= 12
-    assert schema_tables == set(api.EXPORT_TABLE_NAMES)
+def test_export_table_names_matches_every_table_the_schema_creates(client):
+    """Every user table a freshly initialised database actually contains,
+    read back from sqlite_master after `db.init_db()` has run the schema AND
+    the migrations - not the schema's text. A text match would go blind to a
+    table written without the exact `CREATE TABLE IF NOT EXISTS` phrasing or
+    created by a migration, which is the same silent gap #243 was (two tables
+    added to the schema, never to the export). The only exclusion is sqlite's
+    own bookkeeping (`sqlite_sequence`, from AUTOINCREMENT), which is not
+    user data. There is no allow-list of deliberately-not-portable tables; if
+    a future table needs one, it belongs in a commented set subtracted here,
+    not in a silent gap in EXPORT_TABLE_NAMES."""
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    finally:
+        conn.close()
+    live_tables = {row[0] for row in rows}
+    # Sanity floor on the catalog read itself: fewer than this would mean the
+    # query stopped seeing real tables, which would let this test pass for the
+    # wrong reason (a tiny live_tables trivially failing to catch anything left
+    # out of EXPORT_TABLE_NAMES).
+    assert len(live_tables) >= 12
+    assert live_tables == set(api.EXPORT_TABLE_NAMES)
 
 
 # ---------------------------------------------------------------------------
