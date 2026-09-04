@@ -75,12 +75,12 @@
   {:else if !loaded}
     <p class="quiet">Loading…</p>
   {:else}
-    {#if truncated}
-      <p class="quiet truncated">{truncationStatement({ returned: returnedCount, total })}</p>
-    {/if}
     {#if rows.length === 0}
       <p class="quiet empty-state">{NO_POSITIONS_STATEMENT}</p>
     {:else}
+      {#if truncated}
+        <p class="quiet truncated">{truncationStatement({ returned: returnedCount, total })}</p>
+      {/if}
       <ol>
         {#each rows as row (`${row.string}:${row.fret}`)}
           <li data-string={row.string} data-fret={row.fret} data-count={row.count}>
