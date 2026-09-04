@@ -235,44 +235,62 @@ async function pdfScrollSettlesAt(page, target, what) {
 }
 
 /**
- * Waits for the PDF pane's scroll to come to REST, without naming where.
+ * Waits for a gig-mode half turn to be WHERE IT ASKED TO BE, once the pane
+ * has finished re-rendering underneath it.
  *
- * `pdfScrollSettlesAt` above is the right barrier when the test knows the
+ * `pdfScrollSettlesAt` above is the right barrier when the test knows the one
  * target. The gig-mode-re-render test below deliberately does not: it presses
- * INTO a live re-render, and the two orderings of that race land the reader
- * on two different offsets, both correct. A gig turn records the position it
- * asked for as a fraction of the page it lands on (PdfViewer's requestScroll
- * / positionAt), and the re-render restores that fraction against the NEW
- * page height - so a press that lands before the re-render carries a fraction
- * measured on the narrow pre-render page, and one that lands after carries a
- * fraction measured on the wide settled page. Measured locally, 60 runs: 523
- * of 1100 px past page one's top for the first ordering, 535 of 1100 for the
- * second. A single target would be wrong for one of them.
+ * INTO a live re-render, and the two orderings of that race land the reader on
+ * two different offsets, both correct. So this names BOTH, computed from
+ * geometry rather than restated as numbers:
  *
- * What both have in common is that the pane stops moving. `scrollBy({
- * behavior: "smooth" })` animates over several frames, and NOTHING else in
- * that test waits for it: the settled-width barrier is about canvas widths,
+ *   - `landedAsMeasured`: the press was measured against the pre-render page
+ *     (half of the narrow page plus its gap), and the re-render then restored
+ *     that as a FRACTION against the new page height - PdfViewer's
+ *     requestScroll / positionAt pair, which is what makes a turn survive the
+ *     pages changing size at all.
+ *   - `landedAsRendered`: the press was measured against the settled page,
+ *     and there is nothing left to restore.
+ *
+ * Measured locally at a 1280-wide viewport: 547 and 559 respectively, both
+ * about half of page one down, and the test's band holds for either.
+ *
+ * Why a barrier at all (#234). The two lines above this one in that test do
+ * not wait for the turn: the settled-width barrier is about canvas WIDTHS,
+ * which reach their final value inside the re-render loop - before it restores
+ * the scroll, which it only does after the last page has finished drawing -
  * and the indicator poll agrees trivially all the way down page one (the HUD
- * says "1 / 2" and page one is the most visible page at every scrollTop the
- * turn passes through), so a read taken straight after them can land
- * mid-animation on a loaded machine. Two consecutive animation frames with an
- * unchanged scrollTop is a smooth scroll that has finished - an in-flight one
- * moves every frame.
+ * says "1 / 2" and page one is the most visible page at every scrollTop this
+ * turn passes through). Between those two facts sits a window where the pages
+ * are already their settled size but the reader is still at the offset the
+ * narrow geometry produced, and a fraction read there is measured against the
+ * wrong page height. Measured at the earliest frame the width barrier can
+ * legally return, 20 of 20 runs: 313 px, read as 0.2627 of a page - under the
+ * 0.35 the test asserts. That is the shape of the CI failure this covers.
+ *
+ * Waiting for the pane merely to stop moving does not close that: inside the
+ * window it IS stopped, for as long as the last page takes to draw. Naming
+ * the offsets does, and it makes a genuinely wrong turn fail with the two
+ * places it could have legitimately been rather than with two numbers.
  */
-async function pdfScrollComesToRest(page) {
+async function pdfHalfTurnSettles(page, before) {
   await expect
-    .poll(() =>
-      page.evaluate(async () => {
-        const scroller = document.querySelector(".pages");
-        if (!scroller) return "no pane yet";
-        const before = scroller.scrollTop;
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        return scroller.scrollTop === before
-          ? "at rest"
-          : `still moving (${Math.round(before)} to ${Math.round(scroller.scrollTop)})`;
-      }),
-    )
-    .toBe("at rest");
+    .poll(async () => {
+      const at = await pdfGeometry(page);
+      // Half the narrow page and its gap, kept as the fraction of that page
+      // it left the reader at, then re-measured against the settled page.
+      const step = (before.pageTwoTop - before.pageOneTop) / 2;
+      const fraction = (before.scrollTop + step - before.pageOneTop) / before.pageHeight;
+      const landedAsMeasured = at.pageOneTop + fraction * at.pageHeight;
+      // Half the settled page and its gap, from where the reader started.
+      const landedAsRendered = before.scrollTop + (at.pageTwoTop - at.pageOneTop) / 2;
+      // A pixel of tolerance, for the reason pdfScrollSettlesAt states.
+      return Math.abs(at.scrollTop - landedAsMeasured) <= 1 || Math.abs(at.scrollTop - landedAsRendered) <= 1
+        ? "half a page on"
+        : `at ${Math.round(at.scrollTop)}, not half a page on (${Math.round(landedAsMeasured)} measured against the ` +
+            `pre-render page, ${Math.round(landedAsRendered)} against the settled one)`;
+    })
+    .toBe("half a page on");
 }
 
 async function openDemo(page) {
@@ -1299,6 +1317,10 @@ test.describe("gig mode itself", () => {
     });
     await expect(page.locator(".pdf-page")).toHaveCount(2);
     await pdfPagesRenderedAtSettledWidth(page);
+    // The pane the turn may be measured against, read while nothing is
+    // moving: one of the two offsets below is half of THIS page, carried
+    // across the re-render as a fraction.
+    const before = await pdfGeometry(page);
 
     await page.keyboard.press("f");
     await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
@@ -1307,24 +1329,24 @@ test.describe("gig mode itself", () => {
     await page.keyboard.press("ArrowRight");
 
     await pdfPagesRenderedAtSettledWidth(page);
+    // The turn's own barrier, and the only one here that is about the SCROLL
+    // rather than the render (#234). The line above waits for canvas WIDTHS,
+    // which are final inside the re-render loop - before it restores the
+    // scroll, which it only does once the last page has drawn - and the
+    // indicator poll below agrees at every scrollTop this turn passes
+    // through. Without this, the fraction is read in that window, off a
+    // reader still at the offset the narrow geometry produced: measured at
+    // the earliest frame the width barrier can return, 20 of 20 runs, 0.2627.
+    await pdfHalfTurnSettles(page, before);
     await pdfIndicatorAgrees(page, 2);
-    // The turn's own barrier, and the only one in this test that is about the
-    // SCROLL rather than the render (#234). Neither line above waits for it:
-    // the width barrier is about canvas widths, and the indicator poll agrees
-    // at every scrollTop this turn passes through, so without this the
-    // fraction below is read off a smooth scroll that may still be in flight.
-    // On CI, once, it was: 384 of 1100 px past page one's top, 0.349, against
-    // the 535 the same turn comes to rest at - a scroll caught 72% of the way
-    // there, not a turn that went the wrong distance.
-    await pdfScrollComesToRest(page);
 
     // And the geometry that makes the line above worth asserting: the reader
     // really is mid-page-one, not parked somewhere the two would agree
     // trivially. Half a page on, whichever geometry the step was measured
     // against, with page two left well under the 0.4 threshold.
     //
-    // The band stays 0.35 to 0.65. Measured at rest, 60 local runs across
-    // three CPU throttling rates, it takes exactly two values - 0.4755 and
+    // The band stays 0.35 to 0.65. Measured at rest, 60 runs across three CPU
+    // throttling rates, the fraction takes exactly two values - 0.4755 and
     // 0.4864, the two orderings of the race this test presses into - and the
     // nearer edge is 0.125 away. Widening it would only hide the next early
     // read; the band was never the loose part.
