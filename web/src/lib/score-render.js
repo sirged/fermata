@@ -1573,8 +1573,8 @@ function clearLateBeatText(score, mark) {
  * A words-only instruction - the shape the extractor writes when it could not
  * read the target off the page - carries no `<sound>` at all, is therefore
  * never seen by this function, and is counted by neither branch above.
- * Measured on Phantom Train: `nav_marks_unresolved` 1 (its words-only To
- * Coda), `skipped` 0.
+ * Measured on one library score, score_af in the server test pins:
+ * `nav_marks_unresolved` 1 (its words-only To Coda), `skipped` 0.
  *
  * Targets go on first, all of them, before any jump is decided: a Fine only
  * exists on the model because this function puts it there, and a "D.C. al
