@@ -2570,7 +2570,28 @@ class _FakeReporter:
         self.lines.append(text)
 
 
-def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(monkeypatch, tmp_path):
+@pytest.fixture
+def _reset_skip_counters(monkeypatch):
+    """Snapshot-and-clear every skip counter `pytest_terminal_summary` reads,
+    not just the one a given test means to exercise.
+
+    Issue #217: the library test below used to reset only `_library_skips`,
+    so in a full run with `web/node_modules` absent, real node_modules skips
+    that happened earlier in the session were still sitting in
+    `_node_modules_skips` when this test asserted the summary was empty - the
+    counters are module-level state shared across the whole run, not reset
+    between tests by pytest itself. Discovering every `*_skips` list on
+    `conftest` rather than naming them one at a time means a counter added
+    later is covered without anyone remembering to touch this fixture too."""
+    import conftest
+
+    for name in dir(conftest):
+        if name.endswith("_skips") and isinstance(getattr(conftest, name), list):
+            monkeypatch.setattr(conftest, name, [])
+
+
+def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(
+        monkeypatch, tmp_path, _reset_skip_counters):
     """The loud skip. A suite that skipped a third of itself said so only by
     a number nobody compared against anything, which is exactly how 36
     skipped extraction tests went unnoticed. A count on the screen is not a
@@ -2583,7 +2604,6 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(monkeypat
     the one thing this must never say by accident."""
     import conftest
 
-    monkeypatch.setattr(conftest, "_library_skips", [])
     monkeypatch.delenv("FERMATA_TEST_LIBRARY", raising=False)
 
     # nothing skipped and no library configured: no claim either way
@@ -2617,7 +2637,8 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_a_library(monkeypat
     assert reporter.lines == []
 
 
-def test_the_summary_says_how_many_tests_skipped_for_want_of_node_modules(monkeypatch):
+def test_the_summary_says_how_many_tests_skipped_for_want_of_node_modules(
+        monkeypatch, _reset_skip_counters):
     """The same loud skip as the library one above, for `web/node_modules`
     (issue #134 adversarial review, item 7): nine tests - including
     score_s's and playback-order headline cases - used to skip in
@@ -2625,8 +2646,6 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_node_modules(monkey
     so unless a reader compared this run's summary against CI's by hand."""
     import conftest
 
-    monkeypatch.setattr(conftest, "_library_skips", [])
-    monkeypatch.setattr(conftest, "_node_modules_skips", [])
     monkeypatch.delenv("FERMATA_TEST_LIBRARY", raising=False)
 
     # nothing skipped: no claim either way
@@ -2645,6 +2664,29 @@ def test_the_summary_says_how_many_tests_skipped_for_want_of_node_modules(monkey
     conftest.pytest_terminal_summary(reporter, 0, None)
     assert len(reporter.lines) == 1
     assert "2 test(s) skipped for want of web/node_modules" in reporter.lines[0]
+
+
+def test_the_summary_reports_node_modules_skips_alone_when_the_library_ran_clean(
+        monkeypatch, _reset_skip_counters):
+    """The mixed case neither test above covers: a library counter that is
+    empty because the run genuinely exercised it (or never needed it) beside
+    a node_modules counter that is not, because `web/node_modules` really is
+    missing. The summary must carry exactly the node_modules line and say
+    nothing about the library - the two counters are independent and the
+    summary must not conflate an empty one with a suppressed other."""
+    import conftest
+
+    monkeypatch.delenv("FERMATA_TEST_LIBRARY", raising=False)
+
+    with pytest.raises(BaseException):
+        conftest.skip_without_node_modules("alphaTab.mjs not found")
+    assert conftest._library_skips == []
+    assert len(conftest._node_modules_skips) == 1
+
+    reporter = _FakeReporter()
+    conftest.pytest_terminal_summary(reporter, 0, None)
+    assert len(reporter.lines) == 1
+    assert "1 test(s) skipped for want of web/node_modules" in reporter.lines[0]
 
 
 def test_the_committed_musicxml_still_matches_its_generator():
