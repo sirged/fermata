@@ -14,6 +14,20 @@ import { barAtTick } from "./metronome.js";
 /** Which staves a score is drawn with. */
 export const SCORE_PROFILES = ["score", "tab", "scoretab"];
 
+// alphaTab's own "render every track" sentinel (issue #93). AlphaTabApiBase's
+// renderScore() special-cases a track-index array of exactly one element
+// equal to -1 as "all tracks in the score" (see its bundled source); any
+// falsy or empty list instead falls back to `[score.tracks[0]]`. `api.load()`
+// forwards its own track-index argument straight into that same renderScore()
+// call, with no translation - so a load call that wants every track drawn has
+// to pass this literal array, not `undefined` and not a real index list built
+// from a track count nothing has parsed yet. `api.tex()` on the concrete
+// browser AlphaTabApi additionally accepts the string `"all"` and turns it
+// into this same array itself; the two spellings are used at their matching
+// call sites below only for that reason, not because they mean anything
+// different.
+const ALL_TRACKS = [-1];
+
 const STAVE_PROFILE = {
   score: alphaTab.StaveProfile.Score,
   tab: alphaTab.StaveProfile.Tab,
@@ -161,13 +175,28 @@ function canDraw(track, staff, profileKey) {
  * pair in the rendered set fails a profile's check - the renderer loops over
  * all of them building one staff system - so a profile is supported the
  * moment any single pair can draw it: this ORs canDraw across every pair, it
- * does not decide from one staff. A score with two staves in the one track
- * that gets rendered - one notation-only, one tab-only - still has to offer
- * both "score" and "tab", each justified by only one of the two staves; see
+ * does not decide from one staff. A score with two staves in one track -
+ * one notation-only, one tab-only - still has to offer both "score" and
+ * "tab", each justified by only one of the two staves; see
  * multi-staff.musicxml in web/test-fixtures for a fixture built to reach
- * exactly this (deliberately one track, not two - only the first track
- * renders by default, so a second track would never be part of the pairs
- * this function is given at all, and would not exercise the OR here).
+ * exactly this within a single track's staves.
+ *
+ * EVERY track renders now, not just the first (issue #93: load()/tex() ask
+ * for ALL_TRACKS, and this function is handed `api.tracks` - see its call
+ * site - which is that same resolved, now-plural list). So a second track's
+ * staves are among the pairs this function ORs across, where before that fix
+ * they never were - only the first track rendered by default, so a second
+ * track could not have reached this OR no matter how a fixture was built.
+ * web/test-fixtures/multi-part.musicxml (two parts, both plain notation
+ * staves) and score-multi-part.spec.js prove exactly that much: every track
+ * is now among the pairs, and both are rendered. They do NOT exercise the
+ * cross-track OR itself - both parts support the same profiles, so
+ * `data-score-profiles` reads identically whether the second part is present
+ * or dropped ("score,scoretab" either way) - that is a claim this comment is
+ * not making. No fixture in this repo yet has two tracks that each support a
+ * different single profile; multi-staff.musicxml remains the only fixture
+ * that exercises the OR itself, and it does so within one track's staves,
+ * not across tracks.
  */
 export function supportedProfiles(tracks) {
   // The whole body is inside the try, not just the canDraw loop: a malformed
@@ -1497,11 +1526,16 @@ function jumpDirectionFor(kind, words, bar, targets, codaRouteIsSafe) {
  */
 function beatsInBarCreationOrder(score, barIndex) {
   const out = [];
-  // The first track only. A `<part>` becomes a track, and the importer parses
-  // each part's measures to the end before starting the next - so the words
-  // held from a direction in the first part's measure are always consumed by a
-  // beat in the first part. Marks are indexed against the first part's
-  // measures (see musicXmlMeasures), so that is the track to look in.
+  // The first track only, DELIBERATELY - not "whichever tracks are rendered"
+  // (issue #93 made that every track, not just this one). A `<part>` becomes
+  // a track, and the importer parses each part's measures to the end before
+  // starting the next - so the words held from a direction in the first
+  // part's measure are always consumed by a beat in the first part.
+  // musicXmlMeasures() and navigationMarks() index marks against the
+  // document's first `<part>` element specifically, by reading the raw XML
+  // directly rather than anything alphaTab decided to draw - so this is the
+  // one track whose identity that indexing already assumes, regardless of how
+  // many tracks the renderer is now asked to show.
   for (const staff of score.tracks?.[0]?.staves ?? []) {
     for (const voice of staff.bars?.[barIndex]?.voices ?? []) {
       for (const beat of voice.beats ?? []) out.push(beat);
@@ -1554,8 +1588,8 @@ function clearLateBeatText(score, mark) {
  * A words-only instruction - the shape the extractor writes when it could not
  * read the target off the page - carries no `<sound>` at all, is therefore
  * never seen by this function, and is counted by neither branch above.
- * Measured on Phantom Train: `nav_marks_unresolved` 1 (its words-only To
- * Coda), `skipped` 0.
+ * Measured on one library score, score_af in the server test pins:
+ * `nav_marks_unresolved` 1 (its words-only To Coda), `skipped` 0.
  *
  * Targets go on first, all of them, before any jump is decided: a Fine only
  * exists on the model because this function puts it there, and a "D.C. al
@@ -1996,12 +2030,27 @@ export function createScoreView(host, opts = {}) {
   // redraw the way an editor step needs to before re-reading bounds.
   let pendingEditResolve = null;
 
-  // Walk the one rendered track's model in document order - bar, then each
-  // voice in turn, then each beat, then each chord member - skipping rests, so
-  // the ordinal assigned here matches document.js's sounding-note order beat
-  // for beat. One part, one staff is this profile's scope (Rule 17); a second
-  // staff or track would need an axis this walk does not name, exactly as
-  // Rule 17's own uniqueness note says of its id formula.
+  // Walk track 0's model in document order - bar, then each voice in turn,
+  // then each beat, then each chord member - skipping rests, so the ordinal
+  // assigned here matches document.js's sounding-note order beat for beat.
+  // One part, one staff is this profile's scope (Rule 17); a second staff or
+  // track would need an axis this walk does not name, exactly as Rule 17's
+  // own uniqueness note says of its id formula.
+  //
+  // NOT limited to single-part documents by anything upstream - issue #93's
+  // fix made load()/reloadScore() render every track, and the editor has no
+  // gate of its own that keeps a multi-part document out: ScoreCompare.svelte
+  // passes `editable` on a free-text textarea whose save PUTs arbitrary
+  // content, TabViewer.svelte's canEditNotes() checks only `format ===
+  // "musicxml"`, and the server's XSD validation is a no-op unless
+  // FERMATA_MUSICXML_XSD is configured. So a hand-pasted two-part document
+  // reaching this editor is a real, reachable case, not a hypothetical one -
+  // it renders every part (the view is fixed), but this ordinal map still
+  // walks track 0 only, so only notes in the first part are selectable or
+  // editable at all; clicking a note drawn in a second part has nothing here
+  // to find it. That is a pre-existing gap this fix does not close - tracked
+  // as issue #226, rather than folded into #93's track-aware-editor-is-out-
+  // of-scope decision.
   function buildNoteOrdinals() {
     noteOrdinals = new Map();
     notesInOrder = [];
@@ -2781,6 +2830,18 @@ export function createScoreView(host, opts = {}) {
         delete host.dataset.scoreTabWithheld;
       }
     }
+    // Already track-aware, and needs no change for issue #93: `api.tracks`
+    // (plural) is alphaTab's own account of every track the CURRENT render
+    // request resolved to, not `tracks[0]` - and load()/tex() now always ask
+    // for ALL_TRACKS, so once a score has actually loaded this is every track
+    // the document has, not just the first. The `loadedScore.tracks` fallback
+    // is for the one moment `api.tracks` cannot be trusted instead: alphaTab
+    // sets its internal `_tracks` field to the resolved list BEFORE firing
+    // scoreLoaded (see AlphaTabApiBase._internalRenderTracks in the bundled
+    // source), so in practice `api.tracks` is already correct by the time
+    // this handler runs - this is a belt-and-braces read of the score's own
+    // tracks for a future alphaTab release that reordered that sequence, not
+    // evidence of a real gap today.
     scoreProfiles = supportedProfiles(api.tracks?.length ? api.tracks : loadedScore.tracks);
     unrenderable = scoreProfiles.length === 0;
     if (!unrenderable && !scoreProfiles.includes(profile)) {
@@ -2969,12 +3030,18 @@ export function createScoreView(host, opts = {}) {
     pendingSourceText = null;
     pendingUnreadReason = null;
     if (next.kind === "alphatex") {
-      api.tex(next.text);
+      // "all", not the default first-track-only render (issue #93) - an
+      // alphaTeX document can declare more than one `\track`, and every one
+      // of them should draw, the same as a multi-part MusicXML file.
+      api.tex(next.text, "all");
     } else if (next.kind === "musicxml") {
       // Goes through the same byte loader a library file uses: the format is
       // detected from the content, so there is no separate entry point.
       pendingSourceText = next.text;
-      api.load(new TextEncoder().encode(next.text));
+      // ALL_TRACKS (issue #93): a MusicXML file with more than one <part>
+      // becomes more than one track here, and every one of them should draw -
+      // api.load()'s own default, with no track list, renders only the first.
+      api.load(new TextEncoder().encode(next.text), ALL_TRACKS);
     } else if (next.kind === "file") {
       fetch(next.url)
         .then((r) => r.arrayBuffer())
@@ -2989,7 +3056,10 @@ export function createScoreView(host, opts = {}) {
           const document = await readMusicXml(bytes);
           pendingSourceText = document.text;
           pendingUnreadReason = document.unread;
-          api.load(bytes);
+          // ALL_TRACKS (issue #93): same reasoning as the musicxml branch
+          // above - this is the path a library file (of any track count) and
+          // a directly uploaded MusicXML/.mxl/Guitar Pro file both take.
+          api.load(bytes, ALL_TRACKS);
         })
         .catch((e) => onError(String(e)));
     }
@@ -3208,7 +3278,21 @@ export function createScoreView(host, opts = {}) {
       pendingSourceText = text;
       pendingUnreadReason = null;
       try {
-        api.load(new TextEncoder().encode(text));
+        // ALL_TRACKS (issue #93), for consistency with every other load()
+        // call in this file - and not a no-op here either. Nothing gates a
+        // multi-part document out of this editor: ScoreCompare.svelte's
+        // `editable` prop sits on a free-text textarea whose save PUTs
+        // arbitrary content, and TabViewer.svelte's canEditNotes() checks
+        // only `format === "musicxml"`, with the server's XSD validation a
+        // no-op unless FERMATA_MUSICXML_XSD is configured - so a hand-pasted
+        // two-part document reaching this reload is real, not hypothetical.
+        // Without ALL_TRACKS here, that reload would silently drop back to
+        // drawing only the first part after an edit, on a document that drew
+        // every part before it. buildNoteOrdinals() above still only builds
+        // ordinals for track 0, so a second part's notes render but are not
+        // selectable - a pre-existing gap, tracked as issue #226, that this
+        // call is not attempting to close.
+        api.load(new TextEncoder().encode(text), ALL_TRACKS);
       } catch (e) {
         pendingEditResolve = null;
         reject(e instanceof Error ? e : new Error(String(e)));
