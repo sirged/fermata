@@ -20,11 +20,11 @@
 // WHY IT IS NAMED TO SORT AMONG THE OTHER zzzz-library-* SPECS: it uploads
 // and deletes scores the same way they do, and carries the same refusal-
 // unless-throwaway-instance guard zzz-library-organise.spec.js's own header
-// explains. Fully emptying the library in both beforeEach and afterAll -
-// rather than tracking its own small "OWN" list, the way zz-library-missing
-// does - is deliberate here: this file's whole subject is what a FRESH scan
-// does, so starting one from a library that already has a transcribed score
-// in it would silently defeat its own premise.
+// explains. Fully emptying the library after EVERY test - rather than
+// tracking its own small "OWN" list, the way zz-library-missing does - is
+// deliberate here: this file's whole subject is what a FRESH scan does, so
+// starting one from a library that already has a transcribed score in it
+// would silently defeat its own premise.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
