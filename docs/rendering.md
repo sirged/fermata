@@ -623,7 +623,7 @@ according to nothing but enum order. It is **not** the transcription's
 bars whose instruction went out *without* a `<sound>`, this one about marks
 that arrived *with* one and were declined. A words-only instruction — the shape
 the extractor writes when it could not read the target off the page — is never
-seen here at all and is counted by neither cause. Measured on *Phantom Train*:
+seen here at all and is counted by neither cause. Measured on conftest score_af:
 `nav_marks_unresolved` 1, `skipped` 0.
 
 `data-score-jumps-unread` exists because an empty `data-score-jumps` would

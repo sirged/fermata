@@ -127,7 +127,7 @@ looks like coverage and is not is worse than none:
   (`musicxml.TYPE_NAMES`). IF a genuine 64th were engraved, it would be read
   as four levels and emitted as a 32nd - but the library holds no genuine
   64th to confirm that against: the only stems this decoder reads at four
-  levels are Troian Beauty p2's grace notes, which are a pre-existing,
+  levels are one library score's p2 grace notes, which are a pre-existing,
   unrelated over-count (a grace beam read past its own group), not a real
   64th. `thirty_second_beams` deliberately does not contain a 64th either: a
   bar asserting one would be pinning a different limit than the one measured

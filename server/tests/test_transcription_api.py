@@ -704,7 +704,7 @@ def test_a_coincident_unsplit_pair_survives_a_reload(app_env, score_o_pdf, monke
     """coincident_unsplit_pairs / staves_coincident_unsplit (issue #116) round
     trip against a score where they are non-zero, for the same reason the bar
     figures above are: all-zeros looks identical to a persistence bug that
-    dropped them. Ronfaure reads 15 unsplit pairs across 4 staves (see
+    dropped them. score_o reads 15 unsplit pairs across 4 staves (see
     test_a_coincident_pair_with_no_second_stem_is_disclosed_not_silently_doubled
     in test_tabextract.py) - reaching ExtractionResult and to_dict() with
     #116 itself, but neither _BAR_KEYS in api.py nor the confidence blob
@@ -819,7 +819,7 @@ def test_an_unpaired_tie_end_survives_a_reload(app_env, score_p_pdf, monkeypatch
     HALF-matched tie - `tuplet_and_tie`'s split one is matched at neither end,
     which counts nothing - so every committed fixture reports zero, and a
     counter only ever asserted at zero cannot tell a working round trip from a
-    dropped field. Courage (FF XVI) writes 6 complete ties and leaves 4 ends
+    dropped field. score_p writes 6 complete ties and leaves 4 ends
     it could not close, in bars this asserts by number, and marks 19 harmonics
     beside them."""
     monkeypatch.setattr(api, "LIBRARY_DIR", score_p_pdf.parent)
@@ -1174,7 +1174,7 @@ def test_a_lost_system_survives_the_api_round_trip(
 
     Run against a nonzero score deliberately, for the reason the tests above
     state: a persistence bug that unconditionally wrote 0 and [] would pass
-    every zero-valued assertion in this file. Dynamis loses one system on
+    every zero-valued assertion in this file. score_ac loses one system on
     page 1 to a 7-line group (see the conftest note), and it is one of only
     two scores in the library that still lose one at all.
 
@@ -1224,7 +1224,7 @@ def test_navigation_disclosures_survive_the_api_round_trip(
     written as the words the page prints, with no `<sound tocoda=>` beside
     it, and the bar is reported here.
 
-    It used to be Victory Fanfare, on the strength of its "D.S." having no
+    It used to be score_v, on the strength of its "D.S." having no
     segno to name - which was never true of that score, or of 82 others. Its
     segno was drawn in Finale's Maestro at the glyph ID this project's table
     labelled "simile", so the count this test needed to be nonzero was

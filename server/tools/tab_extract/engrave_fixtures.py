@@ -348,8 +348,8 @@ def fixture_unison_voices():
 def fixture_unison_in_chord():
     """`unison_voices` with the upper voice thickened into a CHORD, so the
     unison is one member of it rather than the whole of it (issue #137) - the
-    shape the library's own residual case has, measured off The Cosmic Wheel
-    (FF XI) page by page: an upper voice writing a two-note chord whose LOWER
+    shape the library's own residual case has, measured off conftest score_q
+    page by page: an upper voice writing a two-note chord whose LOWER
     member sounds the same pitch, at the same moment, as the lower voice's
     own eighth. Three noteheads are drawn at that onset and only two
     positions are occupied, because two of the three are the identical glyph
