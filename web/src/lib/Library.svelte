@@ -1,4 +1,6 @@
 <script>
+  import { untrack } from "svelte";
+
   import { api } from "./api.js";
 
   let scores = $state([]);
@@ -10,6 +12,7 @@
   let tag = $state("");
   let favorite = $state(false);
   let practiced = $state("");
+  let transcribed = $state("");
   let scan = $state(null);
   let loading = $state(true);
   let uploadInput;
@@ -272,11 +275,22 @@
     ["unknown", "Unsorted"],
   ];
 
+  // A freshly scanned library transcribes itself (#190), and this is how a
+  // person sees which of it that reached: narrow to "Transcribed" and the
+  // grid is exactly the scores a bulk pass could read; narrow to "Not
+  // transcribed" and it is exactly the complement - whatever a scan judged
+  // non-extractable, plus anything a manual pass has not reached yet.
+  const TRANSCRIBED = [
+    ["", "Any transcription"],
+    ["yes", "Transcribed"],
+    ["no", "Not transcribed"],
+  ];
+
   async function refresh() {
     loading = true;
     try {
       [scores, collections, tags] = await Promise.all([
-        api.scores({ search, collection, kind, tag, favorite, practiced }),
+        api.scores({ search, collection, kind, tag, favorite, practiced, transcribed }),
         api.collections(),
         api.tags(),
       ]);
@@ -287,7 +301,7 @@
 
   $effect(() => {
     // re-query whenever a filter changes
-    void search, collection, kind, tag, favorite, practiced;
+    void search, collection, kind, tag, favorite, practiced, transcribed;
     const t = setTimeout(refresh, 150);
     return () => clearTimeout(t);
   });
@@ -309,6 +323,12 @@
         timer = setTimeout(poll, 1500);
       } else {
         refresh();
+        // A scan this page is tracking just finished - the single instant
+        // most likely to have just started an automatic transcription pass
+        // (#190's own hook). Check right away rather than wait out
+        // whatever is left of the background poll's own idle interval -
+        // see nudgeBackgroundBatchPoll's own comment.
+        nudgeBackgroundBatchPoll();
       }
     }
     api.scanStatus().then((s) => {
@@ -316,6 +336,101 @@
       if (s.scanning) poll();
     });
     return () => clearTimeout(timer);
+  });
+
+  // For a bulk pass THIS page never started (#190 review, F3, three
+  // passes) - a scan's own automatic one, or one started from another tab
+  // or client. Polled independently of both the scan poll above and the
+  // transcribe dialog's own poll (see `backgroundBatch`'s own comment).
+  //
+  // RATE: 3s while a pass is confirmed running, 15s while idle. Idle
+  // forever at 3s (an earlier version of this) was roughly 1200
+  // requests/hour/tab with nothing running at all; backing off to 15s
+  // while idle - measured over 60s with nothing running: 4 requests, once
+  // every ~15s, as designed - cuts that by roughly 80% while a pass is
+  // NOT running, which is the overwhelmingly common case. Backing off
+  // rather than stopping outright (which the brief also allowed) is what
+  // still catches a pass THIS PAGE neither started nor is watching, from
+  // another tab or another client, without waiting for this page's own
+  // next reload to notice it.
+  //
+  // NUDGED - an immediate check, replacing whatever is left of the idle
+  // wait - the moment a scan this page is tracking finishes (both the
+  // mount-time scan poll above and pollUntilDone below call
+  // nudgeBackgroundBatchPoll() in their own "not scanning any more"
+  // branch). That is what keeps the 15s idle floor from being a real gap
+  // for the single most common case this feature is FOR - clicking "Scan
+  // library" and watching: the automatic pass this page's own scan may
+  // have started is checked within one request round trip of the scan
+  // itself finishing, not after up to 15s of nothing. A pass from
+  // elsewhere still relies on the 15s idle floor - there is no local
+  // signal for those to nudge on.
+  //
+  // RESILIENT to one failed request (#190 review, F3-1). api.js throws
+  // ApiError on a non-2xx response and fetch itself rejects on a dropped
+  // connection - a self-hosted server restarting with this page open is
+  // the ordinary way to see one - so without the try/finally below, ONE
+  // failed request ended this loop for the rest of the page's life
+  // (measured: baseline 2 requests/9s; after one aborted response, 0
+  // requests in the following 15s, plus an unhandled rejection). The
+  // reschedule lives in `finally` specifically so it runs whether the
+  // request above it succeeded or not. Logged and otherwise swallowed,
+  // nothing louder: this poll is ambient awareness, not a request a
+  // person is waiting on, and the ordinary scan poll and every other
+  // request on this page already surface a real outage of their own.
+  //
+  // `transcribeOpen` is read through `untrack` rather than as an ordinary
+  // reactive read, on purpose: reading it as a normal reactive value here
+  // would make this effect's own synchronous setup one of
+  // `transcribeOpen`'s dependents, so Svelte would tear this whole loop
+  // down and restart it - one extra request - every time the dialog opens
+  // or closes, exactly backwards from "skip a beat while it's open".
+  // `untrack` reads the current value without subscribing to it, so
+  // opening or closing the dialog no longer touches this loop at all; the
+  // next already-scheduled tick simply sees the new value when it runs.
+  let backgroundBatchTimer;
+  let backgroundBatchCancelled = true;
+  let wasBackgroundBatchRunning = false;
+
+  async function pollBackgroundBatch() {
+    clearTimeout(backgroundBatchTimer);
+    let nextDelay = 15000;
+    try {
+      if (!untrack(() => transcribeOpen)) {
+        const status = await api.transcribeBatchStatus();
+        if (backgroundBatchCancelled) return;
+        if (status.running) {
+          backgroundBatch = status;
+          wasBackgroundBatchRunning = true;
+          nextDelay = 3000;
+        } else {
+          if (wasBackgroundBatchRunning) refresh();
+          wasBackgroundBatchRunning = false;
+          backgroundBatch = null;
+        }
+      }
+    } catch (err) {
+      console.error("background transcription status check did not complete", err);
+    } finally {
+      if (!backgroundBatchCancelled) {
+        backgroundBatchTimer = setTimeout(pollBackgroundBatch, nextDelay);
+      }
+    }
+  }
+
+  function nudgeBackgroundBatchPoll() {
+    if (backgroundBatchCancelled) return;
+    clearTimeout(backgroundBatchTimer);
+    backgroundBatchTimer = setTimeout(pollBackgroundBatch, 0);
+  }
+
+  $effect(() => {
+    backgroundBatchCancelled = false;
+    pollBackgroundBatch();
+    return () => {
+      backgroundBatchCancelled = true;
+      clearTimeout(backgroundBatchTimer);
+    };
   });
 
   async function triggerScan() {
@@ -327,8 +442,17 @@
   function pollUntilDone() {
     const poll = async () => {
       scan = await api.scanStatus();
-      if (scan.scanning) setTimeout(poll, 1500);
-      else refresh();
+      if (scan.scanning) {
+        setTimeout(poll, 1500);
+      } else {
+        refresh();
+        // This page's own click just finished scanning - nudge the
+        // background-batch poll rather than leave it to its own idle
+        // interval, since this is exactly the moment #190's own hook may
+        // have started an automatic pass. See nudgeBackgroundBatchPoll's
+        // own comment.
+        nudgeBackgroundBatchPoll();
+      }
     };
     setTimeout(poll, 800);
   }
@@ -351,6 +475,13 @@
   let transcribeError = $state("");
   let transcribeStatus = $state(null);
   let transcribePollTimer;
+  // A pass this page did not start - a scan's own automatic one (#190), or
+  // someone else's - running right now. Polled independently of the dialog
+  // above, which only ever knows about a pass THIS page started: without
+  // this, the one moment a click here would be refused (see
+  // startTranscribeBatch's own `!result.started` branch) was invisible until
+  // the click itself failed.
+  let backgroundBatch = $state(null);
 
   const OUTCOME_LABEL = {
     already_transcribed: "already had one",
@@ -404,7 +535,23 @@
       const opts = { reconvert: transcribeReconvert };
       if (transcribeTarget.kind === "collection") opts.collection = transcribeTarget.collection;
       const ids = transcribeTarget.kind === "ids" ? transcribeTarget.ids : null;
-      transcribeStatus = await api.transcribeBatch(ids, opts);
+      const result = await api.transcribeBatch(ids, opts);
+      if (!result.started) {
+        // Refused - a pass is already running, and what came back is THAT
+        // pass's own status (api.transcribeBatch's own shape: "the status
+        // left behind by whichever pass - this one, or one already running -
+        // is current"), not one for the selection just made. Adopting it
+        // here would show somebody else's progress and results as though
+        // they belonged to this selection, and close having silently
+        // transcribed nothing this person chose - reachable with one click
+        // right after an upload or a boot scan starts its own pass (#190).
+        transcribeError =
+          `a pass over ${result.total} score${result.total === 1 ? "" : "s"} is already ` +
+          "running in the background - your selection was not started. Try again once it " +
+          "finishes.";
+        return;
+      }
+      transcribeStatus = result;
       pollTranscribeBatch();
     } catch (err) {
       transcribeError = err?.message ?? "Fermata could not start that.";
@@ -663,6 +810,29 @@
       </p>
     {/if}
 
+    {#if !scan?.scanning && scan?.transcribe_batch_note}
+      <!-- A freshly scanned library transcribes itself (#190) - what its
+           chain's own bulk pass decided, said the same way the scan's other
+           after-the-fact notes are: attributed to the LAST SCAN, because the
+           note is replaced the next time a chain decides anything. Produced
+           since the feature shipped but never rendered anywhere until this
+           review (F3) - the one place a person could otherwise learn a
+           background pass was declined was by noticing nothing got marked. -->
+      <p class="scan-note">Last scan: {scan.transcribe_batch_note}.</p>
+    {/if}
+
+    {#if backgroundBatch && !transcribeOpen}
+      <!-- Live, not after-the-fact: a bulk pass is running RIGHT NOW that
+           this page did not start (#190 review, F3) - the scan's own
+           automatic one, or one from another tab or client. Unobtrusive on
+           purpose - this is ambient awareness, not the dialog's own detailed
+           progress, which is why it steps aside while that dialog is open. -->
+      <p class="scan-note">
+        Transcribing {backgroundBatch.total} score{backgroundBatch.total === 1 ? "" : "s"} in
+        the background…
+      </p>
+    {/if}
+
     {#if notice}
       <!-- What just happened to somebody's files, in their own terms and in
            full: which scores moved where, or what a deletion kept. Dismissible
@@ -753,6 +923,11 @@
             <option {value}>{label}</option>
           {/each}
         </select>
+        <select class="transcribed-filter" bind:value={transcribed}>
+          {#each TRANSCRIBED as [value, label]}
+            <option {value}>{label}</option>
+          {/each}
+        </select>
         <button
           class="organise-toggle"
           class:on={organising}
@@ -817,6 +992,14 @@
                   <div class="sheet-icon">𝄞</div>
                 {/if}
                 <button class="fav" class:on={score.favorite} onclick={(e) => toggleFavorite(score, e)} title="Favorite">★</button>
+                {#if score.has_transcription}
+                  <!-- Whether it came from a scan's own bulk pass or a hand
+                       edit makes no difference here on purpose (#190's own
+                       No-gos) - this says only that a transcription exists,
+                       which is what the transcription filter beside it
+                       narrows the grid to. -->
+                  <span class="transcribed-mark" title="This score has a transcription">♪</span>
+                {/if}
                 {#if kindLabel[score.content_kind]}
                   <span class="kind">{kindLabel[score.content_kind]}</span>
                 {/if}
@@ -1301,6 +1484,20 @@
 
   .fav.on {
     color: var(--brass-bright);
+  }
+
+  /* Top-left is otherwise empty on a card: .fav sits top-right, .kind and
+     .missing-flag sit along the bottom. */
+  .transcribed-mark {
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    font-size: 13px;
+    line-height: 1;
+    background: rgba(22, 19, 14, 0.75);
+    color: var(--brass-bright);
+    padding: 4px 7px;
+    border-radius: 99px;
   }
 
   .kind {

@@ -39,6 +39,17 @@ const NON_EXTRACTABLE_PDF = fs.readFileSync(path.join(ENGRAVED_DIR, "notation_on
 
 const SCAN_DEADLINE_MS = 30_000;
 
+/** The throwaway library's root on disk (see playwright.config.js) - needed
+ * only by the mixed-selection test below, to place a file WITHOUT going
+ * through POST /api/upload, so that file's own first scan can be triggered
+ * at a moment the test controls precisely rather than through the upload
+ * endpoint's own immediate scan. */
+const libraryDir = () => {
+  const dir = process.env.FERMATA_TEST_LIBRARY_DIR;
+  if (!dir) throw new Error("FERMATA_TEST_LIBRARY_DIR is not set - see playwright.config.js");
+  return dir;
+};
+
 async function scanSettled(request) {
   const deadline = Date.now() + SCAN_DEADLINE_MS;
   for (;;) {
@@ -133,11 +144,97 @@ async function waitForBatchDone(page) {
   });
 }
 
+async function apiBatchSettled(request, timeout = SCAN_DEADLINE_MS) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const status = await (await request.get("/api/transcribe/batch/status")).json();
+    if (!status.running) return status;
+    if (Date.now() > deadline) throw new Error("a bulk transcription pass never finished");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 test("a bulk pass over a mixed selection shows live progress and every score's real outcome", async ({
   page,
   request,
 }) => {
-  const fresh = await upload(request, EXTRACTABLE_PDF, "fresh.pdf", "Uploads", "Fresh score");
+  // #190 means uploading an extractable PDF transcribes it automatically,
+  // almost immediately - so getting a genuinely first-time "transcribed"
+  // outcome for "fresh.pdf" below (rather than a reconvert of one the
+  // automatic pass already did) means keeping that automatic pass from
+  // ever reaching it. Attempted first with a single throwaway score to
+  // occupy the batch slot and lost: a single small PDF's real re-extraction
+  // is fast enough (measured directly: 15-40ms) that it had already
+  // finished by the time a scan triggered right after "confirmed running"
+  // reached its own chain decision - "confirmed running at some instant" is
+  // not "still running a few round trips later". WARMUP_COUNT real
+  // re-extractions, fired together as ONE explicit pass this test starts
+  // itself, is what actually holds the slot open long enough: still
+  // genuine PDF work (not a sleep a future refactor could silently race
+  // again), just enough of it that the margin is measured in whole seconds
+  // rather than milliseconds.
+  //
+  // "fresh.pdf" itself is placed on disk directly (never through POST
+  // /api/upload, which would trigger its own scan immediately) so this test
+  // controls exactly when its scan happens: only once the occupying pass is
+  // CONFIRMED running - so its own automatic attempt (#190) is refused the
+  // same way a hand-started pass refuses a second one (see
+  // scanner._finish_scan_chain), not merely likely to be.
+  const WARMUP_COUNT = 15;
+  const warmups = await Promise.all(
+    Array.from({ length: WARMUP_COUNT }, (_, i) =>
+      upload(request, EXTRACTABLE_PDF, `warmup${i}.pdf`, "Uploads", `Warmup score ${i}`),
+    ),
+  );
+  // upload() above only waits out each file's own SCAN, not whatever
+  // automatic pass (#190) that scan's chain may have started - settled
+  // explicitly here so the occupying pass below starts from a known idle
+  // state, not racing an auto-batch of unpredictable timing (an earlier
+  // version of this test raced exactly that and was flaky).
+  await apiBatchSettled(request);
+
+  const freshDir = path.join(libraryDir(), "Uploads");
+  fs.mkdirSync(freshDir, { recursive: true });
+  fs.writeFileSync(path.join(freshDir, "fresh.pdf"), EXTRACTABLE_PDF);
+
+  const occupyRes = await request.post("/api/transcribe/batch", {
+    data: { score_ids: warmups.map((w) => w.id), reconvert: true },
+  });
+  expect((await occupyRes.json()).started, "the occupying pass could not start").toBe(true);
+  await expect(async () => {
+    const status = await (await request.get("/api/transcribe/batch/status")).json();
+    expect(status.running, JSON.stringify(status)).toBe(true);
+  }).toPass({ timeout: 5_000 });
+
+  const scanRes = await request.post("/api/scan");
+  expect(scanRes.ok(), await scanRes.text()).toBe(true);
+  const scanBody = await scanRes.json();
+  expect(scanBody.started, JSON.stringify(scanBody)).toBe(true);
+  await scanSettled(request);
+  await apiBatchSettled(request);
+
+  let fresh;
+  await expect(async () => {
+    const scores = await (await request.get("/api/scores")).json();
+    fresh = scores.find((s) => s.path === "Uploads/fresh.pdf");
+    expect(fresh, "fresh.pdf never appeared in the library").toBeTruthy();
+  }).toPass({ timeout: SCAN_DEADLINE_MS });
+  const freshPatched = await request.patch(`/api/scores/${fresh.id}`, {
+    data: { title: "Fresh score" },
+  });
+  expect(freshPatched.ok(), await freshPatched.text()).toBe(true);
+  fresh = await freshPatched.json();
+
+  // The premise this test needs, checked rather than assumed: if the scan
+  // above had somehow landed before the occupying pass was confirmed
+  // running, "fresh.pdf" would already carry a transcription here, and the
+  // assertions below would be proving something weaker than they claim to.
+  expect(
+    fresh.has_transcription,
+    "fresh.pdf was auto-transcribed despite a bulk pass being confirmed running when its " +
+      "scan was triggered",
+  ).toBe(false);
+
   const already = await upload(
     request, EXTRACTABLE_PDF, "already.pdf", "Uploads", "Already transcribed score",
   );
@@ -230,11 +327,18 @@ test("the sidebar's per-folder Transcribe button selects only that folder", asyn
   await expect(dialog.locator(".transcribe-line")).toHaveCount(1);
   await expect(dialog.locator(".transcribe-line")).toContainText("In the folder");
 
-  // elsewhere.pdf was never selected, so it has no transcription of its own.
-  const scores = await (await request.get("/api/scores")).json();
-  const otherScore = scores.find((s) => s.path === "OtherFolder/elsewhere.pdf");
-  expect(otherScore.has_transcription).toBe(false);
+  // The same claim, from the API's own results rather than only the
+  // rendered line - the exact set of ids this pass actually ran over.
+  const finished = await apiBatchSettled(request);
+  expect(finished.results.map((r) => r.score_id)).toEqual([inFolder.id]);
 
+  // elsewhere.pdf was never selected for THIS bulk pass - already proven
+  // above by the dialog's own result count and title, not by
+  // has_transcription: an extractable PDF gains one on its own the moment a
+  // scan reaches it, whether or not anybody ever selects it for a bulk pass
+  // (#190), so has_transcription can no longer distinguish "selected here"
+  // from "scanned at some point".
+  const scores = await (await request.get("/api/scores")).json();
   const inFolderNow = scores.find((s) => s.id === inFolder.id);
   expect(inFolderNow.has_transcription).toBe(true);
 });
