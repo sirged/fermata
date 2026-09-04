@@ -392,21 +392,23 @@ def _check_fixture_path_keys() -> None:
     FERMATA_TEST_LIBRARY is unset: `_fixture_path` returns None before ever
     indexing `_FIXTURE_RELATIVE_PATHS`, so the run stays green and just skips
     - the same silent-gap failure mode this file's skip counter exists to
-    catch, one level up. Checked here, at collection time, against every
-    quoted key argument this file's own source text actually calls
-    `_fixture_path` with, so a typo'd key fails loudly on every run, library
-    configured or not."""
+    catch, one level up. Checked here, at collection time: every quoted key
+    argument this file's own source text calls `_fixture_path` with (single
+    or double quoted, and tolerant of the call being wrapped across lines)
+    must be an actual table key, AND every table key must be used by some
+    call - so a typo'd key and a dead table entry both fail loudly, and a
+    regex that stopped matching anything fails loudly too instead of passing
+    vacuously. This only reads THIS file's own source; a `_fixture_path`
+    call added to another file is not covered (none exist today)."""
     import re
 
     src = Path(__file__).read_text(encoding="utf-8")
-    used = set(re.findall(r'_fixture_path\("([^"]+)"\)', src))
+    used = set(re.findall(r"""_fixture_path\(\s*["']([^"']+)["']\s*\)""", src, re.S))
     valid = set(_FIXTURE_RELATIVE_PATHS)
-    unknown = used - valid
-    if unknown:
-        raise AssertionError(
-            f"_fixture_path(...) called with key(s) not in _FIXTURE_RELATIVE_PATHS: "
-            f"{sorted(unknown)}"
-        )
+    assert used == valid, (
+        f"guard coverage drifted: unused keys {sorted(valid - used)}, "
+        f"unknown keys {sorted(used - valid)}"
+    )
 
 
 _check_fixture_path_keys()
