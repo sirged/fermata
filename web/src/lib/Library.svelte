@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
 
   import { api } from "./api.js";
+  import { keySignatureLabel } from "./provenance.js";
 
   let scores = $state([]);
   let collections = $state([]);
@@ -13,6 +14,16 @@
   let favorite = $state(false);
   let practiced = $state("");
   let transcribed = $state("");
+  // #8: filters on the two fields worth narrowing a grid by. `key`/`difficulty`
+  // travel as STRINGS, the same way every other select on this page does (kind,
+  // transcribed, practiced) - "" means unset, and every real value (including
+  // "0", the common "no sharps or flats" key) is a non-empty string, so the
+  // truthy check api.scores() already does to drop unset filters never mistakes
+  // a real, falsy-looking NUMBER for one. Tempo has no filter control here: #8's
+  // Done-when asks for key and difficulty in the interface, and a range needs a
+  // pair of inputs a single "beside the existing filter row" select cannot be.
+  let key = $state("");
+  let difficulty = $state("");
   let scan = $state(null);
   let loading = $state(true);
   let uploadInput;
@@ -286,11 +297,38 @@
     ["no", "Not transcribed"],
   ];
 
+  // #8: the server's own closed ranges (api.MIN_KEY_FIFTHS..MAX_KEY_FIFTHS,
+  // api.MIN_DIFFICULTY..MAX_DIFFICULTY) mirrored the same way KINDS above
+  // mirrors VALID_KINDS - nothing here asks the server what is valid, so a
+  // number offered here that the server would refuse is a drift bug, not a
+  // possibility this file defends against at runtime.
+  const KEY_FILTERS = [
+    ["", "Any key"],
+    ...Array.from({ length: 15 }, (_, i) => i - 7).map((fifths) => [
+      String(fifths),
+      keySignatureLabel(fifths),
+    ]),
+  ];
+  const DIFFICULTY_FILTERS = [
+    ["", "Any difficulty"],
+    ...[1, 2, 3, 4, 5].map((n) => [String(n), "★".repeat(n) + "☆".repeat(5 - n)]),
+  ];
+
   async function refresh() {
     loading = true;
     try {
       [scores, collections, tags] = await Promise.all([
-        api.scores({ search, collection, kind, tag, favorite, practiced, transcribed }),
+        api.scores({
+          search,
+          collection,
+          kind,
+          tag,
+          favorite,
+          practiced,
+          transcribed,
+          key,
+          difficulty,
+        }),
         api.collections(),
         api.tags(),
       ]);
@@ -301,7 +339,7 @@
 
   $effect(() => {
     // re-query whenever a filter changes
-    void search, collection, kind, tag, favorite, practiced, transcribed;
+    void search, collection, kind, tag, favorite, practiced, transcribed, key, difficulty;
     const t = setTimeout(refresh, 150);
     return () => clearTimeout(t);
   });
@@ -925,6 +963,16 @@
         </select>
         <select class="transcribed-filter" bind:value={transcribed}>
           {#each TRANSCRIBED as [value, label]}
+            <option {value}>{label}</option>
+          {/each}
+        </select>
+        <select class="key-filter" bind:value={key} title="Filter by key">
+          {#each KEY_FILTERS as [value, label]}
+            <option {value}>{label}</option>
+          {/each}
+        </select>
+        <select class="difficulty-filter" bind:value={difficulty} title="Filter by difficulty">
+          {#each DIFFICULTY_FILTERS as [value, label]}
             <option {value}>{label}</option>
           {/each}
         </select>

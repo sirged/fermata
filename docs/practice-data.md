@@ -474,7 +474,11 @@ equality, not label equality and not fingering equality, either way.
 
 ## What is not here yet
 
-- **Key, tempo and difficulty per score** - musical metadata about the piece
-  rather than about the practice.
 - **Achievements** - looking back at what has been accomplished, where a goal
   looks forward from an intention. Designed to share this surface.
+
+Key, tempo and difficulty per score (issue #8) shipped as plain columns on
+`scores`, not on this surface - see docs/api.md's note on `PATCH
+/api/scores/{id}` for what each holds and why. They are metadata about the
+piece rather than about the practice, which is why they live there rather
+than here.

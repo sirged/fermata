@@ -1,6 +1,7 @@
 <script>
   import { api } from "./api.js";
   import { formatDuration } from "./practice.js";
+  import { keySignatureLabel } from "./provenance.js";
   import PdfViewer from "./PdfViewer.svelte";
   import TabViewer from "./TabViewer.svelte";
   import ScoreCompare from "./ScoreCompare.svelte";
@@ -399,6 +400,40 @@
     score = await api.patch(score.id, { content_kind: ev.target.value });
   }
 
+  // #8: the server's own closed ranges, mirrored the same way setKind's
+  // <select> above already mirrors VALID_KINDS - see api.MIN_KEY_FIFTHS /
+  // MAX_KEY_FIFTHS / MIN_DIFFICULTY / MAX_DIFFICULTY.
+  const KEY_OPTIONS = [
+    ["", "Key: unset"],
+    ...Array.from({ length: 15 }, (_, i) => i - 7).map((fifths) => [
+      String(fifths),
+      keySignatureLabel(fifths),
+    ]),
+  ];
+  const DIFFICULTY_OPTIONS = [
+    ["", "Difficulty: unset"],
+    ...[1, 2, 3, 4, 5].map((n) => [String(n), "★".repeat(n) + "☆".repeat(5 - n)]),
+  ];
+
+  // Every one of these three is independently clearable (an empty select /
+  // input sends `null`, not 0 or "") - see ScorePatch on the server, where an
+  // explicit null is the one way a wrong hand entry, or a key
+  // _store_extraction_result filled in on its own, comes off again.
+  async function setKey(ev) {
+    const v = ev.target.value;
+    score = await api.patch(score.id, { key: v === "" ? null : Number(v) });
+  }
+
+  async function setDifficulty(ev) {
+    const v = ev.target.value;
+    score = await api.patch(score.id, { difficulty: v === "" ? null : Number(v) });
+  }
+
+  async function setTempo(ev) {
+    const v = ev.target.value.trim();
+    score = await api.patch(score.id, { tempo: v === "" ? null : Number(v) });
+  }
+
   async function toggleFavorite() {
     score = await api.patch(score.id, { favorite: !score.favorite });
   }
@@ -454,6 +489,36 @@
             <option value="tab">tab</option>
             <option value="both">notation + tab</option>
           </select>
+          <select
+            class="key-select"
+            value={score.key === null || score.key === undefined ? "" : String(score.key)}
+            onchange={setKey}
+            title="Key signature - filled in from a transcription's decoded key when one is transcribed, or set by hand"
+          >
+            {#each KEY_OPTIONS as [value, label]}
+              <option {value}>{label}</option>
+            {/each}
+          </select>
+          <select
+            class="difficulty-select"
+            value={score.difficulty === null || score.difficulty === undefined ? "" : String(score.difficulty)}
+            onchange={setDifficulty}
+            title="How hard this piece is - nothing here infers one, it is only ever set by hand"
+          >
+            {#each DIFFICULTY_OPTIONS as [value, label]}
+              <option {value}>{label}</option>
+            {/each}
+          </select>
+          <input
+            class="tempo-input"
+            type="number"
+            min="20"
+            max="400"
+            placeholder="bpm"
+            value={score.tempo ?? ""}
+            onchange={setTempo}
+            title="Tempo (manual - the decoder's own reading has no confidence figure to trust)"
+          />
           <button
             class="ghost timer"
             class:on={practiceStart != null}
@@ -625,6 +690,10 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  .tempo-input {
+    width: 4.5em;
   }
 
   .ghost {
