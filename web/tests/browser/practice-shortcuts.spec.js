@@ -1138,6 +1138,11 @@ test.describe("a page turn pressed before the PDF has rendered", () => {
     await page.keyboard.press("ArrowRight");
 
     await pdfPagesRenderedAtSettledWidth(page, 15_000);
+    // The same exposure as the indicator test below, and the same barrier
+    // (#234): the line above waits for canvas widths, which are final before
+    // the re-render restores the scroll, so the fraction can otherwise be
+    // read off a reader still at the pre-render offset.
+    await pdfHalfTurnSettles(page, before);
     const after = await pdfGeometry(page);
     expect(after.pageHeight).toBeLessThan(before.pageHeight);
     // Half a page on from where the tap was taken, give or take which
