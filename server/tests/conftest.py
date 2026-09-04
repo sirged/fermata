@@ -387,6 +387,31 @@ def _fixture_path(name: str) -> Path | None:
     return p if p.is_file() else None
 
 
+def _check_fixture_path_keys() -> None:
+    """A typo in a `_fixture_path(...)` argument below is invisible whenever
+    FERMATA_TEST_LIBRARY is unset: `_fixture_path` returns None before ever
+    indexing `_FIXTURE_RELATIVE_PATHS`, so the run stays green and just skips
+    - the same silent-gap failure mode this file's skip counter exists to
+    catch, one level up. Checked here, at collection time, against every
+    quoted key argument this file's own source text actually calls
+    `_fixture_path` with, so a typo'd key fails loudly on every run, library
+    configured or not."""
+    import re
+
+    src = Path(__file__).read_text(encoding="utf-8")
+    used = set(re.findall(r'_fixture_path\("([^"]+)"\)', src))
+    valid = set(_FIXTURE_RELATIVE_PATHS)
+    unknown = used - valid
+    if unknown:
+        raise AssertionError(
+            f"_fixture_path(...) called with key(s) not in _FIXTURE_RELATIVE_PATHS: "
+            f"{sorted(unknown)}"
+        )
+
+
+_check_fixture_path_keys()
+
+
 @pytest.fixture
 def score_a_pdf() -> Path:
     p = _fixture_path("score_a")
