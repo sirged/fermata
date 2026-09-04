@@ -14,6 +14,20 @@ import { barAtTick } from "./metronome.js";
 /** Which staves a score is drawn with. */
 export const SCORE_PROFILES = ["score", "tab", "scoretab"];
 
+// alphaTab's own "render every track" sentinel (issue #93). AlphaTabApiBase's
+// renderScore() special-cases a track-index array of exactly one element
+// equal to -1 as "all tracks in the score" (see its bundled source); any
+// falsy or empty list instead falls back to `[score.tracks[0]]`. `api.load()`
+// forwards its own track-index argument straight into that same renderScore()
+// call, with no translation - so a load call that wants every track drawn has
+// to pass this literal array, not `undefined` and not a real index list built
+// from a track count nothing has parsed yet. `api.tex()` on the concrete
+// browser AlphaTabApi additionally accepts the string `"all"` and turns it
+// into this same array itself; the two spellings are used at their matching
+// call sites below only for that reason, not because they mean anything
+// different.
+const ALL_TRACKS = [-1];
+
 const STAVE_PROFILE = {
   score: alphaTab.StaveProfile.Score,
   tab: alphaTab.StaveProfile.Tab,
@@ -1497,11 +1511,16 @@ function jumpDirectionFor(kind, words, bar, targets, codaRouteIsSafe) {
  */
 function beatsInBarCreationOrder(score, barIndex) {
   const out = [];
-  // The first track only. A `<part>` becomes a track, and the importer parses
-  // each part's measures to the end before starting the next - so the words
-  // held from a direction in the first part's measure are always consumed by a
-  // beat in the first part. Marks are indexed against the first part's
-  // measures (see musicXmlMeasures), so that is the track to look in.
+  // The first track only, DELIBERATELY - not "whichever tracks are rendered"
+  // (issue #93 made that every track, not just this one). A `<part>` becomes
+  // a track, and the importer parses each part's measures to the end before
+  // starting the next - so the words held from a direction in the first
+  // part's measure are always consumed by a beat in the first part.
+  // musicXmlMeasures() and navigationMarks() index marks against the
+  // document's first `<part>` element specifically, by reading the raw XML
+  // directly rather than anything alphaTab decided to draw - so this is the
+  // one track whose identity that indexing already assumes, regardless of how
+  // many tracks the renderer is now asked to show.
   for (const staff of score.tracks?.[0]?.staves ?? []) {
     for (const voice of staff.bars?.[barIndex]?.voices ?? []) {
       for (const beat of voice.beats ?? []) out.push(beat);
@@ -2002,6 +2021,18 @@ export function createScoreView(host, opts = {}) {
   // for beat. One part, one staff is this profile's scope (Rule 17); a second
   // staff or track would need an axis this walk does not name, exactly as
   // Rule 17's own uniqueness note says of its id formula.
+  //
+  // Still `tracks[0]` on purpose after issue #93, which made every OTHER
+  // load()/tex() call in this file render every track: this editor seam is
+  // reachable only from ScoreCompare.svelte's `editable` prop, fed
+  // `transcription.content` - Fermata's own tabextract output - and
+  // server/fermata/musicxml.py's emitter hard-codes that output to a single
+  // `<part>` (issue #93's own Occurrence note). So `tracks[0]` is not just
+  // "the first of several" here, it is currently the only track that exists
+  // for anything this function is ever called on. A multi-track document
+  // reaching the editor would need the axis Rule 17 already says this id
+  // formula does not name - that is the track-selector work the issue calls
+  // out of scope, not a gap this comment is papering over.
   function buildNoteOrdinals() {
     noteOrdinals = new Map();
     notesInOrder = [];
@@ -2781,6 +2812,18 @@ export function createScoreView(host, opts = {}) {
         delete host.dataset.scoreTabWithheld;
       }
     }
+    // Already track-aware, and needs no change for issue #93: `api.tracks`
+    // (plural) is alphaTab's own account of every track the CURRENT render
+    // request resolved to, not `tracks[0]` - and load()/tex() now always ask
+    // for ALL_TRACKS, so once a score has actually loaded this is every track
+    // the document has, not just the first. The `loadedScore.tracks` fallback
+    // is for the one moment `api.tracks` cannot be trusted instead: alphaTab
+    // sets its internal `_tracks` field to the resolved list BEFORE firing
+    // scoreLoaded (see AlphaTabApiBase._internalRenderTracks in the bundled
+    // source), so in practice `api.tracks` is already correct by the time
+    // this handler runs - this is a belt-and-braces read of the score's own
+    // tracks for a future alphaTab release that reordered that sequence, not
+    // evidence of a real gap today.
     scoreProfiles = supportedProfiles(api.tracks?.length ? api.tracks : loadedScore.tracks);
     unrenderable = scoreProfiles.length === 0;
     if (!unrenderable && !scoreProfiles.includes(profile)) {
@@ -2969,12 +3012,18 @@ export function createScoreView(host, opts = {}) {
     pendingSourceText = null;
     pendingUnreadReason = null;
     if (next.kind === "alphatex") {
-      api.tex(next.text);
+      // "all", not the default first-track-only render (issue #93) - an
+      // alphaTeX document can declare more than one `\track`, and every one
+      // of them should draw, the same as a multi-part MusicXML file.
+      api.tex(next.text, "all");
     } else if (next.kind === "musicxml") {
       // Goes through the same byte loader a library file uses: the format is
       // detected from the content, so there is no separate entry point.
       pendingSourceText = next.text;
-      api.load(new TextEncoder().encode(next.text));
+      // ALL_TRACKS (issue #93): a MusicXML file with more than one <part>
+      // becomes more than one track here, and every one of them should draw -
+      // api.load()'s own default, with no track list, renders only the first.
+      api.load(new TextEncoder().encode(next.text), ALL_TRACKS);
     } else if (next.kind === "file") {
       fetch(next.url)
         .then((r) => r.arrayBuffer())
@@ -2989,7 +3038,10 @@ export function createScoreView(host, opts = {}) {
           const document = await readMusicXml(bytes);
           pendingSourceText = document.text;
           pendingUnreadReason = document.unread;
-          api.load(bytes);
+          // ALL_TRACKS (issue #93): same reasoning as the musicxml branch
+          // above - this is the path a library file (of any track count) and
+          // a directly uploaded MusicXML/.mxl/Guitar Pro file both take.
+          api.load(bytes, ALL_TRACKS);
         })
         .catch((e) => onError(String(e)));
     }
@@ -3208,7 +3260,17 @@ export function createScoreView(host, opts = {}) {
       pendingSourceText = text;
       pendingUnreadReason = null;
       try {
-        api.load(new TextEncoder().encode(text));
+        // ALL_TRACKS (issue #93), for consistency with every other load()
+        // call in this file. The editor only ever reaches this path for
+        // Fermata's own transcription output (ScoreCompare.svelte's
+        // `editable` prop is fed `transcription.content`), which
+        // server/fermata/musicxml.py's emitter hard-codes to a single part
+        // today - so this is currently a no-op change, not a fix - but a
+        // reload that silently dropped back to track 0 the moment that
+        // emitter grew a second part would be a second, easy-to-miss version
+        // of the same bug, and there is no reason for this call to be the one
+        // load() site in the file that still defaults.
+        api.load(new TextEncoder().encode(text), ALL_TRACKS);
       } catch (e) {
         pendingEditResolve = null;
         reject(e instanceof Error ? e : new Error(String(e)));
