@@ -87,10 +87,10 @@ jobs:
   browser:
     name: Browser tests
     runs-on: ubuntu-latest
-    # The suite itself runs in ~75s. 25 is a floor under setup-time variance
-    # (npm's registry fetches are not equally fast on every run), not the
-    # fix for it - the caching below is the fix; this just keeps a slow
-    # network from turning a passing suite into a cancelled job.
+    # The suite itself takes about 7.6 minutes; 25 covers that plus a
+    # worst-observed 7.7-minute setup, with headroom. The caching below is
+    # the fix for that setup variance - this is only the floor under it, not
+    # a substitute for it.
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -113,7 +113,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: web/node_modules
-          key: node-modules-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('web/package-lock.json') }}
       # This suite drives the real backend serving the real build, because a
       # passing build proves nothing about whether anything rendered - so both
       # halves are installed here. Playwright starts the server itself; see
@@ -134,7 +134,9 @@ jobs:
       - name: Read Playwright version
         id: playwright-version
         working-directory: web
-        run: echo "version=$(node -p "require('./package-lock.json').packages['node_modules/playwright'].version")" >> "$GITHUB_OUTPUT"
+        run: |
+          version=$(node -p "require('./package-lock.json').packages['node_modules/playwright'].version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Cache browser
         uses: actions/cache@v4
         with:
