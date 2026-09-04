@@ -718,8 +718,10 @@
     const before = doc.text();
     const newOrdinal = doc.restToNote(restOrdinal, string, fret);
     if (newOrdinal == null) {
-      editWarn = REST_TO_NOTE_REFUSAL;
+      // Reselect first: selectRest clears editWarn, so the message has to be
+      // set after it or it is never seen.
       selectRest(restOrdinal);
+      editWarn = REST_TO_NOTE_REFUSAL;
       return null;
     }
     editWarn = "";

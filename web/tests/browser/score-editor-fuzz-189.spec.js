@@ -50,13 +50,14 @@ const wrap = (page) => page.locator(".staff-render .wrap");
 const host = (page) => page.locator(".staff-render .at-host");
 
 const SEED = Number(process.env.FERMATA_FUZZ_SEED ?? 0x1a2b3c);
-// Raised from 40 when restToNote joined the menu (#238): the menu is drawn
-// from uniformly, but the draw is not a fair one over a short run - at this
-// seed the first 40 steps happen never to pick the eighth op at all, measured,
-// so the "restToNote was attempted" assertion below could not hold. The SEED is
-// deliberately unchanged, which makes the first 40 steps byte-for-byte the
-// sequence this guard has always run and the extra 20 a strict addition to it,
-// rather than a different sequence chosen to make a new assertion pass.
+// Raised from 40 when restToNote joined the menu (#238). Adding an eighth op
+// changes every draw (the menu is picked modulo its length, and the op is now
+// drawn before the ordinal), so this is a NEW sequence, not the old one plus
+// twenty steps: at this seed, measured, the first 40 steps of the new sequence
+// never pick restToNote at all, and the "restToNote was attempted" assertion
+// below could not hold. Sixty steps draw every op at least once (restToNote
+// first at step 49, three times in all). The SEED is unchanged so a red run
+// still reproduces from the number in the test title.
 const N = Number(process.env.FERMATA_FUZZ_N ?? 60);
 
 async function renderedOk(page) {
