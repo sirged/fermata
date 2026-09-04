@@ -22,9 +22,12 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
+      # [mcp] as well as [dev]: server/tests/test_mcp_server.py connects a
+      # real protocol client to a real listener, and without the extra those
+      # tests would skip - green, and proving nothing about the feature.
       - name: Install
         working-directory: server
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,mcp]"
       # An extracted transcription is stored to be rendered, so the tests
       # check it parses with the real alphaTab importer the player uses -
       # which is a runtime dependency of the web project. Installing it here

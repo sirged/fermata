@@ -16,8 +16,38 @@ from .db import init_db
 log = logging.getLogger("fermata.startup")
 
 
+def _start_mcp_server(app: FastAPI):
+    """Start the Model Context Protocol server (issue #31), or don't.
+
+    THE IMPORT IS INSIDE THE `if` ON PURPOSE, and it is the whole reason this
+    is a function rather than three lines in the lifespan. With FERMATA_MCP
+    unset, `fermata.mcp_server` - and through it the protocol library - is
+    never imported, so a deployment that turned this feature off does not
+    need the optional dependency installed at all, and `import fermata.main`
+    keeps working without it. server/tests/test_mcp_server.py pins that in
+    both directions.
+
+    The tools are generated from `app.openapi()`: the same document the
+    application serves at `/openapi.json`, read here at startup, so a tool
+    schema cannot drift from the route it wraps. Note the direction - this
+    reads the document, it does not add to it. Turning the flag on does not
+    change a single line of the API's own contract.
+    """
+    if not config.MCP_ENABLED:
+        return None
+    from . import mcp_server
+
+    return mcp_server.start(
+        app.openapi(),
+        host=config.MCP_HOST,
+        port=config.MCP_PORT,
+        api_base_url=config.MCP_API_URL,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    mcp_listener = None
     try:
         ensure_dirs()
         # Parses FERMATA_TRUSTED_PROXIES - not done at import time (see
@@ -42,7 +72,13 @@ async def lifespan(app: FastAPI):
         # docstring for why this is fatal and a genuinely broad-but-real
         # subnet is not.
         authproxy.check_trusted_proxies_are_not_everyone()
+        # Parses FERMATA_MCP_PORT when, and only when, FERMATA_MCP is on -
+        # in here, not at import time, for exactly the same reason
+        # load_auth_trusted_networks is (see config.py's comment on
+        # MCP_PORT).
+        config.load_mcp_settings()
         init_db()
+        mcp_listener = _start_mcp_server(app)
     except RuntimeError as exc:
         # Said plainly BEFORE the exception propagates, because of what happens
         # next in the real world. Uvicorn prints a traceback for anything raised
@@ -70,7 +106,11 @@ async def lifespan(app: FastAPI):
     # that, not buried under a warning about a different one.
     authproxy.check_auth_configuration_sanity()
     scanner.start_scan()
-    yield
+    try:
+        yield
+    finally:
+        if mcp_listener is not None:
+            mcp_listener.stop()
 
 
 app = FastAPI(title="Fermata", lifespan=lifespan)

@@ -28,6 +28,28 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The Model Context Protocol server (issue #31). An EXTRA, not a core
+# dependency, because the feature is off unless FERMATA_MCP is set and
+# nothing imports any of this until it is - a source install that never
+# turns it on should not have to carry the protocol library or its
+# transitive dependencies. The container image installs the extra anyway
+# (see the Dockerfile), so that flipping the flag there is an environment
+# variable rather than a rebuild.
+#
+# Pinned exactly, unlike everything above. This is the one dependency whose
+# wire behaviour IS the feature - a protocol revision arriving in a patch
+# release would change what a connected client sees without a line of this
+# repository changing - so the version that was actually tested is the
+# version that ships, and moving it is a deliberate commit.
+#
+# httpx is named explicitly rather than relied on from the protocol
+# library's own dependency tree: fermata/mcp_server.py imports it directly
+# to make each tool's HTTP request against the REST API, and a dependency
+# you import is one you declare.
+mcp = [
+    "mcp==2.1.1",
+    "httpx>=0.27",
+]
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
