@@ -18,14 +18,33 @@ import { expect, test } from "@playwright/test";
 import { stubMultiPartScore } from "./fixtures/multi-part-score.js";
 
 const host = (page) => page.locator(".at-host");
+const playButton = (page) => page.locator(".player button.primary");
 
+// Mirrors navigation.spec.js's openScore(): data-score-render-ok reads "true"
+// in two states that drew nothing at all - before the very first render ever
+// runs, and when a render request was silently dropped at width 0 or deferred
+// by font loading (see web/test-fixtures/tab-profile-selection.md, "A score
+// that draws nothing") - so it is not on its own proof that anything is on
+// screen yet. Waiting for the play button to become enabled as well is what
+// the rest of this suite uses to mean "a real render actually finished."
 async function openScore(page, id) {
   await page.goto(`/#/score/${id}`);
+  await expect(playButton(page)).toBeEnabled({ timeout: 30_000 });
   await expect(host(page)).toHaveAttribute("data-score-render-ok", "true", { timeout: 30_000 });
 }
 
+// Trimmed and NBSP-normalized: alphaTab pads some drawn text (bar numbers
+// render as "1  ", for instance) with trailing whitespace, and writes a
+// multi-word track name with a U+00A0 NON-BREAKING space between the words
+// (measured directly - a plain ASCII space would not survive this) rather
+// than an ordinary one, almost certainly to stop its own line-wrapping
+// splitting a track name across two lines. Neither has anything to do with a
+// string's identity for this spec's purposes, so both are normalized away
+// here rather than baked into the two literals this file compares against.
 async function drawnText(page) {
-  return await page.evaluate(() => [...document.querySelectorAll(".at-host svg text")].map((t) => t.textContent));
+  return await page.evaluate(() =>
+    [...document.querySelectorAll(".at-host svg text")].map((t) => t.textContent.replace(/ /g, " ").trim()),
+  );
 }
 
 test.describe("a multi-part score draws every part, not just the first", () => {
