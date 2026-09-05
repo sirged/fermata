@@ -659,10 +659,10 @@ you'd be upset to lose — weekly is reasonable for casual use.
 
 **`GET /api/export`** is the other way to get a backup, and it does not need
 the container stopped: it is a live endpoint, called over the network, that
-answers with one zip holding every score, transcription, practice-session,
-goal, setlist, tag, instrument and setting row plus the score files
-themselves — a portable archive rather than a copy of the database file.
-(Fretboard-drill history is not in it yet; #243 tracks that.) It
+answers with one zip holding every row Fermata keeps — scores, transcriptions,
+practice sessions, goals, setlists, tags, instruments, settings and drill
+history — plus the score files themselves: a portable archive rather than a
+copy of the database file. It
 is the better choice for scripting a backup onto another machine, or for
 taking one without touching the host filesystem at all; copying `config/` is
 the better choice for a quick local snapshot before an upgrade. See [the API

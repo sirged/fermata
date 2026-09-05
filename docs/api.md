@@ -240,14 +240,14 @@ that ties them together.
 
 | Endpoint | What it does |
 | --- | --- |
-| `GET /api/export` | Every score row, transcription, practice session, goal, tag, instrument, setting and setlist (with its ordered membership), plus the score files themselves, as one zip. |
+| `GET /api/export` | Every score row, transcription, practice session, goal, tag, instrument, setting, setlist (with its ordered membership) and fretboard-drill attempt, plus the score files themselves, as one zip. |
 | `POST /api/import` | Restores an archive `GET /api/export` produced. **Dry run by default.** |
 
 **The archive.** A zip with `manifest.json` at its root - a JSON object naming
 the exact `schema_version` (`fermata/db.py`'s `SCHEMA_VERSION`, not the
 application's own release number) the rest of it was written against, and
-carrying the rows of the tables the endpoint table above lists, verbatim,
-under `tables` (drill history is not among them yet; see #243). Score files themselves
+carrying every table's rows verbatim under `tables` (drill history included
+since #243). Score files themselves
 live under `files/<content-hash><extension>`, named by the same identity the
 scanner already uses (`scanner.hash_file`) rather than by a person's folder
 names, which is what lets two scores that happen to share content share one

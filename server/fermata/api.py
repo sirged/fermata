@@ -4667,8 +4667,8 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
 @router.post("/import", tags=[TAG_PORTABILITY], response_model=ImportOut)
 async def import_library(file: UploadFile, dry_run: bool = True):
     """Restore an archive written by `GET /api/export` - every score row,
-    transcription, practice session, goal, tag, instrument, setting and
-    setlist it carries, added to this library. A setlist's ordered membership
+    transcription, practice session, goal, tag, instrument, setting, setlist
+    and drill attempt it carries, added to this library. A setlist's ordered membership
     is restored with both its foreign keys repointed at this import's own new
     setlist and score rows, so the arrangement survives intact. See the
     module comment above this section for the archive's shape, exactly what
