@@ -1581,6 +1581,15 @@
     </p>
   {/if}
 
+  {#if editError && !editMode}
+    <!-- enterEdit() (above) catches createDocument's refusal, sets editError
+    and returns before editMode ever flips true - so the {#if editMode} panel
+    below, which is the only other place editError renders, never mounts for
+    this case. Without this paragraph the refusal was silent: the "Edit
+    notes" button just stayed enabled and did nothing (#226 follow-up). -->
+    <p class="error">{editError}</p>
+  {/if}
+
   {#if editMode}
     <div class="edit-panel">
       {#if editError}

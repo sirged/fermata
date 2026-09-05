@@ -47,6 +47,18 @@ const TWO_PART_MUSICXML = fs.readFileSync(
 const PART_COUNT = 2;
 const REFUSAL_MESSAGE = `The note editor works on one part at a time; this document has ${PART_COUNT}.`;
 
+// The refusal counts <part> elements (document.js's `partCount`), not
+// <score-part> entries in <part-list> - a document can legitimately list more
+// score-parts than it actually writes as <part>s (or the reverse, an
+// under-specified upload), and only the latter is what the editor cannot map.
+// Built from EDITOR_MUSICXML - still exactly one <part id="P1">, with a
+// second <score-part> appended to <part-list> so it names two parts while
+// writing one.
+const TWO_SCORE_PART_LIST_MUSICXML = EDITOR_MUSICXML.replace(
+  '<score-part id="P1"><part-name>Guitar</part-name></score-part>',
+  '<score-part id="P1"><part-name>Guitar</part-name></score-part>\n    <score-part id="P2"><part-name>Ghost</part-name></score-part>',
+);
+
 const wrap = (page) => page.locator(".staff-render .wrap");
 const host = (page) => page.locator(".staff-render .at-host");
 
@@ -88,13 +100,18 @@ test.describe("a two-part transcription is refused by the note editor (#226)", (
     await openStaff(page, TWO_PART_MUSICXML);
     await page.getByRole("button", { name: "Edit notes" }).click();
     // Never entered edit mode - createDocument threw before enterEdit() got to
-    // set editMode true, so the panel that would show editError never mounts
-    // either (it lives behind `{#if editMode}`); data-editor-error is the one
-    // place the message reaches the DOM regardless, the same as it already
-    // does for the pre-existing partwise-only refusal.
+    // set editMode true, so the panel that would show editError inline never
+    // mounts either (it lives behind `{#if editMode}`). data-editor-error
+    // carries the message regardless, the same as it already does for the
+    // pre-existing partwise-only refusal - but a guitarist reads the page, not
+    // an attribute, so the refusal also has to be actual rendered text (#226
+    // follow-up: this used to be a silent no-op, the button just staying
+    // enabled with nothing visibly happening).
     await expect(wrap(page)).toHaveAttribute("data-editor-active", "false");
     await expect(wrap(page)).toHaveAttribute("data-editor-error", REFUSAL_MESSAGE);
     await expect(wrap(page)).not.toHaveAttribute("data-editor-selected", /.*/);
+    await expect(page.locator(".wrap p.error", { hasText: REFUSAL_MESSAGE })).toBeVisible();
+    await expect(page.locator("body")).toContainText(REFUSAL_MESSAGE);
   });
 
   test("no note is selected after clicking the staff or pressing arrow keys", async ({ page }) => {
@@ -141,5 +158,36 @@ test.describe("a two-part transcription is refused by the note editor (#226)", (
     await expect
       .poll(() => page.evaluate(() => window.__scoreEditor?.noteCount() ?? 0))
       .toBe(8);
+  });
+
+  test("a document with one <part> but two <score-part> entries still opens in the editor", async ({ page }) => {
+    // The refusal counts <part> elements, not <part-list>'s <score-part>
+    // entries (document.js's partCount) - this document names two parts in
+    // its <part-list> but writes only one <part>, so it must open exactly
+    // like EDITOR_MUSICXML, unaffected by the extra score-part entry.
+    await openStaff(page, TWO_SCORE_PART_LIST_MUSICXML);
+    await page.getByRole("button", { name: "Edit notes" }).click();
+    await expect(wrap(page)).toHaveAttribute("data-editor-active", "true");
+    await expect(wrap(page)).not.toHaveAttribute("data-editor-error", /.*/);
+    await expect
+      .poll(() => page.evaluate(() => window.__scoreEditor?.noteCount() ?? 0))
+      .toBe(8);
+  });
+
+  test("after the refusal, the viewer still renders both parts", async ({ page }) => {
+    // Clicking "Edit notes" and seeing the refusal must not disturb the plain
+    // viewer's own render of the document underneath - refusing an EDIT is not
+    // the same as failing to render, so the staff stays exactly as the
+    // read-only test above measures it (both part names, 12 TAB staff rows),
+    // even after the editor has rejected this same document.
+    await openStaff(page, TWO_PART_MUSICXML);
+    await page.getByRole("button", { name: "Edit notes" }).click();
+    await expect(wrap(page)).toHaveAttribute("data-editor-active", "false");
+    await expect(page.locator("body")).toContainText(REFUSAL_MESSAGE);
+    await renderedOk(page);
+    const texts = await drawnTexts(page);
+    expect(texts).toContain("Upper");
+    expect(texts).toContain("Lower");
+    expect(await staffLineRowCount(page)).toBe(12);
   });
 });

@@ -114,7 +114,7 @@ export function createDocument(xml) {
   }
   const root = doc.documentElement;
   if (!root || root.tagName !== "score-partwise") {
-    throw new Error("The note editor works on partwise MusicXML transcriptions only.");
+    throw new Error("The note editor works on partwise MusicXML transcriptions.");
   }
 
   // This profile writes exactly one <part> (the docstring's "one part");
