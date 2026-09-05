@@ -1,0 +1,30 @@
+// Fermata test fixture (issue #237): an original scale-fragment-plus-chord
+// sketch written for this repo, not an existing arrangement. Generated into
+// web/test-fixtures/guitar-pro-import-fixture.gp with alphaTab 1.8.4's own
+// Gp7Exporter, from this exact source, via (from web/, after `npm ci`):
+//
+//   node -e "
+//     import('./node_modules/@coderline/alphatab/dist/alphaTab.mjs').then(async (mod) => {
+//       const fs = await import('node:fs');
+//       const settings = new mod.Settings();
+//       const importer = new mod.importer.AlphaTexImporter();
+//       importer.init(mod.io.ByteBuffer.fromString(fs.readFileSync('test-fixtures/guitar-pro-import-fixture.alphatex', 'utf8')), settings);
+//       const score = importer.readScore();
+//       const bytes = new mod.exporter.Gp7Exporter().export(score, settings);
+//       fs.writeFileSync('test-fixtures/guitar-pro-import-fixture.gp', Buffer.from(bytes));
+//     });
+//   "
+//
+// Expected on reload through the real importer (ScoreLoader.loadScoreFromBytes):
+// 1 track, 4 bars, 13 beats, 18 notes, standard 6-string tuning (E4 B3 G3 D3
+// A2 E2 = MIDI 64 59 55 50 45 40), title "Guitar Pro import fixture",
+// artist "Fermata test fixture".
+\title "Guitar Pro import fixture"
+\artist "Fermata test fixture"
+\tempo 100
+\track "Fixture"
+.
+:4 0.6 2.6 3.6 5.6 |
+:4 0.5 2.5 3.5 5.5 |
+:4 0.4 2.4 3.4 5.4 |
+:1 (0.6 2.5 2.4 1.3 0.2 0.1)
