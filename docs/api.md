@@ -341,7 +341,7 @@ layer's own correctness depends on this one meaning what it says.
 
 That server (issue #31, `server/fermata/mcp_server.py`) is off unless
 `FERMATA_MCP` is set, and when it runs it is a CLIENT of this API like any
-other: each of its thirteen read-only tools is one documented `GET` from the
+other: each of its fourteen read-only tools is one documented `GET` from the
 list above, called over HTTP, answering with that route's own JSON
 unchanged. It never adds an operation to this document - it reads it. The
 tool list and every tool's input schema are generated from `app.openapi()`

@@ -18,6 +18,7 @@ meet.
 """
 
 import json
+import re
 from typing import Any
 
 # The one drill that writes here today. A widened tuple, not a migration, is
@@ -377,4 +378,152 @@ def chord_attempt_dict(row) -> dict:
     d["correct"] = bool(d["correct"])
     for field in ("target_shape", "given_shape", "given_notes"):
         d[field] = json.loads(d[field]) if d[field] is not None else None
+    return d
+
+
+# ---------------------------------------------------------------------------
+# Named drill scopes (issue #236) - the validation half of
+# trainer_scope_presets / trainer_scope_preset_strings.
+#
+# A SCOPE is what narrows a drill to what somebody is actually working on:
+# which strings, which frets, and optionally which key. Both drills have
+# always had one (web/src/lib/trainer/constraints.js); until #236 it lived
+# only in the browser and vanished on reload. This module validates the saved
+# form of it, the same way normalise_attempt validates an answered question,
+# and for the same reason: the rules belong beside the data rather than in a
+# route handler.
+#
+# CHECKED AGAINST THE BOUNDS ANY INSTRUMENT COULD HAVE, never against one
+# live instrument row - exactly the rule MIN_STRING_NUMBER/MAX_FRET above
+# already state for an attempt, and here it is not a convenience but the
+# design: a preset is SHARED infrastructure (db.py's note on why there is no
+# `drill` column says the same about drills). A scope named while a
+# seven-string guitar was selected is still the scope somebody wants when
+# they pick the six-string up, and pinning it to whichever instrument
+# happened to be chosen when Save was pressed would make half a person's
+# presets refuse to load for reasons they never asked about. What a drill
+# does with a string its current tuning does not have is a rendering
+# question, answered where the neck is drawn (constraints.js's stringInScope
+# simply never matches it), not a reason to refuse the row.
+# ---------------------------------------------------------------------------
+
+# The two scales a key can name, character for character
+# web/src/lib/trainer/constraints.js's KEY_QUALITIES. Fixed here rather than
+# accepting any string for the same reason PITCH_CLASSES is fixed: "the key of
+# G major" has to be a GROUP BY, not a value each client spells its own way.
+KEY_QUALITIES = ("major", "minor")
+
+# Long enough for any name a person would type, bounded so a stored name stays
+# a label - the same rule, and the same number, api.MAX_SETLIST_NAME_CHARS
+# applies to a setlist's.
+MAX_PRESET_NAME_CHARS = 200
+
+# How many strings one preset may name. The bound is MAX_STRING_NUMBER,
+# because naming every string of the widest instrument this app accepts is a
+# real scope ("all of them") and naming more than that is a mistake.
+MAX_PRESET_STRINGS = MAX_STRING_NUMBER
+
+
+def _preset_name(name) -> str:
+    """A preset's name, cleaned the way api._clean_setlist_name cleans a
+    setlist's: unprintable characters dropped, runs of whitespace collapsed,
+    the ends trimmed, the length bounded. A name that was only whitespace is a
+    ValueError rather than a stored blank - an unnamed entry in a list of
+    named scopes is one nobody can pick on purpose."""
+    if not isinstance(name, str):
+        raise ValueError("a preset needs a name")
+    cleaned = re.sub(r"\s+", " ", "".join(ch for ch in name if ch.isprintable())).strip()
+    if not cleaned:
+        raise ValueError("a preset needs a name")
+    return cleaned[:MAX_PRESET_NAME_CHARS]
+
+
+def _preset_strings(string_numbers) -> list[int]:
+    """The string set, deduplicated and sorted.
+
+    EMPTY IS REFUSED, and that is the one rule here worth spelling out.
+    Everywhere else in the scope model an empty string list means "no filter
+    at all" rather than "no strings" (constraints.js's stringInScope, and
+    FretToNote.svelte's toggleString, which will not let the last box be
+    unchecked for exactly this reason). A SAVED preset cannot use that
+    convention: a row with no strings would be indistinguishable from a row
+    whose strings failed to write, so "every string" is stored by naming every
+    string, and nothing downstream has to guess which of the two was meant.
+    """
+    if not isinstance(string_numbers, (list, tuple)):
+        raise ValueError("strings must be a list of string numbers")
+    numbers = set()
+    for value in string_numbers:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("every string number must be a whole number")
+        if not MIN_STRING_NUMBER <= value <= MAX_STRING_NUMBER:
+            raise ValueError(
+                f"every string number must be between {MIN_STRING_NUMBER} "
+                f"and {MAX_STRING_NUMBER}"
+            )
+        numbers.add(value)
+    if not numbers:
+        raise ValueError("a preset needs at least one string")
+    if len(numbers) > MAX_PRESET_STRINGS:
+        raise ValueError(f"a preset may name at most {MAX_PRESET_STRINGS} strings")
+    return sorted(numbers)
+
+
+def _preset_key(key_root, key_quality) -> tuple[str | None, str | None]:
+    """The key, or no key at all. Both fields or neither: a root with no
+    quality does not name a key, and a quality with no root names nothing -
+    the same both-or-neither rule _position applies to a string and a fret,
+    and for the same reason (otherwise "does this scope have a key" is
+    answered by whichever column happens to be non-null)."""
+    if key_root is None and key_quality is None:
+        return None, None
+    if key_root is None or key_quality is None:
+        raise ValueError("key_root and key_quality must both be given, or neither")
+    if key_root not in PITCH_CLASSES:
+        raise ValueError(f"key_root must be one of {list(PITCH_CLASSES)}")
+    if key_quality not in KEY_QUALITIES:
+        raise ValueError(f"key_quality must be one of {list(KEY_QUALITIES)}")
+    return key_root, key_quality
+
+
+def normalise_preset(
+    *, name, start_fret, end_fret, strings, key_root=None, key_quality=None
+) -> dict:
+    """Check a named scope and return what to store: the preset's own row
+    under 'preset', and its string set under 'strings' (one row each, in the
+    child table - db.py says why a set is not a column).
+
+    Raises ValueError with a message meant for a person to read, the same
+    contract normalise_attempt has.
+    """
+    for value, field in ((start_fret, "start_fret"), (end_fret, "end_fret")):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{field} must be a whole number")
+        if not MIN_FRET <= value <= MAX_FRET:
+            raise ValueError(f"{field} must be between {MIN_FRET} and {MAX_FRET}")
+    if start_fret > end_fret:
+        # Not a range at all. Stored, it would be a preset that can never ask
+        # a question, and nothing downstream could tell that from a scope that
+        # is merely narrow.
+        raise ValueError("start_fret must not be past end_fret")
+    root, quality = _preset_key(key_root, key_quality)
+    return {
+        "preset": {
+            "name": _preset_name(name),
+            "start_fret": start_fret,
+            "end_fret": end_fret,
+            "key_root": root,
+            "key_quality": quality,
+        },
+        "strings": _preset_strings(strings),
+    }
+
+
+def preset_dict(row, string_numbers) -> dict:
+    """One preset as the API presents it - the stored row plus its string set,
+    which lives in its own table and so is passed in rather than read off the
+    row. Sorted ascending, always: a set has no order of its own, and a stable
+    one is what lets a client compare two presets without sorting first."""
+    d = dict(row)
+    d["strings"] = sorted(string_numbers)
     return d

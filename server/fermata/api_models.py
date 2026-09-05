@@ -242,6 +242,10 @@ class PracticeSessionOut(BaseModel):
     target_tempo_bpm: int | None
     rating: int | None
     note: str | None
+    # The named drill scope this session was practised under (issue #236), or
+    # null - which is the ordinary case: only a fretboard or chord drill run
+    # on a saved scope carries one. See db.py's note on the column.
+    preset_id: int | None
     local_date_source: str
     reached_target: bool | None
     score_missing: bool
@@ -1064,6 +1068,12 @@ class ImportOut(BaseModel):
     # lost, it simply never existed in the first place.
     trainer_attempts_imported: int
     trainer_chord_attempts_imported: int
+    # #236's two: how many named drill scopes the archive carried, and how
+    # many string-set rows across them - 0 for an archive written before
+    # these tables existed, the same way the two above read for one written
+    # before drill history travelled.
+    trainer_presets_imported: int
+    trainer_preset_strings_imported: int
 
 
 # ---------------------------------------------------------------------------
@@ -1158,6 +1168,53 @@ class TrainerChordAttemptListOut(BaseModel):
     attempts: list[TrainerChordAttemptOut]
     total: int
     truncated: bool
+
+
+# ---------------------------------------------------------------------------
+# Named drill scopes (issue #236)
+#
+# The scope a drill is narrowed to - which strings, which frets, which key -
+# saved under a name, so it survives a reload and so the same one narrows
+# BOTH drills. Shapes mirror trainer.preset_dict exactly, the same discipline
+# the rest of this module keeps.
+# ---------------------------------------------------------------------------
+
+
+class TrainerPresetOut(BaseModel):
+    """One named scope, as trainer.preset_dict presents it - the stored row
+    plus its string set, gathered from the child table it lives in (a set is
+    not a column and is not JSON; see db.py's note on
+    trainer_scope_preset_strings).
+
+    `key_root` and `key_quality` are null TOGETHER and mean "every note" -
+    the key filter is off by default in both drills, so a scope naming no key
+    is not one with a field missing. `strings` is never empty: "every string"
+    is stored by naming every string, so that a saved row can never be
+    confused with one whose strings failed to write (trainer._preset_strings
+    says why that convention differs from the browser's).
+    """
+
+    id: int
+    owner: str
+    name: str
+    start_fret: int
+    end_fret: int
+    key_root: str | None
+    key_quality: str | None
+    strings: list[int]
+    created_at: str
+
+
+class TrainerPresetDeleteOut(BaseModel):
+    """DELETE /api/trainer/presets/{id}. `sessions_kept` counts the practice
+    sessions that were logged under this scope and are NOT going anywhere -
+    each keeps its day, its length and its activity, and loses only the
+    reference (db.py's ON DELETE SET NULL note says why that is the right
+    trade). Counted and returned so a client can say so plainly rather than
+    leaving somebody to wonder what a delete just reached."""
+
+    deleted: int
+    sessions_kept: int
 
 
 # ---------------------------------------------------------------------------

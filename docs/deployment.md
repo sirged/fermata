@@ -500,7 +500,7 @@ being a second copy of the API. With
 every request that did not come from your trusted proxy carrying the
 identity header is refused, and the tools' requests are exactly that. So
 every tool would answer `401` while the tool list went on advertising
-thirteen working tools — a failure with no symptom except an emptiness that
+fourteen working tools — a failure with no symptom except an emptiness that
 looks like an empty library.
 
 The two obvious workarounds are both worse than the fault, which is why
@@ -547,7 +547,7 @@ docker compose up -d
 
 The tools are then reachable at **http://127.0.0.1:8765/mcp**, over the
 protocol's Streamable HTTP transport. Point a client that speaks the Model
-Context Protocol at that URL; it will list thirteen tools, each named after
+Context Protocol at that URL; it will list fourteen tools, each named after
 what it reads (`list_scores`, `get_practice_summary`, and so on).
 
 The four settings, only the first of which turns anything on:

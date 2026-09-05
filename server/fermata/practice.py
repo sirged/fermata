@@ -105,6 +105,11 @@ MAX_TEMPO_BPM = 400
 MAX_BAR = 100_000
 MAX_PAGE = 10_000
 MAX_NOTE_CHARS = 2_000
+# The largest value a SQLite INTEGER holds, which is the only bound a row id
+# has to obey - matches api.SQLITE_MAX_INTEGER. Restated rather than imported
+# because this module deliberately imports nothing from api.py (the dependency
+# runs the other way), and a foreign key's real check is the database's.
+MAX_ROW_ID = 2**63 - 1
 MAX_INTENT_CHARS = 200
 MAX_REFLECTION_CHARS = 2_000
 
@@ -274,6 +279,7 @@ def normalise_session(
     target_tempo_bpm=None,
     rating=None,
     note=None,
+    preset_id=None,
     allow_missing_score=False,
     check_day_window=True,
 ) -> dict:
@@ -347,6 +353,13 @@ def normalise_session(
         ),
         "rating": _optional_int(rating, "rating", MIN_RATING, MAX_RATING),
         "note": _optional_text(note, "note", MAX_NOTE_CHARS),
+        # Issue #236's named drill scope. Only its SHAPE is checked here - a
+        # whole number, or nothing at all. Whether that id names a preset this
+        # owner really has is a question about rows, which this module cannot
+        # see and api._normalise_session answers with the connection it has,
+        # exactly the way score_id's own existence check lives there rather
+        # than here.
+        "preset_id": _optional_int(preset_id, "preset_id", 1, MAX_ROW_ID),
     }
 
 
