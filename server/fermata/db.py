@@ -265,7 +265,7 @@ _TRAINER_PRESET_SCHEMA = (
     "CREATE TABLE IF NOT EXISTS trainer_scope_presets "
     + _TRAINER_SCOPE_PRESETS_COLUMNS + ";\n"
     + "CREATE UNIQUE INDEX IF NOT EXISTS idx_trainer_presets_name"
-    " ON trainer_scope_presets(owner, name);\n"
+    " ON trainer_scope_presets(owner, name COLLATE NOCASE);\n"
     + "CREATE TABLE IF NOT EXISTS trainer_scope_preset_strings "
     + _TRAINER_SCOPE_PRESET_STRINGS_COLUMNS + ";\n"
 )

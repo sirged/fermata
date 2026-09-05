@@ -5258,7 +5258,9 @@ def create_trainer_preset(body: TrainerPresetIn):
     purpose (see create_setlist). The difference is what the list is FOR: a
     setlist is a thing you open, while a preset is picked in order to change
     what the next question will be, and two identically named entries make
-    "which scope am I about to practise" unanswerable from the screen.
+    "which scope am I about to practise" unanswerable from the screen. The
+    comparison ignores case for the same reason: "Jazz box" and "jazz box"
+    are one entry to a reader, so they are one entry here.
     """
     try:
         values = trainer.normalise_preset(**body.model_dump())
@@ -5267,7 +5269,7 @@ def create_trainer_preset(body: TrainerPresetIn):
     preset = values["preset"]
     with write_tx() as conn:
         clash = conn.execute(
-            "SELECT id FROM trainer_scope_presets WHERE owner = ? AND name = ?",
+            "SELECT id FROM trainer_scope_presets WHERE owner = ? AND name = ? COLLATE NOCASE",
             (DEFAULT_OWNER, preset["name"]),
         ).fetchone()
         if clash:

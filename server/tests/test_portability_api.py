@@ -356,7 +356,7 @@ def test_export_table_names_matches_every_table_the_schema_creates(client):
     # query stopped seeing real tables, which would let this test pass for the
     # wrong reason (a tiny live_tables trivially failing to catch anything left
     # out of EXPORT_TABLE_NAMES).
-    assert len(live_tables) >= 12
+    assert len(live_tables) >= 14
     assert live_tables == set(api.EXPORT_TABLE_NAMES)
 
 

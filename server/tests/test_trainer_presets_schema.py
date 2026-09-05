@@ -77,6 +77,12 @@ def test_a_name_is_unique_per_owner(app_env):
         _a_preset(conn, name="Fifth position")
     assert "UNIQUE" in str(caught.value).upper()
     conn.rollback()
+    # The index compares without case, like the API's own clash check, so a
+    # row written another way cannot slip a case variant past it either.
+    with pytest.raises(Exception) as caught:
+        _a_preset(conn, name="fifth POSITION")
+    assert "UNIQUE" in str(caught.value).upper()
+    conn.rollback()
 
 
 def test_a_string_is_in_a_preset_at_most_once(app_env):

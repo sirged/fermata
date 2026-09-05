@@ -196,6 +196,16 @@ def test_a_name_that_cleans_to_an_existing_one_collides_too(client):
     assert resp.status_code == 409, resp.text
 
 
+def test_a_name_differing_only_in_case_collides_too(client):
+    """"Fifth position" and "fifth position" are one entry to a reader, so
+    they are one entry here: the clash check compares without case, and the
+    unique index underneath it does the same (see the schema test)."""
+    save(client)
+    resp = client.post("/api/trainer/presets", json=make(name="FIFTH POSITION"))
+    assert resp.status_code == 409, resp.text
+    assert len(client.get("/api/trainer/presets").json()) == 1
+
+
 def test_deleting_a_scope_removes_it_and_its_strings(client):
     body = save(client)
     resp = client.delete(f"/api/trainer/presets/{body['id']}")
