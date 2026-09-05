@@ -20,7 +20,11 @@
 //     4/4 bars (~50 sounding notes). Polyphony is the point: it is where a voice
 //     move or a delete can shift an ordinal.
 //   - The edit menu, uniform over the shipped ops that touch note IDENTITY or
-//     ORDERING: fret, string, accidental, enharmonic, tie, voice move, delete.
+//     ORDERING: fret, string, accidental, enharmonic, tie, voice move, delete,
+//     and (#238) restToNote - turning one of the rests "delete" itself
+//     produces back into a note, addressed by its OWN ordinal space
+//     (h.restCount(), not h.count() - see the driver below) since it starts
+//     from a rest, not a sounding note.
 //     Duration and dots are deliberately NOT in the menu: setDurationType/setDots
 //     change one note's written value WITHOUT refilling the bar (see their
 //     docstrings), so stacking them drives a polyphonic bar out of this profile's
@@ -46,7 +50,15 @@ const wrap = (page) => page.locator(".staff-render .wrap");
 const host = (page) => page.locator(".staff-render .at-host");
 
 const SEED = Number(process.env.FERMATA_FUZZ_SEED ?? 0x1a2b3c);
-const N = Number(process.env.FERMATA_FUZZ_N ?? 40);
+// Raised from 40 when restToNote joined the menu (#238). Adding an eighth op
+// changes every draw (the menu is picked modulo its length, and the op is now
+// drawn before the ordinal), so this is a NEW sequence, not the old one plus
+// twenty steps: at this seed, measured, the first 40 steps of the new sequence
+// never pick restToNote at all, and the "restToNote was attempted" assertion
+// below could not hold. Sixty steps draw every op at least once (restToNote
+// first at step 49, three times in all). The SEED is unchanged so a red run
+// still reproduces from the number in the test title.
+const N = Number(process.env.FERMATA_FUZZ_N ?? 60);
 
 async function renderedOk(page) {
   await expect(host(page)).toHaveAttribute("data-score-render-ok", "true");
@@ -98,24 +110,47 @@ test.describe("note editor - N-random-edits divergence fuzz guard", () => {
         const pick = (arr) => arr[Math.floor(rng() * arr.length)];
         const h = window.__scoreEditorHarness;
         const stringCount = h.stringCount();
-        const OPS = ["fret", "string", "accidental", "enharmonic", "tie", "voice", "delete"];
+        // "restToNote" (#238) joins the menu alongside the other ops that
+        // touch note IDENTITY or ORDERING: like voice/delete, it changes which
+        // ordinal is which sounding note (a rest becomes one), so it belongs
+        // in the SAME "structural" bucket those two are counted in below. It
+        // is addressed differently from every other op here - by a REST
+        // ordinal (h.restCount()), not a sounding one - since "delete" is
+        // exactly what supplies the fresh rests this op then converts back.
+        const OPS = ["fret", "string", "accidental", "enharmonic", "tie", "voice", "delete", "restToNote"];
         const opCounts = {};
         let applied = 0;
         let refused = 0;
         let firstBadStep = -1;
         let firstBad = null;
+        let restSkipped = 0;
         const steps = [];
         for (let i = 0; i < n; i++) {
-          const count = h.count();
-          if (count === 0) break;
-          const ordinal = Math.floor(rng() * count);
           const op = pick(OPS);
+          let ordinal;
           let arg = null;
-          if (op === "fret") arg = Math.floor(rng() * 13);
-          else if (op === "string") arg = 1 + Math.floor(rng() * stringCount);
-          else if (op === "accidental") arg = pick([-2, -1, 0, 1, 2]);
-          else if (op === "enharmonic") arg = pick([-1, 1]);
-          else if (op === "voice") arg = 1 + Math.floor(rng() * 3);
+          if (op === "restToNote") {
+            const restCount = h.restCount();
+            if (restCount === 0) {
+              // Nothing to convert yet (no rest exists this early in the
+              // sequence) - skip the step rather than force a target that
+              // does not exist; "delete" earlier in the run is what supplies
+              // one.
+              restSkipped += 1;
+              continue;
+            }
+            ordinal = Math.floor(rng() * restCount);
+            arg = { string: 1 + Math.floor(rng() * stringCount), fret: Math.floor(rng() * 13) };
+          } else {
+            const count = h.count();
+            if (count === 0) break;
+            ordinal = Math.floor(rng() * count);
+            if (op === "fret") arg = Math.floor(rng() * 13);
+            else if (op === "string") arg = 1 + Math.floor(rng() * stringCount);
+            else if (op === "accidental") arg = pick([-2, -1, 0, 1, 2]);
+            else if (op === "enharmonic") arg = pick([-1, 1]);
+            else if (op === "voice") arg = 1 + Math.floor(rng() * 3);
+          }
           const r = await h.apply(ordinal, op, arg);
           opCounts[op] = (opCounts[op] ?? 0) + 1;
           if (r.applied) applied += 1;
@@ -133,6 +168,7 @@ test.describe("note editor - N-random-edits divergence fuzz guard", () => {
           applied,
           refused,
           opCounts,
+          restSkipped,
           firstBadStep,
           firstBad,
           finalCount: h.count(),
@@ -155,6 +191,13 @@ test.describe("note editor - N-random-edits divergence fuzz guard", () => {
     expect(result.applied, "no edit applied - the sequence exercised nothing").toBeGreaterThan(5);
     const structural = (result.opCounts.voice ?? 0) + (result.opCounts.delete ?? 0);
     expect(structural, "no voice-move or delete was attempted").toBeGreaterThan(0);
+    // The new operation (#238) actually ran at least once, on a genuine rest -
+    // POLY_MUSICXML starts with two, and "delete" earlier in the same run
+    // supplies more, so restCount() is never 0 for the whole sequence.
+    expect(
+      result.opCounts.restToNote ?? 0,
+      `restToNote was never attempted (restSkipped=${result.restSkipped})`,
+    ).toBeGreaterThan(0);
 
     // The written MusicXML re-imports to a model identical to the one on screen,
     // across every note - the fuzz guard's assertion.

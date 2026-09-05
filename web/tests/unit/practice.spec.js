@@ -193,6 +193,10 @@ const COMPONENTS = [
   // to write a verdict on - there is a single subject and a row of numbers
   // about it - so it is the one that most needs this check.
   "ScoreProgress.svelte",
+  // The fret-to-note drill's own weak-positions panel (#235) - a list of
+  // counts about where a player keeps answering incorrectly is exactly the
+  // kind of surface a verdict word slips into.
+  "trainer/PositionCounts.svelte",
 ];
 
 // The attributes a person actually reads. Every other attribute value is

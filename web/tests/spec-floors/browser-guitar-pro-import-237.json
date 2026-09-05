@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/guitar-pro-import.spec.js",
+  "count": 1,
+  "reason": "issue #237: no fixture and no test loaded a Guitar Pro file through the real importer before this - server/tests/test_scanner.py's .gp bytes are arbitrary by its own docstring. This spec uploads an original .gp fixture, opens it through the real Viewer/TabViewer/score-render.js path, and asserts bar count, note count and tuning read off the real render."
+}

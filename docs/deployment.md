@@ -657,6 +657,18 @@ That's the whole backup: one folder, copied while the container isn't
 writing to it. Do this on whatever schedule matches how much practice history
 you'd be upset to lose — weekly is reasonable for casual use.
 
+**`GET /api/export`** is the other way to get a backup, and it does not need
+the container stopped: it is a live endpoint, called over the network, that
+answers with one zip holding every score, transcription, practice-session,
+goal, setlist, tag, instrument and setting row plus the score files
+themselves — a portable archive rather than a copy of the database file.
+(Fretboard-drill history is not in it yet; #243 tracks that.) It
+is the better choice for scripting a backup onto another machine, or for
+taking one without touching the host filesystem at all; copying `config/` is
+the better choice for a quick local snapshot before an upgrade. See [the API
+guide](api.md#getting-everything-in-and-out-issue-58) for the archive's shape
+and what restoring it (`POST /api/import`) does and does not do.
+
 ### Restoring a backup
 
 Stop the container, replace the live `config/` folder with the backed-up one,

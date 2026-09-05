@@ -24,6 +24,7 @@
   import { getInstruments, loadInstruments } from "../instruments.svelte.js";
   import { localDay } from "../practice.js";
   import Neck from "./Neck.svelte";
+  import PositionCounts from "./PositionCounts.svelte";
   import {
     DEFAULT_FRET_COUNT,
     PITCH_CLASSES,
@@ -31,6 +32,7 @@
     stringsFromInstrument,
   } from "./neck.js";
   import {
+    DRILL,
     NOTE_TO_POSITION,
     POSITION_TO_NOTE,
     answerStatement,
@@ -128,6 +130,11 @@
   let round = $state(null);
   let questionStartedAt = 0;
   let attemptLogFailures = $state(0);
+  // Bumped once a logged attempt's own POST has resolved, so the position-
+  // counts panel below refetches after each answer and stays current
+  // without a reload - and only after the row it is about actually exists
+  // on the server, never on a mere click.
+  let attemptRefresh = $state(0);
 
   let startedAt = 0;
   let logged = $state(null);
@@ -154,6 +161,7 @@
     const responseMs = Math.max(0, Date.now() - questionStartedAt);
     try {
       await api.logTrainerAttempt(attemptPayload({ question, given, responseMs }));
+      attemptRefresh += 1;
     } catch {
       // Best-effort: the drill's own counts (asked/correctCount, already
       // updated) and its session log are the record that must not be lost.
@@ -474,6 +482,8 @@
         {/if}
       {/if}
     </section>
+
+    <PositionCounts drill={DRILL} refreshToken={attemptRefresh} />
 
     <p class="quiet footnote">
       The time you spend here is logged as fretboard practice, in the same history as everything

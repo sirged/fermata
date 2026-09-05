@@ -170,6 +170,15 @@ export function createDocument(xml) {
   // are skipped by both, consistently.
   const noteEls = [...doc.getElementsByTagName("note")].filter((n) => !isRest(n));
 
+  // The RESTS in document order, addressed the same way (0..restEls.length-1)
+  // - the exact complement of noteEls (#238). Rests were "not offered as edit
+  // targets" until now; this is what lets one be selected and looked up on
+  // its own, parallel to noteEls/ordinal, but in a namespace the RENDERER's
+  // positional map (score-render.js's buildNoteOrdinals) has no notion of -
+  // it skips rests exactly as it always has, unchanged - so a rest selection
+  // carries no on-screen note-head bounds (see TabViewer's selectRest).
+  const restEls = [...doc.getElementsByTagName("note")].filter(isRest);
+
   // The `<measure number>` each sounding note sits in, indexed by ordinal - the
   // model's coarse navigation unit. The keyboard core loop (#186) steps the
   // selection note-to-note along this array (an ordinal +/- 1) and bar-to-bar
@@ -330,6 +339,80 @@ export function createDocument(xml) {
   function noteAt(ordinal) {
     const el = noteEls[ordinal];
     return el ? describe(el, ordinal) : null;
+  }
+
+  // Describe the rest at `restOrdinal` (index into restEls, document order) -
+  // the read side of rest selection (#238). No pitch, string or fret (a rest
+  // carries none of those); the fields a caller needs to preview what
+  // restToNote is about to KEEP - duration, voice, onset, written type and
+  // dots - and to place it the way describe() places a sounding note.
+  function describeRest(el, restOrdinal) {
+    const measureEl = el.closest ? el.closest("measure") : null;
+    const mnum = measureEl ? Number(measureEl.getAttribute("number")) : NaN;
+    return {
+      restOrdinal,
+      id: el.getAttribute("id"),
+      type: tagText(el, "type"),
+      dots: [...el.children].filter((c) => c.tagName === "dot").length,
+      duration: intDuration(el),
+      voice: voiceNumber(el),
+      onset: onsetByEl.has(el) ? onsetByEl.get(el) : null,
+      measure: Number.isFinite(mnum) ? mnum : null,
+    };
+  }
+
+  function restCount() {
+    return restEls.length;
+  }
+
+  function restAt(restOrdinal) {
+    const el = restEls[restOrdinal];
+    return el ? describeRest(el, restOrdinal) : null;
+  }
+
+  // Every <note> (sounding or rest) in document order - the combined stepping
+  // surface a left/right arrow needs once a rest is a selectable stop (#238).
+  // stepNote/stepMeasure above stay note-to-note only, unchanged - the
+  // RENDERER's own positional map (score-render.js's buildNoteOrdinals) skips
+  // rests exactly as it always has, so nothing here disturbs the ordinal the
+  // two sides agree on for a sounding note. This is a SECOND, independent
+  // address space just for the keyboard loop's selection: `{ ordinal }` for a
+  // sounding note (the same ordinal noteAt/the renderer use) or
+  // `{ restOrdinal }` for a rest (this file's own restEls list, meaningless to
+  // the renderer - see TabViewer's selectRest for why a rest selection carries
+  // no on-screen head bounds, only the values describeRest reports).
+  const allEls = [...doc.getElementsByTagName("note")];
+
+  function elementIndexOf(sel) {
+    if (!sel) return -1;
+    if (sel.ordinal != null) return allEls.indexOf(noteEls[sel.ordinal]);
+    if (sel.restOrdinal != null) return allEls.indexOf(restEls[sel.restOrdinal]);
+    return -1;
+  }
+
+  function selectionOf(el) {
+    if (!el) return null;
+    if (isRest(el)) {
+      const idx = restEls.indexOf(el);
+      return idx >= 0 ? { restOrdinal: idx } : null;
+    }
+    const idx = noteEls.indexOf(el);
+    return idx >= 0 ? { ordinal: idx } : null;
+  }
+
+  /**
+   * The selection (`{ ordinal }` for a sounding note, `{ restOrdinal }` for a
+   * rest) one step forward (direction > 0) or back in document order,
+   * INCLUDING rests - null past either end (#238's rest-selectable
+   * navigation). Pure, like stepNote: it reports where the caller's selection
+   * should go next, it does not touch the document.
+   */
+  function stepAny(sel, direction) {
+    const at = elementIndexOf(sel);
+    if (at < 0) return null;
+    const next = at + (direction > 0 ? 1 : -1);
+    if (next < 0 || next >= allEls.length) return null;
+    return selectionOf(allEls[next]);
   }
 
   // Write a `{ step, alter, octave }` into a note's <pitch>, keeping the schema's
@@ -840,6 +923,72 @@ export function createDocument(xml) {
     return true;
   }
 
+  /**
+   * Turn the rest at `restOrdinal` (an index into restEls, document order -
+   * see restAt) into a sounding note on `string` at `fret` (#238) - the
+   * inverse of deleteNote. Its `<duration>`, `<voice>`, `<type>` and any
+   * `<dot>` elements are left exactly as they are - nothing here touches a
+   * duration - only the `<rest/>` is replaced with a `<pitch>` and a
+   * `<notations><technical>` carrying the new string/fret, so the bar's
+   * arithmetic (deleteNote's own concern, mirrored) is unchanged by
+   * construction.
+   *
+   * Refuses (leaving the rest untouched, returning null) exactly where
+   * setFret/setString would refuse a position: an out-of-range string, a
+   * negative fret, or a fret whose resulting pitch has no valid <octave>
+   * (Rule 11). The pitch is spelled against the key and the bar in force at
+   * the rest's own measure through the same spellForEdit/writePitch a fret or
+   * string edit uses, so a note born from a rest is spelled exactly as if it
+   * had always been a note there and its fret were just set.
+   *
+   * Structural like a delete or a voice move: it changes which array index is
+   * which sounding note (every ordinal at or after the new note's position
+   * shifts up by one), so the caller cannot trust noteEls/restEls/allEls in
+   * place afterwards - it rebuilds the model from the new text, the same
+   * convention deleteNote's and moveToVoice's own docstrings state. Returns
+   * the note's ordinal in the CURRENT (already-mutated) document - found the
+   * same way moveToVoice finds its new ordinal, by re-deriving the
+   * sounding-note list from the live DOM rather than trusting noteEls - or
+   * null when the edit was refused.
+   */
+  function restToNote(restOrdinal, string, fret) {
+    const el = restEls[restOrdinal];
+    if (!el || !isRest(el)) return null;
+    if (!Number.isInteger(string) || string < 1 || string > stringCount) return null;
+    if (!Number.isInteger(fret) || fret < 0) return null;
+    const midi = midiForStringFret(tuningByLine, stringCount, string, fret);
+    if (midi == null || !isWritablePitch(midi)) return null;
+
+    const restEl = firstChildTag(el, "rest");
+    if (restEl) el.removeChild(restEl);
+
+    // <notations><technical><string>/<fret> is schema-last on this profile
+    // (voice, type, dot*, accidental, notations - see musicxml.py's own
+    // comment); appended here, BEFORE writePitch, it gives writeAccidental an
+    // anchor to insert an <accidental> before, keeping that same element
+    // order rather than appending the accidental after the notations it
+    // belongs before.
+    const notations = doc.createElement("notations");
+    const technical = doc.createElement("technical");
+    const stringEl = doc.createElement("string");
+    stringEl.textContent = String(string);
+    const fretEl = doc.createElement("fret");
+    fretEl.textContent = String(fret);
+    technical.appendChild(stringEl);
+    technical.appendChild(fretEl);
+    notations.appendChild(technical);
+    el.appendChild(notations);
+
+    // Puts <pitch> at the front - exactly where <rest/> was, since putPitch
+    // inserts before el.firstChild when no <pitch> exists yet - and writes
+    // the printed <accidental> the key/bar call for, if any.
+    writePitch(el, midi);
+
+    const nowSounding = [...doc.getElementsByTagName("note")].filter((n) => !isRest(n));
+    const newOrdinal = nowSounding.indexOf(el);
+    return newOrdinal >= 0 ? newOrdinal : null;
+  }
+
   // ------------------------------------------------ move a note to another voice (#182)
   //
   // Polyphonic tab is written one voice at a time, each voice after the first
@@ -1119,6 +1268,11 @@ export function createDocument(xml) {
     count: () => noteEls.length,
     stepNote,
     stepMeasure,
+    // Rest selection and rest-to-note (#238) - see restAt/restToNote/stepAny.
+    restCount,
+    restAt,
+    stepAny,
+    restToNote,
     setFret,
     setString,
     setAccidental,

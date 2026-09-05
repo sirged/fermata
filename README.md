@@ -27,8 +27,8 @@ them.
   switched between standard notation, tablature, or both staves at once, with
   audio playback, adjustable speed, and a moving cursor. Guitar Pro files are
   accepted by the scanner and handed to the same renderer's importer, which
-  reads that format natively; nothing in this repository covers that path
-  end to end, so it is untested here rather than proven. The built-in
+  reads that format natively; a browser spec carries an original Guitar Pro 7
+  fixture through that whole path (see the format table below). The built-in
   synthesizer also drives practice tools: drag-select a passage on the score
   to loop it, plus a count-in. The
   staff is themed to match the interface, lays itself out differently on a
@@ -126,7 +126,11 @@ them.
   half-page turns for a tablet on a music stand.
 - **Organize** — collections (from your folder layout), free-form tags,
   favorites, content-type labels (notation / tab / both), full-text search,
-  and duplicate detection by file contents.
+  and duplicate detection by file contents. A key signature, a tempo and a
+  1-5 difficulty rating can be set per score too — the key is filled in on
+  its own from a transcription's decoded key when one is transcribed and left
+  alone once set by hand — and the library grid filters by key and
+  difficulty (a tempo range is available through the API).
 - **Reorganize, from the app** — move and rename scores, make and rename
   folders, move a batch in one go. The change is applied to the real file on
   disk and the score follows it, so its practice history, tags, goals and any
@@ -146,7 +150,12 @@ them.
   `/openapi.json` for the schema itself, generated from response models kept
   in sync with what each endpoint actually returns. Enough to script the
   library, log practice, or build a companion app against — see
-  [the API guide](docs/api.md).
+  [the API guide](docs/api.md). A companion server, off by default, speaks
+  the Model Context Protocol, an open standard for describing a set of tools
+  to a program that reads them — a structured-data interface offering a
+  fixed set of read-only tools built from that same API rather than a second
+  copy of it; see [the deployment
+  guide](docs/deployment.md#the-model-context-protocol-server).
 
 ## Quick start
 
@@ -227,12 +236,14 @@ it — see [the tab profile](docs/musicxml-tab-profile.md#checking-a-file).
 | PDF, engraved without tab | Practice reader; nothing to transcribe from |
 | PDF, scanned | Practice reader only — a scan holds no text or glyphs to read |
 | MusicXML (`.musicxml`, `.mxl`) | Interactive: notation / tab / both, audio, full fidelity |
-| Guitar Pro (`.gp3`–`.gp5`, `.gpx`, `.gp`) | Scanned and indexed, then handed to the renderer's own importer, which reads the format natively — **untested here**: no fixture, no end-to-end test |
+| Guitar Pro (`.gp3`–`.gp5`, `.gpx`, `.gp`) | Scanned and indexed, then handed to the renderer's own importer, which reads the format natively[^gp] |
 
 A PDF is a fixed rendering, so the notation/tab toggle belongs to the
 structured formats — and to a transcription made from a PDF, which is what the
 side-by-side view is for. There's a bundled demo (sidebar → *Notation/tab
 demo*) if your library is PDF-only so far.
+
+[^gp]: Checked against a real, original Guitar Pro 7 (`.gp`) fixture: `web/test-fixtures/guitar-pro-import-fixture.gp`, a few original bars built with alphaTab's own exporter from the alphaTeX source committed beside it, never a borrowed arrangement. `web/tests/browser/guitar-pro-import.spec.js` uploads it through the real `/api/upload` path and the real scanner, opens it through the real `Viewer` → `TabViewer` → `score-render.js` path, and checks the bar count, note count and tuning the real importer actually produced.
 
 ## Roadmap
 
