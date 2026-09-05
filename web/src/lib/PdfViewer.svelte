@@ -99,10 +99,11 @@
   // sitting at it. Both turn paths scroll with `behavior: "smooth"`, so for
   // as long as that animation runs, container.scrollTop is a frame of it -
   // a place the reader is passing through, not one they asked for. Set when
-  // a scroll is asked for, cleared when the scrolling goes quiet (the same
+  // a scroll is asked for, and cleared when the pane arrives at it - or,
+  // for a scroll that never arrives, when the scrolling goes quiet (the same
   // 200ms rule that hands page tracking back to the reader: by then the
-  // animation has either arrived or been taken over, and either way
-  // scrollTop is the truth again).
+  // animation has either landed or been taken over, and either way scrollTop
+  // is the truth again). See onScroll for both.
   let scrollTravelling = false;
 
   // Read-only test instrumentation, in the same spirit as the `data-page`
