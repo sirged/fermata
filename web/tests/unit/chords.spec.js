@@ -36,7 +36,10 @@ const fullScope = { startFret: 0, endFret: 12 };
 test("the three family presets say what issue #28 asks for, in order", () => {
   expect(FAMILY_LIST).toEqual(["major_minor", "sevenths", "barre"]);
   expect(FAMILIES.major_minor.qualities).toEqual(["major", "minor"]);
-  expect(FAMILIES.sevenths.qualities).toEqual(["dominant7"]);
+  // Sevenths widened by issue #252 to all three seventh qualities - the
+  // dominant's open shapes plus the new minor/major sevenths' movable
+  // barre forms.
+  expect(FAMILIES.sevenths.qualities).toEqual(["dominant7", "minor7", "major7"]);
   expect(FAMILIES.barre.qualities).toEqual(["major", "minor"]);
   expect(FAMILIES.major_minor.shapeFamilies).toEqual(["open"]);
   expect(FAMILIES.barre.shapeFamilies.every((f) => f.startsWith("barre"))).toBe(true);
@@ -53,14 +56,27 @@ test("the major & minor pool over the full scope contains the open C major and E
   expect(pool.every((s) => s.family === "open")).toBe(true);
 });
 
-test("the sevenths pool contains only dominant sevenths, and the barre pool only barre shapes", () => {
+test("the sevenths pool contains only the three seventh qualities, and the barre pool only barre shapes", () => {
   const sevenths = chordPool(strings, fullScope, "sevenths");
   expect(sevenths.length).toBeGreaterThan(0);
-  expect(sevenths.every((s) => s.quality === "dominant7")).toBe(true);
+  expect(sevenths.every((s) => ["dominant7", "minor7", "major7"].includes(s.quality))).toBe(true);
 
   const barre = chordPool(strings, fullScope, "barre");
   expect(barre.length).toBeGreaterThan(0);
   expect(barre.every((s) => s.family.startsWith("barre"))).toBe(true);
+});
+
+test("the sevenths pool also offers minor and major sevenths, drawn from the new barre shapes", () => {
+  const sevenths = chordPool(strings, fullScope, "sevenths");
+  const minor7 = sevenths.filter((s) => s.quality === "minor7");
+  const major7 = sevenths.filter((s) => s.quality === "major7");
+  expect(minor7.length).toBeGreaterThan(0);
+  expect(major7.length).toBeGreaterThan(0);
+  // Neither new quality has an open shape (chord-shapes.js only builds one
+  // for major, minor and dominant7) - every instance is one of the two new
+  // movable barre families.
+  expect(minor7.every((s) => s.family.startsWith("barre"))).toBe(true);
+  expect(major7.every((s) => s.family.startsWith("barre"))).toBe(true);
 });
 
 test("narrowing the fret range to open position drops a shape that needs a higher fret", () => {

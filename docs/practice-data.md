@@ -449,7 +449,7 @@ from a request body.
 | `session_id` | The `practice_sessions` row logging the surrounding drill's TIME, when there is one yet - `NULL` otherwise, the same ordinary-not-edge case `trainer_attempts.session_id` is. |
 | `drill` | `'chord_flashcards'` today - a widened tuple, not a migration, is how a second chord-shaped drill would arrive, the same rule `trainer_attempts.drill` follows. |
 | `direction` | `shape_to_name` (shown a real fingering, asked to name the chord) or `name_to_shape` (named a chord, asked to place it on the neck). |
-| `target_root`, `target_quality` | The chord being tested, always set - a pitch class and one of `major`/`minor`/`dominant7`. |
+| `target_root`, `target_quality` | The chord being tested, always set - a pitch class and one of the five qualities `chord-theory.js` and `trainer.py` name in lockstep (`major`, `minor`, `dominant7`, `minor7`, `major7`). |
 | `target_shape` | The fingering actually SHOWN - a JSON array of `{string, fret}` - set only on `shape_to_name`; `NULL` on `name_to_shape`, which shows no shape at all. |
 | `given_root`, `given_quality` | The chord chosen by name - set only on `shape_to_name`. |
 | `given_notes` | The pitch classes a TAPPED shape actually sounded, a JSON array worked out client-side from the instrument's own tuning - never from which shape the player meant to play, mirroring `given_note`'s rule above. Set only on `name_to_shape`. |

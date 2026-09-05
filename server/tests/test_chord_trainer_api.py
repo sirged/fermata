@@ -317,6 +317,41 @@ def test_an_unknown_filter_value_is_refused(client):
     assert client.get("/api/trainer/chord-attempts?quality=augmented").status_code == 422
 
 
+# ---------------------------------------------------------------------------
+# The minor and major seventh (issue #252): accepted end to end, the same
+# as every quality above - not merely known to trainer.chord_tones.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("quality", "root", "given_notes"),
+    [
+        ("minor7", "A", ["A", "C", "E", "G"]),
+        ("major7", "C", ["C", "E", "G", "B"]),
+    ],
+)
+def test_the_new_seventh_qualities_are_accepted_and_round_trip(client, quality, root, given_notes):
+    resp = client.post(
+        "/api/trainer/chord-attempts",
+        json=name_to_shape(
+            target_root=root,
+            target_quality=quality,
+            given_notes=given_notes,
+            given_shape=[{"string": 6, "fret": 0}],
+        ),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["target_quality"] == quality
+    assert body["target_root"] == root
+    assert body["correct"] is True
+
+    listed = client.get(f"/api/trainer/chord-attempts?quality={quality}").json()
+    assert listed["total"] == 1
+    assert listed["attempts"][0]["target_root"] == root
+    assert listed["attempts"][0]["target_quality"] == quality
+
+
 def test_truncation_is_reported_honestly(client):
     for root in ("C", "D", "E"):
         client.post("/api/trainer/chord-attempts", json=shape_to_name(target_root=root, given_root=root))

@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/chord-shapes.spec.js",
+  "count": 2,
+  "reason": "issue #252: the new minor7 and major7 E-form and A-form movable barre shapes - a known root read off the neck at a known base fret for each new quality (F minor7, C major7), and the E-shape minor7 form naming all twelve roots across a fret range the same way the existing major-quality test already proves for its own family. Every instance's actual sounded notes against chord-theory.js's chordTones is already covered by the existing exhaustive barre-shape loop, which iterates every template with no changes needed."
+}

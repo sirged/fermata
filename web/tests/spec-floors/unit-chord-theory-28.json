@@ -1,5 +1,5 @@
 {
   "file": "tests/unit/chord-theory.spec.js",
   "count": 10,
-  "reason": "issue #28: chord music theory is load-bearing, so this drill's chord tones are checked exhaustively - known major, minor and dominant-seventh triads/tetrads asserted by hand, then every one of the 36 (root, quality) chords this module can build checked for note count, no repeated tone, and starting on its own root, plus the major/minor third relationship and the dominant-seventh-is-a-major-triad-plus-one-note relationship holding at every root, chord naming, and chordsMatch (the tone-set equality the flash card grades by) refusing an unknown chord rather than throwing."
+  "reason": "issue #28: chord music theory is load-bearing, so this drill's chord tones are checked exhaustively - known major, minor, dominant-, minor- and major-seventh triads/tetrads asserted by hand, then every one of the 60 (root, quality) chords this module can build checked for note count, no repeated tone, and starting on its own root, plus the major/minor third relationship and the dominant-seventh-is-a-major-triad-plus-one-note relationship holding at every root, chord naming, and chordsMatch (the tone-set equality the flash card grades by) refusing an unknown chord rather than throwing."
 }
