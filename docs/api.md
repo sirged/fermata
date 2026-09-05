@@ -246,8 +246,8 @@ that ties them together.
 **The archive.** A zip with `manifest.json` at its root - a JSON object naming
 the exact `schema_version` (`fermata/db.py`'s `SCHEMA_VERSION`, not the
 application's own release number) the rest of it was written against, and
-carrying every table's rows verbatim under `tables`, drill history included
-(#243). Score files themselves
+carrying every table's rows verbatim under `tables` (drill history included
+since #243). Score files themselves
 live under `files/<content-hash><extension>`, named by the same identity the
 scanner already uses (`scanner.hash_file`) rather than by a person's folder
 names, which is what lets two scores that happen to share content share one
