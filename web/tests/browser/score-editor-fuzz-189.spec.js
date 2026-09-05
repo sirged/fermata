@@ -24,12 +24,20 @@
 //     and (#238) restToNote - turning one of the rests "delete" itself
 //     produces back into a note, addressed by its OWN ordinal space
 //     (h.restCount(), not h.count() - see the driver below) since it starts
-//     from a rest, not a sounding note.
-//     Duration and dots are deliberately NOT in the menu: setDurationType/setDots
-//     change one note's written value WITHOUT refilling the bar (see their
-//     docstrings), so stacking them drives a polyphonic bar out of this profile's
-//     Rule 8 - a validity question distinct from the positional-map integrity
-//     this guard proves, and one #183 already covers per-op.
+//     from a rest, not a sounding note. And (#251) "rangeString" - extend the
+//     selection by k notes through the real shift+arrow path, then move EVERY
+//     note in it to one string in a single gesture: a multi-note write is the
+//     newest way a document and a render can be left disagreeing, since one
+//     gesture now rewrites several notes before a single reload.
+//     Duration and dots are deliberately NOT in the menu, in their single-note
+//     OR their range form: setDurationType/setDots change one note's written
+//     value WITHOUT refilling the bar (see their docstrings), so stacking them
+//     drives a polyphonic bar out of this profile's Rule 8 - a validity
+//     question distinct from the positional-map integrity this guard proves,
+//     and one #183 (and, for a range, #251's own spec) already covers per-op.
+//     That is why the range op drawn here is the STRING change: it rewrites a
+//     run of notes in one gesture, which is the property under test, and
+//     leaves every <duration> alone.
 //   - Refusals are not failures: an op that legitimately refuses (a tie to a
 //     different pitch, a voice already occupied at the onset) leaves the document
 //     untouched and the sequence continues.
@@ -50,13 +58,19 @@ const wrap = (page) => page.locator(".staff-render .wrap");
 const host = (page) => page.locator(".staff-render .at-host");
 
 const SEED = Number(process.env.FERMATA_FUZZ_SEED ?? 0x1a2b3c);
-// Raised from 40 when restToNote joined the menu (#238). Adding an eighth op
-// changes every draw (the menu is picked modulo its length, and the op is now
-// drawn before the ordinal), so this is a NEW sequence, not the old one plus
-// twenty steps: at this seed, measured, the first 40 steps of the new sequence
-// never pick restToNote at all, and the "restToNote was attempted" assertion
-// below could not hold. Sixty steps draw every op at least once (restToNote
-// first at step 49, three times in all). The SEED is unchanged so a red run
+// Raised from 40 when restToNote joined the menu (#238), and LEFT at 60 when
+// rangeString joined it (#251). Two things follow from how the draw works, and
+// neither is "the old sequence plus more steps": the op is picked modulo the
+// menu's length and BEFORE the ordinal, so growing the menu from eight entries
+// to nine changes every draw after the first - this is a DIFFERENT sequence
+// from the one the guard ran before #251, not an extension of it. What was
+// re-measured rather than assumed is that sixty steps still draw every op at
+// least once. At this seed, measured on the nine-op menu: enharmonic 9,
+// accidental 10, voice 8, rangeString 8, fret 7, string 6, restToNote 6,
+// delete 3, tie 3 - 60 draws, 39 applied, 18 refused, no step skipped, and the
+// widest rangeString gesture covered 4 notes. So N stays 60 and the assertions
+// below (every new op attempted, and at least one range wider than one note)
+// hold on measurement rather than on hope. The SEED is unchanged so a red run
 // still reproduces from the number in the test title.
 const N = Number(process.env.FERMATA_FUZZ_N ?? 60);
 
@@ -117,13 +131,18 @@ test.describe("note editor - N-random-edits divergence fuzz guard", () => {
         // is addressed differently from every other op here - by a REST
         // ordinal (h.restCount()), not a sounding one - since "delete" is
         // exactly what supplies the fresh rests this op then converts back.
-        const OPS = ["fret", "string", "accidental", "enharmonic", "tie", "voice", "delete", "restToNote"];
+        const OPS = ["fret", "string", "accidental", "enharmonic", "tie", "voice", "delete", "restToNote", "rangeString"];
         const opCounts = {};
         let applied = 0;
         let refused = 0;
         let firstBadStep = -1;
         let firstBad = null;
         let restSkipped = 0;
+        // The widest range a "rangeString" gesture actually covered, so the
+        // assertions can tell a real multi-note write from a run of gestures
+        // that each happened to reach only their anchor (an extension stops at
+        // a rest, at a voice change and at the document edge).
+        let rangeWidest = 0;
         const steps = [];
         for (let i = 0; i < n; i++) {
           const op = pick(OPS);
@@ -145,13 +164,15 @@ test.describe("note editor - N-random-edits divergence fuzz guard", () => {
             const count = h.count();
             if (count === 0) break;
             ordinal = Math.floor(rng() * count);
-            if (op === "fret") arg = Math.floor(rng() * 13);
+            if (op === "rangeString") arg = { k: Math.floor(rng() * 4), string: 1 + Math.floor(rng() * stringCount) };
+            else if (op === "fret") arg = Math.floor(rng() * 13);
             else if (op === "string") arg = 1 + Math.floor(rng() * stringCount);
             else if (op === "accidental") arg = pick([-2, -1, 0, 1, 2]);
             else if (op === "enharmonic") arg = pick([-1, 1]);
             else if (op === "voice") arg = 1 + Math.floor(rng() * 3);
           }
           const r = await h.apply(ordinal, op, arg);
+          if (op === "rangeString" && r.range && r.range.length > rangeWidest) rangeWidest = r.range.length;
           opCounts[op] = (opCounts[op] ?? 0) + 1;
           if (r.applied) applied += 1;
           if (r.refused) refused += 1;
@@ -169,6 +190,7 @@ test.describe("note editor - N-random-edits divergence fuzz guard", () => {
           refused,
           opCounts,
           restSkipped,
+          rangeWidest,
           firstBadStep,
           firstBad,
           finalCount: h.count(),
@@ -198,6 +220,19 @@ test.describe("note editor - N-random-edits divergence fuzz guard", () => {
       result.opCounts.restToNote ?? 0,
       `restToNote was never attempted (restSkipped=${result.restSkipped})`,
     ).toBeGreaterThan(0);
+    // ... and so did the RANGE operation (#251), the one that rewrites several
+    // notes in a single gesture before a single reload.
+    expect(
+      result.opCounts.rangeString ?? 0,
+      `rangeString was never attempted (opCounts=${JSON.stringify(result.opCounts)})`,
+    ).toBeGreaterThan(0);
+    // At least one of those gestures actually covered more than one note - a
+    // run of one-note "ranges" would exercise nothing the single-note string op
+    // does not.
+    expect(
+      result.rangeWidest,
+      `no rangeString gesture covered more than one note (opCounts=${JSON.stringify(result.opCounts)})`,
+    ).toBeGreaterThan(1);
 
     // The written MusicXML re-imports to a model identical to the one on screen,
     // across every note - the fuzz guard's assertion.
