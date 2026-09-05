@@ -393,6 +393,139 @@ async function pdfSettlesPast(page, stamp, timeout) {
     .toBe("settled");
 }
 
+/**
+ * Off unless FERMATA_GIG_TRACE is set. Everything below this line is inert
+ * without it - no extra evaluate, no extra wait, no change to a single
+ * assertion - so the shipped test is exactly the test that shipped.
+ *
+ * What it is for (#234): the indicator test's fraction has come back as
+ * 384/1100 twice on a CI runner and never once on a development box, at any
+ * CPU throttle. Both standing hypotheses are about WHEN the read lands
+ * rather than about what the viewer computes, and neither can be told apart
+ * from the value alone. So the runner is asked directly: a per-frame sample
+ * of the pane, every scroll event, every write of either settle attribute,
+ * and a mark at each barrier's return, attached to the run as an artifact.
+ */
+const GIG_TRACE = !!process.env.FERMATA_GIG_TRACE;
+
+/**
+ * Installs the in-page recorder on the PDF scroller.
+ *
+ * Three sources, because the three answer different questions and a frame
+ * sampler alone answers none of them cleanly:
+ *
+ * - a requestAnimationFrame loop: where the pane IS, frame by frame. A gap
+ *   between consecutive frame timestamps is a main-thread stall, which is
+ *   the thing a loaded runner has and this box does not.
+ * - the scroller's own scroll events: what the viewer's 200ms quiet timer
+ *   actually sees. That timer is armed from onScroll and from nowhere else,
+ *   so a gap in THIS stream, not in the frame stream, is what lets a rest
+ *   stamp be written.
+ * - a MutationObserver on the two settle attributes: when each stamp was
+ *   written or removed, to the millisecond, rather than when a poll noticed.
+ */
+async function installGigTrace(page) {
+  await page.evaluate(() => {
+    const scroller = document.querySelector(".pages");
+    const log = [];
+    const snap = (kind, label) => {
+      const first = document.querySelector('.pdf-page[data-page="1"]');
+      const rect = scroller.getBoundingClientRect();
+      const topOf = (el) => el.getBoundingClientRect().top - rect.top + scroller.scrollTop;
+      const entry = {
+        kind,
+        t: Math.round(performance.now() * 10) / 10,
+        scrollTop: Math.round(scroller.scrollTop * 100) / 100,
+        pageOneTop: Math.round(topOf(first) * 100) / 100,
+        pageHeight: Math.round(first.getBoundingClientRect().height * 100) / 100,
+        widths: [...document.querySelectorAll(".pdf-page")]
+          .map((c) => Math.round(c.getBoundingClientRect().width))
+          .join("/"),
+        heights: [...document.querySelectorAll(".pdf-page")]
+          .map((c) => Math.round(c.getBoundingClientRect().height))
+          .join("/"),
+        settle: scroller.dataset.settleSeq ?? null,
+        render: scroller.dataset.renderSettleSeq ?? null,
+        vis: document.visibilityState,
+      };
+      if (label) entry.label = label;
+      log.push(entry);
+      return entry;
+    };
+    let running = true;
+    const onScroll = () => snap("scroll");
+    const observer = new MutationObserver(() => snap("attr"));
+    const tick = () => {
+      if (!running) return;
+      snap("frame");
+      requestAnimationFrame(tick);
+    };
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    observer.observe(scroller, { attributes: true, attributeFilter: ["data-settle-seq", "data-render-settle-seq"] });
+    requestAnimationFrame(tick);
+    window.__gigTrace = {
+      log,
+      mark: (label) => snap("mark", label),
+      stop: () => {
+        running = false;
+        scroller.removeEventListener("scroll", onScroll);
+        observer.disconnect();
+        return log;
+      },
+    };
+    snap("mark", "install");
+  });
+}
+
+/** Timestamps a moment in the test on the PAGE's clock, so it is comparable
+ *  with every sample the recorder took. */
+async function gigMark(page, label) {
+  if (!GIG_TRACE) return null;
+  return page.evaluate((l) => window.__gigTrace?.mark(l) ?? null, label);
+}
+
+/**
+ * Stops the recorder, and attaches the whole trace plus a readable digest to
+ * the Playwright report, so a run that crossed the band carries its own
+ * explanation out of the runner.
+ */
+async function attachGigTrace(page, testInfo, extra) {
+  const log = await page.evaluate(() => window.__gigTrace?.stop() ?? []);
+  const marks = log.filter((e) => e.kind === "mark");
+  const attrs = log.filter((e) => e.kind === "attr");
+  const scrolls = log.filter((e) => e.kind === "scroll");
+  const frames = log.filter((e) => e.kind === "frame");
+  const gap = (rows) => {
+    let worst = 0;
+    let at = null;
+    for (let i = 1; i < rows.length; i++) {
+      if (rows[i].t - rows[i - 1].t > worst) {
+        worst = rows[i].t - rows[i - 1].t;
+        at = rows[i - 1].t;
+      }
+    }
+    return { worst: Math.round(worst * 10) / 10, after: at };
+  };
+  const digest = {
+    ...extra,
+    samples: log.length,
+    marks: marks.map((m) => `${m.t} ${m.label} scrollTop=${m.scrollTop} h=${m.pageHeight} settle=${m.settle} render=${m.render} vis=${m.vis}`),
+    attributeWrites: attrs.map((a) => `${a.t} settle=${a.settle} render=${a.render} scrollTop=${a.scrollTop}`),
+    scrollEvents: scrolls.length,
+    worstScrollGapMs: gap(scrolls),
+    frames: frames.length,
+    worstFrameGapMs: gap(frames),
+  };
+  await testInfo.attach("gig-trace-digest.json", {
+    body: JSON.stringify(digest, null, 2),
+    contentType: "application/json",
+  });
+  await testInfo.attach("gig-trace.json", {
+    body: JSON.stringify(log),
+    contentType: "application/json",
+  });
+}
+
 async function openDemo(page) {
   await page.goto("/#/demo");
   // All three profile buttons is the signal the sample actually finished
@@ -1446,7 +1579,7 @@ test.describe("gig mode itself", () => {
   // after it) leave the reader half a page down page one. Winning the race
   // is what makes this test reach the dropped crossing; losing it can only
   // make it prove less, never fail.
-  test("the page indicator matches the pane after a turn taken inside gig mode's re-render", async ({ page }) => {
+  test("the page indicator matches the pane after a turn taken inside gig mode's re-render", async ({ page }, testInfo) => {
     // Windowed gig mode, for the reason the test above states.
     await page.evaluate(() => {
       Element.prototype.requestFullscreen = () => Promise.reject(new Error("denied"));
@@ -1455,14 +1588,22 @@ test.describe("gig mode itself", () => {
     await pdfPagesRenderedAtSettledWidth(page);
 
     await page.keyboard.press("f");
+    // Installed before gig mode's own re-render can start, so the trace
+    // covers the whole window this test presses into. Inert unless
+    // FERMATA_GIG_TRACE is set; see installGigTrace (#234).
+    if (GIG_TRACE) await installGigTrace(page);
     await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
     // Deliberately no barrier before the press: this is the tap a performer
     // actually makes, straight into the pane that is still about to
     // re-render. The stamp is only read, not waited on.
     const settled = await pdfSettleStamp(page);
+    const renderBefore = GIG_TRACE ? await pdfRenderSettleStamp(page) : null;
+    await gigMark(page, "pre-press");
     await page.keyboard.press("ArrowRight");
+    await gigMark(page, "press-sent");
 
     await pdfPagesRenderedAtSettledWidth(page);
+    await gigMark(page, "width-barrier-returned");
     // The turn's own barrier, and the only one here that is about where the
     // pane ended up rather than about the canvases (#234). REST rather than
     // the restore barrier the two tests above use, because which side of the
@@ -1474,7 +1615,9 @@ test.describe("gig mode itself", () => {
     // threshold and this geometry; see pdfSettlesPast for the measurement,
     // and for why that is an accident worth not depending on.
     await pdfSettlesPast(page, settled);
+    await gigMark(page, "rest-barrier-returned");
     await pdfIndicatorAgrees(page, 2);
+    await gigMark(page, "indicator-agreed");
 
     // And the geometry that makes the line above worth asserting: the reader
     // really is mid-page-one, not parked somewhere the two would agree
@@ -1486,8 +1629,16 @@ test.describe("gig mode itself", () => {
     // 0.4864, the two orderings of the race this test presses into - and the
     // nearer edge is 0.125 away. Widening it would only hide the next early
     // read; the band was never the loose part.
+    await gigMark(page, "read-before");
     const at = await pdfGeometry(page);
+    await gigMark(page, "read-after");
     const fraction = (at.scrollTop - at.pageOneTop) / at.pageHeight;
+    // Attached BEFORE the band is asserted, so the run that crosses is the
+    // run that carries the trace out. The assertions below are untouched.
+    if (GIG_TRACE) {
+      await page.waitForTimeout(1000);
+      await attachGigTrace(page, testInfo, { fraction, at, settled, renderBefore });
+    }
     expect(fraction).toBeGreaterThan(0.35);
     expect(fraction).toBeLessThan(0.65);
     const state = await pdfIndicatorState(page);

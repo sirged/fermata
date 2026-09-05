@@ -1,0 +1,98 @@
+# TEMPORARY. Not for main: this exists only to reproduce issue #234's
+# 384/1100 read on a runner, which has never appeared on a development box at
+# any CPU throttle. It runs one test many times with FERMATA_GIG_TRACE=1 and
+# uploads the trace. Delete the branch and this file once the mechanism is
+# known.
+#
+# The steps below are the CI browser job's, copied verbatim including both
+# cache keys, so a run here restores the same node_modules and browser trees
+# that job does and starts in seconds rather than minutes.
+name: Gig turn trace
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeat:
+        description: How many times to repeat the test
+        default: "30"
+      full:
+        description: Run the whole suite instead of the one spec (yes/no)
+        default: "no"
+  push:
+    branches: [gig-turn-ci-trace]
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    name: Trace the gig turn
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Cache node_modules
+        id: node-modules-cache
+        uses: actions/cache@v4
+        with:
+          path: web/node_modules
+          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('web/package-lock.json') }}
+      - name: Install server
+        working-directory: server
+        run: pip install -e .
+      - name: Install web
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        working-directory: web
+        run: npm ci
+      - name: Build
+        working-directory: web
+        run: npm run build
+      - name: Read Playwright version
+        id: playwright-version
+        working-directory: web
+        run: |
+          version=$(node -p "require('./package-lock.json').packages['node_modules/playwright'].version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Cache browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+      - name: Install browser
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      # PLAYWRIGHT_ALLOW_PARTIAL because one spec is deliberately less than
+      # the suite, which the runner's spec-floor guard would otherwise read
+      # as tests having gone missing.
+      - name: Trace
+        working-directory: web
+        env:
+          FERMATA_GIG_TRACE: "1"
+          PLAYWRIGHT_ALLOW_PARTIAL: "1"
+        run: |
+          repeat="${{ github.event.inputs.repeat || '30' }}"
+          if [ "${{ github.event.inputs.full }}" = "yes" ]; then
+            node scripts/run-browser-tests.mjs
+          else
+            node scripts/run-browser-tests.mjs \
+              tests/browser/practice-shortcuts.spec.js \
+              --grep "indicator matches the pane" \
+              --repeat-each "$repeat"
+          fi
+      - name: Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gig-trace-report
+          path: |
+            web/playwright-report/
+            web/test-results/
+          retention-days: 7
