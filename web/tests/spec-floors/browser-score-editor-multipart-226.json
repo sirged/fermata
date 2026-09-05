@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-editor-multipart-226.spec.js",
+  "count": 6,
+  "reason": "issue #226: reworked from the editor-multipart-selection-probe branch (b0d3f2b) once createDocument refused a document with more than one part - opening the two-part fixture shows the refusal and selects nothing (data-editor-active false, data-editor-error the refusal message, no data-editor-selected, AND the refusal as visible rendered text), no click or arrow key selects a note afterwards, the viewer still draws both parts read-only (both part names, 12 TAB staff-line rows), a single-part document is unaffected, a document with one <part> but two <score-part> entries in <part-list> still opens (the count is of <part> elements), and the viewer still renders both parts after the refusal is shown."
+}
