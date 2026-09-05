@@ -202,6 +202,11 @@ const COMPONENTS = [
   // step from a list of the things they have not covered - so the words on
   // it are held to the same rule as everything above.
   "trainer/ScopePresets.svelte",
+  // The chord flash card drill (#28), extended with the minor and major
+  // seventh (#252): its own prompt strings and every chord name it renders
+  // are held to the same vocabulary rule as the rest of the practice
+  // surface.
+  "trainer/ChordFlashCards.svelte",
 ];
 
 // The attributes a person actually reads. Every other attribute value is

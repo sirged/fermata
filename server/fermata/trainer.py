@@ -202,19 +202,25 @@ CHORD_DRILLS = ("chord_flashcards",)
 CHORD_DIRECTIONS = ("shape_to_name", "name_to_shape")
 
 # Interval steps from the root, in semitones - a triad for major and minor,
-# a tetrad for the one seventh chord this drill names ("majors and minors
-# first, then sevenths, then barre chords" - issue #28's own ordering).
+# a tetrad for every seventh chord this drill names ("majors and minors
+# first, then sevenths, then barre chords" - issue #28's own ordering,
+# extended by #252 to the minor and major seventh alongside the dominant).
 # MIRRORED, CHARACTER FOR CHARACTER, in web/src/lib/trainer/chord-
 # theory.js's QUALITIES - the same discipline PITCH_CLASSES above is held
 # to against neck.js's table of the same name. server/tests/
 # test_chord_theory.py and web/tests/unit/chord-theory.spec.js each check
-# every one of the 36 (root, quality) chords this can build; a drift
-# between the two would otherwise show up as a shape and its label
-# disagreeing about what chord is on screen, not as a failing test.
+# every one of the 60 (root, quality) chords this can build, and
+# test_chord_theory.py additionally parses chord-theory.js's own source to
+# pin the two tables' intervals equal, key for key, rather than trusting
+# them to stay in step by hand; a drift between the two would otherwise
+# show up as a shape and its label disagreeing about what chord is on
+# screen, not as a failing test.
 CHORD_QUALITIES = {
     "major": (0, 4, 7),
     "minor": (0, 3, 7),
     "dominant7": (0, 4, 7, 10),
+    "minor7": (0, 3, 7, 10),
+    "major7": (0, 4, 7, 11),
 }
 
 

@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/chord-flashcards.spec.js",
+  "count": 1,
+  "reason": "issue #252: against the real backend and the real build, the sevenths preset offers a minor7 and a major7 card (drawn from the new movable barre shapes, since neither quality has an open one), each one actually answered through the page, and each attempt read back through /api/trainer/chord-attempts under its own quality string rather than only asserted client-side."
+}

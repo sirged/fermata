@@ -92,6 +92,29 @@ test("across twelve consecutive base frets, an E-shape major barre names every o
   expect(roots.size).toBe(12);
 });
 
+// ---------------------------------------------------------------- minor7 / major7 barre shapes (issue #252)
+
+test("the new minor7 and major7 barre shapes are generated the same way, root read off the neck at each one", () => {
+  const shapes = barreShapesFor(strings, { minBaseFret: 1, maxFret: 12 });
+  // F minor7: E-shape minor7 at fret 1 - the same "first barre chord"
+  // position as F major, one quality over.
+  const fMinor7 = shapes.find((s) => s.id === "barre-e-minor7:1");
+  expect(fMinor7.root).toBe("F");
+  expect(fMinor7.quality).toBe("minor7");
+  // C major7: A-shape major7 at fret 3, an octave-plus-a-bit up from the
+  // open-position C the A-shape's plain major form reaches at the same fret.
+  const cMajor7 = shapes.find((s) => s.id === "barre-a-major7:3");
+  expect(cMajor7.root).toBe("C");
+  expect(cMajor7.quality).toBe("major7");
+});
+
+test("across twelve consecutive base frets, an E-shape minor7 barre names every one of the twelve roots", () => {
+  const shapes = barreShapesFor(strings, { minBaseFret: 1, maxFret: 14 })
+    .filter((s) => s.id.startsWith("barre-e-minor7:"));
+  const roots = new Set(shapes.map((s) => s.root));
+  expect(roots.size).toBe(12);
+});
+
 // ---------------------------------------------------------------- shapeMatchesChord
 
 test("shapeMatchesChord is true for a shape against its own declared chord", () => {
