@@ -1873,7 +1873,18 @@
           <span class="edit-hint">Type a fret digit to turn this rest into a note.</span>
         </div>
       {:else if selectedOrdinal == null}
-        <p class="edit-hint">Click a note on the staff to select it, then change its fret, string or duration. Arrow to a rest to select it. Shift+← / Shift+→ extends the selection along the run, to change or delete a whole phrase at once.</p>
+        <!-- The shift+arrow gesture is offered as a TITLE rather than as more
+             visible text (#251). This paragraph is the tallest thing in the
+             panel when nothing is selected, and a second line in it pushes the
+             staff down - so a note-head position read before a selection no
+             longer names that head after one, and a click at the old point
+             misses. That is not hypothetical: lengthening this sentence reds
+             score-editor-poly-189's click-cycling tests, which measure a head
+             once and click it twice. The panel's height stays what it was. -->
+        <p
+          class="edit-hint"
+          title="Shift+← / Shift+→ extends the selection along the run, so a duration change or a delete can act on a whole phrase at once. Escape collapses it again."
+        >Click a note on the staff to select it, then change its fret, string or duration. Arrow to a rest to select it.</p>
       {:else}
         <div class="edit-fields">
           {#if isRange()}
