@@ -302,9 +302,9 @@
       // canvases changed height, so restore scroll to wherever that position
       // now is rather than let it drift to an arbitrary pixel offset - the
       // same fraction down the same page, not merely that page's top
-      const restored = target && container.querySelector(`[data-page="${target.page}"]`);
-      if (restored) {
-        container.scrollTop = pageTop(restored) + target.fraction * restored.getBoundingClientRect().height;
+      const restored = offsetOf(target);
+      if (restored !== null) {
+        container.scrollTop = restored;
         restoredAtSeq = scrollRequestSeq;
         // Assigning scrollTop ends any smooth scroll that was still running,
         // and this assignment IS that scroll's destination - so nothing is
@@ -466,6 +466,20 @@
     })();
 
     function onScroll() {
+      // Arrived, so nothing is travelling any more. Checked on every scroll
+      // event rather than left to the timer below, because the timer only
+      // fires when the SCROLLING stops - and a reader who takes over with a
+      // wheel straight after a turn keeps it re-armed for as long as they
+      // keep scrolling, which would leave a re-render in that window
+      // restoring them to the turn's target instead of where they had
+      // scrolled to.
+      if (scrollTravelling) {
+        const want = offsetOf(requestedScroll);
+        const max = Math.max(0, container.scrollHeight - container.clientHeight);
+        if (want === null || Math.abs(container.scrollTop - Math.min(Math.max(want, 0), max)) <= 1) {
+          scrollTravelling = false;
+        }
+      }
       clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
         intendedPage = null;
@@ -593,6 +607,16 @@
       }
     }
     return null;
+  }
+
+  // The inverse of positionAt: where a recorded position is on the scroller
+  // NOW, at whatever height the pages are currently rendered. Both the
+  // re-render's restore and the "has the pane got there yet" check in
+  // onScroll ask this same question, so they ask it the same way.
+  function offsetOf(position) {
+    const canvas = position && container.querySelector(`[data-page="${position.page}"]`);
+    if (!canvas) return null;
+    return pageTop(canvas) + position.fraction * canvas.getBoundingClientRect().height;
   }
 
   // Records a scroll this component is about to perform, so a resize
