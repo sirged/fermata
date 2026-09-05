@@ -223,10 +223,11 @@ test("below the wrap breakpoint, the transport row (Play/Speed/Loop) renders abo
 // and checked the same two ways: no clipping and no page overflow at every
 // width, every control reachable by a real click at the two narrowest ones.
 // No library or upload needed: `header.filter-row` renders unconditionally,
-// with zero scores, so this needs no upload and therefore cannot disturb
-// zz-library-missing.spec.js's own high-water-mark calibration the way
-// leaving rows behind in the library would (see
-// zzzzzz-score-metadata.spec.js's header comment for that story in full).
+// with zero scores, so this test leaves nothing behind - unlike
+// zzzzzz-score-metadata.spec.js, which does leave rows behind and for that
+// reason still has to sort after zz-library-missing.spec.js's own refusal
+// test (see that file's header for the full story; the high-water-mark
+// reason that used to require the same ordering is gone as of #250).
 test.describe("the library filter row has zero clipping and the page never overflows horizontally", () => {
   for (const width of WIDTHS) {
     test(`at ${width}px`, async ({ page }) => {
