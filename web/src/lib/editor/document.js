@@ -114,7 +114,17 @@ export function createDocument(xml) {
   }
   const root = doc.documentElement;
   if (!root || root.tagName !== "score-partwise") {
-    throw new Error("The note editor works on partwise MusicXML transcriptions only.");
+    throw new Error("The note editor works on partwise MusicXML transcriptions.");
+  }
+
+  // This profile writes exactly one <part> (the docstring's "one part");
+  // a document with more than one is refused here, at open, the same way an
+  // unparseable or non-partwise document already is above - plainly, before
+  // any edit-mode state is entered - rather than silently mapping only the
+  // first part while drawing every one (#226).
+  const partCount = doc.getElementsByTagName("part").length;
+  if (partCount > 1) {
+    throw new Error(`The note editor works on one part at a time; this document has ${partCount}.`);
   }
 
   // The tuning, read once. line -> MIDI of that open string. `<staff-tuning
@@ -415,6 +425,57 @@ export function createDocument(xml) {
     return selectionOf(allEls[next]);
   }
 
+  /**
+   * The ordinal of the sounding note that CONTINUES the run at `ordinal` one
+   * step forward (direction > 0) or back - the multi-note selection's extend
+   * step (#251) - or null when the run ends there. Pure, like stepNote: it
+   * reports where an extension should reach, it writes nothing.
+   *
+   * "Continues the run" is the whole of the rule, and it is deliberately
+   * stricter than stepNote's ordinal +/- 1:
+   *
+   * - The neighbour is taken in FULL document order (allEls: every `<note>`,
+   *   rests included), not in the sounding-note ordinal space. So what sits
+   *   physically next to this note is what decides, not what the next ordinal
+   *   happens to be.
+   * - A REST stops the run. The selection is drawn on the staff as a marked
+   *   set of note-heads; jumping a rest would mark two heads with a visible
+   *   silence between them and still call them one contiguous selection, which
+   *   misreads. It is also the rule the tie already follows (tieNext refuses to
+   *   span a gap), so the editor has one notion of "directly follows", not two.
+   * - A note in ANOTHER VOICE stops the run. A selection is an ordinal range on
+   *   ONE voice (the issue's own rabbit hole: no cross-voice selection). In a
+   *   polyphonic measure each voice is written as its own block, so the element
+   *   after voice 1's last note in a bar is voice 2's first note - and the run
+   *   stops there rather than silently changing voice mid-selection. The
+   *   consequence, stated rather than discovered: in a polyphonic document a
+   *   selection cannot cross a barline, because the next element after a
+   *   voice's last note in the bar belongs to another voice. In a single-voice
+   *   document it can, and does.
+   * - The document edge stops the run.
+   *
+   * Because two notes are only ever joined when nothing sits between them in
+   * document order, the reachable set from an anchor is a CONTIGUOUS ordinal
+   * range, every member of it in the anchor's voice - which is what lets the
+   * caller hold a selection as an anchor plus an extent rather than a list.
+   */
+  function stepContiguous(ordinal, direction) {
+    const el = noteEls[ordinal];
+    if (!el) return null;
+    const at = allEls.indexOf(el);
+    if (at < 0) return null;
+    const next = allEls[at + (direction > 0 ? 1 : -1)];
+    // The isRest stop is written out rather than left to the noteEls lookup at
+    // the end, which would also reject a rest (a rest is never in noteEls). It
+    // is here because it is a RULE, not a side effect of an index miss: the
+    // alternative design - skip the rest and carry on - is a one-line change to
+    // this same spot, and a reader deciding between them should see the choice.
+    if (!next || isRest(next)) return null;
+    if (voiceNumber(next) !== voiceNumber(el)) return null;
+    const idx = noteEls.indexOf(next);
+    return idx >= 0 ? idx : null;
+  }
+
   // Write a `{ step, alter, octave }` into a note's <pitch>, keeping the schema's
   // child order (step, alter?, octave). The <alter> is omitted for a natural, as
   // the emitter does. This touches ONLY the sound element; the printed
@@ -646,10 +707,25 @@ export function createDocument(xml) {
    * Returns true when the document changed. Structural by nature - it changes
    * the bar's arithmetic - which is why the caller re-imports the whole
    * document rather than trusting an in-place tweak (see score-render.js).
+   *
+   * Refuses (leaving the note untouched) a note carrying a
+   * `<time-modification>` - the SAME refusal setDots has carried since #183,
+   * and for the same reason (#251). A tuplet member's sounding `<duration>` is
+   * its written `<type>` scaled by the tuplet ratio: three eighths inside a
+   * 3:2 `<time-modification>` are written `eighth` but sound 160 units each at
+   * divisions 480, not 240. Retyping one here would write the UNSCALED value
+   * for the new type, so the note's `<duration>` would stop being its written
+   * value times the ratio and the bar would no longer sum. Writing the scaled
+   * value instead is not this increment's job either: tuplet entry is a stated
+   * follow-on, and a tuplet whose members disagree in written type is a
+   * different, structural edit (the whole `<time-modification>` group has to
+   * change together). So the request is refused rather than written wrong -
+   * before this guard it was written wrong silently, with nothing testing it.
    */
   function setDurationType(ordinal, type) {
     const el = noteEls[ordinal];
     if (!el) return false;
+    if (firstChildTag(el, "time-modification")) return false;
     const value = durationForType(type, divisions);
     if (value == null) return false;
     const durationEl = firstChildTag(el, "duration");
@@ -1268,6 +1344,8 @@ export function createDocument(xml) {
     count: () => noteEls.length,
     stepNote,
     stepMeasure,
+    // The multi-note selection's extend step (#251) - see stepContiguous.
+    stepContiguous,
     // Rest selection and rest-to-note (#238) - see restAt/restToNote/stepAny.
     restCount,
     restAt,

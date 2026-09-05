@@ -1656,7 +1656,12 @@ promise more interoperability than exists.
 
 - Tuplets (`<time-modification>`, `<tuplet>`). This is why Rule 2's divisions
   value is chosen to divide by 3 — so adding them later does not require
-  changing it.
+  changing it. The note editor does not *write* one, but it can be opened over
+  a document that carries one (a hand-edited or imported file), and it refuses
+  to retype or to dot such a note: a tuplet member's `<duration>` is its
+  written `<type>` scaled by the tuplet ratio, so writing the unscaled value
+  for a new type would leave a bar that no longer sums. Both refusals leave the
+  note exactly as it was.
 - Slurs (`<slur>`). Ties are covered — see [Rule 18](#ties-rule-18) — but a
   slur is a different mark: it joins notes of *different* pitch, and the
   equal pitch a tie joins is the only thing this extractor uses to tell one

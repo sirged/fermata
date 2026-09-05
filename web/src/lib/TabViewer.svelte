@@ -168,6 +168,17 @@
   // stays skipping them - see document.js's stepAny), so a rest selection
   // never sets `overlay`; the edit panel shows it as text instead.
   let selectedRest = $state(null);
+  // The far end of a MULTI-NOTE selection (#251), or null when exactly one note
+  // is selected. `selectedOrdinal` is the ANCHOR - the note the selection grew
+  // from, the one every per-note-by-nature operation (fret entry, tie, voice
+  // move) still acts on - and `selExtent` is where shift+ArrowLeft/Right has
+  // reached. The selection itself is the CONTIGUOUS ordinal range between the
+  // two, inclusive, in either order (the extent may sit before the anchor); see
+  // rangeOrdinals. It is a range rather than a list because document.js's
+  // stepContiguous only ever joins notes with nothing between them in document
+  // order and in the same voice, so everything between the two ends is in the
+  // selection by construction.
+  let selExtent = $state(null);
   // The string offered for a rest-to-note conversion, editable in the panel
   // while a rest is selected. Initialised from lastEditString (the string the
   // player was last actually fretting) or the rest's voice's own default
@@ -222,7 +233,19 @@
   let saveError = $state("");
   let undoStack = $state([]);
   let redoStack = $state([]);
-  let overlay = $state(null);
+  // One entry per SELECTED NOTE-HEAD (#251): a single selection has one, a
+  // range has one per note in it, each positioned from the renderer's own
+  // headRect for that ordinal. score-render.js is untouched - this asks the
+  // existing positional map for the bounds of every ordinal in the range
+  // instead of only the anchor's.
+  let overlays = $state([]);
+  // The selected ordinals, ascending - the reactive mirror of rangeOrdinals(),
+  // recomputed by updateOverlay wherever the selection changes (#251). Held as
+  // state rather than derived on read because rangeOrdinals() consults `doc`,
+  // which is deliberately NOT reactive (see its comment above), so a template
+  // that called it directly would not re-read it when a rebuild changed the
+  // note count.
+  let selRange = $state([]);
 
   // The keyboard core loop's two-digit fret entry (#186). Typing a digit with a
   // note selected sets its fret immediately (so "1" then a pause commits fret
@@ -255,6 +278,7 @@
 
   function clearSelection() {
     selectedOrdinal = null;
+    selExtent = null;
     selectedRest = null;
     selRestString = null;
     selFret = selString = selType = selMidi = selNoteId = null;
@@ -264,7 +288,8 @@
     selVoice = selOnset = selRenderVoice = null;
     selVoiceOptions = [];
     divergenceOk = true;
-    overlay = null;
+    overlays = [];
+    selRange = [];
     editWarn = "";
     // A fresh selection (or none) starts a fresh two-digit fret window - a
     // digit typed on a new note must never extend the last note's fret.
@@ -313,6 +338,9 @@
     editWarn = "";
     fretEntry = null;
     selectedRest = null;
+    // A click always starts a FRESH single selection - it sets a new anchor, so
+    // whatever range the arrows had built is gone (#251).
+    selExtent = null;
     selectedOrdinal = ord;
     refreshSelection();
   }
@@ -338,6 +366,9 @@
       return;
     }
     selectedOrdinal = null;
+    // A rest has no ordinal in the sounding-note space a range is expressed in,
+    // so selecting one always collapses the range (#251).
+    selExtent = null;
     selFret = selString = selType = selMidi = selNoteId = null;
     selStep = selAlter = selAccidental = null;
     selDots = d.dots ?? 0;
@@ -350,11 +381,60 @@
     // ordinal in score-render.js's positional map) - true, not merely
     // unchecked, so it never reads as a false "out of sync" warning.
     divergenceOk = true;
-    overlay = null;
+    overlays = [];
+    selRange = [];
     editWarn = "";
     fretEntry = null;
     selRestString = defaultStringForVoice(d.voice);
     selectedRest = d;
+  }
+
+  // ------------------------------------------- the multi-note selection (#251)
+  //
+  // A selection is an anchor ordinal plus an optional extent ordinal (see
+  // selExtent). These three functions are the whole of its arithmetic; every
+  // range operation below reads rangeOrdinals() and nothing else.
+
+  // The selected ordinals, ascending - [anchor] when nothing is extended.
+  // Clamped to the document, so a rebuild that shortened it (a delete) can
+  // never hand an operation an ordinal that no longer exists.
+  function rangeOrdinals() {
+    if (selectedOrdinal == null) return [];
+    const count = doc ? doc.count() : 0;
+    const other = selExtent ?? selectedOrdinal;
+    const lo = Math.min(selectedOrdinal, other);
+    const hi = Math.min(Math.max(selectedOrdinal, other), count - 1);
+    const out = [];
+    for (let i = Math.max(0, lo); i <= hi; i++) out.push(i);
+    return out;
+  }
+
+  // Extend the selection one note further from its moving end, along
+  // document.js's stepContiguous - which stops at a rest, at a voice change and
+  // at the document edge (see its contract for why each). Shrinking is the same
+  // gesture in the other direction: the extent walks back toward the anchor and
+  // straight past it, so shift+ArrowLeft after two shift+ArrowRights leaves one
+  // note selected again, exactly as a text selection behaves.
+  function extendSelection(direction) {
+    if (selectedOrdinal == null || !doc) return;
+    fretEntry = null;
+    const from = selExtent ?? selectedOrdinal;
+    const next = doc.stepContiguous(from, direction);
+    if (next == null) return; // the run ends here - the selection stands
+    editWarn = "";
+    selExtent = next === selectedOrdinal ? null : next;
+    updateOverlay();
+  }
+
+  // Collapse a range back to its anchor (Escape, and any plain arrow). The
+  // anchor stays selected: collapsing is "stop selecting a run", not "select
+  // nothing".
+  function collapseSelection() {
+    if (selExtent == null) return false;
+    selExtent = null;
+    editWarn = "";
+    updateOverlay();
+    return true;
   }
 
   function refreshSelection() {
@@ -364,6 +444,13 @@
     if (!d) {
       clearSelection();
       return;
+    }
+    // An extent left over from before a rebuild that shortened the document (a
+    // range delete) is clamped back into it, so the range never names an
+    // ordinal that no longer exists (#251).
+    if (selExtent != null && (selExtent < 0 || selExtent >= doc.count())) {
+      selExtent = doc.count() > 0 ? Math.min(Math.max(selExtent, 0), doc.count() - 1) : null;
+      if (selExtent === selectedOrdinal) selExtent = null;
     }
     if (d.string != null) lastEditString = d.string;
     const v = view.editor.viewInfo(selectedOrdinal);
@@ -400,26 +487,35 @@
     updateOverlay();
   }
 
+  // Position a marker over EVERY selected note-head (#251) - one for a single
+  // selection, one per note for a range. The bounds come from the renderer's
+  // existing positional map, asked once per ordinal; nothing in
+  // score-render.js changes, and a head the map has no bounds for is simply
+  // not marked rather than moving the others.
   function updateOverlay() {
+    selRange = rangeOrdinals();
     if (selectedOrdinal == null || !view || !scroller) {
-      overlay = null;
-      return;
-    }
-    const r = view.editor.headRect(selectedOrdinal);
-    if (!r) {
-      overlay = null;
+      overlays = [];
       return;
     }
     // The overlay lives inside the scroller and is positioned in its scroll
     // space, so it tracks the note when the staff is scrolled without any
     // scroll listener. headRect is in client space; convert once.
     const sr = scroller.getBoundingClientRect();
-    overlay = {
-      left: r.left - sr.left + scroller.scrollLeft,
-      top: r.top - sr.top + scroller.scrollTop,
-      width: r.width,
-      height: r.height,
-    };
+    const marks = [];
+    for (const ord of selRange) {
+      const r = view.editor.headRect(ord);
+      if (!r) continue;
+      marks.push({
+        ordinal: ord,
+        anchor: ord === selectedOrdinal,
+        left: r.left - sr.left + scroller.scrollLeft,
+        top: r.top - sr.top + scroller.scrollTop,
+        width: r.width,
+        height: r.height,
+      });
+    }
+    overlays = marks;
   }
 
   // The N-random-edits fuzz guard's assertion (#189), stronger than the
@@ -513,13 +609,108 @@
     refreshSelection();
   }
 
+  // ------------------------------------------------- range operations (#251)
+  //
+  // A selection of more than one note applies the per-note operations that make
+  // sense over a run - duration type, dots, delete, respelling (the accidental
+  // control and the enharmonic cycle) and a string change - to each note in
+  // turn, as ONE gesture: one undo entry, one re-import, one re-render. The
+  // operations that are per-note BY NATURE - fret entry, the tie toggle, the
+  // voice move - act on the anchor alone; a fret means one fretted position, a
+  // tie joins one pair, and a voice move rebuilds a measure around one note.
+  //
+  // The refusal policy, decided once and stated so a reader need not infer it
+  // from the arithmetic: a range gesture is ALL-OR-NOTHING. If the document
+  // refuses the edit for any note in the range - a tuplet member under a
+  // duration change, a dotted value that is not a whole number of divisions -
+  // the whole gesture is rolled back and nothing is written. That is the
+  // simpler undo story of the two on offer: an undo entry always means "all N
+  // notes changed", never "some subset changed and the panel said which", and a
+  // refused gesture leaves the undo stack untouched, so undo after a refusal
+  // still reaches the edit before it rather than a half-applied one. Rolling
+  // back is exact rather than best-effort, because the model IS the document
+  // text: the pre-gesture text is re-parsed, the same way undo's own restore
+  // works.
+  //
+  // The policy is UNIFORM across every range operation, the string change
+  // included. The issue's sketch scopes that one to "string change where the
+  // pitch allows", which reads as a per-note skip - but setString refuses only
+  // when the resulting pitch falls outside MusicXML's writable octaves (Rule
+  // 11, MIDI 12-131), and on any tuning and fret span a real instrument has it
+  // never does: the lowest open string a document can even declare is around
+  // MIDI 12, and the highest string plus the highest fret stays well under
+  // 131. A skip branch for it would therefore be code no document could reach
+  // and no test could red, so the string change takes the same all-or-nothing
+  // rollback as the rest and reports the same refusal. Said here rather than
+  // discovered; see the PR for the measurement.
+  //
+  // `mutate(ordinal)` returns true when it changed that note. It is called from
+  // the HIGHEST ordinal down. Measured in review: the order does not matter
+  // today, because the model's note list is a parse-time snapshot and every
+  // operation (a delete included) rewrites a note in place, so ordinals never
+  // shift mid-gesture. Descending is kept as a defence for an operation that
+  // one day removes or inserts elements, not as something the tests depend on.
+  async function applyRange(mutate, refusal) {
+    if (selectedOrdinal == null || !doc || !view) return;
+    const ords = rangeOrdinals();
+    if (ords.length === 0) return;
+    fretEntry = null;
+    const before = doc.text();
+    let changed = 0;
+    let skipped = 0;
+    for (const ord of [...ords].sort((a, b) => b - a)) {
+      if (mutate(ord)) changed += 1;
+      else skipped += 1;
+    }
+    if (skipped > 0) {
+      // Roll the whole gesture back to the pre-gesture text. Nothing is pushed
+      // onto the undo stack, and `dirty` is left as it was.
+      doc = createDocument(before);
+      editStringCount = doc.stringCount;
+      editWarn = `${refusal} Nothing in the selection of ${ords.length} notes was changed.`;
+      return;
+    }
+    const after = doc.text();
+    if (changed === 0 || after === before) {
+      editWarn = refusal;
+      return;
+    }
+    editWarn = "";
+    undoStack = [...undoStack, before];
+    redoStack = [];
+    dirty = true;
+    // Rebuilt from the new text rather than trusted in place, for the same
+    // reason deleteSelected and changeVoice rebuild: a range gesture may have
+    // turned notes into rests, which moves every ordinal after them.
+    doc = createDocument(after);
+    editStringCount = doc.stringCount;
+    await view.editor.reload(after);
+    if (doc.count() === 0) {
+      clearSelection();
+      return;
+    }
+    if (selectedOrdinal >= doc.count()) selectedOrdinal = doc.count() - 1;
+    if (selExtent != null && selExtent >= doc.count()) selExtent = doc.count() - 1;
+    if (selExtent === selectedOrdinal) selExtent = null;
+    if (doc.noteAt(selectedOrdinal)) refreshSelection();
+    else clearSelection();
+  }
+
+  // True when the current selection covers more than one note - the switch
+  // every dual-purpose control below reads. With exactly one note selected each
+  // of them takes its original single-note path unchanged, so nothing about the
+  // existing editor moves when a range is never made.
+  function isRange() {
+    return selectedOrdinal != null && selExtent != null && selExtent !== selectedOrdinal;
+  }
+
   function changeFret(value) {
     const v = Number(value);
     if (!Number.isInteger(v) || v < 0) {
       editWarn = "A fret is a whole number, zero or more.";
       return;
     }
-    applyEdit(
+    return applyEdit(
       () => doc.setFret(selectedOrdinal, v),
       "That fret would put the note outside the pitch range MusicXML can write (octaves 0–9).",
     );
@@ -528,14 +719,15 @@
   function changeString(value) {
     const v = Number(value);
     if (!Number.isInteger(v)) return;
-    applyEdit(
-      () => doc.setString(selectedOrdinal, v),
-      "That string would put the note outside the pitch range MusicXML can write (octaves 0–9).",
-    );
+    const refusal = "That string would put the note outside the pitch range MusicXML can write (octaves 0–9).";
+    if (isRange()) return applyRange((ord) => doc.setString(ord, v), refusal);
+    return applyEdit(() => doc.setString(selectedOrdinal, v), refusal);
   }
 
   function changeDuration(type) {
-    applyEdit(() => doc.setDurationType(selectedOrdinal, type), "That duration can't be written for this note.");
+    const refusal = "That duration can't be written for this note.";
+    if (isRange()) return applyRange((ord) => doc.setDurationType(ord, type), refusal);
+    return applyEdit(() => doc.setDurationType(selectedOrdinal, type), refusal);
   }
 
   // Set the selected note's augmentation dots (#183). Non-structural in the same
@@ -548,7 +740,9 @@
   function changeDots(value) {
     const v = Number(value);
     if (!Number.isInteger(v) || v < 0 || v > 2) return;
-    applyEdit(() => doc.setDots(selectedOrdinal, v), "That dotted value can't be written for this note.");
+    const refusal = "That dotted value can't be written for this note.";
+    if (isRange()) return applyRange((ord) => doc.setDots(ord, v), refusal);
+    return applyEdit(() => doc.setDots(selectedOrdinal, v), refusal);
   }
 
   // Toggle a tie from the selected note to the next one (#183). Both notes
@@ -557,7 +751,7 @@
   // enough. A tie to a different pitch, or across a gap, is refused (setTie
   // returns false) with the stated message.
   function toggleTie() {
-    applyEdit(
+    return applyEdit(
       () => doc.setTie(selectedOrdinal, !selTieStart),
       "A tie needs the next note to be the same pitch and directly follow this one.",
     );
@@ -572,10 +766,9 @@
   function changeAccidental(value) {
     const v = Number(value);
     if (!Number.isInteger(v)) return;
-    applyEdit(
-      () => doc.setAccidental(selectedOrdinal, v),
-      "That accidental can't spell this note (its pitch has no such spelling in a writable octave).",
-    );
+    const refusal = "That accidental can't spell this note (its pitch has no such spelling in a writable octave).";
+    if (isRange()) return applyRange((ord) => doc.setAccidental(ord, v), refusal);
+    return applyEdit(() => doc.setAccidental(selectedOrdinal, v), refusal);
   }
 
   // Cycle the selected note through its enharmonic spellings (F sharp <-> G flat,
@@ -583,10 +776,9 @@
   // the accidental control; refused only when the pitch has a single spelling to
   // offer.
   function cycleEnharmonic(direction) {
-    applyEdit(
-      () => doc.cycleSpelling(selectedOrdinal, direction),
-      "This note has no other enharmonic spelling to cycle to.",
-    );
+    const refusal = "This note has no other enharmonic spelling to cycle to.";
+    if (isRange()) return applyRange((ord) => doc.cycleSpelling(ord, direction), refusal);
+    return applyEdit(() => doc.cycleSpelling(selectedOrdinal, direction), refusal);
   }
 
   // Move the selected note into another voice (#182). Unlike a fret/string/
@@ -603,6 +795,10 @@
     if (selectedOrdinal == null || !doc || !view) return;
     if (v === selVoice) return; // choosing the note's own voice is a no-op
     fretEntry = null;
+    // Anchor-only, and structural: the move rebuilds a whole measure and
+    // renumbers every ordinal after it, so a range built before it would name
+    // notes that have shifted. It collapses to the moved note (#251).
+    selExtent = null;
     const before = doc.text();
     const newOrdinal = doc.moveToVoice(selectedOrdinal, v);
     if (newOrdinal == null) {
@@ -649,6 +845,10 @@
     if ((selectedOrdinal == null && selectedRest == null) || !doc) return;
     // Moving off the current selection ends its two-digit fret window.
     fretEntry = null;
+    // A PLAIN arrow collapses a range (#251) and then steps from the anchor,
+    // the same one note it would have stepped from had the range never been
+    // made - "stop selecting a run, and carry on moving".
+    selExtent = null;
     if (kind === "measure") {
       if (selectedOrdinal == null) return;
       const target = doc.stepMeasure(selectedOrdinal, direction);
@@ -734,6 +934,7 @@
     editStringCount = doc.stringCount;
     selectedRest = null;
     selRestString = null;
+    selExtent = null;
     selectedOrdinal = newOrdinal;
     // Seeds the two-digit fret window as if this digit had been typed on an
     // ordinary note, so a fast second digit right after extends the fret to
@@ -769,6 +970,14 @@
   // deleted note was the last one.
   async function deleteSelected() {
     if (selectedOrdinal == null || !doc || !view) return;
+    // Over a range, every selected note becomes a rest in one gesture - the
+    // same doc.deleteNote each single delete uses, applied from the highest
+    // ordinal down (see applyRange) so each ordinal is still the note it named
+    // when the range was read. One undo entry brings all of them back.
+    if (isRange()) {
+      await applyRange((ord) => doc.deleteNote(ord), "Those notes can't be deleted.");
+      return;
+    }
     fretEntry = null;
     const before = doc.text();
     if (!doc.deleteNote(selectedOrdinal)) {
@@ -883,10 +1092,19 @@
             text: () => (doc ? doc.text() : null),
             select: (ordinal) => {
               if (doc == null || ordinal == null || ordinal < 0 || ordinal >= doc.count()) return null;
+              selExtent = null;
               selectedOrdinal = ordinal;
               refreshSelection();
               return selectedOrdinal;
             },
+            // The multi-note selection (#251), through the same
+            // extendSelection the shift+arrow keypress calls - so the fuzz
+            // and the keyboard build a range the one way.
+            extend: (direction) => {
+              extendSelection(direction);
+              return rangeOrdinals();
+            },
+            range: () => rangeOrdinals(),
             selectRestOrdinal: (restOrdinal) => {
               if (doc == null || restOrdinal == null || restOrdinal < 0 || restOrdinal >= doc.restCount()) return null;
               selectRest(restOrdinal);
@@ -922,10 +1140,38 @@
               }
               if (doc == null || ordinal == null || ordinal < 0 || ordinal >= doc.count())
                 return { applied: false, refused: false, reason: "ordinal-out-of-range", divergenceOk };
+              selExtent = null;
               selectedOrdinal = ordinal;
               refreshSelection();
               editWarn = "";
               const before = doc.text();
+              // The RANGE op (#251): extend the selection by `arg.k` notes
+              // through the real shift+arrow path, then move every note in it
+              // to `arg.string` through the real range handler. A string
+              // change is the range op the fuzz draws for the same reason
+              // duration and dots are still absent from its menu (see the
+              // spec's own header): it leaves every <duration> alone, so it
+              // cannot drive a polyphonic bar out of Rule 8 and turn a
+              // validity question into a false positive about the positional
+              // map this guard exists to prove.
+              if (op === "rangeString") {
+                const k = Math.max(0, Number(arg?.k ?? 0));
+                for (let s = 0; s < k; s++) extendSelection(1);
+                const ords = rangeOrdinals();
+                await changeString(arg?.string);
+                const afterRange = doc ? doc.text() : before;
+                return {
+                  op,
+                  arg: arg ?? null,
+                  ordinal,
+                  range: ords,
+                  applied: afterRange !== before,
+                  refused: !!editWarn,
+                  warn: editWarn || null,
+                  selected: selectedOrdinal,
+                  divergenceOk,
+                };
+              }
               switch (op) {
                 case "fret": await changeFret(arg); break;
                 case "string": await changeString(arg); break;
@@ -1273,9 +1519,30 @@
     // through it.
     if (editMode && (selectedOrdinal != null || selectedRest != null)) {
       switch (e.key) {
+        case "Escape":
+          // Collapse a multi-note selection back to its anchor (#251). With
+          // nothing extended there is nothing to collapse, and the key is left
+          // alone rather than claimed for a no-op.
+          if (collapseSelection()) {
+            e.preventDefault();
+            return;
+          }
+          break;
         case "ArrowLeft":
         case "ArrowRight":
           e.preventDefault();
+          // Shift+arrow EXTENDS the selection along the run (#251) instead of
+          // moving it. This claims shift+arrow away from the transport's
+          // loop-boundary nudge for exactly as long as a NOTE is selected in
+          // edit mode - the same arbitration the plain arrows already make, and
+          // for the same reason: with a note selected the arrows are the
+          // editor's. With a REST selected there is no ordinal to extend from
+          // (a rest has none in the sounding-note space), so shift+arrow is a
+          // no-op there rather than falling through to the transport.
+          if (e.shiftKey) {
+            if (selectedOrdinal != null) extendSelection(e.key === "ArrowRight" ? 1 : -1);
+            return;
+          }
           moveSelection("note", e.key === "ArrowRight" ? 1 : -1);
           return;
         case "ArrowUp":
@@ -1376,6 +1643,9 @@
   data-editor-error={editError || null}
   data-editor-warn={editWarn || null}
   data-editor-selected={selectedOrdinal}
+  data-editor-selected-extent={selExtent}
+  data-editor-selected-count={selectedOrdinal != null ? selRange.length : null}
+  data-editor-selected-ordinals={selectedOrdinal != null ? selRange.join(",") : null}
   data-editor-selected-fret={selFret}
   data-editor-selected-string={selString}
   data-editor-selected-type={selType}
@@ -1581,6 +1851,15 @@
     </p>
   {/if}
 
+  {#if editError && !editMode}
+    <!-- enterEdit() (above) catches createDocument's refusal, sets editError
+    and returns before editMode ever flips true - so the {#if editMode} panel
+    below, which is the only other place editError renders, never mounts for
+    this case. Without this paragraph the refusal was silent: the "Edit
+    notes" button just stayed enabled and did nothing (#226 follow-up). -->
+    <p class="error">{editError}</p>
+  {/if}
+
   {#if editMode}
     <div class="edit-panel">
       {#if editError}
@@ -1604,11 +1883,31 @@
           <span class="edit-hint">Type a fret digit to turn this rest into a note.</span>
         </div>
       {:else if selectedOrdinal == null}
-        <p class="edit-hint">Click a note on the staff to select it, then change its fret, string or duration. Arrow to a rest to select it.</p>
+        <!-- The shift+arrow gesture is offered as a TITLE rather than as more
+             visible text (#251). This paragraph is the tallest thing in the
+             panel when nothing is selected, and a second line in it pushes the
+             staff down - so a note-head position read before a selection no
+             longer names that head after one, and a click at the old point
+             misses. That is not hypothetical: lengthening this sentence reds
+             score-editor-poly-189's click-cycling tests, which measure a head
+             once and click it twice. The panel's height stays what it was. -->
+        <p
+          class="edit-hint"
+          title="Shift+← / Shift+→ extends the selection along the run, so a duration change or a delete can act on a whole phrase at once. Escape collapses it again."
+        >Click a note on the staff to select it, then change its fret, string or duration. Arrow to a rest to select it.</p>
       {:else}
         <div class="edit-fields">
-          <label>
-            Fret
+          {#if isRange()}
+            <!-- A run of notes selected with shift+arrow (#251). Duration,
+                 dots, the accidental, the enharmonic cycle, the string and
+                 Backspace act on the WHOLE run in one undo step; Fret, Tie and
+                 Voice act on the anchor alone. -->
+            <span class="hint" title="Shift+← / Shift+→ extends the selection along the run; Escape collapses it">
+              {selRange.length} notes selected
+            </span>
+          {/if}
+          <label title={isRange() ? "The fret applies to the anchor note only — one fret is one fretted position" : null}>
+            Fret{isRange() ? " (anchor)" : ""}
             <input
               type="number"
               min="0"
@@ -1666,12 +1965,12 @@
             class="tie-toggle"
             class:on={selTieStart}
             onclick={toggleTie}
-            title="Tie this note to the next — they must be the same pitch and directly follow one another, so the two read as one held note"
+            title="Tie this note to the next — they must be the same pitch and directly follow one another, so the two read as one held note. Over a selection it ties the anchor only."
           >
             {selTieStart ? "Tied →" : "Tie →"}
           </button>
-          <label title="Move this note to another voice — the second voice (and its backup) is created if it does not exist yet">
-            Voice
+          <label title="Move this note to another voice — the second voice (and its backup) is created if it does not exist yet. Over a selection it moves the anchor only, and collapses the selection to it.">
+            Voice{isRange() ? " (anchor)" : ""}
             <select value={String(selVoice ?? "")} onchange={(e) => changeVoice(e.target.value)}>
               {#if selVoice != null && !selVoiceOptions.includes(selVoice)}
                 <option value={String(selVoice)}>{selVoice}</option>
@@ -1719,11 +2018,19 @@
     onclick={editMode ? (e) => selectAt(e.clientX, e.clientY) : undefined}
   >
     <div class="at-host" bind:this={host}></div>
-    {#if editMode && overlay}
-      <div
-        class="note-selection"
-        style="left:{overlay.left}px; top:{overlay.top}px; width:{overlay.width}px; height:{overlay.height}px;"
-      ></div>
+    {#if editMode}
+      <!-- One marker per selected note-head: a single selection draws one, a
+           multi-note selection (#251) one for each note in the range, the
+           anchor among them flagged so a reader can see which end the
+           anchor-only operations (fret entry, tie) will act on. -->
+      {#each overlays as mark (mark.ordinal)}
+        <div
+          class="note-selection"
+          class:anchor={mark.anchor}
+          data-editor-selected-head={mark.ordinal}
+          style="left:{mark.left}px; top:{mark.top}px; width:{mark.width}px; height:{mark.height}px;"
+        ></div>
+      {/each}
     {/if}
   </div>
 </div>
@@ -1934,6 +2241,15 @@
     background: rgba(200, 160, 70, 0.16);
     pointer-events: none;
     box-sizing: border-box;
+  }
+
+  /* The anchor of a multi-note selection (#251) reads a shade stronger than
+     the notes it reached, so the end the anchor-only operations act on is
+     visible without a legend. A single selection IS its anchor, so one
+     selected note now draws at this stronger shade too (it was 0.16 before
+     #251). */
+  .note-selection.anchor {
+    background: rgba(200, 160, 70, 0.3);
   }
 
   .edit-toggle {
