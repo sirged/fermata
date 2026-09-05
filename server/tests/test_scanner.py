@@ -1409,6 +1409,14 @@ def test_an_upgraded_database_ends_up_with_the_same_scores_table_as_a_fresh_one(
     An upgraded install and a fresh one must not end up with subtly different
     tables, because every later change is then written against whichever one
     the author happens to have.
+
+    WHAT THIS DOES NOT CHECK, said here because db.py used to claim it did.
+    Both databases below are built by init_db, so _add_missing_columns runs on
+    both sides: a column deleted from db._SCORES_COLUMNS is re-added to both
+    and the two shapes still match. This is a check on the upgrade PATH, not on
+    the two definitions drifting apart. That is
+    test_a_fresh_install_gets_every_added_column_from_the_schema_text_alone
+    below.
     """
 
     # BY NAME, NOT BY POSITION, and the exclusion of order is deliberate rather
@@ -1471,6 +1479,96 @@ def test_an_upgraded_database_ends_up_with_the_same_scores_table_as_a_fresh_one(
     # column but not the stamp would leave exactly the rollback hole the bump is
     # for open on every database that mattered.
     assert upgraded_version == fresh_version == db.SCHEMA_VERSION
+
+
+# The columns a fresh install is ALLOWED to be missing from its CREATE TABLE,
+# and the reason each one is allowed. Anything not named here that
+# COLUMN_ADDITIONS adds must also be in the schema text, which is what the test
+# below is for.
+#
+# instrument_id: it REFERENCES instruments(id), and that table is created
+# further down the same script - a forward reference in the CREATE TABLE would
+# depend on the order of two statements rather than on anything either one
+# says. See the comment over db._SCORES_COLUMNS, which states this exception in
+# the source it is an exception to.
+_NOT_IN_THE_SCHEMA_TEXT = {"scores": {"instrument_id"}}
+
+
+def test_a_fresh_install_gets_every_added_column_from_the_schema_text_alone(
+    tmp_path, monkeypatch
+):
+    """The drift check that actually catches drift, in the one direction the
+    other one cannot see.
+
+    THE COMPARISON ABOVE IS ONE-DIRECTIONAL, and this exists because that was
+    not said anywhere. `test_an_upgraded_database_ends_up_with_the_same_scores_
+    table_as_a_fresh_one` builds both of its databases through init_db, so
+    _add_missing_columns runs on BOTH sides - which means a column deleted from
+    _SCORES_COLUMNS is silently re-added to both, both sides still match, and
+    the whole suite stays green. Measured on 1527d0a by deleting `key` from the
+    CREATE TABLE: 1339 passed, 81 skipped, exactly as before.
+
+    That matters because _SCORES_COLUMNS IS THE DEFINITION OF RECORD (its own
+    comment says so, and db._rebuild_carrying_rows rebuilds tables from these
+    strings). A column that lives only in COLUMN_ADDITIONS is a column a
+    rebuild would drop - #94's own bug, which is why missing_since was moved
+    into the CREATE TABLE in the first place.
+
+    So this one builds a database from the SCHEMA text and NOTHING else - no
+    init_db, no migrations, no _add_missing_columns - and requires it to have
+    every column a normal start ends up with, bar the documented exceptions
+    above. A loop over COLUMN_ADDITIONS, so a table added to that dict is
+    covered by this the day it is added rather than the day somebody remembers.
+    """
+
+    def shape(conn, table):
+        return {
+            r["name"]: (r["type"].upper(), r["notnull"], r["dflt_value"])
+            for r in conn.execute(f"PRAGMA table_info({table})")
+        }
+
+    # Nothing but the schema text. Deliberately not through db.connect/init_db,
+    # which is the entire point: this is the table a fresh install's CREATE
+    # TABLE statements produce, before anything gets a chance to patch it up.
+    schema_only = sqlite3.connect(tmp_path / "schema-only.db")
+    schema_only.row_factory = sqlite3.Row
+    schema_only.executescript(db.SCHEMA)
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "normal.db")
+    db._local.conn = None
+    db.init_db()
+    normal = db.connect()
+    try:
+        for table, additions in db.COLUMN_ADDITIONS.items():
+            exempt = _NOT_IN_THE_SCHEMA_TEXT.get(table, set())
+            from_schema = shape(schema_only, table)
+            after_start = shape(normal, table)
+            assert from_schema, f"db.SCHEMA does not create the {table} table at all"
+            missing = set(after_start) - exempt - set(from_schema)
+            assert not missing, (
+                f"{sorted(missing)} reach the '{table}' table only through "
+                "COLUMN_ADDITIONS, so a fresh install's CREATE TABLE does not have "
+                "them and any rebuild from the schema text would drop them - see the "
+                "comment over db._SCORES_COLUMNS"
+            )
+            # And the other direction, so a column cannot be quietly RENAMED in
+            # the schema text either, plus the definitions themselves.
+            assert set(from_schema) == set(after_start) - exempt
+            for column in from_schema:
+                assert from_schema[column] == after_start[column], (
+                    f"the '{column}' column of '{table}' is not the same column in "
+                    "db.SCHEMA as it is after a normal start"
+                )
+            # Every exception is a real one: it must be a column
+            # COLUMN_ADDITIONS actually adds, and must genuinely be absent from
+            # the schema text - otherwise this allowance would quietly widen
+            # into a licence to leave anything out.
+            for column in exempt:
+                assert column in additions
+                assert column not in from_schema
+    finally:
+        db._local.conn = None
+        schema_only.close()
 
 
 def test_the_release_before_this_one_refuses_to_open_this_database(tmp_path, monkeypatch):
