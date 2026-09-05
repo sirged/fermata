@@ -364,27 +364,99 @@
     api.version().then((v) => (buildInfo = v));
   });
 
-  $effect(() => {
-    let timer;
-    async function poll() {
-      scan = await api.scanStatus();
-      if (scan.scanning) {
-        timer = setTimeout(poll, 1500);
+  // The scan poll. Both of the shapes #223 fixed in the background-batch poll
+  // below were still here, and #250 is those two again, in this loop.
+  //
+  // IT RUNS WHILE THE PAGE IS OPEN, not only while a scan happened to be
+  // running at the instant this page mounted. The version before this asked
+  // once on mount and started polling only `if (s.scanning)` - so a scan
+  // begun anywhere else afterwards (another tab, another client, the boot
+  // scan, or the automatic one an upload starts) was never noticed at all:
+  // the button stayed idle for the whole of it and the grid still showed the
+  // library as it was before, until somebody reloaded. This page is the one
+  // place a person watches a library from, and "a scan is running" is a fact
+  // about the install, not about who clicked.
+  //
+  // RATE: 1.5s while a scan is confirmed running, 15s while idle - the same
+  // two numbers, and the same reasoning, as pollBackgroundBatch below: idle
+  // forever at 1.5s would be ~2400 requests/hour/tab against a server doing
+  // nothing, and backing off rather than stopping is what still catches a
+  // scan this page did not start.
+  //
+  // RESILIENT to one failed request. `scan = await api.scanStatus()` with no
+  // catch meant one non-2xx (api.js throws ApiError) or one dropped
+  // connection - a self-hosted server restarting with this page open is the
+  // ordinary way to see one - ended this loop for the rest of the page's
+  // life, silently, plus an unhandled rejection. The reschedule lives in
+  // `finally` so it runs whether the request above it succeeded or not, and
+  // the failure is logged once rather than surfaced: this poll is ambient
+  // awareness, and a real outage is already surfaced by every request on
+  // this page a person IS waiting on.
+  //
+  // WHY `finished_at` IS WATCHED and not only the scanning flag. A scan of a
+  // small library can start and finish inside one idle interval, so a poll
+  // that only refreshed on a scanning -> not-scanning transition IT saw
+  // would leave the grid stale after exactly the case above: a scan this
+  // page never caught in the act. The timestamp moving is the same fact
+  // observed after it happened. The first status read only records a
+  // baseline - there is nothing on screen yet that could be stale.
+  let scanPollTimer;
+  let scanPollCancelled = true;
+  let wasScanning = false;
+  let lastScanFinishedAt;
+
+  async function pollScan() {
+    clearTimeout(scanPollTimer);
+    let nextDelay = 15000;
+    try {
+      const status = await api.scanStatus();
+      if (scanPollCancelled) return;
+      scan = status;
+      if (status.scanning) {
+        wasScanning = true;
+        nextDelay = 1500;
       } else {
-        refresh();
-        // A scan this page is tracking just finished - the single instant
-        // most likely to have just started an automatic transcription pass
-        // (#190's own hook). Check right away rather than wait out
-        // whatever is left of the background poll's own idle interval -
-        // see nudgeBackgroundBatchPoll's own comment.
-        nudgeBackgroundBatchPoll();
+        const finishedAt = status.finished_at ?? null;
+        const landed = lastScanFinishedAt !== undefined && finishedAt !== lastScanFinishedAt;
+        if (wasScanning || landed) {
+          refresh();
+          // A scan this page is tracking just finished - the single instant
+          // most likely to have just started an automatic transcription pass
+          // (#190's own hook). Check right away rather than wait out
+          // whatever is left of the background poll's own idle interval -
+          // see nudgeBackgroundBatchPoll's own comment.
+          nudgeBackgroundBatchPoll();
+        }
+        wasScanning = false;
+        lastScanFinishedAt = finishedAt;
+      }
+    } catch (err) {
+      console.error("scan status check did not complete", err);
+    } finally {
+      if (!scanPollCancelled) {
+        scanPollTimer = setTimeout(pollScan, nextDelay);
       }
     }
-    api.scanStatus().then((s) => {
-      scan = s;
-      if (s.scanning) poll();
-    });
-    return () => clearTimeout(timer);
+  }
+
+  // An immediate check, replacing whatever is left of the current wait, for
+  // the one moment this page KNOWS a scan just started because it started it.
+  // 800ms is the delay the old pollUntilDone opened with, kept: the POST has
+  // returned by then and asking sooner reads a status the scan thread has not
+  // written yet.
+  function nudgeScanPoll(delay = 0) {
+    if (scanPollCancelled) return;
+    clearTimeout(scanPollTimer);
+    scanPollTimer = setTimeout(pollScan, delay);
+  }
+
+  $effect(() => {
+    scanPollCancelled = false;
+    pollScan();
+    return () => {
+      scanPollCancelled = true;
+      clearTimeout(scanPollTimer);
+    };
   });
 
   // For a bulk pass THIS page never started (#190 review, F3, three
@@ -485,25 +557,12 @@
   async function triggerScan() {
     await api.scan();
     scan = { ...(scan ?? {}), scanning: true };
-    pollUntilDone();
-  }
-
-  function pollUntilDone() {
-    const poll = async () => {
-      scan = await api.scanStatus();
-      if (scan.scanning) {
-        setTimeout(poll, 1500);
-      } else {
-        refresh();
-        // This page's own click just finished scanning - nudge the
-        // background-batch poll rather than leave it to its own idle
-        // interval, since this is exactly the moment #190's own hook may
-        // have started an automatic pass. See nudgeBackgroundBatchPoll's
-        // own comment.
-        nudgeBackgroundBatchPoll();
-      }
-    };
-    setTimeout(poll, 800);
+    // `wasScanning` is set here rather than left to the poll to discover,
+    // because a scan of a small library can be over before the first check
+    // lands - and this page's own click is exactly the case that must end in
+    // a refresh whether or not the poll ever caught it running.
+    wasScanning = true;
+    nudgeScanPoll(800);
   }
 
   // --- Bulk transcription (issue #55) -----------------------------------
@@ -636,7 +695,8 @@
     try {
       await api.acknowledgeScan(scan.acknowledge_token);
       scan = { ...scan, scanning: true, refused: false };
-      pollUntilDone();
+      wasScanning = true;
+      nudgeScanPoll(800);
     } catch (err) {
       // The usual cause is the library having changed again while this message
       // was on screen, which makes the token stale on purpose - saying so is
