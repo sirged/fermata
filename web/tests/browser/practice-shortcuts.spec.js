@@ -401,6 +401,86 @@ async function pdfSettlesPast(page, stamp, timeout) {
 }
 
 /**
+ * A reader's hand on the PDF pane, still on it while a re-render captures
+ * where they are - the one thing the two tests at the bottom of this file
+ * both need and no single scroll can give them.
+ *
+ * Why a HELD scroll rather than one assignment and a wait. PdfViewer hands
+ * the pane back to the reader 200ms after the last scroll event, and that
+ * timer is what makes a single stray scroll harmless: wait, and the viewer
+ * has already agreed the reader is where the scroller says. The state both
+ * tests are about only exists WHILE the reader is scrolling, so the hand has
+ * to still be moving when the re-render's capture runs. A rAF loop writing
+ * `scrollTop` every frame re-arms that timer about twelve times per interval,
+ * so the window stays open for as long as the loop runs, and the tests stop
+ * depending on which of two 200ms timers a runner fires first.
+ *
+ * `waypoints` is the gesture, in scroller pixels: the loop writes one per
+ * frame, then holds on the last one by alternating it with one pixel more.
+ * That alternation is the "held" part - a hand resting on a trackpad, not a
+ * hand let go - and one pixel is deliberately inside the slack the viewer
+ * allows itself when deciding a scroll has been taken over (see PdfViewer's
+ * own comment on it), so a hold reads as a hold and a drag reads as a drag.
+ * `released` says the loop has stopped; `holding` says the waypoints are
+ * spent and only the hold is left, which is when a test may resize.
+ *
+ * It stops itself on the first canvas changing width. That is PdfViewer's
+ * re-render loop sizing the canvases, which happens strictly AFTER the
+ * capture this hold exists to span (rerenderAtWidth reads the reader's
+ * position before it touches a canvas) and strictly BEFORE the restore it
+ * must not fight (the loop restores only once the last page has drawn). So
+ * the hand is guaranteed to be on the pane for the capture and off it for
+ * the restore, without either being timed.
+ *
+ * Scrolled by assignment rather than with `page.mouse.wheel` on purpose:
+ * this stands for a scrollbar drag or a trackpad pan, which reach the
+ * scroller as scroll events and nothing else. A wheel event is a separate,
+ * louder signal that the viewer treats as a takeover on its own, and using
+ * one here would prove the wheel listener rather than the scroll arithmetic
+ * these two tests exist to pin down.
+ */
+async function startHeldScroll(page, waypoints) {
+  await page.evaluate((path) => {
+    const scroller = document.querySelector(".pages");
+    const firstPage = () => document.querySelector('.pdf-page[data-page="1"]');
+    const startWidth = firstPage().getBoundingClientRect().width;
+    const state = { holding: false, released: false, lastWrote: null };
+    window.__heldScroll = state;
+    const hold = path[path.length - 1];
+    let i = 0;
+    let flip = false;
+    const tick = () => {
+      if (firstPage().getBoundingClientRect().width !== startWidth) {
+        state.released = true;
+        return;
+      }
+      let want;
+      if (i < path.length) {
+        want = path[i++];
+        if (i === path.length) state.holding = true;
+      } else {
+        flip = !flip;
+        want = flip ? hold + 1 : hold;
+      }
+      scroller.scrollTop = want;
+      state.lastWrote = want;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, waypoints);
+}
+
+/** Waits for a held scroll to have reached its last waypoint. */
+async function heldScrollSteady(page) {
+  await expect.poll(() => page.evaluate(() => window.__heldScroll?.holding ?? false)).toBe(true);
+}
+
+/** Waits for a held scroll to have let go, which the re-render is what does. */
+async function heldScrollReleased(page) {
+  await expect.poll(() => page.evaluate(() => window.__heldScroll?.released ?? false)).toBe(true);
+}
+
+/**
  * Off unless FERMATA_GIG_TRACE is set. Everything below this line is inert
  * without it - no extra evaluate, no extra wait, no change to a single
  * assertion - so the shipped test is exactly the test that shipped.
@@ -1709,5 +1789,210 @@ test.describe("gig mode itself", () => {
     await page.keyboard.press(" ");
     await expect(page.locator("button.primary")).toHaveText(/Pause/);
     await page.keyboard.press(" "); // left as found
+  });
+});
+
+// The review of #234's fix, and the half of it that had no test.
+//
+// That fix gave PdfViewer a "still travelling" flag: while a turn's smooth
+// scroll is in flight, a re-render restores the reader to what they ASKED
+// for rather than to the frame of the animation the scroller happens to be
+// showing. Right, and measured on a runner. What it did not have was any
+// guard on the flag's LIFECYCLE - the flag was set on every request and
+// cleared only by arriving, by the restore, or by 200ms of quiet counted
+// from a scroll event. Both of those clearing paths need the pane to
+// actually move, and a turn does not always move it.
+//
+// So the same fix could strand the flag ON, and a stranded flag is the
+// original defect with the sign flipped: instead of yanking the reader to a
+// frame of the turn they are taking, it yanks them to a turn they abandoned.
+// Both tests below are that failure, and both are arithmetic on this box
+// rather than a race - neither needs an animation to take frames, which is
+// why neither could be written for #234 itself.
+//
+// Both use the same shape: put the reader somewhere the viewer's record
+// disagrees with, keep their hand on the pane so the quiet backstop cannot
+// quietly rescue it (see startHeldScroll), resize, and assert on where the
+// re-render's restore leaves them. Measured against the code as reviewed:
+// the first restored to 24 (page one's top) where the reader was at 300, and
+// the second to 446 (the abandoned turn's target) where the reader was at
+// 40. Both restore to the reader's own place now.
+test.describe("a scroll the pane never travelled must not outlive itself", () => {
+  test.beforeEach(async ({ page }) => {
+    await stubScoreApi(page, transcriptionResponse({ warnings: [], confidence: CLEAN_CONFIDENCE }));
+    // The same override, for the same reason, as the side-by-side describe
+    // above: a real two-page PDF in place of stubScoreApi's single page.
+    await page.route("**/api/scores/1/file", (route) =>
+      route.fulfill({ body: buildMultiPagePdf(2), contentType: "application/pdf" }),
+    );
+    await page.goto("/#/score/1");
+    await expect(playButton(page)).toBeEnabled({ timeout: 15_000 });
+    await expect(page.locator(".pdf-page")).toHaveCount(2);
+    await pdfPagesRenderedAtSettledWidth(page);
+  });
+
+  // A turn that asks the pane to go where it already is.
+  //
+  // ArrowLeft on page one is exactly that press, and a pedal sends it all
+  // the time - a performer taps back at the top of a piece and nothing is
+  // supposed to happen. goto() clamps the target to page one, records the
+  // request, and calls scrollIntoView on a pane already at that offset. The
+  // browser has nothing to animate, so NOT ONE scroll event follows: the
+  // arrival check never runs, and the quiet backstop is armed from a scroll
+  // event and so never runs either. The flag is set and there is nothing
+  // left that can clear it.
+  //
+  // The press is therefore free, in the sense that matters here: the reader
+  // sees nothing happen and has no reason to think anything did. What they
+  // do next is scroll somewhere, and until this fix the next re-render put
+  // them back on page one's top - the target of a turn that never moved a
+  // pixel, minutes earlier if they like.
+  test("a turn onto the page already shown does not capture the reader's next scroll", async ({ page }) => {
+    const before = await pdfGeometry(page);
+
+    // First press: the pane IS at scrollTop 0, and page one's top is the
+    // 24px of the scroller's own padding below that, so this one does move -
+    // and arriving is what clears the flag it sets. It is here so the second
+    // press is the redundant one, which is the press under test.
+    const settled = await pdfSettleStamp(page);
+    await page.keyboard.press("ArrowLeft");
+    await pdfScrollSettlesAt(page, before.pageOneTop, "page one's top");
+    // Arrived AND said so, which are not the same instant and cannot be
+    // collapsed here. `scrollTop` reaches its destination before the scroll
+    // EVENT reporting it is dispatched, so the barrier above can return with
+    // press one's event still queued - and an event that lands after press
+    // two is press one ARRIVING, which clears the very state press two is
+    // here to leave behind. Measured with the viewer instrumented, without
+    // this line: the two presses ran 10ms apart (482 and 492 on the page
+    // clock), the arrival ran at 498, and the re-render 580ms later
+    // captured a flag nothing had left set. Waiting for rest is waiting for
+    // that event to have been delivered and for its own 200ms quiet timer to
+    // have fired, so press two below starts from a viewer with nothing
+    // outstanding.
+    await pdfSettlesPast(page, settled);
+
+    // Second press: same page, same offset, nothing to animate, no scroll
+    // event. Asserted rather than assumed, because "no event follows" is the
+    // whole mechanism - if this press ever did move the pane, the test below
+    // would be about something else entirely.
+    await page.keyboard.press("ArrowLeft");
+    await page.waitForTimeout(300);
+    expect(Math.abs((await pdfGeometry(page)).scrollTop - before.pageOneTop)).toBeLessThanOrEqual(1);
+
+    // The reader then puts their hand on the pane and reads on, well past
+    // the 200ms the viewer allows for its own scrolls to go quiet - the
+    // stranded flag survives any amount of waiting, which is what makes this
+    // arithmetic rather than a race. 300 is chosen only to be unambiguously
+    // NEITHER page one's top nor page two.
+    const hold = before.pageOneTop + Math.round(0.45 * before.pageHeight);
+    await startHeldScroll(page, [hold]);
+    await heldScrollSteady(page);
+
+    // A narrower window: shorter pages, a re-render, and the reader's place
+    // has to survive it as a fraction because the pixel count will not.
+    const restores = await pdfRenderSettleStamp(page);
+    await page.setViewportSize({ width: 900, height: 720 });
+    await pdfPagesRenderedAtSettledWidth(page);
+    await heldScrollReleased(page);
+    await pdfRestoreSettlesPast(page, restores);
+
+    const after = await pdfGeometry(page);
+    expect(after.pageHeight).toBeLessThan(before.pageHeight);
+    // Computed off `hold` rather than off what the hold last wrote: the hold
+    // alternates between `hold` and one pixel more, so the capture saw one
+    // of those two, and one pre-resize pixel is under a post-resize pixel
+    // once scaled by the new page height. Hence the same 2px tolerance the
+    // half-page-turn resize test above uses.
+    const fraction = (hold - before.pageOneTop) / before.pageHeight;
+    const want = after.pageOneTop + fraction * after.pageHeight;
+    expect(Math.abs(after.scrollTop - want)).toBeLessThanOrEqual(2);
+    // And the blunt version: not scrolled back to page one's top, which is
+    // where the stranded flag put every reader who pressed back twice.
+    expect(after.scrollTop).toBeGreaterThan(after.pageOneTop + 1);
+  });
+
+  // A turn the reader abandons before it lands.
+  //
+  // This one is the flag doing exactly what it was added for, to a reader
+  // who no longer wants it. A gig half-page turn is asked for, the smooth
+  // scroll is still in flight, and the reader scrolls somewhere else -
+  // backwards, to re-read the bar they just left. The scroll they take over
+  // with cancels the animation, so the turn is never delivered and never
+  // arrives; the flag stays set for as long as their hand keeps the quiet
+  // backstop pushed back; and the next re-render throws their scrolling away
+  // and drops them on the turn's target instead.
+  //
+  // `scrollBy` is stubbed to a no-op for the turn itself, in an evaluate
+  // after load (the same way the two tests above stub requestFullscreen).
+  // That is not a stand-in for the reader's takeover - the takeover is real
+  // scrolling below - it stands in for the ONE thing this box cannot
+  // produce: an animation that has not been delivered yet. A smooth scroll
+  // here completes in the frame it is issued (measured in #234's trace: two
+  // scroll events for a whole turn on this box, nine to thirteen on a
+  // runner), so without the stub the turn arrives before the reader can take
+  // it over and there is no in-flight state left to test. What the viewer
+  // sees either way is identical: a recorded request and a pane that is not
+  // at it yet.
+  test("a gig turn the reader scrolls away from restores their place, not the turn's target", async ({ page }) => {
+    await page.evaluate(() => {
+      Element.prototype.requestFullscreen = () => Promise.reject(new Error("denied"));
+    });
+    const settled = await pdfSettleStamp(page);
+    await page.keyboard.press("f");
+    await expect(page.getByRole("button", { name: "Side by side", exact: true })).toHaveCount(0);
+    await pdfPagesRenderedAtSettledWidth(page);
+    // Gig mode's own re-render out of the way - restored, not merely
+    // re-rendered - before this test takes any baseline off the pane. Same
+    // obligation, and the same reason, as the half-page-turn resize test.
+    await pdfRestoreSettlesPast(page, null);
+    // And at rest afterwards, past a stamp taken before gig mode was entered
+    // at all. That re-render restores the scroll by ASSIGNMENT, and the
+    // scroll event reporting it is dispatched after the assignment lands -
+    // so without this, an event belonging to gig mode could arrive after the
+    // turn below and arm the viewer's quiet timer against it. The test above
+    // says more about why that matters; it was measured there.
+    await pdfSettlesPast(page, settled);
+
+    const before = await pdfGeometry(page);
+    const step = (before.pageTwoTop - before.pageOneTop) / 2;
+    const turnTarget = before.scrollTop + step;
+
+    await page.evaluate(() => {
+      Element.prototype.scrollBy = function () {};
+    });
+    await page.keyboard.press("ArrowRight");
+    await page.waitForTimeout(300);
+    // The turn is recorded and undelivered - the state a runner's animation
+    // is in for nine to thirteen frames, held open here instead.
+    expect(Math.abs((await pdfGeometry(page)).scrollTop - before.scrollTop)).toBeLessThanOrEqual(1);
+
+    // The reader takes over: a short flick down, then a drag back UP past
+    // where they started - away from the turn's target, which is what says
+    // "not where I want to be" - and a hand left resting there. The flick
+    // matters: a takeover is recognized by the pane RETREATING from its
+    // closest approach, so there has to be an approach to retreat from, and
+    // one frame moving toward the target is the honest way to have one.
+    const hold = before.pageOneTop + 16;
+    const flick = before.pageOneTop + 66;
+    const drag = [];
+    for (let at = flick; at > hold; at -= 8) drag.push(at);
+    await startHeldScroll(page, [...drag, hold]);
+    await heldScrollSteady(page);
+
+    const restores = await pdfRenderSettleStamp(page);
+    await page.setViewportSize({ width: 900, height: 720 });
+    await pdfPagesRenderedAtSettledWidth(page);
+    await heldScrollReleased(page);
+    await pdfRestoreSettlesPast(page, restores);
+
+    const after = await pdfGeometry(page);
+    expect(after.pageHeight).toBeLessThan(before.pageHeight);
+    const fraction = (hold - before.pageOneTop) / before.pageHeight;
+    const want = after.pageOneTop + fraction * after.pageHeight;
+    expect(Math.abs(after.scrollTop - want)).toBeLessThanOrEqual(2);
+    // Said the other way round too, because it is the failure this test is
+    // named for: nowhere near the half page the reader turned away from.
+    const abandoned = after.pageOneTop + ((turnTarget - before.pageOneTop) / before.pageHeight) * after.pageHeight;
+    expect(Math.abs(after.scrollTop - abandoned)).toBeGreaterThan(100);
   });
 });
