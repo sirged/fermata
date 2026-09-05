@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/zzzzzzz-library-scan-poll.spec.js",
+  "count": 2,
+  "reason": "issue #250: an already-open library page notices a scan it did not start, and one failed status request does not end the poll."
+}
