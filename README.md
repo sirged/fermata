@@ -126,7 +126,11 @@ them.
   half-page turns for a tablet on a music stand.
 - **Organize** — collections (from your folder layout), free-form tags,
   favorites, content-type labels (notation / tab / both), full-text search,
-  and duplicate detection by file contents.
+  and duplicate detection by file contents. A key signature, a tempo and a
+  1-5 difficulty rating can be set per score too — the key is filled in on
+  its own from a transcription's decoded key when one is transcribed and left
+  alone once set by hand — and the library grid filters by key and
+  difficulty (a tempo range is available through the API).
 - **Reorganize, from the app** — move and rename scores, make and rename
   folders, move a batch in one go. The change is applied to the real file on
   disk and the score follows it, so its practice history, tags, goals and any
@@ -146,7 +150,12 @@ them.
   `/openapi.json` for the schema itself, generated from response models kept
   in sync with what each endpoint actually returns. Enough to script the
   library, log practice, or build a companion app against — see
-  [the API guide](docs/api.md).
+  [the API guide](docs/api.md). A companion server, off by default, speaks
+  the Model Context Protocol, an open standard for describing a set of tools
+  to a program that reads them — a structured-data interface offering a
+  fixed set of read-only tools built from that same API rather than a second
+  copy of it; see [the deployment
+  guide](docs/deployment.md#the-model-context-protocol-server).
 
 ## Quick start
 
