@@ -27,13 +27,21 @@ const today = localDay();
 // would show up as this suite's own assertions failing against what the
 // page renders, which is the point.
 const PITCH_CLASSES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
-const INTERVALS = { major: [0, 4, 7], minor: [0, 3, 7], dominant7: [0, 4, 7, 10] };
+const INTERVALS = {
+  major: [0, 4, 7],
+  minor: [0, 3, 7],
+  dominant7: [0, 4, 7, 10],
+  minor7: [0, 3, 7, 10],
+  major7: [0, 4, 7, 11],
+};
+const SEVENTH_SUFFIX = { dominant7: "7", minor7: "m7", major7: "maj7" };
 function chordTones(root, quality) {
   const i = PITCH_CLASSES.indexOf(root);
   return INTERVALS[quality].map((step) => PITCH_CLASSES[(i + step) % 12]);
 }
 function chordName(root, quality) {
-  return quality === "dominant7" ? `${root}7` : `${root} ${quality}`;
+  if (quality === "major" || quality === "minor") return `${root} ${quality}`;
+  return `${root}${SEVENTH_SUFFIX[quality]}`;
 }
 
 async function reset(request) {
@@ -337,6 +345,61 @@ test("stopping the drill also logs one chords practice session, with a human-rea
   );
   expect(forbiddenWord(sessions[0].note), sessions[0].note).toBeNull();
   expect(sessions[0].note).not.toMatch(/%/);
+});
+
+// ---------------------------------------------------------------------------
+// The new seventh qualities (issue #252): the sevenths preset now offers
+// minor7 and major7 alongside the dominant, drawn entirely from the new
+// movable barre shapes - each one answered for real and read back through
+// the API under its own quality string.
+// ---------------------------------------------------------------------------
+
+test("sevenths: a minor7 and a major7 card are each offered, answered, and logged with their own quality", async ({
+  page,
+  request,
+}) => {
+  await page.locator(".family-choice", { hasText: "Sevenths" }).click();
+  await startButton(page).click();
+
+  const answered = { minor7: null, major7: null };
+  for (let i = 0; i < 40 && (!answered.minor7 || !answered.major7); i++) {
+    const q = await question(page);
+    if ((q.quality === "minor7" || q.quality === "major7") && !answered[q.quality]) {
+      answered[q.quality] = q.root;
+      await page.locator(`.choice[data-root="${q.root}"][data-quality="${q.quality}"]`).click();
+      await expect(answerStatement(page)).toContainText(chordName(q.root, q.quality));
+    } else {
+      // Any other card (a dominant7, or a quality already captured) is
+      // still answered so the drill advances - naming the shown chord
+      // itself, which is always correct, since the point here is reaching
+      // both new qualities, not grading every card along the way.
+      await page.locator(`.choice[data-root="${q.root}"][data-quality="${q.quality}"]`).click();
+    }
+    await page.locator(".next-question").click();
+  }
+
+  expect(answered.minor7, "a minor7 card was drawn and answered within 40 questions").toBeTruthy();
+  expect(answered.major7, "a major7 card was drawn and answered within 40 questions").toBeTruthy();
+
+  for (const quality of ["minor7", "major7"]) {
+    // The attempt POST is fire-and-forget from the page's own side (#110) -
+    // nothing here ordered it after the click above, so this read must
+    // retry rather than race it.
+    await expect(async () => {
+      const { attempts, total } = await (
+        await request.get(
+          // A root like F# has to be encoded - a bare "#" starts a URL
+          // fragment and silently truncates everything after it, which is
+          // exactly the intermittent failure a sharp root drew here first.
+          `/api/trainer/chord-attempts?quality=${quality}&root=${encodeURIComponent(answered[quality])}`,
+        )
+      ).json();
+      expect(total, `a logged ${quality} attempt`).toBeGreaterThan(0);
+      expect(attempts[0].target_quality).toBe(quality);
+      expect(attempts[0].target_root).toBe(answered[quality]);
+      expect(attempts[0].correct).toBe(true);
+    }).toPass({ timeout: 10_000 });
+  }
 });
 
 test("leaving the page mid-drill still logs the practice", async ({ page, request }) => {

@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/chord-theory.spec.js",
+  "count": 4,
+  "reason": "issue #252: the minor and major seventh added to QUALITIES - known minor and major sevenths asserted by hand, and each proven built on its own triad plus one more note at every root, the same relationship dominant7 is already held to and the one a mutation giving minor7 dominant7's own intervals would fail on the third rather than only on note count."
+}
