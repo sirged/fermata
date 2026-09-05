@@ -1880,6 +1880,14 @@ test.describe("a scroll the pane never travelled must not outlive itself", () =>
   // do next is scroll somewhere, and until this fix the next re-render put
   // them back on page one's top - the target of a turn that never moved a
   // pixel, minutes earlier if they like.
+  //
+  // What this test constructs is the near end of that: the reader's hand
+  // goes on the pane straight after the tap. Minutes is what the reviewed
+  // code allowed and cannot be asserted against the fixed one - the quiet
+  // backstop is armed from the request now, so a stranded flag expires in
+  // 200ms even with nothing moving. Inside those 200ms, and for as long as
+  // a hand keeps them from elapsing, only NOT SETTING the flag saves the
+  // reader; that is what is pinned here.
   test("a turn onto the page already shown does not capture the reader's next scroll", async ({ page }) => {
     const before = await pdfGeometry(page);
 
