@@ -244,9 +244,12 @@ test("a score whose file has gone is shown as missing rather than vanishing", as
 // upload route rather than any test-only hook: it counts what is already
 // believed present, uploads enough files of its own that losing all of them
 // takes the library to half or less of the high-water mark those uploads
-// themselves set, and takes the PROPORTIONAL refusal. That is refused for any
-// number of files anybody leaves lying around, because the number of its own
-// files is worked out from that number.
+// themselves set, and takes the PROPORTIONAL refusal. That clears whatever
+// number of already-ROWED scores anybody leaves lying around, because the
+// number of its own files is worked out from that count - and it clears a
+// couple of unrowed-but-scannable files too (see the margin below), though
+// not an unbounded pile of them, because `believed_present` only reflects a
+// file once something has rowed it.
 //
 // The categorical refusal is not left uncovered by the move: test_scanner.py
 // covers it at the function boundary and again through the API, where a library
@@ -259,14 +262,22 @@ test("a refused scan says so on the page, and can be confirmed", async ({ page, 
   // gone only makes the loss below larger.
   const before = (await scores(request)).filter((s) => !s.missing_since).length;
   // Enough that this test's own loss is decisive whatever `before` is:
-  //   - `before + 1` so that what remains after the loss (at most `before`) is
-  //     under half of the mark these uploads leave behind (at least
-  //     `before + count`);
+  //   - `before * 2 + 2` rather than `before + 1`. `before` counts ROWS, not
+  //     files, but the settling scan below (`scanAndWait`) walks every file
+  //     under Uploads/ - including any scannable file an earlier spec left
+  //     behind WITHOUT ever uploading it, so it never got a row and was never
+  //     part of `before`. That scan rows it anyway, adding it to
+  //     `believed_present` on the same pass this test's mark is taken from,
+  //     which this test's own loss then has to outweigh even though it never
+  //     touches that file. `before + 1` gave a margin of exactly half a file
+  //     over that - measured failing against two such leftovers, on this
+  //     branch before this fix, as `{"total":7,"missing":6,"refused":false}`.
+  //     `before * 2 + 2` clears two of them with room to spare;
   //   - `LOSS_FLOOR - before` so the mark clears the floor below which the
   //     proportional test is switched off entirely;
   //   - two at minimum, because marking a row missing needs a library that does
   //     not read as empty, which is the other refusal and the other test.
-  const count = Math.max(before + 1, LOSS_FLOOR - before, 2);
+  const count = Math.max(before * 2 + 2, LOSS_FLOOR - before, 2);
   const names = [FIRST, SECOND, ...Array.from({ length: count - 2 }, (_, i) => refusalName(i))];
 
   for (const name of names) await upload(request, name);
