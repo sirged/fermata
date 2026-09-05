@@ -901,9 +901,22 @@ SCHEMA_VERSION = 5
 # nullable, no foreign key, and needing no backfill, because NULL is already
 # true of every row that exists: they were all written by a scanner that would
 # have deleted them rather than mark them, so every one of them was present the
-# last time anything looked. The two definitions cannot drift unnoticed -
-# test_scanner.py compares an upgraded install's scores table against a fresh
-# one's, column for column, which is the check #94 wished it had had.
+# last time anything looked.
+#
+# WHAT ACTUALLY CATCHES A DRIFT BETWEEN THE TWO DEFINITIONS, stated precisely
+# because the version of this comment before #250 was not. It is
+# test_scanner.py's test_a_fresh_install_gets_every_added_column_from_the_
+# schema_text_alone, which builds a database from the SCHEMA text with
+# _add_missing_columns NOT run and requires every column this dict adds to be
+# in it already (bar the documented exceptions, of which instrument_id above
+# is the only one).
+#
+# It is NOT test_scanner.py's upgraded-versus-fresh comparison, which this
+# comment used to claim it was: both of that test's databases are built by
+# init_db, so the additions below run on BOTH sides of it - delete a column
+# from _SCORES_COLUMNS and the additions put it back on both, the two shapes
+# still match, and the suite stays green. Measured. That test checks the
+# upgrade PATH, which is a different and equally necessary thing.
 COLUMN_ADDITIONS = {
     "scores": {
         "instrument_id": "INTEGER REFERENCES instruments(id) ON DELETE SET NULL",
