@@ -66,10 +66,17 @@ if (filteredArgs.length !== passedArgs.length) {
 // even starts, so a new instance of the pattern fails fast and cheaply
 // rather than waiting on a browser job to flake under load. See
 // check-out-of-band-reads.mjs for what it does and does not catch.
-const guard = spawnSync("node", ["scripts/check-out-of-band-reads.mjs"], {
+//
+// process.execPath and shell: false, for the same reason the Playwright
+// spawn below uses them: this script should not have a command line anywhere
+// in it that an argument could be re-parsed by. These args happen to be
+// fixed and space-free, so nothing was broken here - but "no shell" is the
+// property worth being able to state about the whole file rather than about
+// one call in it, and it also runs this guard under the same node binary
+// that is running this script instead of whichever one a PATH lookup finds.
+const guard = spawnSync(process.execPath, ["scripts/check-out-of-band-reads.mjs"], {
   cwd: webRoot,
   stdio: "inherit",
-  shell: true,
 });
 if (guard.status !== 0) {
   process.exit(guard.status ?? 1);

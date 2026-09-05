@@ -2860,6 +2860,21 @@ export function createScoreView(host, opts = {}) {
     }
     metronome.scoreLoaded(loadedScore);
     onScoreTempo(loadedScore?.tempo ?? null, tempoProvenance(loadedScore));
+    // Read-only instrumentation for browser specs, same spirit as
+    // dataset.scoreRenderOk/scoreRenders in publish() below: the pitches a
+    // staff's `tuning` getter reports, not the separate `tuningName` string a
+    // file can carry unchanged even after its strings were edited (issue
+    // #237's Drop-D mutation left the stored name reading "Standard Tuning"
+    // while the pitches were not standard) - so a spec that wants to know
+    // what the importer actually produced has to read this, not drawn text
+    // that only ever echoes the stored name. Empty string when there is no
+    // track or no strings to read.
+    if (host) {
+      const tuningTracks = api.tracks?.length ? api.tracks : loadedScore.tracks;
+      const tuning = tuningTracks?.[0]?.staves?.[0]?.tuning;
+      host.dataset.scoreTuning = tuning && tuning.length ? tuning.join(",") : "";
+      host.dataset.scoreTracks = String(tuningTracks?.length ?? 0);
+    }
     publish();
     // Third argument: how many staves disqualifyUnstrungTabStaves() withheld,
     // so a caller whose profiles came back empty can tell "no notation or
