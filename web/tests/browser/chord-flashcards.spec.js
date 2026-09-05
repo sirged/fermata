@@ -382,13 +382,18 @@ test("sevenths: a minor7 and a major7 card are each offered, answered, and logge
   expect(answered.major7, "a major7 card was drawn and answered within 40 questions").toBeTruthy();
 
   for (const quality of ["minor7", "major7"]) {
-    const { attempts, total } = await (
-      await request.get(`/api/trainer/chord-attempts?quality=${quality}&root=${answered[quality]}`)
-    ).json();
-    expect(total, `a logged ${quality} attempt`).toBeGreaterThan(0);
-    expect(attempts[0].target_quality).toBe(quality);
-    expect(attempts[0].target_root).toBe(answered[quality]);
-    expect(attempts[0].correct).toBe(true);
+    // The attempt POST is fire-and-forget from the page's own side (#110) -
+    // nothing here ordered it after the click above, so this read must
+    // retry rather than race it.
+    await expect(async () => {
+      const { attempts, total } = await (
+        await request.get(`/api/trainer/chord-attempts?quality=${quality}&root=${answered[quality]}`)
+      ).json();
+      expect(total, `a logged ${quality} attempt`).toBeGreaterThan(0);
+      expect(attempts[0].target_quality).toBe(quality);
+      expect(attempts[0].target_root).toBe(answered[quality]);
+      expect(attempts[0].correct).toBe(true);
+    }).toPass({ timeout: 10_000 });
   }
 });
 
