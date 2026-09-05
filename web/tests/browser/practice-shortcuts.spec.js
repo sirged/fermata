@@ -252,9 +252,16 @@ async function pdfRenderSettleStamp(page) {
  * target. The tests below deliberately do not: they press INTO a live
  * re-render, and where that leaves the reader depends on which page height
  * the press was measured against. Measured on this box at 1280 wide, 60 runs:
- * 0.4755 and 0.4864 of a page. A CI runner came to rest at 473px, which is
- * neither of the two offsets this box produces - that number is unexplained,
- * NOT a measured pane geometry, and no barrier can name it in advance.
+ * 0.4755 and 0.4864 of a page. A CI runner came to rest at offsets this box
+ * does not produce - 473px once, 408px twice - and no barrier can name those
+ * in advance. Traced on a runner (#234) they turn out not to be barrier
+ * failures at all: the pane really had come to rest there, because the
+ * re-render's restore had snapshotted a frame of the turn's still-running
+ * smooth scroll and put the reader at it. Both are frames of the same
+ * animation, read straight off the trace - it passes 236 and 272 on
+ * consecutive frames, and 24 + (236-24)/608 * 1100 = 408, 24 + (272-24)/608 *
+ * 1100 = 473. That is fixed in the viewer; the barrier is still needed for
+ * the class it does cover, below.
  *
  * So the barrier waits for the viewer's own claim instead. The settled-width
  * barrier these tests already had cannot stand in for it: it is about canvas
@@ -1628,7 +1635,10 @@ test.describe("gig mode itself", () => {
     // throttling rates, the fraction takes exactly two values - 0.4755 and
     // 0.4864, the two orderings of the race this test presses into - and the
     // nearer edge is 0.125 away. Widening it would only hide the next early
-    // read; the band was never the loose part.
+    // read; the band was never the loose part - and it was right not to
+    // widen it for #234's 0.3491, which turned out to be the viewer leaving
+    // the reader 35% down a page they had asked to be 50% down, not a read
+    // taken too early. See rerenderAtWidth.
     await gigMark(page, "read-before");
     const at = await pdfGeometry(page);
     await gigMark(page, "read-after");
