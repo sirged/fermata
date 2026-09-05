@@ -71,6 +71,8 @@ from .api_models import (
     TrainerAttemptOut,
     TrainerChordAttemptListOut,
     TrainerChordAttemptOut,
+    TrainerPresetDeleteOut,
+    TrainerPresetOut,
     TranscribeBatchStatusOut,
     TranscribeBatchTriggerOut,
     TranscribeResultOut,
@@ -933,6 +935,12 @@ class PracticeIn(BaseModel):
     target_tempo_bpm: Count | None = None
     rating: Count | None = None
     note: str | None = Field(default=None, max_length=practice.MAX_NOTE_CHARS)
+    # The named drill scope this practice was done under (issue #236). A
+    # fretboard or chord drill run on a saved preset sends its id here, and
+    # from then on "what was practised" is a row this can be joined on rather
+    # than a sentence in `note` - see docs/practice-data.md's rule about what
+    # may and may not live in free text.
+    preset_id: Count | None = Field(default=None, ge=1, le=SQLITE_MAX_INTEGER)
 
 
 class SessionIn(PracticeIn):
@@ -962,6 +970,7 @@ class SessionPatch(BaseModel):
     target_tempo_bpm: Count | None = None
     rating: Count | None = None
     note: str | None = Field(default=None, max_length=practice.MAX_NOTE_CHARS)
+    preset_id: Count | None = Field(default=None, ge=1, le=SQLITE_MAX_INTEGER)
 
 
 _SESSION_COLUMNS = (
@@ -978,6 +987,7 @@ _SESSION_COLUMNS = (
     "target_tempo_bpm",
     "rating",
     "note",
+    "preset_id",
 )
 
 
@@ -986,6 +996,12 @@ def _normalise_session(
 ) -> dict:
     if fields.get("score_id") is not None:
         _live_score_row(conn, fields["score_id"], "log practice against it")
+    if fields.get("preset_id") is not None:
+        # Checked here rather than left to the foreign key, for the reason
+        # every other reference in this file is: a raised IntegrityError is a
+        # 500 and says nothing a person could act on, whereas this is a 404
+        # naming what was not found (see _trainer_preset_row).
+        _trainer_preset_row(conn, fields["preset_id"])
     try:
         return practice.normalise_session(
             recorded_on=_server_today(),
@@ -4008,6 +4024,17 @@ EXPORT_TABLE_NAMES = (
     # because neither one references a score at all.
     "trainer_attempts",
     "trainer_chord_attempts",
+    # #236's two. A named scope is exactly the kind of thing this feature
+    # exists for: a person arranged it by hand, nothing on disk can
+    # regenerate it, and practice_sessions.preset_id points at it - so an
+    # archive that carried the sessions but not the presets would restore a
+    # history whose "what was practised" column named rows that no longer
+    # exist. `trainer_scope_preset_strings` rides ON its preset exactly as
+    # setlist_scores rides on its setlist: its `preset_id` follows this
+    # import's id remap, and so does practice_sessions.preset_id. Neither
+    # table references a score, so neither is filtered by one.
+    "trainer_scope_presets",
+    "trainer_scope_preset_strings",
 )
 
 # Tables added to EXPORT_TABLE_NAMES after some archives already on disk were
@@ -4017,7 +4044,21 @@ EXPORT_TABLE_NAMES = (
 # taken before today because a table it never knew about is absent would be
 # worse than importing with an empty drill history). Every OTHER name still
 # has to match exactly, per the comment above EXPORT_TABLE_NAMES.
-LEGACY_OPTIONAL_TABLES = ("trainer_attempts", "trainer_chord_attempts")
+#
+# #236's two are here for the identical reason #243's two are, and the
+# reasoning carries over unchanged: an archive written yesterday cannot have
+# a `trainer_scope_presets` key, and refusing every backup a person already
+# holds - the ones this feature exists to make restorable - because a table
+# that did not exist when they took it is absent would be a far worse
+# outcome than restoring with no named scopes. A session in such an archive
+# has no `preset_id` either (the column did not exist), so importing one
+# with these two empty leaves nothing dangling and nothing to guess.
+LEGACY_OPTIONAL_TABLES = (
+    "trainer_attempts",
+    "trainer_chord_attempts",
+    "trainer_scope_presets",
+    "trainer_scope_preset_strings",
+)
 
 
 def _dump_table(conn, sql: str, params=()) -> list[dict]:
@@ -4113,6 +4154,25 @@ def _build_export_manifest(conn, *, include_trash: bool) -> dict:
         (DEFAULT_OWNER,),
     )
 
+    # #236's two: every named scope, and the string set of each. The child
+    # rows are filtered to the presets actually travelling - the same filter
+    # setlist_scores/score_tags use, and here it can only ever be a no-op
+    # (presets are filtered by owner alone, exactly as their strings are),
+    # which is the point: it states the invariant rather than assuming it.
+    trainer_scope_presets = _dump_table(
+        conn,
+        "SELECT * FROM trainer_scope_presets WHERE owner = ? ORDER BY id",
+        (DEFAULT_OWNER,),
+    )
+    preset_ids = {row["id"] for row in trainer_scope_presets}
+    trainer_scope_preset_strings = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM trainer_scope_preset_strings ORDER BY preset_id, string_number"
+        )
+        if row["preset_id"] in preset_ids
+    ]
+
     return {
         "format": EXPORT_FORMAT,
         "schema_version": SCHEMA_VERSION,
@@ -4135,6 +4195,8 @@ def _build_export_manifest(conn, *, include_trash: bool) -> dict:
             "setlist_scores": setlist_scores,
             "trainer_attempts": trainer_attempts,
             "trainer_chord_attempts": trainer_chord_attempts,
+            "trainer_scope_presets": trainer_scope_presets,
+            "trainer_scope_preset_strings": trainer_scope_preset_strings,
         },
     }
 
@@ -4407,6 +4469,26 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile) -> dict:
                 422,
                 "the archive's setlist_scores table names a score that is not in the archive",
             )
+    # Named drill scopes and their string sets (#236), checked the same way:
+    # a string-set row naming a preset that is not in the archive, or a
+    # practice session naming one, cannot be inserted without dropping the
+    # reference or crashing partway through write_tx().
+    preset_ids = {_require_id(row, "trainer_scope_presets") for row in tables["trainer_scope_presets"]}
+    for row in tables["trainer_scope_preset_strings"]:
+        if row.get("preset_id") not in preset_ids:
+            raise HTTPException(
+                422,
+                "the archive's trainer_scope_preset_strings table names a preset that is not "
+                "in the archive",
+            )
+    for row in tables["practice_sessions"]:
+        pid = row.get("preset_id")
+        if pid is not None and pid not in preset_ids:
+            raise HTTPException(
+                422,
+                "the archive's practice_sessions table names a preset that is not in the "
+                "archive",
+            )
     return manifest
 
 
@@ -4551,9 +4633,29 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
     # id before the trainer tables existed, so nothing needed its
     # lastrowid - now trainer_attempts/trainer_chord_attempts do, the same
     # way score_id_map exists for everything that references a score.
+    # #236's presets go in BEFORE the sessions that name them, for the same
+    # reason instruments and tags go in before the scores that name them: a
+    # session's `preset_id` is repointed at this import's own new preset row,
+    # so that row has to exist and its new id has to be known first. The
+    # string set follows its preset, exactly as setlist_scores follows its
+    # setlist.
+    preset_id_map: dict[int, int] = {}
+    for row in tables["trainer_scope_presets"]:
+        preset_id_map[row["id"]] = _insert_row(
+            conn, "trainer_scope_presets", row, overrides={"owner": DEFAULT_OWNER}
+        )
+    for row in tables["trainer_scope_preset_strings"]:
+        _insert_row(
+            conn,
+            "trainer_scope_preset_strings",
+            row,
+            overrides={"preset_id": preset_id_map[row["preset_id"]]},
+        )
+
     session_id_map: dict[int, int] = {}
     for row in tables["practice_sessions"]:
         sid = row.get("score_id")
+        pid = row.get("preset_id")
         session_id_map[row["id"]] = _insert_row(
             conn,
             "practice_sessions",
@@ -4561,6 +4663,7 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
             overrides={
                 "owner": DEFAULT_OWNER,
                 "score_id": score_id_map.get(sid) if sid is not None else None,
+                "preset_id": preset_id_map.get(pid) if pid is not None else None,
             },
         )
 
@@ -4661,6 +4764,8 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
         "setlist_scores_imported": len(tables["setlist_scores"]),
         "trainer_attempts_imported": len(tables["trainer_attempts"]),
         "trainer_chord_attempts_imported": len(tables["trainer_chord_attempts"]),
+        "trainer_presets_imported": len(tables["trainer_scope_presets"]),
+        "trainer_preset_strings_imported": len(tables["trainer_scope_preset_strings"]),
     }
 
 
@@ -4745,6 +4850,8 @@ async def import_library(file: UploadFile, dry_run: bool = True):
             "setlist_scores_imported": len(tables["setlist_scores"]),
             "trainer_attempts_imported": len(tables["trainer_attempts"]),
             "trainer_chord_attempts_imported": len(tables["trainer_chord_attempts"]),
+            "trainer_presets_imported": len(tables["trainer_scope_presets"]),
+            "trainer_preset_strings_imported": len(tables["trainer_scope_preset_strings"]),
         }
 
     _require_library()
@@ -5059,6 +5166,149 @@ def list_trainer_chord_attempts(
         "total": total,
         "truncated": total > len(rows),
     }
+
+
+# ---------------------------------------------------------------------------
+# Trainer: named drill scopes (issue #236)
+#
+# A scope - which strings, which fret range, which key - saved under a name.
+# Until this surface existed a scope was browser state that reset on every
+# page load, and the only trace it left behind was an English sentence in
+# practice_sessions.note, which docs/practice-data.md's rule for this data
+# layer forbids: "what was practised" has to be a row a reader can query, not
+# prose it has to parse.
+#
+# THREE ROUTES AND NO UPDATE, deliberately. A preset is a small, whole thing:
+# saving the current scope under a new name is what "change it" means in both
+# drills, and an edit route would need a shape (replace the string set? merge
+# it?) that nothing is asking for. Delete and save again is the operation.
+#
+# ONE LIST FOR BOTH DRILLS, which is the point of the bet - see db.py's note
+# on why trainer_scope_presets has no `drill` column.
+# ---------------------------------------------------------------------------
+
+
+class TrainerPresetIn(BaseModel):
+    """A scope to save under a name.
+
+    `strings` is required and must not be empty - "every string" is spelled
+    by naming every string, see trainer._preset_strings for why a saved
+    preset cannot use the browser's "empty means no filter" convention.
+    `key_root`/`key_quality` are given together or not at all; omitting both
+    is a scope over every note, which is the ordinary case.
+    """
+
+    name: str = Field(max_length=trainer.MAX_PRESET_NAME_CHARS)
+    start_fret: StrictInt
+    end_fret: StrictInt
+    strings: list[StrictInt]
+    key_root: str | None = None
+    key_quality: str | None = None
+
+
+def _trainer_preset_row(conn, preset_id: int):
+    row = conn.execute(
+        "SELECT * FROM trainer_scope_presets WHERE id = ? AND owner = ?",
+        (preset_id, DEFAULT_OWNER),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "preset not found")
+    return row
+
+
+def _trainer_preset_strings(conn, preset_id: int) -> list[int]:
+    return [
+        r["string_number"]
+        for r in conn.execute(
+            "SELECT string_number FROM trainer_scope_preset_strings "
+            "WHERE preset_id = ? ORDER BY string_number",
+            (preset_id,),
+        )
+    ]
+
+
+def _trainer_preset_dict(conn, row) -> dict:
+    return trainer.preset_dict(row, _trainer_preset_strings(conn, row["id"]))
+
+
+@router.get("/trainer/presets", tags=[TAG_TRAINER], response_model=list[TrainerPresetOut])
+def list_trainer_presets():
+    """Every named drill scope, newest first, each with the strings it
+    allows.
+
+    The strings come along here rather than on a detail endpoint: a scope is
+    small, and a picker that has to make a second request per entry before it
+    can say what any of them mean would be a list nobody can read.
+    """
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM trainer_scope_presets WHERE owner = ? ORDER BY created_at DESC, id DESC",
+        (DEFAULT_OWNER,),
+    ).fetchall()
+    return [_trainer_preset_dict(conn, r) for r in rows]
+
+
+@router.post("/trainer/presets", tags=[TAG_TRAINER], response_model=TrainerPresetOut)
+def create_trainer_preset(body: TrainerPresetIn):
+    """Save the current drill scope under a name, so it can be picked up
+    again tomorrow and in the other drill.
+
+    A name already in use is refused with 409 rather than accepted as a
+    second entry - unlike a setlist, whose duplicate names are allowed on
+    purpose (see create_setlist). The difference is what the list is FOR: a
+    setlist is a thing you open, while a preset is picked in order to change
+    what the next question will be, and two identically named entries make
+    "which scope am I about to practise" unanswerable from the screen. The
+    comparison ignores case for the same reason: "Jazz box" and "jazz box"
+    are one entry to a reader, so they are one entry here.
+    """
+    try:
+        values = trainer.normalise_preset(**body.model_dump())
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    preset = values["preset"]
+    with write_tx() as conn:
+        clash = conn.execute(
+            "SELECT id FROM trainer_scope_presets WHERE owner = ? AND name = ? COLLATE NOCASE",
+            (DEFAULT_OWNER, preset["name"]),
+        ).fetchone()
+        if clash:
+            raise HTTPException(409, f"there is already a preset called {preset['name']}")
+        columns = ", ".join(preset)
+        placeholders = ", ".join("?" * len(preset))
+        row = conn.execute(
+            f"""INSERT INTO trainer_scope_presets(owner, {columns})
+                VALUES (?, {placeholders}) RETURNING *""",
+            [DEFAULT_OWNER, *preset.values()],
+        ).fetchone()
+        conn.executemany(
+            "INSERT INTO trainer_scope_preset_strings(preset_id, string_number) VALUES (?, ?)",
+            [(row["id"], n) for n in values["strings"]],
+        )
+        return _trainer_preset_dict(conn, row)
+
+
+@router.delete(
+    "/trainer/presets/{preset_id}", tags=[TAG_TRAINER], response_model=TrainerPresetDeleteOut
+)
+def delete_trainer_preset(preset_id: RowId):
+    """Delete a named scope. The practice logged under it is NOT touched -
+    `sessions_kept` counts the sessions that keep their day, their length and
+    their activity and lose only the reference (db.py's ON DELETE SET NULL
+    note says why). Its string set goes with it, by cascade, because a row
+    saying "(this preset) includes (string 3)" states nothing once the preset
+    is gone."""
+    with write_tx() as conn:
+        _trainer_preset_row(conn, preset_id)
+        kept = conn.execute(
+            "SELECT COUNT(*) AS n FROM practice_sessions WHERE preset_id = ? AND owner = ?",
+            (preset_id, DEFAULT_OWNER),
+        ).fetchone()["n"]
+        conn.execute(
+            "DELETE FROM trainer_scope_presets WHERE id = ? AND owner = ?",
+            (preset_id, DEFAULT_OWNER),
+        )
+    return {"deleted": preset_id, "sessions_kept": kept}
 
 
 # ---------------------------------------------------------------------------

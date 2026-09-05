@@ -76,6 +76,14 @@ READ_TOOLS: dict[str, str] = {
     "get_current_goal": "current_goal_api_practice_goals_current_get",
     "list_trainer_attempts": "list_trainer_attempts_api_trainer_attempts_get",
     "list_trainer_chord_attempts": "list_trainer_chord_attempts_api_trainer_chord_attempts_get",
+    # Issue #236's named drill scopes. A READ, so the no-write rule this set
+    # is built on is untouched - and it earns its place rather than merely
+    # passing the census: practice_sessions now carries `preset_id`, which
+    # list_practice_sessions hands back, and without this a caller reading
+    # that number has no way to learn what scope it names. Recording it in
+    # NOT_EXPOSED would have left the practice history describing itself with
+    # an id nothing in the tool set can resolve.
+    "list_trainer_presets": "list_trainer_presets_api_trainer_presets_get",
 }
 
 # Every OTHER readable route under /api, each with the reason it is not a
@@ -265,7 +273,7 @@ def build_tools(document: dict) -> list[ToolSpec]:
     Called once at startup with `app.openapi()`. Raises ToolMappingError
     (via check_tool_mapping) rather than silently shipping a shorter list if
     the document and READ_TOOLS have parted company - a server that quietly
-    served twelve tools where thirteen were meant is the failure this whole
+    served thirteen tools where fourteen were meant is the failure this whole
     design exists to make impossible.
     """
     check_tool_mapping(document)

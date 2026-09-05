@@ -13,6 +13,8 @@ import {
   keyNotes,
   noteInScope,
   positionInScope,
+  presetFromScope,
+  scopeFromPreset,
   scopeIsAskable,
   scopeLabel,
   scopePositions,
@@ -143,4 +145,112 @@ test("groupInScope requires every member of the group inside the scope, and a gr
 
 test("an empty group is never in scope - a shape with nothing fretted is not a shape", () => {
   expect(groupInScope([], { startFret: 0, endFret: 12 })).toBe(false);
+});
+
+// ---------------------------------------------------------------- named scopes (#236)
+//
+// The two shapes a scope now has - the live object the drills narrow with,
+// and the row GET/POST /api/trainer/presets stores - and the whole of the
+// translation between them. What these pin is that the round trip is lossless
+// in every dimension a preset carries, and that the ONE place the two shapes
+// genuinely disagree (an unfiltered string set) is resolved on purpose rather
+// than by accident.
+
+test("a scope with every dimension set survives the round trip through a preset row", () => {
+  const scope = {
+    startFret: 5,
+    endFret: 9,
+    stringNumbers: [3, 1, 2],
+    key: { root: "G", quality: "minor" },
+  };
+  const row = presetFromScope("Middle of the neck", strings, scope);
+  expect(row).toEqual({
+    name: "Middle of the neck",
+    start_fret: 5,
+    end_fret: 9,
+    // Sorted on the way out: a set has no order, and a stable one is what
+    // lets two presets be compared without sorting first.
+    strings: [1, 2, 3],
+    key_root: "G",
+    key_quality: "minor",
+  });
+  expect(scopeFromPreset({ ...row, id: 1 })).toEqual({
+    startFret: 5,
+    endFret: 9,
+    stringNumbers: [1, 2, 3],
+    key: { root: "G", quality: "minor" },
+  });
+});
+
+test("an unfiltered string set is stored by naming every string, never as an empty set", () => {
+  // THE ONE REAL DIFFERENCE between the two shapes. In a live scope an empty
+  // or absent stringNumbers means "no filter at all" (stringInScope above); a
+  // stored row cannot use that convention, because a preset with no strings
+  // would be indistinguishable from one whose strings did not write. So the
+  // instrument's own strings are spelled out.
+  const named = presetFromScope("Everything", strings, { startFret: 0, endFret: 12 });
+  expect(named.strings).toEqual([1, 2, 3, 4, 5, 6]);
+  expect(
+    presetFromScope("Everything", strings, { startFret: 0, endFret: 12, stringNumbers: [] })
+      .strings,
+  ).toEqual([1, 2, 3, 4, 5, 6]);
+  // And what comes back still narrows nothing, which is the property that
+  // actually matters: it offers every position the unscoped neck does.
+  const restored = scopeFromPreset(named);
+  expect(scopePositions(strings, restored).length).toBe(
+    scopePositions(strings, { startFret: 0, endFret: 12 }).length,
+  );
+});
+
+test("a scope with no key stores two nulls, and comes back with no key at all", () => {
+  const row = presetFromScope("Open position", strings, { startFret: 0, endFret: 3 });
+  expect(row.key_root).toBeNull();
+  expect(row.key_quality).toBeNull();
+  const restored = scopeFromPreset(row);
+  // Not `key: null` - noteInScope would read that the same way, but a saved
+  // every-note scope would then be a different SHAPE of object from a fresh
+  // one, and something comparing the two would say they differ.
+  expect("key" in restored).toBe(false);
+  expect(noteInScope("C#", restored)).toBe(true);
+});
+
+test("a key whose quality was left implicit is stored as major rather than as nothing", () => {
+  // A live scope may carry a key with no quality - constraints.js defaults it
+  // to major everywhere it reads one. A ROW may not: key_root without
+  // key_quality is refused by the server, so the default is applied here,
+  // once, rather than left to be rejected on the way out.
+  const row = presetFromScope("Key of D", strings, {
+    startFret: 0,
+    endFret: 12,
+    key: { root: "D" },
+  });
+  expect(row.key_quality).toBe("major");
+  expect(scopeFromPreset(row).key).toEqual({ root: "D", quality: "major" });
+});
+
+test("a restored preset narrows the position pool exactly as the scope it was saved from did", () => {
+  // The claim the whole feature rests on, stated as an equality: what a
+  // person practises after picking a saved scope is what they were
+  // practising when they saved it.
+  const scope = {
+    startFret: 5,
+    endFret: 7,
+    stringNumbers: [6, 5],
+    key: { root: "A", quality: "minor" },
+  };
+  const before = scopePositions(strings, scope);
+  const after = scopePositions(
+    strings,
+    scopeFromPreset(presetFromScope("A minor box", strings, scope)),
+  );
+  expect(after.length).toBe(before.length);
+  expect(before.length).toBeGreaterThan(0);
+  expect(after.map((p) => `${p.string}:${p.fret}`).sort()).toEqual(
+    before.map((p) => `${p.string}:${p.fret}`).sort(),
+  );
+});
+
+test("nothing at all is not a preset - scopeFromPreset says so rather than inventing a scope", () => {
+  expect(scopeFromPreset(null)).toBeNull();
+  expect(scopeFromPreset(undefined)).toBeNull();
 });

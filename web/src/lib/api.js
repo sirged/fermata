@@ -285,6 +285,18 @@ export const api = {
     );
     return fetch(`/api/trainer/chord-attempts?${q}`).then(j);
   },
+  // Named drill scopes (issue #236) - which strings, which frets, which key,
+  // saved under a name and shared by BOTH drills. The scope used to be
+  // browser state that reset on reload; these three are the whole of what
+  // replaced it.
+  trainerPresets: () => fetch("/api/trainer/presets").then(j),
+  createTrainerPreset: (body) =>
+    fetch("/api/trainer/presets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(j),
+  deleteTrainerPreset: (id) => fetch(`/api/trainer/presets/${id}`, { method: "DELETE" }).then(j),
   version: () => fetch("/api/version").then(j),
   settings: () => fetch("/api/settings").then(j),
   putSettings: (values) =>

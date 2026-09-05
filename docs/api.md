@@ -240,14 +240,14 @@ that ties them together.
 
 | Endpoint | What it does |
 | --- | --- |
-| `GET /api/export` | Every score row, transcription, practice session, goal, tag, instrument, setting, setlist (with its ordered membership) and fretboard-drill attempt, plus the score files themselves, as one zip. |
+| `GET /api/export` | Every score row, transcription, practice session, goal, tag, instrument, setting, setlist (with its ordered membership), fretboard-drill attempt and named drill scope, plus the score files themselves, as one zip. |
 | `POST /api/import` | Restores an archive `GET /api/export` produced. **Dry run by default.** |
 
 **The archive.** A zip with `manifest.json` at its root - a JSON object naming
 the exact `schema_version` (`fermata/db.py`'s `SCHEMA_VERSION`, not the
 application's own release number) the rest of it was written against, and
 carrying every table's rows verbatim under `tables` (drill history included
-since #243). Score files themselves
+since #243, named drill scopes since #236). Score files themselves
 live under `files/<content-hash><extension>`, named by the same identity the
 scanner already uses (`scanner.hash_file`) rather than by a person's folder
 names, which is what lets two scores that happen to share content share one
@@ -288,6 +288,60 @@ leaves the library exactly as it was.
 **`dry_run` defaults to true**, the same default every bulk operation in this
 API uses (see the five rules above). It validates the archive completely and
 reports what it found without opening a transaction or writing a file.
+
+## The fretboard drills (issues #27, #28, #236)
+
+Two drills run on the neck — fret to note, and chord flash cards — and both
+write the same two kinds of thing. Every answered question is its own
+structured row (`POST /api/trainer/attempts` and
+`POST /api/trainer/chord-attempts`, listed back by the matching `GET`s), so
+"which positions get missed" is a `WHERE` clause rather than something a
+reader parses out of prose. The drill's *time* is an ordinary practice session
+(`POST /api/practice/sessions`, activity `fretboard` or `chords`) — there is
+no separate drill-session row.
+
+**A scope, saved under a name.** What a drill asks about is narrowed by a
+scope: which strings, which fret range, and optionally which key. That used to
+live in the browser and reset on every page load, leaving nothing behind but
+an English sentence in the session's `note`. It is now a row.
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /api/trainer/presets` | Every named scope, newest first, each with the strings it allows. |
+| `POST /api/trainer/presets` | Save a scope under a name. |
+| `DELETE /api/trainer/presets/{id}` | Delete a named scope. The practice logged under it is **not** touched — `sessions_kept` counts it. |
+
+The string set is **one row per string**, in a child table, never a list in a
+column and never JSON: "which strings does this scope allow" has to be
+answerable by the database (see [docs/practice-data.md](practice-data.md)).
+That is also why `strings` is required and may not be empty on the way in —
+"every string" is stored by naming every string, so a saved scope can never be
+confused with one whose strings failed to write. `key_root` and `key_quality`
+travel together or not at all; both absent means every note, which is the
+ordinary case.
+
+**Presets are shared, not per-drill.** There is no `drill` column: a scope is a
+thing a person is working on, so one saved while naming notes is the same one
+the chord drill offers. A name must be unique per owner — a duplicate is
+refused with `409`, unlike a setlist, because a preset is picked in order to
+change what the next question will be and two identically named entries make
+"which scope am I about to practise" unanswerable from the screen.
+
+**A practice session carries `preset_id`.** A drill run on a named scope logs
+it on the session, and every session read-back returns it — so "how much time
+went into the first five frets in the key of G" is a join rather than a text
+search. It is null on almost every row, and that is not a missing value: a
+session logged from anywhere but a drill, or from a drill on a scope nobody
+named, genuinely has none. Deleting a preset clears the reference and leaves
+the session whole: the minutes were still practised. A drill run on an
+*unnamed* scope still writes the scope sentence into `note`, because for that
+session it is the only trace there is; existing notes are left exactly as they
+were.
+
+Named scopes **travel in the portable archive** (issue #58's export / import):
+a backup carries each preset, its string set, and each session's reference to
+it, and a restore repoints all three at the new rows. An archive written before
+these tables existed still imports, with no named scopes and nothing dangling.
 
 ## Setlists (issue #6)
 
@@ -341,7 +395,7 @@ layer's own correctness depends on this one meaning what it says.
 
 That server (issue #31, `server/fermata/mcp_server.py`) is off unless
 `FERMATA_MCP` is set, and when it runs it is a CLIENT of this API like any
-other: each of its thirteen read-only tools is one documented `GET` from the
+other: each of its fourteen read-only tools is one documented `GET` from the
 list above, called over HTTP, answering with that route's own JSON
 unchanged. It never adds an operation to this document - it reads it. The
 tool list and every tool's input schema are generated from `app.openapi()`

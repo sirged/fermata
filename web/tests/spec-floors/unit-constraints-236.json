@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/constraints.spec.js",
+  "count": 6,
+  "reason": "issue #236: the mapping between a live scope and a stored preset row - a full round trip, the unfiltered string set spelled out rather than left empty, no key stored as two nulls and restored as no key at all, an implicit key quality defaulted before it reaches a column that refuses one, the position pool proved identical either side of the trip, and nothing-is-not-a-preset."
+}

@@ -49,6 +49,7 @@
   } from "./chords.js";
   import { KEY_QUALITY_LIST } from "./constraints.js";
   import Neck from "./Neck.svelte";
+  import ScopePresets from "./ScopePresets.svelte";
   import { DEFAULT_FRET_COUNT, fretCountFromInstrument, noteAt, stringsFromInstrument } from "./neck.js";
 
   const instruments = getInstruments();
@@ -94,8 +95,41 @@
     endFret = fretCount;
   });
 
+  // Which saved scope is in force, or null (issue #236). Cleared by every
+  // hand-turned scope control below: once somebody moves a fret selector the
+  // scope is no longer the one that preset describes, and a session logged
+  // under it must not claim otherwise. Identical to FretToNote.svelte's, on
+  // purpose - the picker is one shared component, and so is the rule for
+  // when a selection stops being true.
+  let selectedPresetId = $state(null);
+
+  function handTurned() {
+    selectedPresetId = null;
+  }
+
+  /** Adopt a saved scope: its strings, its fret range and its key, all at
+   * once. Marks each dimension customized so the "follow the instrument's
+   * own defaults" effects above stop overwriting what was just restored.
+   * The chord FAMILY is deliberately untouched - a preset is the shared
+   * string/fret/key scope, not this drill's own idea of what to ask about. */
+  function applyPreset(restored, id) {
+    selectedPresetId = id;
+    if (!restored) return;
+    customizedStrings = true;
+    customizedFretRange = true;
+    selectedStrings = [...restored.stringNumbers];
+    startFret = restored.startFret;
+    endFret = restored.endFret;
+    keyEnabled = Boolean(restored.key);
+    if (restored.key) {
+      keyRoot = restored.key.root;
+      keyQuality = restored.key.quality;
+    }
+  }
+
   function toggleString(number) {
     customizedStrings = true;
+    handTurned();
     if (selectedStrings.includes(number)) {
       if (selectedStrings.length <= 1) return;
       selectedStrings = selectedStrings.filter((n) => n !== number);
@@ -106,11 +140,13 @@
 
   function setStartFret(value) {
     customizedFretRange = true;
+    handTurned();
     startFret = Number(value);
   }
 
   function setEndFret(value) {
     customizedFretRange = true;
+    handTurned();
     endFret = Number(value);
   }
 
@@ -121,6 +157,21 @@
   let keyEnabled = $state(false);
   let keyRoot = $state("C");
   let keyQuality = $state("major");
+
+  function setKeyEnabled(value) {
+    handTurned();
+    keyEnabled = value;
+  }
+
+  function setKeyRoot(value) {
+    handTurned();
+    keyRoot = value;
+  }
+
+  function setKeyQuality(value) {
+    handTurned();
+    keyQuality = value;
+  }
 
   const scope = $derived({
     startFret,
@@ -153,8 +204,27 @@
     return Math.max(1, Math.round((Date.now() - startedAt) / 1000));
   }
 
-  function drillNote() {
-    return sessionNote({ asked, correct: correctCount, direction, strings, scope, family });
+  /** What the session carries about the scope it ran on - the same rule
+   * FretToNote.svelte's own sessionFields states, and see chords.js's
+   * sessionNote for why the chord family stays in the sentence even when the
+   * region does not. */
+  function sessionFields() {
+    if (selectedPresetId != null) {
+      return {
+        preset_id: selectedPresetId,
+        note: sessionNote({
+          asked,
+          correct: correctCount,
+          direction,
+          strings,
+          scope: null,
+          family,
+        }),
+      };
+    }
+    return {
+      note: sessionNote({ asked, correct: correctCount, direction, strings, scope, family }),
+    };
   }
 
   function nextQuestion() {
@@ -273,7 +343,7 @@
         activity: "chords",
         seconds,
         local_date: localDay(),
-        note: drillNote(),
+        ...sessionFields(),
       });
       logged = { seconds: session?.seconds ?? seconds, id: session?.id ?? null };
       unlogged = null;
@@ -297,7 +367,7 @@
         activity: "chords",
         seconds: elapsed(),
         local_date: localDay(),
-        note: drillNote(),
+        ...sessionFields(),
       })
       .catch(() => {});
   });
@@ -323,6 +393,11 @@
       data-given-correct={round?.given != null ? (round.correct ? "1" : "0") : ""}
       data-tapped-count={tapped.length}
       data-attempt-log-failures={attemptLogFailures}
+      data-start-fret={startFret}
+      data-end-fret={endFret}
+      data-strings={[...selectedStrings].sort((a, b) => a - b).join(",")}
+      data-key={keyEnabled ? `${keyRoot} ${keyQuality}` : ""}
+      data-preset={selectedPresetId ?? ""}
     >
       <p class="hint">
         Shown a shape, name the chord - or name a chord, tap its notes onto the neck. Both
@@ -415,20 +490,44 @@
 
       <div class="row key-row">
         <label class="key-toggle">
-          <input type="checkbox" bind:checked={keyEnabled} disabled={running} class="key-enabled" />
+          <input
+            type="checkbox"
+            checked={keyEnabled}
+            disabled={running}
+            class="key-enabled"
+            onchange={(e) => setKeyEnabled(e.currentTarget.checked)}
+          />
           <span>Key</span>
         </label>
-        <select class="key-root" bind:value={keyRoot} disabled={running || !keyEnabled}>
+        <select
+          class="key-root"
+          value={keyRoot}
+          disabled={running || !keyEnabled}
+          onchange={(e) => setKeyRoot(e.currentTarget.value)}
+        >
           {#each ROOTS as root (root)}
             <option value={root}>{root}</option>
           {/each}
         </select>
-        <select class="key-quality" bind:value={keyQuality} disabled={running || !keyEnabled}>
+        <select
+          class="key-quality"
+          value={keyQuality}
+          disabled={running || !keyEnabled}
+          onchange={(e) => setKeyQuality(e.currentTarget.value)}
+        >
           {#each KEY_QUALITY_LIST as quality (quality)}
             <option value={quality}>{quality}</option>
           {/each}
         </select>
       </div>
+
+      <ScopePresets
+        {strings}
+        {scope}
+        selectedId={selectedPresetId}
+        disabled={running}
+        onSelect={applyPreset}
+      />
 
       {#if instruments.error}
         <p class="notice instruments-error">

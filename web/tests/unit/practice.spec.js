@@ -197,6 +197,11 @@ const COMPONENTS = [
   // counts about where a player keeps answering incorrectly is exactly the
   // kind of surface a verdict word slips into.
   "trainer/PositionCounts.svelte",
+  // The named-scope picker both drills use (#236). A list of scopes a person
+  // saved is a list of the things they are working on, which is one short
+  // step from a list of the things they have not covered - so the words on
+  // it are held to the same rule as everything above.
+  "trainer/ScopePresets.svelte",
 ];
 
 // The attributes a person actually reads. Every other attribute value is

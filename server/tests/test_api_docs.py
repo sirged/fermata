@@ -303,8 +303,9 @@ def test_every_route_has_exactly_the_expected_operation_count(openapi_schema):
     # two: start a bulk transcription pass, poll its status. Plus issue #28's
     # two: log a chord flash card attempt, and list them. Plus issue #6's
     # eight setlist routes: list, create, get one, rename, delete, add a
-    # score, remove a score, reorder.
-    assert count == 68
+    # score, remove a score, reorder. Plus issue #236's three: list the named
+    # drill scopes, save one, delete one.
+    assert count == 71
 
 
 def test_binary_routes_do_not_advertise_a_json_content_type(openapi_schema):

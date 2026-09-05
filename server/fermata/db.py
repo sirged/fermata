@@ -71,6 +71,25 @@ DEFAULT_OWNER = "local"
 # carry their day, their length, their tempo, their bars and their note, which
 # is enough to be practice that happened. See practice.session_dict's
 # `score_missing`.
+#
+# `preset_id` (issue #236) is the named drill scope this session was practised
+# under - see _TRAINER_SCOPE_PRESETS_COLUMNS below. It is what turns "what was
+# practised" from a sentence in `note` into a row: a reader asking "how much
+# time went into the first five frets in the key of G" joins this column
+# rather than parsing English out of a free-text field.
+#
+# NULLABLE, and null on almost every row: every session logged before this
+# column existed has none, every session logged from anywhere but a fretboard
+# drill has none, and a drill run on a scope nobody chose to name has none
+# either. That is not a missing value - "no named scope" is the ordinary case
+# and the honest answer.
+#
+# ON DELETE SET NULL, chosen the same way score_id above was: the test is
+# whether the row still says anything once the thing it names is gone. It
+# does - the minutes were still practised, on that day, in that activity - so
+# deleting a preset must not reach the history, only the reference. Deleting
+# a preset is a tidy-up ("I no longer work on that"), never a statement that
+# the practice did not happen.
 _PRACTICE_SESSIONS_COLUMNS = """(
     id INTEGER PRIMARY KEY,
     owner TEXT NOT NULL DEFAULT 'local',
@@ -87,7 +106,8 @@ _PRACTICE_SESSIONS_COLUMNS = """(
     tempo_bpm INTEGER,
     target_tempo_bpm INTEGER,
     rating INTEGER,
-    note TEXT
+    note TEXT,
+    preset_id INTEGER REFERENCES trainer_scope_presets(id) ON DELETE SET NULL
 )"""
 
 # Kept as separate statements rather than one script so SCHEMA can be
@@ -167,6 +187,87 @@ _PRACTICE_GOALS_COLUMNS = """(
 _PRACTICE_GOALS_INDEXES = (
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_practice_goals_period"
     " ON practice_goals(owner, period_start)",
+)
+
+# A named drill scope (issue #236): the strings, the fret range and the key a
+# player is working inside, saved under a name so it can be picked up again
+# tomorrow and in the OTHER drill. Until this table existed a scope lived only
+# in the browser's own state and left no trace but an English sentence in
+# practice_sessions.note - a free-text blob, which docs/practice-data.md's
+# rule for the structured-data interface forbids.
+#
+# SHARED, NOT PER-DRILL, and that is the whole design (see
+# web/src/lib/trainer/constraints.js's own module comment, which factored the
+# scope model out of one drill for exactly this reason). There is no `drill`
+# column here on purpose: "strings 1-2, frets 5-9, key of G major" is a thing
+# a person is working on, not a thing a particular question format owns, so a
+# scope saved while naming notes is the same row the chord drill reads.
+#
+# AUTOINCREMENT, for the same reason instruments, goals and setlists have it:
+# presets are routinely deleted, and a plain INTEGER PRIMARY KEY hands a
+# deleted row's id to the next one - so practice_sessions.preset_id, held on
+# rows that outlive the preset they named, could silently start describing a
+# different scope than the one that was actually practised. (It does not,
+# because the ON DELETE SET NULL below clears it - but the two guarantees are
+# independent, and an id also travels in an open browser tab and in an
+# archive being restored.)
+#
+# `key_root` and `key_quality` are nullable TOGETHER and mean "every note":
+# the key filter is off by default in both drills, and a scope that names no
+# key is not a scope with a missing field. Nothing here stores the key's
+# NOTES - constraints.js's keyNotes computes them from the two, and a stored
+# note list would be a second copy of that arithmetic, free to drift.
+#
+# One name per owner (the unique index). Setlists deliberately allow
+# duplicate names - a setlist is a thing you open and look at, so two called
+# "Sunday" are merely confusing - but a preset is a thing you PICK from a
+# list in order to change what the next question will be, and two identically
+# named entries there make "which scope am I about to practise" unanswerable
+# from what is on screen. api.create_trainer_preset answers a collision with
+# 409, the status this codebase already uses for a write refused because of
+# what is already there.
+_TRAINER_SCOPE_PRESETS_COLUMNS = """(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL DEFAULT 'local',
+    name TEXT NOT NULL,
+    start_fret INTEGER NOT NULL,
+    end_fret INTEGER NOT NULL,
+    key_root TEXT,
+    key_quality TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)"""
+
+# The string set, one row per string - the setlist_scores of this pair.
+#
+# A SET DOES NOT FIT A COLUMN, and it is not going in as JSON. "Which strings
+# does this preset allow" has to be a WHERE clause for the same reason
+# trainer_attempts' columns are columns and not a blob (see that table's own
+# note): a reader that has to parse "[1,2,3]" out of a text field cannot ask
+# the database anything about it, and docs/practice-data.md's rule for this
+# data layer is that structured practice data stays queryable.
+#
+# PRIMARY KEY (preset_id, string_number): a string is in a preset at most
+# once, exactly as a score is in a setlist at most once, and for the same
+# reason - "remove it" would otherwise be ambiguous about which copy is
+# meant. No `position` column: unlike a setlist this really is a SET, and the
+# order strings are listed in carries no meaning a player chose.
+#
+# ON DELETE CASCADE, the setlist_scores rule applied unchanged: a membership
+# row is pure association - "(this preset) includes (this string)" - and says
+# nothing at all once the preset it names is gone.
+_TRAINER_SCOPE_PRESET_STRINGS_COLUMNS = """(
+    preset_id INTEGER NOT NULL REFERENCES trainer_scope_presets(id) ON DELETE CASCADE,
+    string_number INTEGER NOT NULL,
+    PRIMARY KEY (preset_id, string_number)
+)"""
+
+_TRAINER_PRESET_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS trainer_scope_presets "
+    + _TRAINER_SCOPE_PRESETS_COLUMNS + ";\n"
+    + "CREATE UNIQUE INDEX IF NOT EXISTS idx_trainer_presets_name"
+    " ON trainer_scope_presets(owner, name COLLATE NOCASE);\n"
+    + "CREATE TABLE IF NOT EXISTS trainer_scope_preset_strings "
+    + _TRAINER_SCOPE_PRESET_STRINGS_COLUMNS + ";\n"
 )
 
 _PRACTICE_SCHEMA = (
@@ -643,7 +744,7 @@ CREATE TABLE IF NOT EXISTS setlist_scores (
     PRIMARY KEY (setlist_id, score_id)
 );
 CREATE INDEX IF NOT EXISTS idx_setlist_scores_order ON setlist_scores(setlist_id, position);
-""" + _PRACTICE_SCHEMA + _TRAINER_SCHEMA + _TRAINER_CHORD_SCHEMA
+""" + _TRAINER_PRESET_SCHEMA + _PRACTICE_SCHEMA + _TRAINER_SCHEMA + _TRAINER_CHORD_SCHEMA
 
 # The schema this code expects. Stamped into PRAGMA user_version once a startup
 # has finished bringing a database up to date.
@@ -735,6 +836,20 @@ CREATE INDEX IF NOT EXISTS idx_setlist_scores_order ON setlist_scores(setlist_id
 # the old release misbehave - say a scanner that reconciles setlist membership -
 # that change is what bumps this, with the forward-path test the bump then
 # needs; adding these tables is not that change.)
+#
+# SCOPE PRESETS (#236) DO NOT BUMP THIS EITHER, by the same rule, and the one
+# part worth spelling out is the new practice_sessions COLUMN rather than the
+# two new tables. The tables are pure additions the previous release has no
+# code for at all, exactly like setlists. `practice_sessions.preset_id` is a
+# column on a table that release does read and write - so the question is
+# whether not knowing about it makes that release do harm, and it does not:
+# it never selects the column, so a session it writes simply has none (which
+# is what NULL already means here), and its own export dumps `SELECT *`, so
+# an archive it takes carries the column across intact rather than dropping
+# it. The one cross-table path is deleting a preset, which that release
+# cannot do because it has no route to. Nothing is resurrected, hidden or
+# destroyed by the older code, so bumping would only strand a rollback over
+# data that was never at risk.
 SCHEMA_VERSION = 5
 
 # Columns added to a table that had already shipped. CREATE TABLE IF NOT EXISTS
@@ -805,6 +920,23 @@ COLUMN_ADDITIONS = {
         "key": "INTEGER",
         "tempo": "INTEGER",
         "difficulty": "INTEGER",
+    },
+    # #236's one, on a table that shipped long ago. It is exactly the kind of
+    # change this mechanism is for - nullable, and needing no backfill because
+    # NULL is already true of every row that exists: no session written before
+    # today was practised under a named scope, because there were no named
+    # scopes. It DOES carry a foreign key, which this mechanism supports (see
+    # _add_missing_columns, which checks the REFERENCES really landed) as long
+    # as the added column's default is NULL - and it is, which is also what the
+    # column means. The trainer_scope_presets table it points at arrives on the
+    # same startup through SCHEMA's own CREATE TABLE IF NOT EXISTS, which runs
+    # before this does (see init_db).
+    #
+    # _PRACTICE_SESSIONS_COLUMNS IS THE DEFINITION OF RECORD, the same rule
+    # `missing_since` states above; this entry exists only because CREATE TABLE
+    # IF NOT EXISTS cannot reach a table that is already there.
+    "practice_sessions": {
+        "preset_id": "INTEGER REFERENCES trainer_scope_presets(id) ON DELETE SET NULL",
     },
 }
 

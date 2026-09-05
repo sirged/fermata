@@ -17,14 +17,21 @@
   //   Every question is a structured row (POST /api/trainer/attempts), not
   //   only a count folded into the session's note - issue #32's promise for
   //   this drill. The session logged at the end still carries a human-
-  //   readable summary in its own `note`, the same as every other activity.
+  //   readable summary in its own `note`, the same as every other activity -
+  //   EXCEPT when the scope it ran on is a saved one, in which case the
+  //   session carries that preset's id instead and the sentence is not
+  //   written at all (issue #236). Which scope was practised is then a row
+  //   to join on rather than prose to parse; see docs/practice-data.md.
   import { onDestroy } from "svelte";
 
   import { api } from "../api.js";
   import { getInstruments, loadInstruments } from "../instruments.svelte.js";
   import { localDay } from "../practice.js";
+  import { ROOTS } from "./chord-theory.js";
+  import { KEY_QUALITY_LIST } from "./constraints.js";
   import Neck from "./Neck.svelte";
   import PositionCounts from "./PositionCounts.svelte";
+  import ScopePresets from "./ScopePresets.svelte";
   import {
     DEFAULT_FRET_COUNT,
     PITCH_CLASSES,
@@ -93,8 +100,48 @@
     endFret = fretCount;
   });
 
+  // Key scope: ported from ChordFlashCards.svelte for issue #236, unchanged
+  // in behaviour - off by default (every note in play), a real constraint
+  // only once a person turns it on. It was always part of the shared
+  // constraint model (constraints.js's noteInScope, #26); this drill simply
+  // had no control for it, which meant a scope saved here could not carry a
+  // key and the same preset would have meant two different things in the two
+  // drills.
+  let keyEnabled = $state(false);
+  let keyRoot = $state("C");
+  let keyQuality = $state("major");
+
+  // Which saved scope is in force, or null. Cleared by every hand-turned
+  // scope control below (see `handTurned`): once somebody moves a fret
+  // selector the scope is no longer the one that preset describes, and a
+  // session logged under it must not claim otherwise.
+  let selectedPresetId = $state(null);
+
+  function handTurned() {
+    selectedPresetId = null;
+  }
+
+  /** Adopt a saved scope: its strings, its fret range and its key, all at
+   * once. Marks each dimension customized so the "follow the instrument's
+   * own defaults" effects above stop overwriting what was just restored. */
+  function applyPreset(restored, id) {
+    selectedPresetId = id;
+    if (!restored) return;
+    customizedStrings = true;
+    customizedFretRange = true;
+    selectedStrings = [...restored.stringNumbers];
+    startFret = restored.startFret;
+    endFret = restored.endFret;
+    keyEnabled = Boolean(restored.key);
+    if (restored.key) {
+      keyRoot = restored.key.root;
+      keyQuality = restored.key.quality;
+    }
+  }
+
   function toggleString(number) {
     customizedStrings = true;
+    handTurned();
     if (selectedStrings.includes(number)) {
       // At least one string must stay selected - an empty list does not mean
       // "nothing asked", it means "no filter at all" (see fret-to-note.js's
@@ -110,15 +157,37 @@
 
   function setStartFret(value) {
     customizedFretRange = true;
+    handTurned();
     startFret = Number(value);
   }
 
   function setEndFret(value) {
     customizedFretRange = true;
+    handTurned();
     endFret = Number(value);
   }
 
-  const scope = $derived({ startFret, endFret, stringNumbers: selectedStrings });
+  function setKeyEnabled(value) {
+    handTurned();
+    keyEnabled = value;
+  }
+
+  function setKeyRoot(value) {
+    handTurned();
+    keyRoot = value;
+  }
+
+  function setKeyQuality(value) {
+    handTurned();
+    keyQuality = value;
+  }
+
+  const scope = $derived({
+    startFret,
+    endFret,
+    stringNumbers: selectedStrings,
+    key: keyEnabled ? { root: keyRoot, quality: keyQuality } : undefined,
+  });
   const askable = $derived(scopeIsAskable(strings, scope));
 
   let running = $state(false);
@@ -146,8 +215,28 @@
     return Math.max(1, Math.round((Date.now() - startedAt) / 1000));
   }
 
-  function drillNote() {
-    return sessionNote({ asked, correct: correctCount, direction, strings, scope });
+  /** What the session carries about the scope it ran on.
+   *
+   * A drill on a SAVED scope sends `preset_id` and no scope sentence at all
+   * (issue #236): the row says which named scope it was, and a reader asking
+   * "how much time went into this scope" joins that column instead of
+   * parsing English out of `note`. The counts still go in the note, because
+   * they are about how the session went rather than about what it was
+   * scoped to.
+   *
+   * A drill on an unnamed scope is unchanged - the sentence is all there is,
+   * and dropping it would lose the one trace such a session has. Sessions
+   * already stored keep whatever they were written with; #236 lists
+   * migrating them as a rabbit hole and does not.
+   */
+  function sessionFields() {
+    if (selectedPresetId != null) {
+      return {
+        preset_id: selectedPresetId,
+        note: sessionNote({ asked, correct: correctCount, direction, strings, scope: null }),
+      };
+    }
+    return { note: sessionNote({ asked, correct: correctCount, direction, strings, scope }) };
   }
 
   function nextQuestion() {
@@ -251,7 +340,7 @@
         activity: "fretboard",
         seconds,
         local_date: localDay(),
-        note: drillNote(),
+        ...sessionFields(),
       });
       logged = { seconds: session?.seconds ?? seconds, id: session?.id ?? null };
       unlogged = null;
@@ -278,7 +367,7 @@
         activity: "fretboard",
         seconds: elapsed(),
         local_date: localDay(),
-        note: drillNote(),
+        ...sessionFields(),
       })
       .catch(() => {});
   });
@@ -303,6 +392,11 @@
       data-question-fret={round?.question?.fret ?? ""}
       data-given-note={round?.given?.note ?? ""}
       data-attempt-log-failures={attemptLogFailures}
+      data-start-fret={startFret}
+      data-end-fret={endFret}
+      data-strings={[...selectedStrings].sort((a, b) => a - b).join(",")}
+      data-key={keyEnabled ? `${keyRoot} ${keyQuality}` : ""}
+      data-preset={selectedPresetId ?? ""}
     >
       <p class="hint">
         Shown a position, name its note - or shown a note, tap where it lives on the neck. Both
@@ -379,6 +473,47 @@
         {/each}
       </div>
 
+      <div class="row key-row">
+        <label class="key-toggle">
+          <input
+            type="checkbox"
+            checked={keyEnabled}
+            disabled={running}
+            class="key-enabled"
+            onchange={(e) => setKeyEnabled(e.currentTarget.checked)}
+          />
+          <span>Key</span>
+        </label>
+        <select
+          class="key-root"
+          value={keyRoot}
+          disabled={running || !keyEnabled}
+          onchange={(e) => setKeyRoot(e.currentTarget.value)}
+        >
+          {#each ROOTS as root (root)}
+            <option value={root}>{root}</option>
+          {/each}
+        </select>
+        <select
+          class="key-quality"
+          value={keyQuality}
+          disabled={running || !keyEnabled}
+          onchange={(e) => setKeyQuality(e.currentTarget.value)}
+        >
+          {#each KEY_QUALITY_LIST as quality (quality)}
+            <option value={quality}>{quality}</option>
+          {/each}
+        </select>
+      </div>
+
+      <ScopePresets
+        {strings}
+        {scope}
+        selectedId={selectedPresetId}
+        disabled={running}
+        onSelect={applyPreset}
+      />
+
       {#if instruments.error}
         <p class="notice instruments-error">
           {instruments.error} The drill below uses the standard guitar instead.
@@ -387,7 +522,7 @@
 
       {#if !askable}
         <p class="statement narrow-scope">
-          Nothing is selected to ask about - choose at least one fret in range.
+          Nothing is selected to ask about - widen the fret range, the strings, or the key.
         </p>
       {/if}
 
@@ -450,7 +585,7 @@
         </div>
       {:else if running && !round}
         <p class="statement narrow-scope">
-          Nothing is selected to ask about - choose at least one fret in range.
+          Nothing is selected to ask about - widen the fret range, the strings, or the key.
         </p>
         <div class="row controls">
           <button class="ghost stop-drill" onclick={stopAndLog} disabled={logging}>
@@ -559,7 +694,8 @@
     flex-wrap: wrap;
   }
 
-  .scope-row label {
+  .scope-row label,
+  .key-row .key-toggle {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -574,6 +710,10 @@
     padding: 5px 8px;
     font: inherit;
     font-size: 14px;
+  }
+
+  .key-quality {
+    text-transform: capitalize;
   }
 
   /* Big touch targets throughout - this app's tablet-at-a-music-stand rule

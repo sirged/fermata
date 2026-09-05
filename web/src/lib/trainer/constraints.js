@@ -129,3 +129,58 @@ export function scopeLabel(strings, scope = {}) {
   }
   return parts.join(", ");
 }
+
+// --------------------------------------------------------------------------
+// Named scopes (issue #236): the same scope object, as a row.
+//
+// A scope used to live only here, in whichever component happened to hold it,
+// and vanished on reload - the drill it narrowed left behind nothing but a
+// sentence in the practice session's own `note`. GET/POST /api/trainer/presets
+// stores it instead (server/fermata/db.py's trainer_scope_presets), and these
+// two functions are the whole translation between the two shapes. Kept HERE
+// rather than in either drill for the same reason everything else in this
+// module is: two drills need it, and a second copy of a mapping is a second
+// copy free to drift.
+//
+// THE ONE PLACE THE TWO SHAPES REALLY DIFFER is the string set. In a scope, an
+// empty or missing stringNumbers means "no filter at all" (see stringInScope);
+// in a stored preset it cannot, because a row with no strings would be
+// indistinguishable from one whose strings failed to write. So presetFromScope
+// spells "every string" out by naming every string the current instrument has,
+// which is why it takes `strings` at all.
+// --------------------------------------------------------------------------
+
+/** A scope, as the body POST /api/trainer/presets wants. `strings` is the
+ * instrument's own string list, used to spell out an unfiltered string set;
+ * `name` is what the person typed. */
+export function presetFromScope(name, strings, scope = {}) {
+  const all = (strings ?? []).map((s) => s.number);
+  const selected = Array.isArray(scope.stringNumbers) && scope.stringNumbers.length
+    ? [...new Set(scope.stringNumbers)]
+    : all;
+  return {
+    name,
+    start_fret: Math.max(0, Number(scope.startFret ?? 0)),
+    end_fret: Number(scope.endFret ?? DEFAULT_FRET_COUNT),
+    strings: selected.sort((a, b) => a - b),
+    key_root: scope.key?.root ?? null,
+    key_quality: scope.key ? (scope.key.quality ?? "major") : null,
+  };
+}
+
+/** A stored preset row, as a scope the drills already understand. A row with
+ * no key_root yields a scope with no `key` at all - not `key: null`, which
+ * noteInScope would read the same way but which would make a saved
+ * every-note scope look like a different kind of object from a fresh one. */
+export function scopeFromPreset(preset) {
+  if (!preset) return null;
+  const scope = {
+    startFret: Number(preset.start_fret ?? 0),
+    endFret: Number(preset.end_fret ?? DEFAULT_FRET_COUNT),
+    stringNumbers: [...(preset.strings ?? [])].sort((a, b) => a - b),
+  };
+  if (preset.key_root) {
+    scope.key = { root: preset.key_root, quality: preset.key_quality ?? "major" };
+  }
+  return scope;
+}

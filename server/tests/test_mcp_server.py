@@ -307,7 +307,7 @@ def test_the_flag_on_without_the_extra_says_so_instead_of_a_traceback():
 def test_the_feature_and_reverse_proxy_auth_are_refused_together(tmp_path):
     """Both on is not a working deployment: the tools read the API as an
     anonymous loopback client, so reverse-proxy auth would 401 every one of
-    them while the tool list still advertised thirteen. Refusing to start
+    them while the tool list still advertised fourteen. Refusing to start
     says that out loud - see
     authproxy.check_mcp_is_not_configured_behind_proxy_auth for why neither
     workaround is offered instead.
