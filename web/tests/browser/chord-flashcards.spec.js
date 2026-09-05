@@ -387,7 +387,12 @@ test("sevenths: a minor7 and a major7 card are each offered, answered, and logge
     // retry rather than race it.
     await expect(async () => {
       const { attempts, total } = await (
-        await request.get(`/api/trainer/chord-attempts?quality=${quality}&root=${answered[quality]}`)
+        await request.get(
+          // A root like F# has to be encoded - a bare "#" starts a URL
+          // fragment and silently truncates everything after it, which is
+          // exactly the intermittent failure a sharp root drew here first.
+          `/api/trainer/chord-attempts?quality=${quality}&root=${encodeURIComponent(answered[quality])}`,
+        )
       ).json();
       expect(total, `a logged ${quality} attempt`).toBeGreaterThan(0);
       expect(attempts[0].target_quality).toBe(quality);
