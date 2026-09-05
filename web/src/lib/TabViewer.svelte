@@ -645,10 +645,11 @@
   // discovered; see the PR for the measurement.
   //
   // `mutate(ordinal)` returns true when it changed that note. It is called from
-  // the HIGHEST ordinal down: the ordinals were read from the model before the
-  // gesture, and a delete rewrites the note at its own ordinal, so descending
-  // order keeps every remaining ordinal in the list valid against the snapshot
-  // it was taken from no matter what the operation does to the ones after it.
+  // the HIGHEST ordinal down. Measured in review: the order does not matter
+  // today, because the model's note list is a parse-time snapshot and every
+  // operation (a delete included) rewrites a note in place, so ordinals never
+  // shift mid-gesture. Descending is kept as a defence for an operation that
+  // one day removes or inserts elements, not as something the tests depend on.
   async function applyRange(mutate, refusal) {
     if (selectedOrdinal == null || !doc || !view) return;
     const ords = rangeOrdinals();
@@ -2235,8 +2236,9 @@
 
   /* The anchor of a multi-note selection (#251) reads a shade stronger than
      the notes it reached, so the end the anchor-only operations act on is
-     visible without a legend. A single selection IS its anchor, so this is
-     also what one selected note has always looked like. */
+     visible without a legend. A single selection IS its anchor, so one
+     selected note now draws at this stronger shade too (it was 0.16 before
+     #251). */
   .note-selection.anchor {
     background: rgba(200, 160, 70, 0.3);
   }
