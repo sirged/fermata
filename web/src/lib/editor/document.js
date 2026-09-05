@@ -117,6 +117,16 @@ export function createDocument(xml) {
     throw new Error("The note editor works on partwise MusicXML transcriptions only.");
   }
 
+  // This profile writes exactly one <part> (the docstring's "one part");
+  // a document with more than one is refused here, at open, the same way an
+  // unparseable or non-partwise document already is above - plainly, before
+  // any edit-mode state is entered - rather than silently mapping only the
+  // first part while drawing every one (#226).
+  const partCount = doc.getElementsByTagName("part").length;
+  if (partCount > 1) {
+    throw new Error(`The note editor works on one part at a time; this document has ${partCount}.`);
+  }
+
   // The tuning, read once. line -> MIDI of that open string. `<staff-tuning
   // line=>` numbers from the bottom staff line (the lowest string); a note's
   // <string> numbers from the top. midiForStringFret / stringToTuningLine keep
