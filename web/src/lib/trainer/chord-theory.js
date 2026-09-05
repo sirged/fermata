@@ -74,7 +74,8 @@ export function chordName(root, quality) {
  * this the chord that was asked for": two different (root, quality) pairs
  * that happened to name identical tone sets would otherwise grade as wrong
  * for a reason that has nothing to do with what was actually played or
- * chosen. With today's three qualities no such pair exists, but the rule
+ * chosen. With today's five qualities no such pair exists (checked: 60 distinct
+ * tone sets), but the rule
  * this drill grades by should not depend on that staying true. */
 export function chordsMatch(rootA, qualityA, rootB, qualityB) {
   const a = chordTones(rootA, qualityA);
