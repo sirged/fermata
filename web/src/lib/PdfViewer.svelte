@@ -139,11 +139,17 @@
   // approach by more than a pixel is not recognized as one here, and falls
   // through to the quiet backstop above instead.
   const SCROLL_SLACK = 1;
-  // The events a reader takes a scroll over WITH: a wheel or trackpad, a
-  // finger, or a hand on the scrollbar. Listened for on the scroller itself
-  // and passively, so none of them is intercepted or delayed - they are read
-  // as evidence, never handled. See onReaderInput.
-  const READER_INPUT = ["wheel", "touchstart", "pointerdown"];
+  // The events a reader takes a scroll over WITH: a wheel or trackpad, or a
+  // finger. Both abort a smooth scroll in the browser, so seeing one IS
+  // evidence the turn's travel is over. A bare pointerdown is not on the
+  // list: it does not abort the animation, so a tap that turns nothing (dead
+  // zone, long press, a plain click outside gig mode) would end the flag
+  // while the pane still travels, and a re-render in those frames would be
+  // #234 again; a hand on the scrollbar that holds the pane still is caught
+  // by the quiet backstop instead. Listened for on the scroller itself and
+  // passively, so nothing is intercepted or delayed - read as evidence,
+  // never handled. See onReaderInput.
+  const READER_INPUT = ["wheel", "touchstart"];
 
   // Read-only test instrumentation, in the same spirit as the `data-page`
   // attribute each canvas already carries. Nothing in here reads either of
@@ -552,9 +558,9 @@
     // scroll it while it is the pane taking keys at all (see onKey). Nothing
     // reaches the pane by key that is not this component's own turn.
     //
-    // A gig-mode tap is safe against this: it turns on POINTERUP (see
-    // onZonePointerUp), so its own pointerdown has already ended whatever was
-    // travelling before the turn it triggers records the next one.
+    // A gig-mode tap does not clear travel by itself (pointerdown is not
+    // reader input, see READER_INPUT); the turn it triggers on pointerup
+    // records the next request, which supersedes whatever was travelling.
     function onReaderInput() {
       if (scrollTravelling) endTravel();
     }
