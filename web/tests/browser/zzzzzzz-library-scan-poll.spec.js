@@ -1,11 +1,12 @@
-// The library page notices a scan it did not start, and survives a status
-// request that fails (issue #250).
+// The library page notices a scan it did not start, survives a status
+// request that fails, and shows and polls that scan the way it needs to
+// while it runs (issue #250).
 //
-// WHAT THESE TWO COVER THAT NOTHING ELSE DOES. Every other test of the scan
-// status in this suite drives it from the page's own "Scan library" button,
-// which is the one path where the page already knew a scan was running because
-// it started it. The two shapes #223 fixed in the background-batch poll were
-// still present in this one:
+// WHAT THE FIRST TWO COVER THAT NOTHING ELSE DOES. Every other test of the
+// scan status in this suite drives it from the page's own "Scan library"
+// button, which is the one path where the page already knew a scan was
+// running because it started it. The two shapes #223 fixed in the
+// background-batch poll were still present in this one:
 //
 //   1. the poll started only if a scan happened to be running at the instant
 //      the page mounted, so a scan begun from another tab, another client, or
@@ -25,10 +26,19 @@
 // that was not in the grid when the page was opened is in the grid afterwards,
 // with no reload and no click.
 //
-// WHY IT SORTS LAST. It puts a file in the throwaway library and drives a real
-// scan over it. The cleanup below removes the row and purges the trash, so it
-// leaves nothing behind when it passes - but a FAILING run of this file would,
-// and every spec here that checks its library is empty runs before this point.
+// THE THIRD TEST is the race the first two duck: what the page shows and how
+// often it asks WHILE a scan it did not start is still running. It stubs
+// GET /api/scan/status instead of driving a real scan, because a real one
+// will not hold still for milliseconds, and needs no file and no cleanup for
+// exactly that reason.
+//
+// WHY THE FIRST TWO SORT LAST. They put a file in the throwaway library and
+// drive a real scan over it. The cleanup below removes the row and purges the
+// trash, so they leave nothing behind when they pass - but a FAILING run of
+// either would, and every spec here that checks its library is empty runs
+// before this point. The third test never touches the library at all, but
+// stays in this file rather than a new one because it is testing the same
+// poll the first two are.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -205,4 +215,73 @@ test("one failed status request does not end the poll", async ({ page, request }
   // ...and it got there by asking again after the failure, rather than by some
   // other request on the page happening to redraw the grid.
   expect(statusRequests, "the poll made no request after the one that failed").toBeGreaterThan(2);
+});
+
+// The two other tests in this file prove the poll NOTICES a scan it did not
+// start, through the one thing a person can see days later: a score that
+// arrived without a reload. This one is about what the poll shows and how
+// often it asks WHILE that scan is running, and needs the scan to still be
+// in progress at the moment it looks - which the real scanner (single-digit
+// milliseconds against a throwaway library) cannot hold still for. So this
+// one stubs GET /api/scan/status directly and never starts a real scan at
+// all: everything it asserts is a fact about Library.svelte's poll, not
+// about the scanner.
+test("the scan button reflects a scan the page did not start, at the fast poll cadence", async ({
+  page,
+}) => {
+  // A plausible mid-scan body - see api_models.ScanStatusOut for the fields
+  // a real response always carries. `scanning: true` here is the whole
+  // point: this page never called POST /api/scan, so the only way it can
+  // know a scan is running is by being told so on a poll it did not expect
+  // to matter.
+  const scanningStatus = {
+    scanning: true,
+    total: 4,
+    processed: 2,
+    added: 0,
+    updated: 0,
+    missing: 0,
+    restored: 0,
+    unmatched_moves: 0,
+    refused: false,
+    refused_reason: null,
+    unmatched_paths: [],
+    unmatched_count: 0,
+    acknowledge_token: null,
+    errors: 0,
+    last_error: null,
+    started_at: Date.now() / 1000,
+    finished_at: null,
+    transcribe_batch_started: null,
+    transcribe_batch_note: null,
+  };
+  let statusRequests = 0;
+  await page.route("**/api/scan/status", async (route) => {
+    statusRequests += 1;
+    await route.fulfill({ json: scanningStatus });
+  });
+
+  await page.goto("/#/");
+  await page.waitForResponse((r) => r.url().includes("/api/scan/status"));
+
+  // (a) The button shows the scanning state, though this page never started
+  // one - Library.svelte cannot and must not tell "a scan I started" from "a
+  // scan somebody else started" apart (see its own comment above the poll),
+  // so the text is the same one a self-started scan would show.
+  await expect(page.getByRole("button", { name: /^Scan library$|^Scanning \d+\/\d+…$/ })).toHaveText(
+    `Scanning ${scanningStatus.processed}/${scanningStatus.total}…`,
+  );
+
+  // (b) At least three requests inside five seconds - only reachable at the
+  // FAST (1.5s) cadence the poll is supposed to use while `scanning` reads
+  // true. The idle (15s) cadence would produce at most the one mount-time
+  // request in that window, so this also catches a poll that noticed the
+  // scan once and then fell back to idle spacing instead of staying fast
+  // for as long as it is told a scan is running.
+  await expect
+    .poll(() => statusRequests, {
+      timeout: 5000,
+      message: "expected at least 3 status requests within 5s at the fast cadence",
+    })
+    .toBeGreaterThanOrEqual(3);
 });
