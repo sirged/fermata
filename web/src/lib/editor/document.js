@@ -455,6 +455,11 @@ export function createDocument(xml) {
     const at = allEls.indexOf(el);
     if (at < 0) return null;
     const next = allEls[at + (direction > 0 ? 1 : -1)];
+    // The isRest stop is written out rather than left to the noteEls lookup at
+    // the end, which would also reject a rest (a rest is never in noteEls). It
+    // is here because it is a RULE, not a side effect of an index miss: the
+    // alternative design - skip the rest and carry on - is a one-line change to
+    // this same spot, and a reader deciding between them should see the choice.
     if (!next || isRest(next)) return null;
     if (voiceNumber(next) !== voiceNumber(el)) return null;
     const idx = noteEls.indexOf(next);
