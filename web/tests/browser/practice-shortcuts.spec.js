@@ -444,7 +444,7 @@ async function startHeldScroll(page, waypoints) {
     const scroller = document.querySelector(".pages");
     const firstPage = () => document.querySelector('.pdf-page[data-page="1"]');
     const startWidth = firstPage().getBoundingClientRect().width;
-    const state = { holding: false, released: false, lastWrote: null };
+    const state = { holding: false, released: false, lastWrote: null, firstWriteAt: null };
     window.__heldScroll = state;
     const hold = path[path.length - 1];
     let i = 0;
@@ -464,10 +464,43 @@ async function startHeldScroll(page, waypoints) {
       }
       scroller.scrollTop = want;
       state.lastWrote = want;
+      if (state.firstWriteAt === null) state.firstWriteAt = performance.now();
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
   }, waypoints);
+}
+
+/**
+ * Stamps the page clock on the next keydown, so a test can say how long
+ * afterwards the reader's hand reached the pane. Installed BEFORE the press,
+ * on the capture phase, so it is the key itself that is timed and not a later
+ * round trip out to the test and back.
+ */
+async function markNextKeyPress(page) {
+  await page.evaluate(() => {
+    window.__keyAt = null;
+    window.addEventListener("keydown", () => (window.__keyAt = performance.now()), {
+      once: true,
+      capture: true,
+    });
+  });
+}
+
+/**
+ * Milliseconds from that keypress to the held scroll's first write.
+ *
+ * Both tests below have to get the reader's hand onto the pane INSIDE the
+ * 200ms the viewer allows a scroll it asked for before writing it off as one
+ * that will never happen. That interval is the point: a reader takes a turn
+ * over while it is still in flight, and a turn is over in about 150ms. Miss
+ * it and the viewer's own backstop ends the travel, which makes the test pass
+ * without having reached the rule it is about - a silent false negative, not
+ * a failure. So the gap is measured and asserted rather than assumed from how
+ * few round trips are in the way.
+ */
+async function heldScrollDelay(page) {
+  return page.evaluate(() => window.__heldScroll.firstWriteAt - window.__keyAt);
 }
 
 /** Waits for a held scroll to have reached its last waypoint. */
@@ -1872,21 +1905,30 @@ test.describe("a scroll the pane never travelled must not outlive itself", () =>
     await pdfSettlesPast(page, settled);
 
     // Second press: same page, same offset, nothing to animate, no scroll
-    // event. Asserted rather than assumed, because "no event follows" is the
-    // whole mechanism - if this press ever did move the pane, the test below
-    // would be about something else entirely.
+    // event. Read back immediately rather than after a wait, and that is not
+    // impatience - a scroll event is dispatched only when the offset CHANGES,
+    // so a pane proved not to have moved is a pane proved to have dispatched
+    // nothing. Asserted at all because "no event follows" is the whole
+    // mechanism: if this press ever did move the pane, the test below would
+    // be about something else entirely.
+    await markNextKeyPress(page);
     await page.keyboard.press("ArrowLeft");
-    await page.waitForTimeout(300);
     expect(Math.abs((await pdfGeometry(page)).scrollTop - before.pageOneTop)).toBeLessThanOrEqual(1);
 
-    // The reader then puts their hand on the pane and reads on, well past
-    // the 200ms the viewer allows for its own scrolls to go quiet - the
-    // stranded flag survives any amount of waiting, which is what makes this
-    // arithmetic rather than a race. 300 is chosen only to be unambiguously
-    // NEITHER page one's top nor page two.
+    // The reader's hand goes on the pane and they read on, a fraction of the
+    // way down page one - which is neither page one's top nor page two, so
+    // where they end up says which of the two the viewer thought they were.
+    //
+    // Promptly, and inside the 200ms the viewer gives a scroll it asked for
+    // to happen at all: past that its own quiet backstop ends the travel, and
+    // this test would pass without ever reaching the rule it is about. The
+    // gap is asserted below rather than assumed. What keeps the window open
+    // from there is the hand itself - every frame it moves re-arms that
+    // backstop, exactly as a reader scrolling on would.
     const hold = before.pageOneTop + Math.round(0.45 * before.pageHeight);
     await startHeldScroll(page, [hold]);
     await heldScrollSteady(page);
+    expect(await heldScrollDelay(page)).toBeLessThan(150);
 
     // A narrower window: shorter pages, a re-render, and the reader's place
     // has to survive it as a fraction because the pixel count will not.
@@ -1960,10 +2002,12 @@ test.describe("a scroll the pane never travelled must not outlive itself", () =>
     await page.evaluate(() => {
       Element.prototype.scrollBy = function () {};
     });
+    await markNextKeyPress(page);
     await page.keyboard.press("ArrowRight");
-    await page.waitForTimeout(300);
     // The turn is recorded and undelivered - the state a runner's animation
-    // is in for nine to thirteen frames, held open here instead.
+    // is in for nine to thirteen frames, held open here instead. Read back
+    // at once, for the reason the test above gives: a pane that has not moved
+    // has dispatched nothing.
     expect(Math.abs((await pdfGeometry(page)).scrollTop - before.scrollTop)).toBeLessThanOrEqual(1);
 
     // The reader takes over: a short flick down, then a drag back UP past
@@ -1972,12 +2016,17 @@ test.describe("a scroll the pane never travelled must not outlive itself", () =>
     // matters: a takeover is recognized by the pane RETREATING from its
     // closest approach, so there has to be an approach to retreat from, and
     // one frame moving toward the target is the honest way to have one.
+    //
+    // Taken over inside the same 200ms window the test above explains, and
+    // for the same reason - a reader takes a turn over while it is still
+    // going, and a turn is over in about 150ms.
     const hold = before.pageOneTop + 16;
     const flick = before.pageOneTop + 66;
     const drag = [];
     for (let at = flick; at > hold; at -= 8) drag.push(at);
     await startHeldScroll(page, [...drag, hold]);
     await heldScrollSteady(page);
+    expect(await heldScrollDelay(page)).toBeLessThan(150);
 
     const restores = await pdfRenderSettleStamp(page);
     await page.setViewportSize({ width: 900, height: 720 });
