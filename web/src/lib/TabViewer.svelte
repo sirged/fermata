@@ -239,6 +239,13 @@
   // existing positional map for the bounds of every ordinal in the range
   // instead of only the anchor's.
   let overlays = $state([]);
+  // The selected ordinals, ascending - the reactive mirror of rangeOrdinals(),
+  // recomputed by updateOverlay wherever the selection changes (#251). Held as
+  // state rather than derived on read because rangeOrdinals() consults `doc`,
+  // which is deliberately NOT reactive (see its comment above), so a template
+  // that called it directly would not re-read it when a rebuild changed the
+  // note count.
+  let selRange = $state([]);
 
   // The keyboard core loop's two-digit fret entry (#186). Typing a digit with a
   // note selected sets its fret immediately (so "1" then a pause commits fret
@@ -282,6 +289,7 @@
     selVoiceOptions = [];
     divergenceOk = true;
     overlays = [];
+    selRange = [];
     editWarn = "";
     // A fresh selection (or none) starts a fresh two-digit fret window - a
     // digit typed on a new note must never extend the last note's fret.
@@ -374,6 +382,7 @@
     // unchecked, so it never reads as a false "out of sync" warning.
     divergenceOk = true;
     overlays = [];
+    selRange = [];
     editWarn = "";
     fretEntry = null;
     selRestString = defaultStringForVoice(d.voice);
@@ -484,6 +493,7 @@
   // score-render.js changes, and a head the map has no bounds for is simply
   // not marked rather than moving the others.
   function updateOverlay() {
+    selRange = rangeOrdinals();
     if (selectedOrdinal == null || !view || !scroller) {
       overlays = [];
       return;
@@ -493,7 +503,7 @@
     // scroll listener. headRect is in client space; convert once.
     const sr = scroller.getBoundingClientRect();
     const marks = [];
-    for (const ord of rangeOrdinals()) {
+    for (const ord of selRange) {
       const r = view.editor.headRect(ord);
       if (!r) continue;
       marks.push({
@@ -622,18 +632,24 @@
   // text: the pre-gesture text is re-parsed, the same way undo's own restore
   // works.
   //
-  // The ONE stated exception is the string change, which the issue itself
-  // scopes to "where the pitch allows": a run usually crosses strings, and a
-  // gesture that refused the whole selection because one note cannot be played
-  // on the new string would be useless. It applies to the notes that can take
-  // the string, skips the rest, and says how many it skipped in the panel.
+  // The policy is UNIFORM across every range operation, the string change
+  // included. The issue's sketch scopes that one to "string change where the
+  // pitch allows", which reads as a per-note skip - but setString refuses only
+  // when the resulting pitch falls outside MusicXML's writable octaves (Rule
+  // 11, MIDI 12-131), and on any tuning and fret span a real instrument has it
+  // never does: the lowest open string a document can even declare is around
+  // MIDI 12, and the highest string plus the highest fret stays well under
+  // 131. A skip branch for it would therefore be code no document could reach
+  // and no test could red, so the string change takes the same all-or-nothing
+  // rollback as the rest and reports the same refusal. Said here rather than
+  // discovered; see the PR for the measurement.
   //
   // `mutate(ordinal)` returns true when it changed that note. It is called from
   // the HIGHEST ordinal down: the ordinals were read from the model before the
   // gesture, and a delete rewrites the note at its own ordinal, so descending
   // order keeps every remaining ordinal in the list valid against the snapshot
   // it was taken from no matter what the operation does to the ones after it.
-  async function applyRange(mutate, refusal, { partial = false } = {}) {
+  async function applyRange(mutate, refusal) {
     if (selectedOrdinal == null || !doc || !view) return;
     const ords = rangeOrdinals();
     if (ords.length === 0) return;
@@ -645,7 +661,7 @@
       if (mutate(ord)) changed += 1;
       else skipped += 1;
     }
-    if (skipped > 0 && !partial) {
+    if (skipped > 0) {
       // Roll the whole gesture back to the pre-gesture text. Nothing is pushed
       // onto the undo stack, and `dirty` is left as it was.
       doc = createDocument(before);
@@ -658,7 +674,7 @@
       editWarn = refusal;
       return;
     }
-    editWarn = skipped > 0 ? `Changed ${changed} of ${ords.length} notes; ${skipped} could not take it.` : "";
+    editWarn = "";
     undoStack = [...undoStack, before];
     redoStack = [];
     dirty = true;
@@ -699,14 +715,11 @@
     );
   }
 
-  // Over a range this is the one PARTIAL operation - see applyRange's header:
-  // it moves the notes the new string can carry and skips the ones whose pitch
-  // it cannot, saying how many in the panel.
   function changeString(value) {
     const v = Number(value);
     if (!Number.isInteger(v)) return;
     const refusal = "That string would put the note outside the pitch range MusicXML can write (octaves 0–9).";
-    if (isRange()) return applyRange((ord) => doc.setString(ord, v), refusal, { partial: true });
+    if (isRange()) return applyRange((ord) => doc.setString(ord, v), refusal);
     return applyEdit(() => doc.setString(selectedOrdinal, v), refusal);
   }
 
@@ -1630,8 +1643,8 @@
   data-editor-warn={editWarn || null}
   data-editor-selected={selectedOrdinal}
   data-editor-selected-extent={selExtent}
-  data-editor-selected-count={selectedOrdinal != null ? rangeOrdinals().length : null}
-  data-editor-selected-ordinals={selectedOrdinal != null ? rangeOrdinals().join(",") : null}
+  data-editor-selected-count={selectedOrdinal != null ? selRange.length : null}
+  data-editor-selected-ordinals={selectedOrdinal != null ? selRange.join(",") : null}
   data-editor-selected-fret={selFret}
   data-editor-selected-string={selString}
   data-editor-selected-type={selType}
@@ -1869,7 +1882,7 @@
                  Backspace act on the WHOLE run in one undo step; Fret, Tie and
                  Voice act on the anchor alone. -->
             <span class="hint" title="Shift+← / Shift+→ extends the selection along the run; Escape collapses it">
-              {rangeOrdinals().length} notes selected
+              {selRange.length} notes selected
             </span>
           {/if}
           <label title={isRange() ? "The fret applies to the anchor note only — one fret is one fretted position" : null}>
