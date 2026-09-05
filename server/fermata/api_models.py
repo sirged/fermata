@@ -1058,6 +1058,12 @@ class ImportOut(BaseModel):
     # actually travels, not what the setlists held before export.
     setlists_imported: int
     setlist_scores_imported: int
+    # #243's two: how many attempts either drill logged in the archive, or
+    # 0 for an archive written before these tables existed (see
+    # api.LEGACY_OPTIONAL_TABLES) - an old archive's drill history was never
+    # lost, it simply never existed in the first place.
+    trainer_attempts_imported: int
+    trainer_chord_attempts_imported: int
 
 
 # ---------------------------------------------------------------------------
