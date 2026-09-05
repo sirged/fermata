@@ -258,13 +258,22 @@ export function progressStatement({ asked = 0, correct = 0 } = {}) {
 
 /** What goes in the practice session's free-text `note` - a human-readable
  * summary beside the structured per-question rows this drill also writes
- * (see attemptPayload and the module docstring on why both exist). */
+ * (see attemptPayload and the module docstring on why both exist).
+ *
+ * `scope: null` DROPS THE REGION SENTENCE, and is how a session that carries
+ * a preset id asks for its note (issue #236) - the strings, frets and key it
+ * ran on are then in practice_sessions.preset_id, joined to the named scope,
+ * rather than repeated here as prose. THE CHORD FAMILY STAYS, because a
+ * preset does not carry one: a family is what this drill asks ABOUT, not
+ * what a shared scope narrows, so dropping it would lose a fact nothing else
+ * records. The counts stay too, for the same reason fret-to-note.js's own
+ * sessionNote keeps them.
+ *
+ * An unnamed scope still gets the whole sentence, unchanged. */
 export function sessionNote({ asked = 0, correct = 0, direction, strings, scope, family } = {}) {
-  return `Chord flash cards, ${directionLabel(direction)}. ${progressStatement({ asked, correct })} ${scopeLabel(
-    strings,
-    scope,
-    family,
-  )}.`;
+  const summary = `Chord flash cards, ${directionLabel(direction)}. ${progressStatement({ asked, correct })}`;
+  if (scope === null) return `${summary} ${familyLabel(family)}.`;
+  return `${summary} ${scopeLabel(strings, scope, family)}.`;
 }
 
 /** What was logged, said back once the drill has stopped. */

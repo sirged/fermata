@@ -513,6 +513,164 @@ def test_import_accepts_an_archive_from_before_the_trainer_tables_existed(client
     assert client.get("/api/trainer/chord-attempts").json()["total"] == 0
 
 
+# ---------------------------------------------------------------------------
+# #236: named drill scopes and their string sets ride the same round trip,
+# and practice_sessions.preset_id follows the id remap.
+# ---------------------------------------------------------------------------
+
+
+def test_export_import_round_trip_carries_presets_their_strings_and_the_sessions_reference(
+    client, tmp_path, monkeypatch
+):
+    """Save two scopes, log a session under the SECOND one (so a broken remap
+    that carried the raw source id across would land on the wrong preset
+    rather than merely on a valid one), export, and import into a fresh
+    library that already holds a preset and a session of its own - so the
+    imported rows cannot coincidentally get the ids they had in the source.
+
+    The strings are the half that would be silently lost: a preset row can
+    arrive intact while its string set does not, and the restored scope would
+    then narrow nothing while looking perfectly well-formed. So the assertion
+    is on the string sets, per preset, by name.
+    """
+    decoy = client.post(
+        "/api/trainer/presets",
+        json={"name": "Open position", "start_fret": 0, "end_fret": 3, "strings": [6, 5, 4]},
+    ).json()
+    real = client.post(
+        "/api/trainer/presets",
+        json={
+            "name": "Fifth position",
+            "start_fret": 5,
+            "end_fret": 9,
+            "strings": [1, 2, 3],
+            "key_root": "G",
+            "key_quality": "minor",
+        },
+    ).json()
+    assert real["id"] != decoy["id"]
+    session = client.post(
+        "/api/practice/sessions",
+        json={"seconds": 120, "activity": "fretboard", "preset_id": real["id"]},
+    ).json()
+    assert session["preset_id"] == real["id"]
+
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    assert [r["id"] for r in manifest["tables"]["trainer_scope_presets"]] == [
+        decoy["id"], real["id"],
+    ]
+    # One row per string, never a list in a column.
+    assert len(manifest["tables"]["trainer_scope_preset_strings"]) == 6
+
+    archive = client.get("/api/export").content
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    preexisting = client.post(
+        "/api/trainer/presets",
+        json={"name": "Already here", "start_fret": 0, "end_fret": 12, "strings": [6]},
+    ).json()
+    client.post("/api/practice/sessions", json={"seconds": 999, "activity": "ear_training"})
+
+    import_resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert import_resp.status_code == 200, import_resp.text
+    summary = import_resp.json()
+    assert summary["trainer_presets_imported"] == 2
+    assert summary["trainer_preset_strings_imported"] == 6
+
+    by_name = {p["name"]: p for p in client.get("/api/trainer/presets").json()}
+    assert set(by_name) == {"Already here", "Open position", "Fifth position"}
+    assert by_name["Open position"]["strings"] == [4, 5, 6]
+    assert by_name["Fifth position"]["strings"] == [1, 2, 3]
+    assert by_name["Fifth position"]["start_fret"] == 5
+    assert by_name["Fifth position"]["end_fret"] == 9
+    assert by_name["Fifth position"]["key_root"] == "G"
+    assert by_name["Fifth position"]["key_quality"] == "minor"
+    # Fresh ids on both sides of the join, and the session names the RIGHT one.
+    imported_real = by_name["Fifth position"]
+    assert imported_real["id"] not in {real["id"], preexisting["id"]}
+    imported_session = next(
+        s
+        for s in client.get("/api/practice/sessions").json()["sessions"]
+        if s["seconds"] == 120
+    )
+    assert imported_session["preset_id"] == imported_real["id"]
+    assert imported_session["preset_id"] != by_name["Open position"]["id"]
+    assert imported_session["preset_id"] != preexisting["id"]
+
+
+def test_import_accepts_an_archive_from_before_named_scopes_existed(client, add_score):
+    """The LEGACY_OPTIONAL_TABLES tolerance, extended to #236's two for the
+    same reason #243's two have it: an archive taken yesterday cannot carry a
+    table that did not exist, and refusing every backup a person already
+    holds would be strictly worse than restoring one with no named scopes. A
+    session in such an archive has no `preset_id` either, so nothing dangles.
+    Engineered by deleting the two keys - and the column - from an
+    otherwise-real manifest."""
+    add_score("Prelude.pdf", title="Prelude")
+    client.post("/api/practice/sessions", json={"seconds": 300, "activity": "fretboard"})
+    manifest = json.loads(
+        _zip_of(client.get("/api/export?include_files=false")).read("manifest.json")
+    )
+    assert set(manifest["tables"]) == set(api.EXPORT_TABLE_NAMES)
+    del manifest["tables"]["trainer_scope_presets"]
+    del manifest["tables"]["trainer_scope_preset_strings"]
+    for row in manifest["tables"]["practice_sessions"]:
+        del row["preset_id"]
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+
+    resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("legacy-twelve-table.zip", archive, "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    summary = resp.json()
+    assert summary["trainer_presets_imported"] == 0
+    assert summary["trainer_preset_strings_imported"] == 0
+    assert summary["practice_sessions_imported"] == 1
+    assert client.get("/api/scores").json()[0]["title"] == "Prelude"
+    assert client.get("/api/trainer/presets").json() == []
+    # Import ADDS, so the source session and its restored copy are both here;
+    # what matters is that neither ended up naming a scope this archive never
+    # carried.
+    restored = client.get("/api/practice/sessions").json()["sessions"]
+    assert [s["seconds"] for s in restored] == [300, 300]
+    assert [s["preset_id"] for s in restored] == [None, None]
+
+
+def test_an_archive_naming_a_preset_it_does_not_carry_is_refused_before_anything_is_written(
+    client, add_score
+):
+    """Referential integrity WITHIN the archive, the same check every other
+    reference gets: a session naming a preset the archive left out cannot be
+    inserted without dropping the reference silently or crashing partway
+    through write_tx()."""
+    add_score("Prelude.pdf", title="Prelude")
+    preset = client.post(
+        "/api/trainer/presets",
+        json={"name": "Fifth position", "start_fret": 5, "end_fret": 9, "strings": [1, 2]},
+    ).json()
+    client.post(
+        "/api/practice/sessions",
+        json={"seconds": 120, "activity": "fretboard", "preset_id": preset["id"]},
+    )
+    manifest = json.loads(
+        _zip_of(client.get("/api/export?include_files=false")).read("manifest.json")
+    )
+    manifest["tables"]["trainer_scope_presets"] = []
+    manifest["tables"]["trainer_scope_preset_strings"] = []
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+
+    resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("broken.zip", archive, "application/zip")},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "preset" in resp.json()["detail"]
+
+
 def test_export_can_leave_the_trash_out(client, add_score):
     live_id = add_score("Keeper.pdf", title="Keeper")
     trashed_id = add_score("Doomed.pdf", title="Doomed")

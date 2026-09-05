@@ -144,12 +144,22 @@ export function progressStatement({ asked = 0, correct = 0 } = {}) {
 
 /** What goes in the practice session's free-text `note` - a human-readable
  * summary beside the structured per-question rows this drill also writes
- * (see attemptPayload and the module docstring on why both exist). */
+ * (see attemptPayload and the module docstring on why both exist).
+ *
+ * `scope: null` DROPS THE SCOPE SENTENCE, and is how a session that carries
+ * a preset id asks for its note (issue #236). What was practised is then in
+ * a column - practice_sessions.preset_id, joined to the named scope - and
+ * repeating it here as prose would put the same fact in two places, one of
+ * them the free text docs/practice-data.md's rule for this data layer exists
+ * to keep facts out of. The counts stay either way: they are about how the
+ * session went, not about what it was scoped to.
+ *
+ * An unnamed scope still gets the sentence, unchanged, because for that
+ * session it is the only trace of what was narrowed. */
 export function sessionNote({ asked = 0, correct = 0, direction, strings, scope } = {}) {
-  return `Fret to note, ${directionLabel(direction)}. ${progressStatement({ asked, correct })} ${scopeLabel(
-    strings,
-    scope,
-  )}.`;
+  const summary = `Fret to note, ${directionLabel(direction)}. ${progressStatement({ asked, correct })}`;
+  if (scope === null) return summary;
+  return `${summary} ${scopeLabel(strings, scope)}.`;
 }
 
 /** What was logged, said back once the drill has stopped. */

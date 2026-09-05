@@ -29,6 +29,7 @@ One table, `practice_sessions`, for every kind of practice.
 | `target_tempo_bpm` | The tempo being worked towards. |
 | `rating` | 1-5, the player's own sense of how it went. `NULL` for not rated. |
 | `note` | Free text, up to 2000 characters. |
+| `preset_id` | The named drill scope this was practised under (see **Trainer scope presets** below), or `NULL`. |
 
 ### Why there is one table and not one per kind
 
@@ -471,6 +472,72 @@ equality, not label equality and not fingering equality, either way.
   the raw, queryable record, newest first - the same shape
   `GET /api/trainer/attempts` offers, with `root`/`quality` added so "which
   chords am I weak on" is a filter rather than a client-side group-by.
+
+## Trainer scope presets
+
+A **scope** is what narrows a drill to what somebody is actually working on:
+which strings, which fret range, and optionally which key. Both fretboard
+drills have always had one. Until issue #236 it lived only in the browser and
+reset on every page load, and the only trace it left was an English sentence
+in the session's `note` - which is exactly the free-text blob this document's
+rules exist to keep facts out of. It is two tables now.
+
+`trainer_scope_presets`:
+
+| Column | Meaning |
+| --- | --- |
+| `id` | `AUTOINCREMENT`, so a deleted preset's id is never handed to the next one. |
+| `owner` | `'local'`, as everywhere else here. |
+| `name` | What the person called it. Unique per owner. |
+| `start_fret`, `end_fret` | The fret range, 0-36, `start_fret` never past `end_fret`. |
+| `key_root`, `key_quality` | The key, `major` or `minor` - both set or both `NULL`, and both `NULL` means every note. |
+| `created_at` | UTC timestamp. |
+
+`trainer_scope_preset_strings`, one row per string:
+
+| Column | Meaning |
+| --- | --- |
+| `preset_id` | The preset. `ON DELETE CASCADE` - a row saying "(this preset) includes (string 3)" states nothing once the preset is gone. |
+| `string_number` | 1-24. `PRIMARY KEY (preset_id, string_number)`, so a string is in a preset at most once. |
+
+**A set is not a column, and it is not JSON.** "Which strings does this scope
+allow" has to be answerable by the database, for the same reason
+`trainer_attempts` has columns rather than a blob: a reader that must parse
+`"[1,2,3]"` out of a text field cannot ask anything about it. That is also why
+an empty string set is refused on the way in - "every string" is stored by
+naming every string, so a saved scope can never be confused with one whose
+strings failed to write.
+
+**Shared, not per-drill.** There is no `drill` column and there will not be
+one: a scope is a thing a person is working on, not a thing one question
+format owns, so a scope saved while naming notes is the same row the chord
+drill offers.
+
+**What this does to `note`.** A drill run on a named scope logs
+`practice_sessions.preset_id` and stops writing the scope sentence into
+`note` - the fret range, the strings and the key are in a row to join on, and
+repeating them as prose would put the same fact in two places, one of them
+free text. The counts stay in `note`: they are about how the session went, not
+about what it was scoped to. A drill run on an *unnamed* scope still writes
+the whole sentence, because for that session it is the only trace there is,
+and notes already stored are left exactly as they were.
+
+`preset_id` is `ON DELETE SET NULL`, decided the way every other reference
+here is - by asking whether the row still says anything once the thing it
+names is gone. It does: the minutes were still practised, on that day, in that
+activity. Deleting a preset is a tidy-up, never a statement that the practice
+did not happen.
+
+### Asking questions
+
+- `GET /api/trainer/presets` - every named scope, newest first, each with its
+  string set.
+- `POST /api/trainer/presets` - save one. A duplicate name is `409`.
+- `DELETE /api/trainer/presets/{id}` - delete one; `sessions_kept` counts the
+  practice it leaves behind.
+- "How much time went into this scope" is a filter over `practice_sessions` on
+  `preset_id`, joined to the preset - not a bespoke aggregate endpoint, the
+  same rule the rest of this surface holds to.
 
 ## What is not here yet
 

@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/scope-presets.spec.js",
+  "count": 7,
+  "reason": "issue #236: a scope saved in one drill offered in the other with strings, fret range and key all restored; a hand-turned control dropping the claim that the saved scope is still in force; practice logged on a saved scope carrying its id with the scope sentence gone from the note; practice on an unnamed scope keeping that sentence; removing a scope leaving the practice and clearing only the reference; a duplicate name refused in words; and the picker's own wording held to the practice vocabulary."
+}
