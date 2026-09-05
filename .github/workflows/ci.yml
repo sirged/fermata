@@ -124,9 +124,9 @@ jobs:
       # first one and ran a wider set than the caller asked for - silently,
       # with a green run to show for it. Six composed titles in this file
       # match "gig mode" (one directly, five through their describe block)
-      # and seven match "gig", so a --grep that loses its second word lists
-      # seven and this step goes red. Proven against that exact revert
-      # before it was added.
+      # and eight match "gig" (#258 added one), so a --grep that loses its
+      # second word lists eight and this step goes red. Proven against that
+      # exact revert before it was added.
       #
       # Both counts are pinned, not just the good one: if the titles ever
       # converged so that "gig" and "gig mode" listed the same six, the
@@ -147,7 +147,7 @@ jobs:
           echo "$listed"
           echo "$listed" | grep -qx "Total: 6 tests in 1 file"
           wider=$(node scripts/run-browser-tests.mjs             tests/browser/practice-shortcuts.spec.js --grep "gig" --list)
-          echo "$wider" | grep -qx "Total: 7 tests in 1 file"
+          echo "$wider" | grep -qx "Total: 8 tests in 1 file"
 
   browser:
     name: Browser tests

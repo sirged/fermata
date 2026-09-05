@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/practice-shortcuts.spec.js",
+  "count": 2,
+  "reason": "issue #234 review: a scroll the pane never travelled must not outlive itself - a turn onto the page already shown leaves the reader's next scroll alone, and a gig turn the reader scrolls away from restores their own place rather than the target they abandoned."
+}
