@@ -95,6 +95,15 @@
   // half-page branch went uncovered by #169 and #175 in the first place.
   let requestedScroll = null;
   let scrollRequestSeq = 0;
+  // Whether the pane is still TRAVELLING to the position above, rather than
+  // sitting at it. Both turn paths scroll with `behavior: "smooth"`, so for
+  // as long as that animation runs, container.scrollTop is a frame of it -
+  // a place the reader is passing through, not one they asked for. Set when
+  // a scroll is asked for, cleared when the scrolling goes quiet (the same
+  // 200ms rule that hands page tracking back to the reader: by then the
+  // animation has either arrived or been taken over, and either way
+  // scrollTop is the truth again).
+  let scrollTravelling = false;
 
   // Read-only test instrumentation, in the same spirit as the `data-page`
   // attribute each canvas already carries. Nothing in here reads either of
@@ -252,7 +261,25 @@
       // down page one and a turn pressed mid-re-render: the restore landed
       // 140px past page two's top, scaling with how far down page one they
       // had been.
-      const before = positionAt(container.scrollTop);
+      //
+      // And read off the reader's OUTSTANDING REQUEST rather than off the
+      // scroller whenever a turn is still travelling to it (#234). Both turn
+      // paths scroll with `behavior: "smooth"`, so between the press and the
+      // arrival container.scrollTop is a frame of an animation. Snapshotting
+      // one of those frames as "where the reader is" and then restoring to it
+      // does two wrong things at once: it throws away the half page they
+      // asked for, and the restore's own assignment to scrollTop aborts the
+      // animation that was going to deliver it - so they are left partway,
+      // permanently, with nothing to retry it. Measured on a runner where
+      // that animation takes frames rather than landing in one (this is the
+      // whole of #234's 384/1100, and why it never appeared on a box where it
+      // lands in one): press at scrollTop 0 on 608px pages, the animation
+      // reaching 2, 12, 38, 96, 164, 208, 236 over seven frames, the
+      // re-render capturing 236 and restoring to 24 + (236-24)/608 * 1100 =
+      // 408 - 35% down a page the reader had asked to be 50% down, and the
+      // pane genuinely at rest there.
+      const before =
+        scrollTravelling && requestedScroll ? requestedScroll : positionAt(container.scrollTop);
       const seqBefore = scrollRequestSeq;
       // re-render the existing canvases in place (same elements, same
       // order) so the IntersectionObserver's page tracking keeps working
@@ -279,6 +306,11 @@
       if (restored) {
         container.scrollTop = pageTop(restored) + target.fraction * restored.getBoundingClientRect().height;
         restoredAtSeq = scrollRequestSeq;
+        // Assigning scrollTop ends any smooth scroll that was still running,
+        // and this assignment IS that scroll's destination - so nothing is
+        // travelling any more, and the next thing to read the pane should
+        // read it off the scroller.
+        scrollTravelling = false;
       }
     }
 
@@ -435,7 +467,16 @@
 
     function onScroll() {
       clearTimeout(settleTimer);
-      settleTimer = setTimeout(() => (intendedPage = null), 200);
+      settleTimer = setTimeout(() => {
+        intendedPage = null;
+        // The scrolling has stopped, so whatever this component last asked
+        // for has either been delivered or been taken over by the reader:
+        // either way scrollTop is where they are, and a re-render should
+        // read it from there again rather than from a request that is now
+        // history. Cleared on the same timer as intendedPage above because
+        // it is the same fact about the same scroll.
+        scrollTravelling = false;
+      }, 200);
       stampWhenQuiet();
     }
 
@@ -451,6 +492,7 @@
       pendingPage = null;
       turnedBeforeRestore = false;
       requestedScroll = null;
+      scrollTravelling = false;
       observer?.disconnect();
       resizeObserver?.disconnect();
       clearTimeout(saveTimer);
@@ -560,6 +602,9 @@
     if (!position) return;
     requestedScroll = position;
     scrollRequestSeq += 1;
+    // Travelling from here until the scrolling goes quiet - see onScroll,
+    // and rerenderAtWidth for what reads it (#234).
+    scrollTravelling = true;
     markUnsettled();
   }
 
