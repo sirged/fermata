@@ -94,6 +94,23 @@ const BARRE_TEMPLATES = {
     quality: "minor",
     offsets: [[6, 0], [5, 2], [4, 2], [3, 0], [2, 0], [1, 0]],
   },
+  // The E-shape's minor-seventh and major-seventh forms (issue #252) - the
+  // open Em7 (022030-style: 0 2 0 0 0 0) and Emaj7 (0 2 1 1 0 0) fingerings,
+  // made movable the same way barre-e-major/minor already are: every fret
+  // relative to a base that slides up the neck. shape-tones.spec.js checks
+  // every instance this produces against chord-theory.js's own chordTones,
+  // the same as every other shape here - these two are not exempt for being
+  // new.
+  "barre-e-minor7": {
+    rootString: 6,
+    quality: "minor7",
+    offsets: [[6, 0], [5, 2], [4, 0], [3, 0], [2, 0], [1, 0]],
+  },
+  "barre-e-major7": {
+    rootString: 6,
+    quality: "major7",
+    offsets: [[6, 0], [5, 2], [4, 1], [3, 1], [2, 0], [1, 0]],
+  },
   "barre-a-major": {
     rootString: 5,
     quality: "major",
@@ -103,6 +120,19 @@ const BARRE_TEMPLATES = {
     rootString: 5,
     quality: "minor",
     offsets: [[5, 0], [4, 2], [3, 2], [2, 1], [1, 0]],
+  },
+  // The A-shape's minor-seventh and major-seventh forms (issue #252) - the
+  // open Am7 (x02010) and Amaj7 (x02120) fingerings, made movable the same
+  // way barre-a-major/minor already are.
+  "barre-a-minor7": {
+    rootString: 5,
+    quality: "minor7",
+    offsets: [[5, 0], [4, 2], [3, 0], [2, 1], [1, 0]],
+  },
+  "barre-a-major7": {
+    rootString: 5,
+    quality: "major7",
+    offsets: [[5, 0], [4, 2], [3, 1], [2, 2], [1, 0]],
   },
 };
 

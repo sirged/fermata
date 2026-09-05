@@ -44,11 +44,25 @@ test("known dominant sevenths are exactly right", () => {
   expect(chordTones("B", "dominant7")).toEqual(["B", "Eb", "F#", "A"]);
 });
 
+test("known minor sevenths are exactly right", () => {
+  expect(chordTones("A", "minor7")).toEqual(["A", "C", "E", "G"]);
+  expect(chordTones("D", "minor7")).toEqual(["D", "F", "A", "C"]);
+  expect(chordTones("E", "minor7")).toEqual(["E", "G", "B", "D"]);
+  expect(chordTones("C", "minor7")).toEqual(["C", "Eb", "G", "Bb"]);
+});
+
+test("known major sevenths are exactly right", () => {
+  expect(chordTones("C", "major7")).toEqual(["C", "E", "G", "B"]);
+  expect(chordTones("F", "major7")).toEqual(["F", "A", "C", "E"]);
+  expect(chordTones("G", "major7")).toEqual(["G", "B", "D", "F#"]);
+  expect(chordTones("E", "major7")).toEqual(["E", "Ab", "B", "Eb"]);
+});
+
 // ---------------------------------------------------------------- exhaustive, every root x quality
 
-test("every one of the 36 (root, quality) chords has the right note count and no repeats", () => {
+test("every one of the 60 (root, quality) chords has the right note count and no repeats", () => {
   expect(ROOTS).toHaveLength(12);
-  expect(QUALITY_LIST).toEqual(["major", "minor", "dominant7"]);
+  expect(QUALITY_LIST).toEqual(["major", "minor", "dominant7", "minor7", "major7"]);
   for (const root of ROOTS) {
     for (const quality of QUALITY_LIST) {
       const tones = chordTones(root, quality);
@@ -81,12 +95,40 @@ test("a dominant seventh is its major triad plus one more note, at every root", 
   }
 });
 
+// A minor seventh is built on the MINOR triad, not the major one - this is
+// what distinguishes it from a dominant seventh, which shares a root's
+// triad but not its seventh. A mutation that gave minor7 dominant7's own
+// intervals (both are (root, +7 semitones)-shaped tetrads, so a bare note-
+// count check would not catch it) fails right here, on the third.
+test("a minor seventh is its minor triad plus one more note, at every root", () => {
+  for (const root of ROOTS) {
+    const minor = chordTones(root, "minor");
+    const seventh = chordTones(root, "minor7");
+    expect(seventh.slice(0, 3)).toEqual(minor);
+    expect(seventh).toHaveLength(4);
+  }
+});
+
+// Same relationship, on the major triad plus the MAJOR seventh (a half
+// step closer to the root than the dominant/minor seventh above) - the
+// interval that gives this chord its "maj7" suffix rather than a plain "7".
+test("a major seventh is its major triad plus one more note, at every root", () => {
+  for (const root of ROOTS) {
+    const major = chordTones(root, "major");
+    const seventh = chordTones(root, "major7");
+    expect(seventh.slice(0, 3)).toEqual(major);
+    expect(seventh).toHaveLength(4);
+  }
+});
+
 // ---------------------------------------------------------------- naming
 
 test("chordName spells every quality the way a flash card should read it", () => {
   expect(chordName("C", "major")).toBe("C major");
   expect(chordName("A", "minor")).toBe("A minor");
   expect(chordName("G", "dominant7")).toBe("G7");
+  expect(chordName("C", "minor7")).toBe("Cm7");
+  expect(chordName("C", "major7")).toBe("Cmaj7");
 });
 
 test("an unknown root or quality names no chord at all", () => {

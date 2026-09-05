@@ -29,7 +29,7 @@
   import { getInstruments, loadInstruments } from "../instruments.svelte.js";
   import { localDay } from "../practice.js";
   import { playChord } from "../score-render.js";
-  import { ROOTS } from "./chord-theory.js";
+  import { ROOTS, chordName } from "./chord-theory.js";
   import {
     NAME_TO_SHAPE,
     SHAPE_TO_NAME,
@@ -547,7 +547,7 @@
 
         {#if direction === NAME_TO_SHAPE}
           <p class="statement prompt">
-            Place <strong>{round.question.root} {round.question.quality === "dominant7" ? "7" : round.question.quality}</strong> on the neck.
+            Place <strong>{chordName(round.question.root, round.question.quality)}</strong> on the neck.
           </p>
         {:else}
           <p class="statement prompt">Name the shape shown.</p>
@@ -655,7 +655,7 @@
     <p class="quiet footnote">
       The time you spend here is logged as chord practice, in the same history as everything else.
       Every question is also kept on its own, so which chords need more time is something you can
-      look back on - not only a count for the session it happened in.
+      look back on, beyond a count for the session it happened in.
     </p>
   </main>
 </div>

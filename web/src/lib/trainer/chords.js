@@ -58,8 +58,13 @@ export const FAMILIES = {
   },
   sevenths: {
     label: "Sevenths",
-    qualities: ["dominant7"],
-    shapeFamilies: ["open"],
+    // Dominant, minor and major sevenths together (issue #252) - the
+    // dominant's open shapes plus the minor and major's movable E/A-form
+    // barre shapes (chord-shapes.js has no OPEN shape for either new
+    // quality, only "one E-form and one A-form movable shape" as the
+    // issue's own appetite asks for).
+    qualities: ["dominant7", "minor7", "major7"],
+    shapeFamilies: ["open", "barre-e-minor7", "barre-a-minor7", "barre-e-major7", "barre-a-major7"],
   },
   barre: {
     label: "Barre chords",

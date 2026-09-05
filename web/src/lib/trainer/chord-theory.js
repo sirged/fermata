@@ -12,20 +12,25 @@
 // MIRRORED, CHARACTER FOR CHARACTER, IN server/fermata/trainer.py's
 // CHORD_QUALITIES and chord_tones - the same pair neck.js's PITCH_CLASSES
 // and trainer.py's own PITCH_CLASSES already are. tests/unit/chord-
-// theory.spec.js checks every one of the 36 (root, quality) chords this
+// theory.spec.js checks every one of the 60 (root, quality) chords this
 // module can build; server/tests/test_chord_theory.py checks the identical
-// 36 on the Python side, so a drift between the two fails a test on
+// 60 on the Python side, so a drift between the two fails a test on
 // whichever side changed rather than showing up as a shape and its label
-// disagreeing about what chord is on screen.
+// disagreeing about what chord is on screen. test_chord_theory.py also
+// parses this module's own source to pin the two tables' intervals equal,
+// key for key, rather than trusting the two lists to stay in step by hand.
 import { PITCH_CLASSES } from "./neck.js";
 
 // Interval steps from the root, in semitones - a triad for major and minor,
-// a tetrad for the one seventh chord this module names. "Majors and minors
-// first, then sevenths" (issue #28) is exactly this order.
+// a tetrad for every seventh chord this module names. "Majors and minors
+// first, then sevenths" (issue #28, extended by #252 to the minor and major
+// seventh alongside the dominant) is exactly this order.
 export const QUALITIES = {
   major: { label: "major", suffix: "", intervals: [0, 4, 7] },
   minor: { label: "minor", suffix: "m", intervals: [0, 3, 7] },
   dominant7: { label: "7th", suffix: "7", intervals: [0, 4, 7, 10] },
+  minor7: { label: "minor 7th", suffix: "m7", intervals: [0, 3, 7, 10] },
+  major7: { label: "major 7th", suffix: "maj7", intervals: [0, 4, 7, 11] },
 };
 
 export const QUALITY_LIST = Object.keys(QUALITIES);
@@ -48,15 +53,19 @@ export function chordTones(root, quality) {
   return q.intervals.map((step) => PITCH_CLASSES[(rootIndex + step) % 12]);
 }
 
-/** "C major", "A minor", "G7" - how a chord is named wherever one is shown,
- * so the flash card's prompt, its answer choices, and its structured
- * attempt row can never spell the same chord two different ways. Null for
- * an unknown root or quality, the same as chordTones. */
+/** "C major", "A minor", "G7", "Cm7", "Cmaj7" - how a chord is named
+ * wherever one is shown, so the flash card's prompt, its answer choices,
+ * and its structured attempt row can never spell the same chord two
+ * different ways. Major and minor read as a word ("C major"); every
+ * seventh reads as its own suffix run straight against the root, the
+ * style a guitarist already reads a seventh chord's name in - this is why
+ * QUALITIES carries a suffix at all rather than only a label. Null for an
+ * unknown root or quality, the same as chordTones. */
 export function chordName(root, quality) {
   const q = QUALITIES[quality];
   if (PITCH_CLASSES.indexOf(root) < 0 || !q) return null;
-  if (quality === "dominant7") return `${root}7`;
-  return `${root} ${q.label}`;
+  if (quality === "major" || quality === "minor") return `${root} ${q.label}`;
+  return `${root}${q.suffix}`;
 }
 
 /** Whether two chords - each a (root, quality) pair - are the SAME chord,
@@ -65,7 +74,8 @@ export function chordName(root, quality) {
  * this the chord that was asked for": two different (root, quality) pairs
  * that happened to name identical tone sets would otherwise grade as wrong
  * for a reason that has nothing to do with what was actually played or
- * chosen. With today's three qualities no such pair exists, but the rule
+ * chosen. With today's five qualities no such pair exists (checked: 60 distinct
+ * tone sets), but the rule
  * this drill grades by should not depend on that staying true. */
 export function chordsMatch(rootA, qualityA, rootB, qualityB) {
   const a = chordTones(rootA, qualityA);
