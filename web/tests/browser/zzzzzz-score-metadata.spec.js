@@ -22,17 +22,20 @@
 // tolerates anything already sitting under Uploads/, so leaving these rows
 // behind is safe for every spec that checks WHICH scores are present.
 //
-// It is not safe for zz-library-missing.spec.js's own "a refused scan says
-// so" test, which is not about which scores exist but about how MANY: a
-// scan refuses to reconcile when it can account for half or fewer of the
-// library's high-water mark (scanner.py's LOSS_FRACTION), and that mark is a
-// persisted, monotonically-increasing count for the whole run - discovered
-// the hard way, by running the full suite and watching that one test go red
-// once this file's own two rows were added on top of viewer-practice.spec.js's
-// two. Sorting after every spec that depends on that mark's exact size is
-// what keeps this file's own two permanent rows from ever being counted
-// against it - a second reason "leaves rows behind" specs sort late, beside
-// the OWN_PATHS-refusal reason viewer-practice.spec.js's own header gives.
+// IT USED TO BE UNSAFE for zz-library-missing.spec.js's own "a refused scan
+// says so" test as well, which is not about which scores exist but about how
+// MANY - discovered the hard way, by running the full suite and watching that
+// one test go red once this file's own two rows were added on top of
+// viewer-practice.spec.js's two. Sorting after it was the fix, and it was a
+// workaround: the constraint lived in this file's NAME and in nothing that
+// could enforce it.
+//
+// That is no longer a reason to sort here (#250). That test now counts what is
+// already in the library and builds a loss of its own that outweighs it, so it
+// is refused whatever anybody left behind - measured by placing a spec before
+// it that leaves five files, and again with twenty-five. The reason above, the
+// one viewer-practice.spec.js's own header gives, is why this file still sorts
+// late; only the high-water one has gone.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
