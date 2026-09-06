@@ -72,7 +72,7 @@ test("Em7, Emaj7, Am7 and Amaj7 are all offered as open shapes, base fret 0 with
     expect(shape.frets.some((f) => f.fret === 0), `${shape.id} has an open string`).toBe(true);
     expect(shape.frets.every((f) => f.fret >= 0), `${shape.id} never frets below the nut`).toBe(true);
   }
-  // Read exactly as a guitarist would write them - Em7 022000, Emaj7 021100,
+  // Read exactly as a guitarist would write them - Em7 020000, Emaj7 021100,
   // Am7 x02010, Amaj7 x02120 (see chord-shapes.js's own comment on why these
   // are the barre templates' own offsets at base fret 0).
   expect(Object.fromEntries(em7.frets.map((f) => [f.string, f.fret]))).toEqual({
