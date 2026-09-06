@@ -533,6 +533,111 @@ def test_the_refusal_names_what_is_stored_now(app_env, insert_score):
     assert isinstance(detail["message"], str) and detail["message"]
 
 
+def test_two_concurrent_saves_holding_the_same_stamp_do_not_both_land(app_env, insert_score):
+    """The test above proves the precondition rejects a STALE value once B has
+    already loaded it and A has already saved - but that is two requests taken
+    in a chosen order. What actually has to hold is that whichever of two
+    REAL, OVERLAPPING requests loses the race sees a stamp that already moved
+    - not the one it loaded - because save_transcription reads the stored row
+    and then decides whether to write from what it read, and anything that can
+    interleave a second read or write in between reopens exactly the bug this
+    issue closed.
+
+    That is why `save_transcription` runs the read-then-write under
+    `write_tx()` and not `tx()` (see the comment at its call site): `tx()`
+    only takes SQLite's write lock at the transaction's first DML statement,
+    so the SELECT that reads `current` runs OUTSIDE any lock and two threads
+    can both read the same row before either writes. `write_tx()` opens with
+    `BEGIN IMMEDIATE` (db.py, near line 1440), which takes the write lock
+    before that SELECT - so the loser's SELECT blocks until the winner's
+    transaction commits, and then reads the winner's new stamp instead of the
+    one both clients actually loaded.
+
+    Driven through two real TestClients rather than by calling
+    api.save_transcription directly, because the thing under test is two
+    REQUESTS overlapping - db.connect() caches one connection per thread
+    (db._local), so calling the handler twice from this test's own thread
+    would never open two connections at all and could not show the race
+    either way.
+
+    Repeated for 5 barrier-synchronised rounds rather than once: a race that
+    happens to resolve the same way on one run is not evidence it always
+    does, and this is cheap enough (~1s for all 5, measured) that there is no
+    reason to trust a single roll.
+
+    SQLite's busy timeout is `db.connect()`'s `sqlite3.connect(..., timeout=30)`
+    - 30 seconds. The loser here only ever waits for the winner's own
+    transaction to commit (microseconds), so that timeout is never in play;
+    it is mentioned because a MUCH shorter timeout is exactly the kind of
+    thing that would make this test flaky without changing the bug it tests
+    for.
+    """
+    import threading
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.include_router(api.router)
+    # Two clients, one app, one (monkeypatched, per app_env) database file -
+    # not two connections opened by hand, so this goes through exactly the
+    # request path a real second browser tab would.
+    client_a = TestClient(app)
+    client_b = TestClient(app)
+
+    conn = db.connect()
+    score_id = insert_score(conn, "race.pdf")
+    url = f"/api/scores/{score_id}/transcription"
+    # Seed a first edited row: a save with no precondition can never be
+    # refused, so round 0 needs something already stored to race over.
+    client_a.put(url, json={"content": ":4 0.0 |"})
+
+    for round_number in range(5):
+        stamp = client_a.get(url).json()["updated_at"]
+        barrier = threading.Barrier(2)
+        responses = {}
+
+        def _race(client, key, content):
+            barrier.wait()
+            responses[key] = client.put(
+                url, json={"content": content, "expected_updated_at": stamp}
+            )
+
+        content_a = f":4 1.{round_number} |"
+        content_b = f":4 2.{round_number} |"
+        threads = [
+            threading.Thread(target=_race, args=(client_a, "a", content_a)),
+            threading.Thread(target=_race, args=(client_b, "b", content_b)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        statuses = sorted(r.status_code for r in responses.values())
+        assert statuses == [200, 409], (
+            f"round {round_number}: expected exactly one 200 and one 409, got "
+            f"{[(k, r.status_code) for k, r in responses.items()]}"
+        )
+        winner_key = next(k for k, r in responses.items() if r.status_code == 200)
+        loser_key = "b" if winner_key == "a" else "a"
+        winner_content = content_a if winner_key == "a" else content_b
+        winner_body = responses[winner_key].json()
+
+        # The row holds the winner's content and the winner's new stamp - the
+        # loser's write truly never happened, not merely "returned an error".
+        stored = client_a.get(url).json()
+        assert stored["content"] == winner_content
+        assert stored["updated_at"] == winner_body["updated_at"]
+
+        # The 409 names the stamp the winner just wrote, which is how a real
+        # client would notice its precondition is the STALE one and offer a
+        # reload rather than a generic apology.
+        loser_detail = responses[loser_key].json()["detail"]
+        assert loser_detail["updated_at"] == winner_body["updated_at"]
+        assert loser_detail["source"] == "edited"
+
+
 def test_a_save_holding_a_value_for_an_edit_that_was_reverted_is_refused(
     app_env, extractable_pdf, monkeypatch, insert_score
 ):
