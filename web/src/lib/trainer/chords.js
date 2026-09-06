@@ -243,20 +243,29 @@ export function attemptPayload({ sessionId = null, question, given, responseMs =
  *
  * The tones read out here are SPELLED (chord-theory.js's spellChordTones -
  * issue #269), not chordTones' own fixed twelve-name table: "A major 7" is
- * read as A, C#, E, G#, not A, C#, E, Ab. Grading above (checkNameAnswer,
- * checkShapeAnswer) stays on chordTones' pitch-class identity, unchanged -
- * only what the player is TOLD changes here. */
+ * read as A, C#, E, G#, not A, C#, E, Ab. What was actually TAPPED gets the
+ * same treatment: a tapped pitch class that is one of the chord's own tones
+ * is read out with that chord's spelling too, so a wrong answer never says
+ * "sounded G#" in one clause and "sounded Ab" in the next for the same
+ * pitch. A tapped pitch class that ISN'T one of the chord's tones has no
+ * root-relative spelling to borrow - it keeps chordTones' table name.
+ * Grading above (checkNameAnswer, checkShapeAnswer) stays on chordTones'
+ * pitch-class identity, unchanged - only what the player is TOLD changes
+ * here. */
 export function answerStatement(question, given, correct) {
   const name = chordName(question.root, question.quality);
   if (question.direction === SHAPE_TO_NAME) {
     const givenName = chordName(given.root, given.quality);
     return correct ? `That shape is ${name}.` : `That shape is ${name}. You named ${givenName ?? "nothing"}.`;
   }
-  const spelled = spellChordTones(question.root, question.quality).join(", ");
+  const tones = chordTones(question.root, question.quality);
+  const spelledTones = spellChordTones(question.root, question.quality);
+  const spelled = spelledTones.join(", ");
   if (!given.notes?.length) return `${name} is ${spelled}.`;
-  return correct
-    ? `${name} is ${spelled} - that's what sounded.`
-    : `${name} is ${spelled}. What was tapped sounded ${given.notes.join(", ")}.`;
+  if (correct) return `${name} is ${spelled} - that's what sounded.`;
+  const spellingByPitchClass = new Map(tones.map((tone, i) => [tone, spelledTones[i]]));
+  const tapped = given.notes.map((note) => spellingByPitchClass.get(note) ?? note).join(", ");
+  return `${name} is ${spelled}. What was tapped sounded ${tapped}.`;
 }
 
 /** How the drill has gone so far. Two counts, nothing else - no percentage,

@@ -88,14 +88,15 @@ const LETTER_OFFSETS = [0, 2, 4, 6];
 
 /** How a chord's tones are named to the player, root by root - unlike
  * chordTones (identity, one fixed spelling per pitch class, used for
- * grading), this spells each tone by LETTER from the root, choosing
- * whichever accidental makes that letter's pitch class agree with
- * chordTones' answer. "A major 7" is A, C#, E, G# this way (G, not chordTones'
- * own Ab, is the seventh's letter four letters plus a fifth above... two
- * letters past the fifth, i.e. offset 6 from A: A-B-C-D-E-F-G lands on G,
- * sharped to reach the same pitch class Ab already names) - see the module
- * docstring and issue #269 for why a fixed twelve-name table is right for
- * identity but wrong for what a learner reads.
+ * grading), this spells each tone by LETTER from the root: letters ascend
+ * one staff-step per degree from the root's own letter, and each letter
+ * takes whatever accidental makes its pitch class agree with chordTones'
+ * answer. "A major 7" is A, C#, E, G# this way - the seventh's letter sits
+ * two staff-steps past the fifth (offset 6 from A: A-B-C-D-E-F-G lands on
+ * G), sharped to reach the same pitch class chordTones' own Ab already
+ * names - see the module docstring and issue #269 for why a fixed
+ * twelve-name table is right for identity but wrong for what a learner
+ * reads.
  *
  * The ROOT keeps the table's own name (Eb, Ab, Bb, C#, F# spelled as the
  * table spells them - these are ids, not chord-specific spellings, same

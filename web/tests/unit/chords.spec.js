@@ -311,6 +311,19 @@ test("answerStatement spells A major 7's tones G#, not chordTones' own Ab", () =
   );
 });
 
+// issue #271 nit: the TAPPED clause used to read out chordTones' raw
+// PITCH_CLASSES names, so one sentence could say "G#" for the spelled
+// chord tone and "Ab" for the very same tapped pitch class. A tapped tone
+// that belongs to the chord must be read out with the chord's own
+// spelling; a tapped tone that ISN'T one of the chord's tones has no
+// root-relative spelling to borrow, so it keeps chordTones' table name.
+test("answerStatement spells a tapped chord tone by the chord, but keeps a non-chord tone's table name", () => {
+  const question = { direction: NAME_TO_SHAPE, root: "A", quality: "major7" };
+  const text = answerStatement(question, { notes: ["A", "C#", "E", "Ab", "Bb"] }, false);
+  expect(text).toBe("Amaj7 is A, C#, E, G#. What was tapped sounded A, C#, E, G#, Bb.");
+  expect(text).not.toContain("Ab");
+});
+
 test("every phrase this module produces avoids the forbidden words and never a percentage", () => {
   const samples = [
     progressStatement({ asked: 5, correct: 2 }),
