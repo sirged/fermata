@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/chord-theory.spec.js",
+  "count": 6,
+  "reason": "issue #269: spellChordTones' letter-based spelling checked against chord-theory.spec.js's own known-chord cases (A major 7 spells G#, B major spells D#), a hand-written table for major triads/sevenths across all twelve roots, every one of the 60 (root, quality) chords reducing to chordTones' own pitch classes, every spelled tone's letter ascending from the root by its interval degree, no chord among the 60 needing a double accidental, and an unknown root or quality spelling nothing."
+}

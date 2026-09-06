@@ -35,7 +35,7 @@
 // drill committed to, and db.py's comment on the new table for the honest
 // alternative: a sibling table shaped for what a chord attempt actually is.
 import { countOrNone, formatDuration } from "../practice.js";
-import { chordName, chordTones, chordsMatch } from "./chord-theory.js";
+import { chordName, chordTones, chordsMatch, spellChordTones } from "./chord-theory.js";
 import { allShapes, shapeMatchesChord, shapeNotes } from "./chord-shapes.js";
 import { groupInScope, keyNotes, scopeLabel as regionLabel } from "./constraints.js";
 import { DEFAULT_FRET_COUNT, noteAt, pitchClass } from "./neck.js";
@@ -239,17 +239,24 @@ export function attemptPayload({ sessionId = null, question, given, responseMs =
 /** What to say about the answer just given - the chord's name either way,
  * and what was actually played when a shape was tapped. No verdict word:
  * the fact stated is what teaches, same rule as fret-to-note's
- * answerStatement. */
+ * answerStatement.
+ *
+ * The tones read out here are SPELLED (chord-theory.js's spellChordTones -
+ * issue #269), not chordTones' own fixed twelve-name table: "A major 7" is
+ * read as A, C#, E, G#, not A, C#, E, Ab. Grading above (checkNameAnswer,
+ * checkShapeAnswer) stays on chordTones' pitch-class identity, unchanged -
+ * only what the player is TOLD changes here. */
 export function answerStatement(question, given, correct) {
   const name = chordName(question.root, question.quality);
   if (question.direction === SHAPE_TO_NAME) {
     const givenName = chordName(given.root, given.quality);
     return correct ? `That shape is ${name}.` : `That shape is ${name}. You named ${givenName ?? "nothing"}.`;
   }
-  if (!given.notes?.length) return `${name} is ${chordTones(question.root, question.quality).join(", ")}.`;
+  const spelled = spellChordTones(question.root, question.quality).join(", ");
+  if (!given.notes?.length) return `${name} is ${spelled}.`;
   return correct
-    ? `${name} is ${chordTones(question.root, question.quality).join(", ")} - that's what sounded.`
-    : `${name} is ${chordTones(question.root, question.quality).join(", ")}. What was tapped sounded ${given.notes.join(", ")}.`;
+    ? `${name} is ${spelled} - that's what sounded.`
+    : `${name} is ${spelled}. What was tapped sounded ${given.notes.join(", ")}.`;
 }
 
 /** How the drill has gone so far. Two counts, nothing else - no percentage,

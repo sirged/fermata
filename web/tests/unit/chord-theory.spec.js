@@ -12,7 +12,9 @@ import {
   chordName,
   chordTones,
   chordsMatch,
+  spellChordTones,
 } from "../../src/lib/trainer/chord-theory.js";
+import { PITCH_CLASSES } from "../../src/lib/trainer/neck.js";
 
 // ---------------------------------------------------------------- known chords, by hand
 
@@ -136,6 +138,97 @@ test("an unknown root or quality names no chord at all", () => {
   expect(chordTones("C", "augmented")).toBeNull();
   expect(chordName("H", "major")).toBeNull();
   expect(chordName("C", "augmented")).toBeNull();
+});
+
+// ---------------------------------------------------------------- spelled tones (issue #269)
+
+// The seven letters, each letter's own natural pitch class as a semitone,
+// and a reducer that turns a spelled tone ("G#", "Bb", "E") back into the
+// pitch class chordTones would name for the same semitone - independent of
+// spellChordTones' own implementation, so this test would catch the
+// function computing the wrong semitone, not merely restate its own math.
+const LETTER_NATURAL_SEMITONE = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+function pitchClassOf(spelledTone) {
+  const letter = spelledTone[0];
+  const accidental = spelledTone.slice(1);
+  let semitone = LETTER_NATURAL_SEMITONE[letter];
+  for (const ch of accidental) semitone += ch === "#" ? 1 : -1;
+  semitone = ((semitone % 12) + 12) % 12;
+  return PITCH_CLASSES[semitone];
+}
+
+const LETTERS = ["A", "B", "C", "D", "E", "F", "G"];
+const LETTER_OFFSETS = [0, 2, 4, 6];
+
+test("A major 7 spells G#, not the table's Ab; B major spells D#, not Eb", () => {
+  // The two strings #263's review measured directly off main, and #269's
+  // whole reason to exist - see this repo's issue #269.
+  expect(spellChordTones("A", "major7")).toEqual(["A", "C#", "E", "G#"]);
+  expect(spellChordTones("B", "major")).toEqual(["B", "D#", "F#"]);
+});
+
+// A hand-written table for one quality (major) across all twelve roots -
+// the twelve results a reviewer can check by eye against a staff, not only
+// against this module's own reduction logic below. The four roots the
+// twelve-name table already spells with a sharp (C#, F#) read their thirds
+// and sevenths as sharps too (E#, A#, B#) rather than switching to a flat
+// spelling mid-chord - the same "roots stay as the table names them" rule
+// issue #269 states, applied consistently within a chord.
+test("major triads/sevenths, all twelve roots: a hand-written spelling table", () => {
+  expect(spellChordTones("C", "major")).toEqual(["C", "E", "G"]);
+  expect(spellChordTones("C#", "major")).toEqual(["C#", "E#", "G#"]);
+  expect(spellChordTones("D", "major")).toEqual(["D", "F#", "A"]);
+  expect(spellChordTones("Eb", "major")).toEqual(["Eb", "G", "Bb"]);
+  expect(spellChordTones("E", "major")).toEqual(["E", "G#", "B"]);
+  expect(spellChordTones("F", "major")).toEqual(["F", "A", "C"]);
+  expect(spellChordTones("F#", "major")).toEqual(["F#", "A#", "C#"]);
+  expect(spellChordTones("G", "major")).toEqual(["G", "B", "D"]);
+  expect(spellChordTones("Ab", "major")).toEqual(["Ab", "C", "Eb"]);
+  expect(spellChordTones("A", "major")).toEqual(["A", "C#", "E"]);
+  expect(spellChordTones("Bb", "major")).toEqual(["Bb", "D", "F"]);
+  expect(spellChordTones("B", "major")).toEqual(["B", "D#", "F#"]);
+});
+
+test("every one of the 60 spelled chords reduces to chordTones' own pitch classes", () => {
+  for (const root of ROOTS) {
+    for (const quality of QUALITY_LIST) {
+      const tones = chordTones(root, quality);
+      const spelled = spellChordTones(root, quality);
+      expect(spelled, `${root} ${quality}`).toHaveLength(tones.length);
+      expect(spelled[0], `${root} ${quality} root keeps the table's own name`).toBe(root);
+      for (let i = 0; i < tones.length; i++) {
+        expect(pitchClassOf(spelled[i]), `${root} ${quality} tone ${i}: ${spelled[i]}`).toBe(tones[i]);
+      }
+    }
+  }
+});
+
+test("every spelled tone's letter ascends from the root by its interval degree", () => {
+  for (const root of ROOTS) {
+    for (const quality of QUALITY_LIST) {
+      const spelled = spellChordTones(root, quality);
+      const rootLetterIndex = LETTERS.indexOf(root[0]);
+      for (let degree = 1; degree < spelled.length; degree++) {
+        const expectedLetter = LETTERS[(rootLetterIndex + LETTER_OFFSETS[degree]) % 7];
+        expect(spelled[degree][0], `${root} ${quality} tone ${degree}`).toBe(expectedLetter);
+      }
+    }
+  }
+});
+
+test("no chord among the 60 needs a double accidental", () => {
+  for (const root of ROOTS) {
+    for (const quality of QUALITY_LIST) {
+      for (const tone of spellChordTones(root, quality)) {
+        expect(tone.slice(1).length, `${root} ${quality}: ${tone}`).toBeLessThanOrEqual(1);
+      }
+    }
+  }
+});
+
+test("an unknown root or quality spells no chord at all", () => {
+  expect(spellChordTones("H", "major")).toBeNull();
+  expect(spellChordTones("C", "augmented")).toBeNull();
 });
 
 // ---------------------------------------------------------------- chord equality

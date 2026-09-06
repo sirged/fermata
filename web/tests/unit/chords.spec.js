@@ -3,7 +3,7 @@
 // see this module's own docstring.
 import { expect, test } from "@playwright/test";
 
-import { chordTones } from "../../src/lib/trainer/chord-theory.js";
+import { chordTones, spellChordTones } from "../../src/lib/trainer/chord-theory.js";
 import {
   DRILL,
   FAMILIES,
@@ -291,6 +291,24 @@ test("answerStatement names the chord honestly either way, with no verdict word"
   ]) {
     expect(forbiddenWord(text), text).toBeNull();
   }
+});
+
+// issue #269: name_to_shape's statement reads the SPELLED tones
+// (chord-theory.js's spellChordTones), not chordTones' own fixed table -
+// "A major 7" is A, C#, E, G#, never the table's Ab, and this is the one
+// place in this module where that distinction is visible in a string.
+test("answerStatement spells A major 7's tones G#, not chordTones' own Ab", () => {
+  const question = { direction: NAME_TO_SHAPE, root: "A", quality: "major7" };
+  expect(chordTones("A", "major7")).toEqual(["A", "C#", "E", "Ab"]);
+  const spelled = spellChordTones("A", "major7").join(", ");
+  expect(spelled).toBe("A, C#, E, G#");
+  expect(answerStatement(question, { notes: [] }, false)).toBe(`Amaj7 is ${spelled}.`);
+  expect(answerStatement(question, { notes: ["A", "C#", "E", "G#"] }, true)).toBe(
+    `Amaj7 is ${spelled} - that's what sounded.`,
+  );
+  expect(answerStatement(question, { notes: ["A", "C#", "E"] }, false)).toBe(
+    `Amaj7 is ${spelled}. What was tapped sounded A, C#, E.`,
+  );
 });
 
 test("every phrase this module produces avoids the forbidden words and never a percentage", () => {

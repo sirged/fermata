@@ -68,6 +68,64 @@ export function chordName(root, quality) {
   return `${root}${q.suffix}`;
 }
 
+// The seven letter names, in alphabetical (staff-step) order - not pitch-
+// class order, since spelling a chord is about how far a tone sits from the
+// root on the STAFF (a letter apart), never about semitone distance. Used
+// only by spellChordTones; chordTones and chordsMatch never touch a letter.
+const LETTERS = ["A", "B", "C", "D", "E", "F", "G"];
+
+// Each natural letter's own pitch class, as a semitone (C=0 .. B=11) - the
+// zero-accidental reference spellChordTones measures every accidental
+// against. Independent of PITCH_CLASSES's own sharp-or-flat choices.
+const NATURAL_SEMITONES = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
+// How many letters a tone sits above the root, by its position in
+// QUALITIES' interval list - a third is two letters up (skip one), a fifth
+// four, a seventh six. Triads only use the first three; a tetrad's fourth
+// tone (the seventh) is index 3, hence offset 6. The root itself (index 0,
+// offset 0) is never computed this way - see spellChordTones below.
+const LETTER_OFFSETS = [0, 2, 4, 6];
+
+/** How a chord's tones are named to the player, root by root - unlike
+ * chordTones (identity, one fixed spelling per pitch class, used for
+ * grading), this spells each tone by LETTER from the root, choosing
+ * whichever accidental makes that letter's pitch class agree with
+ * chordTones' answer. "A major 7" is A, C#, E, G# this way (G, not chordTones'
+ * own Ab, is the seventh's letter four letters plus a fifth above... two
+ * letters past the fifth, i.e. offset 6 from A: A-B-C-D-E-F-G lands on G,
+ * sharped to reach the same pitch class Ab already names) - see the module
+ * docstring and issue #269 for why a fixed twelve-name table is right for
+ * identity but wrong for what a learner reads.
+ *
+ * The ROOT keeps the table's own name (Eb, Ab, Bb, C#, F# spelled as the
+ * table spells them - these are ids, not chord-specific spellings, same
+ * rule chordTones already follows). Every other tone is spelled fresh: null
+ * for an unknown root or quality, matching chordTones.
+ *
+ * Checked (unit test) to need at most a single sharp or flat across all 60
+ * (root, quality) chords this module builds - no double accidental. If a
+ * future quality or root ever did need one, the fix belongs here (extend
+ * the accidental to "##"/"bb"), not in a special-cased table lookup. */
+export function spellChordTones(root, quality) {
+  const tones = chordTones(root, quality);
+  if (!tones) return null;
+  const rootLetterIndex = LETTERS.indexOf(root[0]);
+  return tones.map((tone, degree) => {
+    if (degree === 0) return root;
+    const letter = LETTERS[(rootLetterIndex + LETTER_OFFSETS[degree]) % 7];
+    const natural = NATURAL_SEMITONES[letter];
+    const actual = PITCH_CLASSES.indexOf(tone);
+    let accidentalSteps = ((actual - natural) % 12 + 12) % 12;
+    if (accidentalSteps > 6) accidentalSteps -= 12;
+    const accidental = accidentalSteps === 0
+      ? ""
+      : accidentalSteps > 0
+        ? "#".repeat(accidentalSteps)
+        : "b".repeat(-accidentalSteps);
+    return `${letter}${accidental}`;
+  });
+}
+
 /** Whether two chords - each a (root, quality) pair - are the SAME chord,
  * meaning the same set of pitch classes. Compares the tone sets rather than
  * the root/quality strings directly, which is the honest version of "is
