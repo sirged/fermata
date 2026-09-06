@@ -307,6 +307,35 @@ the way every other write in this API does, and removes any files already
 written to the library before the failure, so a rejected import always
 leaves the library exactly as it was.
 
+**A named drill scope is checked, not just carried (#268).** Every archived
+`trainer_scope_presets` row - and the string set
+`trainer_scope_preset_strings` carries for it - is run through
+`trainer.normalise_preset`, the same call `POST /api/trainer/presets`
+itself makes, before anything above is written and before the rename check
+described above ever runs. A row the normaliser refuses (a fret or string
+number outside this schema's bounds, an empty string set, a key given
+without its pair, a name that cleans to nothing or is still over
+`trainer_scope_presets.name`'s length cap once cleaned) refuses the WHOLE
+import - nothing applied, in either dry run or applied mode - naming the
+row by its position in the archive (`trainer_scope_presets row 3`, say)
+and the normaliser's own reason, never repairing it. A row the normaliser
+only CLEANS (whitespace collapsed, ends trimmed) is not refused: it is
+imported under the cleaned name, and #260's collision check runs against
+THAT name, not the raw one the archive carried - a whitespace-padded name
+that happens to collide once cleaned is renamed exactly as any other
+collision would be. Every other archived table's rows still travel across
+verbatim (`_insert_row`, unchanged by #268) - this bet checks presets only.
+
+`ImportOut.trainer_scope_presets_renamed` reports both: an entry with no
+`reason` key is a plain #260 collision (the archived name was already a
+valid, cleanable one - nothing about it needed cleaning); `reason:
+"cleaned"` means the archived name only changed because normalising it
+changed it, and the cleaned name did not collide with anything; `reason:
+"collision"` means both happened - the archived name was cleaned AND the
+cleaned name was ALSO already taken, so `to` is that cleaned name's own
+#260-derived rename. `from` is always the name exactly as the archive
+carried it, whichever reason applies.
+
 **`dry_run` defaults to true**, the same default every bulk operation in this
 API uses (see the five rules above). It validates the archive completely and
 reports what it found without opening a transaction or writing a file.
