@@ -1,5 +1,5 @@
 {
   "file": "tests/unit/chords.spec.js",
   "count": 1,
-  "reason": "issue #252: the sevenths family preset, widened to all three seventh qualities, actually offers minor7 and major7 chords in its pool - drawn entirely from the new movable barre shapes, since neither new quality has an open shape."
+  "reason": "issue #252: the sevenths family preset, widened to all three seventh qualities, actually offers minor7 and major7 chords in its pool - drawn from the movable barre shapes plus, since #261, the open Em7, Emaj7, Am7 and Amaj7 shapes."
 }

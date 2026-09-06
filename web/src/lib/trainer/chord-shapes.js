@@ -75,6 +75,19 @@ const OPEN_SHAPE_TEMPLATES = [
   { root: "G", quality: "dominant7", frets: [[6, 3], [5, 2], [4, 0], [3, 0], [2, 0], [1, 1]] },
   { root: "C", quality: "major", frets: [[5, 3], [4, 2], [3, 0], [2, 1], [1, 0]] },
   { root: "B", quality: "dominant7", frets: [[5, 2], [4, 1], [3, 2], [2, 0], [1, 2]] },
+  // The open minor-seventh and major-seventh chords (issue #261) - exactly
+  // the E-form and A-form BARRE_TEMPLATES' own offsets below, at base fret
+  // 0, the same relationship the E/A major and minor open shapes above
+  // already have to their own barre templates (compare, e.g., "E" "major"
+  // above to BARRE_TEMPLATES["barre-e-major"].offsets: identical numbers).
+  // barreShapesFor defaults minBaseFret to 1, so these two qualities never
+  // otherwise reach base fret 0 - the open Em7/Emaj7/Am7/Amaj7 fingerings a
+  // player actually learns first were missing entirely until this shape was
+  // added here, hardcoded the same way every other open shape is.
+  { root: "E", quality: "minor7", frets: [[6, 0], [5, 2], [4, 0], [3, 0], [2, 0], [1, 0]] },
+  { root: "E", quality: "major7", frets: [[6, 0], [5, 2], [4, 1], [3, 1], [2, 0], [1, 0]] },
+  { root: "A", quality: "minor7", frets: [[5, 0], [4, 2], [3, 0], [2, 1], [1, 0]] },
+  { root: "A", quality: "major7", frets: [[5, 0], [4, 2], [3, 1], [2, 2], [1, 0]] },
 ];
 
 // The two moveable barre forms, as offsets from a base fret on the form's
@@ -95,7 +108,7 @@ const BARRE_TEMPLATES = {
     offsets: [[6, 0], [5, 2], [4, 2], [3, 0], [2, 0], [1, 0]],
   },
   // The E-shape's minor-seventh and major-seventh forms (issue #252) - the
-  // open Em7 (022030-style: 0 2 0 0 0 0) and Emaj7 (0 2 1 1 0 0) fingerings,
+  // open Em7 (0 2 0 0 0 0) and Emaj7 (0 2 1 1 0 0) fingerings,
   // made movable the same way barre-e-major/minor already are: every fret
   // relative to a base that slides up the neck. shape-tones.spec.js checks
   // every instance this produces against chord-theory.js's own chordTones,
