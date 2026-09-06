@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import { api } from "./api.js";
   import { createScoreView, UNRENDERABLE_MESSAGE, tabWithheldMessage } from "./score-render.js";
+  import { midiFilename } from "./filename.js";
   import { getSettings, setSetting, STAFF_THEMES, STAFF_THEME_LABELS } from "./settings.svelte.js";
   import Metronome from "./Metronome.svelte";
   import { createDocument, DURATION_TYPES } from "./editor/document.js";
@@ -1474,26 +1475,19 @@
     view?.setCountIn(countIn);
   }
 
-  // The characters a filesystem (or a zip entry, or a URL) would read as a
-  // path separator or a reserved shell character - stripped rather than
-  // escaped, because a download's filename has no way to carry an escape.
-  // "Untitled" matches the fallback Library.svelte already shows for a score
-  // with no title (issue #58's export path), so a MIDI pulled from either
-  // place reads the same way.
-  function sanitizeFilename(name) {
-    return name.replace(/[/\\:*?"<>|]/g, "").trim();
-  }
-
   // Download the current score's MIDI (issue #270) - the same bytes the
   // renderer plays from, handed over exactly the way DataPortability.svelte's
   // library export already does: a Blob, an object URL, and a throwaway <a
   // download> clicked once and torn back down. No server round trip - the
   // bytes never leave the browser that rendered them.
+  //
+  // Filename sanitising lives in filename.js, not here - see that file for
+  // the length bound, control-character stripping and leading/trailing-dot
+  // handling the review on this issue asked for.
   function downloadMidi() {
     const exported = view?.exportMidi();
     if (!exported) return;
-    const cleaned = sanitizeFilename(exported.title ?? "");
-    const filename = `${cleaned || "Untitled"}.mid`;
+    const filename = midiFilename(exported.title ?? "");
     const blob = new Blob([exported.bytes], { type: "audio/midi" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
