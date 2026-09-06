@@ -60,6 +60,26 @@ const wrap = (page) => page.locator(".wrap").first();
 const host = (page) => page.locator(".at-host");
 const sourceLine = (page) => page.locator(".staff-source");
 const fretInput = (page) => page.locator(".edit-fields input");
+const metronomeButton = (page) => page.locator('button:has-text("Metronome")');
+const baseNote = (page) => page.locator(".metronome-base");
+
+// The same eight-note fixture with a real printed tempo on bar one - a
+// <metronome> mark AND the <sound tempo> alphaTab reads, which is how
+// fixtures/metronome-score.js writes one. 92 rather than 120 so it cannot be
+// confused with the renderer's own fallback, which is what "assumed 120 bpm"
+// reports.
+const MARKED_TEMPO = 92;
+const TEMPO_MUSICXML = EDITOR_MUSICXML.replace(
+  "      </attributes>\n",
+  `      </attributes>
+      <direction placement="above">
+        <direction-type>
+          <metronome><beat-unit>quarter</beat-unit><per-minute>${MARKED_TEMPO}</per-minute></metronome>
+        </direction-type>
+        <sound tempo="${MARKED_TEMPO}" />
+      </direction>
+`,
+);
 
 // Every upload gets its own name: the suite shares one server and one library
 // for the WHOLE run, so a fixed name would have the second test open the first
@@ -117,6 +137,30 @@ async function uploadFixture(request, content = EDITOR_MUSICXML) {
   expect(score.file_type, "the fixture was indexed as a native MusicXML score").toBe("musicxml");
   return { name, score };
 }
+
+// The whole suite shares ONE server and ONE throwaway library for the entire
+// run, and this file is the only editor spec that puts real scores in it. Left
+// there, its uploads would be sitting in the library when every later
+// spec makes its own "this is the throwaway instance, not a real library"
+// refusal check - viewer-practice.spec.js, zz-library-missing.spec.js,
+// instruments.spec.js and others - and those specs would go red on scores they
+// never created. Measured: without this hook, running this file and then
+// viewer-practice.spec.js failed six of viewer-practice's tests at its
+// beforeEach. Same two-step as guitar-pro-import.spec.js's own cleanup: a
+// DELETE only moves a score to the trash, so the trash has to be emptied too
+// or the row is still there to be counted.
+async function emptyTheLibrary(request) {
+  for (const score of await (await request.get("/api/scores")).json()) {
+    await request.delete(`/api/scores/${score.id}`);
+  }
+  for (const score of await (await request.get("/api/trash")).json()) {
+    await request.delete(`/api/trash/${score.id}`);
+  }
+}
+
+test.afterEach(async ({ request }) => {
+  await emptyTheLibrary(request);
+});
 
 async function openScore(page, id) {
   await page.goto(`/#/score/${id}`);
@@ -264,6 +308,123 @@ test.describe("editing a native MusicXML score (#262)", () => {
     await selectNote(page, 0);
     await expect(wrap(page)).toHaveAttribute("data-editor-selected-fret", "0");
     await expect(wrap(page)).toHaveAttribute("data-editor-divergence-ok", "true");
+  });
+
+  // The tempo the metronome is a percentage OF keeps the reader's own word for
+  // it across a save.
+  //
+  // "marked" is the only word the metronome uses that claims a number was read
+  // off a page (Metronome.svelte's tempoUnverified), and this file really does
+  // print one: <sound tempo="92"> on bar one, written by whoever exported it.
+  // TabViewer used to decide between "marked" and "transcribed" from `tex !=
+  // null` - "the notation arrived through a transcription row" - which was a
+  // sound proxy only while the sole way to get a row was to extract one from a
+  // scanned page. #262 makes an edit of a native file a row too, so one saved
+  // fret change flipped this score's honest "marked ♩ = 92" into "● transcribed
+  // ♩ = 92", carrying the unverified mark and an aria-label saying the number
+  // came from a transcription rather than a printed marking. Nothing about the
+  // reader's own file changed; only where the notes were being served from.
+  //
+  // WOULD CATCH: staffSource not reaching TabViewer, or TabViewer going back to
+  // reading `tex` for this - the post-save half goes red on "transcribed" and
+  // on the mark. (Reverted to the `tex != null` proxy by hand, it did: see the
+  // mutation table on the pull request.)
+  test("a printed tempo is still called marked after the file has been edited", async ({
+    page,
+    request,
+  }) => {
+    expect(TEMPO_MUSICXML, "the tempo direction was not injected").not.toBe(EDITOR_MUSICXML);
+    const { score } = await uploadFixture(request, TEMPO_MUSICXML);
+
+    await openScore(page, score.id);
+    await expect(sourceLine(page)).toHaveAttribute("data-staff-source", "file");
+
+    // Before any edit: the file's own marking, in the file's own words.
+    await metronomeButton(page).click();
+    await expect(baseNote(page)).toContainText(String(MARKED_TEMPO));
+    await expect(baseNote(page)).toHaveText(/marked/);
+    await expect(baseNote(page)).not.toContainText("transcribed");
+    await expect(baseNote(page).locator(".mark")).toHaveCount(0);
+
+    // One fret change, saved - so the notation now arrives through an edited
+    // row instead of the file's bytes.
+    await page.getByRole("button", { name: "Edit notes" }).click();
+    await expect(wrap(page)).toHaveAttribute("data-editor-active", "true");
+    await setFret(page, 0, 7);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(wrap(page)).toHaveAttribute("data-editor-dirty", "false");
+    await expect(sourceLine(page)).toHaveAttribute("data-staff-source", "edited");
+
+    // The stored document still carries the marking - so a "transcribed" here
+    // would be a claim about provenance, not a side effect of the tempo having
+    // gone missing (which reads "assumed 120 bpm" instead, and would pass a
+    // bare not-toContainText assertion).
+    const stored = await (await request.get(`/api/scores/${score.id}/transcription`)).json();
+    expect(stored.source).toBe("edited");
+    expect(stored.content).toContain(`<sound tempo="${MARKED_TEMPO}"`);
+
+    // And the word is unchanged: the reader's file printed 92, and an edit of
+    // that file is not a transcription of a scanned page.
+    await expect(baseNote(page)).toContainText(String(MARKED_TEMPO));
+    await expect(baseNote(page)).toHaveText(/marked/);
+    await expect(baseNote(page)).not.toContainText("transcribed");
+    await expect(baseNote(page).locator(".mark")).toHaveCount(0);
+  });
+
+  // A lookup that FAILED is not a score with no edit.
+  //
+  // The lookup's .catch used to land every status on staffEdit = null, which
+  // the panel states as "Showing the file as it is in your library." and which
+  // left the editor open over the file. With a stored edit sitting on the
+  // server that is a false statement AND a trap: the editor seeds from the
+  // file, and the reader's next Save writes that document over the edit they
+  // cannot see. The page now says it could not tell, offers a retry, and
+  // refuses to open the editor at all until the lookup has landed.
+  //
+  // WOULD CATCH: swallowing the failure again (any catch that resolves to
+  // "ready"). Done by hand - see the mutation table on the pull request.
+  test("a lookup the server will not answer says so, and offers no editor", async ({
+    page,
+    request,
+  }) => {
+    const { score } = await uploadFixture(request);
+    // A REAL stored edit, written through the real PUT - the thing that would
+    // be silently overwritten. It also makes has_transcription true, which is
+    // what makes the viewer ask for the row at all.
+    const put = await request.put(`/api/scores/${score.id}/transcription`, {
+      data: { content: EDITOR_MUSICXML.replace("<fret>0</fret>", "<fret>7</fret>") },
+    });
+    expect(put.ok(), await put.text()).toBe(true);
+
+    // Only the row lookup is broken; the score itself still loads, which is
+    // exactly the shape of a transient server-side failure.
+    await page.route("**/api/scores/*/transcription", (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' })
+        : route.fallback(),
+    );
+
+    await openScore(page, score.id);
+    await expect(sourceLine(page)).toHaveAttribute("data-staff-source", "unknown");
+    await expect(sourceLine(page)).toContainText("Could not tell whether this score has an edit stored");
+    // Neither of the two claims it is not entitled to make.
+    await expect(sourceLine(page)).not.toContainText("Showing the file as it is in your library");
+    await expect(sourceLine(page)).not.toContainText("Showing your edit of this score");
+
+    // No editor, so nothing can be saved over the row that is really there.
+    await expect(wrap(page)).toHaveAttribute("data-editor-available", "false");
+    await expect(page.getByRole("button", { name: "Edit notes" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
+
+    // A way out that is not "reload the page and hope".
+    const retry = page.getByRole("button", { name: "Try again" });
+    await expect(retry).toHaveCount(1);
+    await page.unroute("**/api/scores/*/transcription");
+    await retry.click();
+    // The retry really re-asks, and the stored edit - which was there the whole
+    // time - is what comes back.
+    await expect(sourceLine(page)).toHaveAttribute("data-staff-source", "edited");
+    await expect(wrap(page)).toHaveAttribute("data-editor-available", "true");
   });
 });
 

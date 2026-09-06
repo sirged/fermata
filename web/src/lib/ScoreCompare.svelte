@@ -632,9 +632,19 @@
         {#if gigMode && gigMarkTitle}
           <span class="gig-mark" title={gigMarkTitle} aria-label={`Unverified: ${gigMarkTitle}`}>●</span>
         {/if}
+        <!-- staffSource is always "extracted" here, for BOTH of the row's own
+             sources. This pane is a PDF's transcription: the notes - and any
+             tempo among them - were read out of a scanned page by the
+             extractor. A row somebody has since hand-corrected
+             (source='edited') is a correction OF that reading, so its tempo is
+             still not a printed marking and the metronome must go on saying
+             "transcribed". The one place an edited row means otherwise is
+             Viewer.svelte's native-file path (#262), where the row is an edit
+             of the reader's own notation file. -->
         <TabViewer
           tex={transcription.content}
           format={transcription.format}
+          staffSource="extracted"
           {gigMode}
           {onToggleGig}
           {practiceLabel}

@@ -32,6 +32,28 @@
     // row written before that change - or hand-edited in alphaTex - carries
     // its own format, so this is read from the row rather than assumed.
     format = "alphatex",
+    // WHERE THE NOTATION ON SCREEN CAME FROM, stated by whoever mounted this
+    // rather than inferred here. Three values:
+    //
+    //   "file"      the score's own notation file, drawn straight from its
+    //               bytes (a native MusicXML/Guitar Pro score, and the demo).
+    //   "edited"    a hand edit of that same file, stored beside it (#262) -
+    //               still the reader's own document, not a reading of a page.
+    //   "extracted" a transcription of a scanned page: whatever the extractor
+    //               produced, INCLUDING a row somebody has since hand-
+    //               corrected. A correction fixes notes; it does not turn a
+    //               number that was lifted off an image into one that was
+    //               printed by an engraver.
+    //
+    // This exists because `tex != null` was standing in for it, and got the
+    // tempo's provenance wrong the moment a native file could carry an edited
+    // row: one saved fret change flipped an honestly "marked ♩ = 92" - read out
+    // of the reader's own <sound tempo> - into "transcribed ♩ = 92", under an
+    // aria-label saying the number came from a transcription rather than a
+    // printed marking. See the Metronome mount below, and Metronome.svelte's
+    // own note on why "marked" is the one word here that may only be said when
+    // something really was read off a page.
+    staffSource = "file",
     gigMode = false,
     onToggleGig = () => {},
     practiceLabel = null,
@@ -1846,7 +1868,13 @@
           transcription and to a MusicXML file alike, and neither of them read
           it anywhere. tempoElsewhere then separates "the document says nothing
           about its tempo" from "it says something, just not here" - only the
-          first may be stated as a fact about the document. -->
+          first may be stated as a fact about the document.
+
+          Between the other two, only staffSource "extracted" is "transcribed":
+          the number was lifted out of a scanned page. A native file's own
+          <sound tempo> is a marking somebody printed, and it does not stop
+          being one because the reader corrected a fret and the notation now
+          arrives through an edited row (#262) - see staffSource's declaration. -->
           <Metronome
             ownsClick={false}
             control={view?.metronome ?? null}
@@ -1855,7 +1883,11 @@
             limit={metronomeLimit}
             proportionBase={true}
             baseTempoLabel={scoreTempo}
-            tempoSource={scoreTempoFrom !== "start" ? "default" : tex != null ? "transcribed" : "marked"}
+            tempoSource={scoreTempoFrom !== "start"
+              ? "default"
+              : staffSource === "extracted"
+                ? "transcribed"
+                : "marked"}
             tempoElsewhere={scoreTempoFrom === "later"}
             bind:mode={metronomeMode}
             bind:proportion={metronomeProportion}
