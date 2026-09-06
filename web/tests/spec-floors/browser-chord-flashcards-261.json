@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/chord-flashcards.spec.js",
+  "count": 1,
+  "reason": "issue #261: against the real backend and the real build, the sevenths preset narrowed to open position (frets 0-2, where no barre shape fits) offers a minor7 or major7 card that is the open Em7/Emaj7/Am7/Amaj7 shape - confirmed off the neck's own rendered target markers, base fret 0 with an open string."
+}
