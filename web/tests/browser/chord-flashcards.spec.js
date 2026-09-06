@@ -44,6 +44,33 @@ function chordName(root, quality) {
   return `${root}${SEVENTH_SUFFIX[quality]}`;
 }
 
+// An independent copy of the tone-SPELLING formula too (issue #269), same
+// discipline as chordTones above: a letter run from the root (third +2
+// letters, fifth +4, seventh +6), sharped or flatted to agree with
+// chordTones' own pitch class - not imported from chord-theory.js, so a
+// drift in the app's spelling would fail here rather than only restate it.
+const LETTERS = ["A", "B", "C", "D", "E", "F", "G"];
+const NATURAL_SEMITONES = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+const LETTER_OFFSETS = [0, 2, 4, 6];
+function spellChordTones(root, quality) {
+  const tones = chordTones(root, quality);
+  const rootLetterIndex = LETTERS.indexOf(root[0]);
+  return tones.map((tone, degree) => {
+    if (degree === 0) return root;
+    const letter = LETTERS[(rootLetterIndex + LETTER_OFFSETS[degree]) % 7];
+    const natural = NATURAL_SEMITONES[letter];
+    const actual = PITCH_CLASSES.indexOf(tone);
+    let accidentalSteps = (((actual - natural) % 12) + 12) % 12;
+    if (accidentalSteps > 6) accidentalSteps -= 12;
+    const accidental = accidentalSteps === 0
+      ? ""
+      : accidentalSteps > 0
+        ? "#".repeat(accidentalSteps)
+        : "b".repeat(-accidentalSteps);
+    return `${letter}${accidental}`;
+  });
+}
+
 async function reset(request) {
   const existing = await (await request.get("/api/instruments")).json();
   for (const instrument of existing) await request.delete(`/api/instruments/${instrument.id}`);
@@ -165,7 +192,9 @@ test("name_to_shape: tapping every required tone and only those grades correct",
 
   await expect(drill(page)).toHaveAttribute("data-asked", "1");
   await expect(drill(page)).toHaveAttribute("data-correct", "1");
-  await expect(answerStatement(page)).toContainText(tones.join(", "));
+  // The statement reads the SPELLED tones (issue #269), not chordTones' own
+  // fixed table - E major's third is G#, never Ab.
+  await expect(answerStatement(page)).toContainText(spellChordTones(q.root, q.quality).join(", "));
   const text = await answerStatement(page).textContent();
   expect(forbiddenWord(text), text).toBeNull();
 });
@@ -184,7 +213,7 @@ test("name_to_shape: tapping too few tones grades incorrect and names the full c
 
   await expect(drill(page)).toHaveAttribute("data-asked", "1");
   await expect(drill(page)).toHaveAttribute("data-correct", "0");
-  await expect(answerStatement(page)).toContainText(tones.join(", "));
+  await expect(answerStatement(page)).toContainText(spellChordTones(q.root, q.quality).join(", "));
   const text = await answerStatement(page).textContent();
   expect(forbiddenWord(text), text).toBeNull();
 });
@@ -443,6 +472,44 @@ test("sevenths, open position only: a minor7 or major7 card is offered at base f
     .evaluateAll((els) => els.map((el) => Number(el.dataset.fret)));
   expect(targetFrets.length).toBeGreaterThan(0);
   expect(targetFrets).toContain(0);
+});
+
+// ---------------------------------------------------------------------------
+// Spelled tones (issue #269): the statement reads a chord's tones by LETTER
+// from the root, not off chordTones' own fixed twelve-name table - so A
+// major 7 reads its seventh as G#, never the table's Ab.
+// ---------------------------------------------------------------------------
+
+test("name_to_shape: A major 7's statement spells the seventh G#, not the table's Ab", async ({
+  page,
+}) => {
+  await page.locator(".direction-choice").nth(1).click();
+  await page.locator(".family-choice", { hasText: "Sevenths" }).click();
+  await page.selectOption(".scope-end-fret", "2");
+  await startButton(page).click();
+
+  let target = null;
+  for (let i = 0; i < 40 && !target; i++) {
+    const q = await question(page);
+    if (q.root === "A" && q.quality === "major7") {
+      target = q;
+      break;
+    }
+    const tones = chordTones(q.root, q.quality);
+    await tapChord(page, tones);
+    await page.locator(".check-shape").click();
+    await page.locator(".next-question").click();
+  }
+  expect(target, "an A major7 card was drawn within 40 questions").toBeTruthy();
+
+  const spelled = spellChordTones("A", "major7");
+  expect(spelled).toEqual(["A", "C#", "E", "G#"]);
+  await tapChord(page, chordTones("A", "major7"));
+  await page.locator(".check-shape").click();
+
+  await expect(answerStatement(page)).toContainText(`${chordName("A", "major7")} is ${spelled.join(", ")}`);
+  const text = await answerStatement(page).textContent();
+  expect(forbiddenWord(text), text).toBeNull();
 });
 
 test("leaving the page mid-drill still logs the practice", async ({ page, request }) => {

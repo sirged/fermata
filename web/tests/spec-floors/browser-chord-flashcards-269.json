@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/chord-flashcards.spec.js",
+  "count": 1,
+  "reason": "issue #269: against the real backend and the real build, name_to_shape's A major 7 answer statement is confirmed to read its seventh as G#, not chordTones' own Ab table entry - checked against an independently reimplemented letter-spelling formula in this suite, the same discipline its chordTones copy already follows."
+}
