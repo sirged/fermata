@@ -269,12 +269,20 @@ collides with one already in the target library (or with another preset
 earlier in the same archive), which is **renamed**, not reused and not
 refused: it is inserted under `<name> (imported)` (then `(imported 2)`,
 `(imported 3)`, ... - the first free name, compared the same
-case-insensitive way the preset's own uniqueness rule is), with its string
-set intact and its id remapped so the archive's own sessions still point at
-the imported copy. `ImportOut.trainer_scope_presets_renamed` lists every
-`{from, to}` pair this produced - empty when nothing collided - identically
-on a dry run and an applied import, so a preview never promises a name the
-real restore would not actually use. Import never replaces, and never merges
+case-insensitive way the preset's own uniqueness rule is, and folded
+ASCII-only the way SQLite's own `COLLATE NOCASE` is - not Python's broader
+`casefold()`, which would flag a collision (e.g. `Straße` against
+`STRASSE`) that the unique index itself would never raise on), with its
+string set intact and its id remapped so the archive's own sessions still
+point at the imported copy. A base name at or near
+`trainer_scope_presets.name`'s own length cap is trimmed to make room for the
+suffix, so the derived name always satisfies the same cap
+`POST /api/trainer/presets` enforces on every name it accepts - never a row
+longer than any name the API would otherwise let anyone create.
+`ImportOut.trainer_scope_presets_renamed` lists every `{from, to}` pair this
+produced - empty when nothing collided - identically on a dry run and an
+applied import, so a preview never promises a name the real restore would
+not actually use. Import never replaces, and never merges
 by guessing which of two similarly-shaped rows is "the same one" - a wrong
 guess risks silently discarding practice history, which this feature's one
 absolute rule is that it never does; renaming a preset is not that guess,
