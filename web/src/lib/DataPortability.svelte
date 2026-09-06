@@ -143,6 +143,13 @@
           Importing adds this to your library - it never replaces or overwrites what is already
           there. Import into an empty library to restore a backup exactly.
         </p>
+        {#if preview.trainer_scope_presets_renamed?.length}
+          <p class="hint" data-testid="import-renames">
+            Renamed on import: {preview.trainer_scope_presets_renamed
+              .map((r) => `${r.from} → ${r.to}`)
+              .join(", ")}
+          </p>
+        {/if}
         <div class="row">
           <button onclick={confirmImport} disabled={applying} data-testid="import-confirm">
             {applying ? "Importing…" : "Import"}
@@ -159,6 +166,13 @@
         Imported {applied.scores_imported} score(s), {applied.practice_sessions_imported} practice
         session(s) and {applied.practice_goals_imported} goal(s).
       </p>
+      {#if applied.trainer_scope_presets_renamed?.length}
+        <p class="hint" data-testid="import-renames">
+          Renamed on import: {applied.trainer_scope_presets_renamed
+            .map((r) => `${r.from} → ${r.to}`)
+            .join(", ")}
+        </p>
+      {/if}
     {/if}
   </div>
 </section>
