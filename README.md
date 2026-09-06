@@ -30,7 +30,8 @@ them.
   reads that format natively; a browser spec carries an original Guitar Pro 7
   fixture through that whole path (see the format table below). The built-in
   synthesizer also drives practice tools: drag-select a passage on the score
-  to loop it, plus a count-in. The
+  to loop it, plus a count-in. A "Download MIDI" control takes the rendered
+  score's playback out of the browser as a standard MIDI file. The
   staff is themed to match the interface, lays itself out differently on a
   phone, a tablet on a stand and a desktop, and can be drawn dark for
   practising in the dark — see [how scores are rendered](docs/rendering.md) for

@@ -1474,6 +1474,37 @@
     view?.setCountIn(countIn);
   }
 
+  // The characters a filesystem (or a zip entry, or a URL) would read as a
+  // path separator or a reserved shell character - stripped rather than
+  // escaped, because a download's filename has no way to carry an escape.
+  // "Untitled" matches the fallback Library.svelte already shows for a score
+  // with no title (issue #58's export path), so a MIDI pulled from either
+  // place reads the same way.
+  function sanitizeFilename(name) {
+    return name.replace(/[/\\:*?"<>|]/g, "").trim();
+  }
+
+  // Download the current score's MIDI (issue #270) - the same bytes the
+  // renderer plays from, handed over exactly the way DataPortability.svelte's
+  // library export already does: a Blob, an object URL, and a throwaway <a
+  // download> clicked once and torn back down. No server round trip - the
+  // bytes never leave the browser that rendered them.
+  function downloadMidi() {
+    const exported = view?.exportMidi();
+    if (!exported) return;
+    const cleaned = sanitizeFilename(exported.title ?? "");
+    const filename = `${cleaned || "Untitled"}.mid`;
+    const blob = new Blob([exported.bytes], { type: "audio/midi" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
   function clamp(n, lo, hi) {
     if (Number.isNaN(n)) return lo;
     return Math.min(hi, Math.max(lo, n));
@@ -1830,6 +1861,18 @@
           {editMode ? "Done editing" : "Edit notes"}
         </button>
       {/if}
+      <!-- Disabled together with the "nothing drawable" notice below
+      (profileOptions null before a score has loaded, or empty once one has
+      loaded with nothing to draw) - the same render-ok signal that notice
+      already reads, not a second one. A render that throws for some other
+      reason surfaces through loadError, which disables this too. -->
+      <button
+        disabled={!profileOptions?.length || !!loadError}
+        onclick={downloadMidi}
+        title="Download this score's MIDI, as the renderer plays it — bends approximated as pitch-bend events; not a re-engraving of the score"
+      >
+        Download MIDI
+      </button>
       <div class="player">
         <button class="primary" disabled={!playerReady} onclick={() => view?.playPause()}>
           {playing ? "❚❚ Pause ((Space))" : "▶ Play ((Space))"}
