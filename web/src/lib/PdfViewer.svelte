@@ -95,6 +95,61 @@
   // half-page branch went uncovered by #169 and #175 in the first place.
   let requestedScroll = null;
   let scrollRequestSeq = 0;
+  // Whether the pane is still TRAVELLING to the position above, rather than
+  // sitting at it. Both turn paths scroll with `behavior: "smooth"`, so for
+  // as long as that animation runs, container.scrollTop is a frame of it -
+  // a place the reader is passing through, not one they asked for.
+  //
+  // Everything that reads this trusts it to mean "the reader's own place is
+  // not on the scroller right now", which is a claim with a short life and
+  // several ways to end. A flag left set past its scroll is not a smaller
+  // bug than the one it was added for; it is the same bug pointing the
+  // other way - a re-render would then discard the reader's real scrolling
+  // in favour of a turn that is over, or was never delivered at all. So the
+  // ways it ends are enumerated, and none of them assume a scroll happens:
+  //
+  //   - NEVER SET, when the pane is already at what was asked for. A turn
+  //     onto the page already shown scrolls nothing, so no scroll event
+  //     follows, so nothing below could ever run. See requestScroll.
+  //   - arrived, checked on each scroll event (onScroll).
+  //   - taken over, when the pane RETREATS from its closest approach by more
+  //     than the pixel of slack an arrival is allowed - a smooth scroll only
+  //     ever closes on its target, so moving back off it is a reader with
+  //     their hand on the pane (onScroll) - or when one of the input events
+  //     a takeover arrives on is seen at all (see the wheel/pointer/touch
+  //     listeners, which say it a frame sooner and without arithmetic).
+  //   - delivered by the restore itself, which assigns the destination.
+  //   - quiet, as the backstop for a scroll that does none of the above:
+  //     200ms with nothing moving, armed BOTH when the scroll is asked for
+  //     and on every scroll event, so a request that never moves the pane
+  //     still expires.
+  let scrollTravelling = false;
+  // How close the pane has got to `requestedScroll` during the current
+  // travel, in pixels; null until its first scroll event. Only a retreat
+  // from this counts as the reader taking over - measuring against the
+  // previous event alone would call the first event of any travel a retreat
+  // whenever the pane starts out nearer the target than the reader's own
+  // first move leaves it.
+  let travelClosest = null;
+  let travelTimer;
+  // The slack, in pixels, on both "has it arrived" and "has it retreated".
+  // Scroll offsets land on device pixels while these targets are computed in
+  // CSS ones, so neither question can be asked exactly. The cost of the
+  // second one is worth stating: a takeover that never backs off its closest
+  // approach by more than a pixel is not recognized as one here, and falls
+  // through to the quiet backstop above instead.
+  const SCROLL_SLACK = 1;
+  // The events a reader takes a scroll over WITH: a wheel or trackpad, or a
+  // finger. Both abort a smooth scroll in the browser, so seeing one IS
+  // evidence the turn's travel is over. A bare pointerdown is not on the
+  // list: it does not abort the animation, so a tap that turns nothing (dead
+  // zone, long press, a plain click outside gig mode) would end the flag
+  // while the pane still travels, and a re-render in those frames would be
+  // #234 again; a hand on the scrollbar that holds the pane still is caught
+  // by the quiet backstop instead. Listened for on the scroller itself and
+  // passively, so nothing is intercepted or delayed - read as evidence,
+  // never handled. See onReaderInput.
+  const READER_INPUT = ["wheel", "touchstart"];
 
   // Read-only test instrumentation, in the same spirit as the `data-page`
   // attribute each canvas already carries. Nothing in here reads either of
@@ -252,7 +307,25 @@
       // down page one and a turn pressed mid-re-render: the restore landed
       // 140px past page two's top, scaling with how far down page one they
       // had been.
-      const before = positionAt(container.scrollTop);
+      //
+      // And read off the reader's OUTSTANDING REQUEST rather than off the
+      // scroller whenever a turn is still travelling to it (#234). Both turn
+      // paths scroll with `behavior: "smooth"`, so between the press and the
+      // arrival container.scrollTop is a frame of an animation. Snapshotting
+      // one of those frames as "where the reader is" and then restoring to it
+      // does two wrong things at once: it throws away the half page they
+      // asked for, and the restore's own assignment to scrollTop aborts the
+      // animation that was going to deliver it - so they are left partway,
+      // permanently, with nothing to retry it. Measured on a runner where
+      // that animation takes frames rather than landing in one (this is the
+      // whole of #234's 384/1100, and why it never appeared on a box where it
+      // lands in one): press at scrollTop 0 on 608px pages, the animation
+      // reaching 2, 12, 38, 96, 164, 208, 236 over seven frames, the
+      // re-render capturing 236 and restoring to 24 + (236-24)/608 * 1100 =
+      // 408 - 35% down a page the reader had asked to be 50% down, and the
+      // pane genuinely at rest there.
+      const before =
+        scrollTravelling && requestedScroll ? requestedScroll : positionAt(container.scrollTop);
       const seqBefore = scrollRequestSeq;
       // re-render the existing canvases in place (same elements, same
       // order) so the IntersectionObserver's page tracking keeps working
@@ -275,10 +348,15 @@
       // canvases changed height, so restore scroll to wherever that position
       // now is rather than let it drift to an arbitrary pixel offset - the
       // same fraction down the same page, not merely that page's top
-      const restored = target && container.querySelector(`[data-page="${target.page}"]`);
-      if (restored) {
-        container.scrollTop = pageTop(restored) + target.fraction * restored.getBoundingClientRect().height;
+      const restored = offsetOf(target);
+      if (restored !== null) {
+        container.scrollTop = restored;
         restoredAtSeq = scrollRequestSeq;
+        // Assigning scrollTop ends any smooth scroll that was still running,
+        // and this assignment IS that scroll's destination - so nothing is
+        // travelling any more, and the next thing to read the pane should
+        // read it off the scroller.
+        endTravel();
       }
     }
 
@@ -431,17 +509,66 @@
       // going quiet is the other way it must be handed back, or the observer
       // would be ignored for as long as the score stayed open.
       container.addEventListener("scroll", onScroll, { passive: true });
+      for (const kind of READER_INPUT) {
+        container.addEventListener(kind, onReaderInput, { passive: true });
+      }
     })();
 
     function onScroll() {
+      // Both endings that can only be seen from a scroll event, and they are
+      // checked here rather than left to the quiet backstop because that
+      // timer only fires when the SCROLLING stops - and a reader who takes
+      // over with a wheel straight after a turn keeps it re-armed for as long
+      // as they keep scrolling. A re-render landing in that window would
+      // restore them to the turn instead of to where they had scrolled to,
+      // which is the whole failure this flag exists to prevent, aimed the
+      // other way.
+      if (scrollTravelling) {
+        const distance = travelDistance(requestedScroll);
+        if (distance === null || distance <= SCROLL_SLACK) {
+          // Arrived - or the page it was aimed at is gone, which is not a
+          // travel any more either way.
+          endTravel();
+        } else if (travelClosest !== null && distance > travelClosest + SCROLL_SLACK) {
+          // Retreating from its closest approach. A smooth scroll only ever
+          // closes on its target, so this is a hand on the pane: the reader
+          // has taken the scroll over, the animation is cancelled, and where
+          // they are now is their own place rather than a frame of anything.
+          endTravel();
+        } else {
+          travelClosest = travelClosest === null ? distance : Math.min(travelClosest, distance);
+          armTravelBackstop();
+        }
+      }
       clearTimeout(settleTimer);
       settleTimer = setTimeout(() => (intendedPage = null), 200);
       stampWhenQuiet();
     }
 
+    // The reader's hand, said directly rather than inferred from where the
+    // pane went. These are the events a takeover of a scroll in flight
+    // actually arrives on, and each one is a statement that the next scroll
+    // belongs to the reader - so the flag ends here a frame before the
+    // arithmetic in onScroll could reach the same conclusion, and in the
+    // cases it cannot reach at all (a hand that stops the pane dead on the
+    // target's own pixel, or one that grabs it and holds it still).
+    //
+    // Not keyboard scrolling: the scroller carries no tabindex, so it never
+    // holds focus, and this component preventDefaults the keys that would
+    // scroll it while it is the pane taking keys at all (see onKey). Nothing
+    // reaches the pane by key that is not this component's own turn.
+    //
+    // A gig-mode tap does not clear travel by itself (pointerdown is not
+    // reader input, see READER_INPUT); the turn it triggers on pointerup
+    // records the next request, which supersedes whatever was travelling.
+    function onReaderInput() {
+      if (scrollTravelling) endTravel();
+    }
+
     return () => {
       cancelled = true;
       container?.removeEventListener("scroll", onScroll);
+      for (const kind of READER_INPUT) container?.removeEventListener(kind, onReaderInput);
       clearTimeout(settleTimer);
       clearTimeout(stampTimer);
       intendedPage = null;
@@ -451,6 +578,7 @@
       pendingPage = null;
       turnedBeforeRestore = false;
       requestedScroll = null;
+      endTravel();
       observer?.disconnect();
       resizeObserver?.disconnect();
       clearTimeout(saveTimer);
@@ -553,6 +681,51 @@
     return null;
   }
 
+  // The inverse of positionAt: where a recorded position is on the scroller
+  // NOW, at whatever height the pages are currently rendered. Both the
+  // re-render's restore and the "has the pane got there yet" check in
+  // onScroll ask this same question, so they ask it the same way.
+  function offsetOf(position) {
+    const canvas = position && container.querySelector(`[data-page="${position.page}"]`);
+    if (!canvas) return null;
+    return pageTop(canvas) + position.fraction * canvas.getBoundingClientRect().height;
+  }
+
+  // How far the pane still has to go to reach a recorded position, or null if
+  // that position is not on the pane any more.
+  //
+  // Clamped to what the scroller can actually reach, because a request often
+  // aims past an end: a half-page step off the last page, or - the case that
+  // strands this - a whole-page turn back from page one, which asks for an
+  // offset the scroller will never show because it is already showing the
+  // nearest thing to it. Unclamped, those never "arrive" and the pane is
+  // recorded as travelling to somewhere it cannot go.
+  function travelDistance(position) {
+    const want = offsetOf(position);
+    if (want === null) return null;
+    const max = Math.max(0, container.scrollHeight - container.clientHeight);
+    return Math.abs(container.scrollTop - Math.min(Math.max(want, 0), max));
+  }
+
+  // The pane is the reader's again: whatever was asked for has landed, been
+  // taken over, or expired. Every ending goes through here so none of them
+  // can leave half of the state behind.
+  function endTravel() {
+    scrollTravelling = false;
+    travelClosest = null;
+    clearTimeout(travelTimer);
+  }
+
+  // The backstop, and the only ending that does not need the pane to move.
+  // Armed when a scroll is ASKED FOR as well as on every scroll event, so a
+  // request the browser has nothing to animate - which fires no scroll event
+  // at all, and so reaches none of the other endings - still expires within
+  // the same quiet interval as one that was merely never delivered.
+  function armTravelBackstop() {
+    clearTimeout(travelTimer);
+    travelTimer = setTimeout(endTravel, 200);
+  }
+
   // Records a scroll this component is about to perform, so a resize
   // re-render already in flight puts the reader where they just asked to be
   // rather than back where they were when it started.
@@ -560,6 +733,27 @@
     if (!position) return;
     requestedScroll = position;
     scrollRequestSeq += 1;
+    // Travelling from here until it arrives, is taken over, or goes quiet -
+    // see scrollTravelling's own comment for the full set, onScroll for two
+    // of them, and rerenderAtWidth for what reads it (#234).
+    //
+    // But only if there is anywhere to travel TO. A turn onto the page
+    // already shown - ArrowLeft on page one, which is an ordinary pedal tap
+    // and does nothing by design - asks the scroller for the offset it is
+    // already at, so the browser animates nothing and dispatches no scroll
+    // event. Set here regardless, the flag would have had no event left to
+    // clear it on and would have stood until the next scroll that produced
+    // one: measured, a reader who taps back twice at the top of a piece and
+    // then scrolls on is put back on page one's top by the next re-render,
+    // however long afterwards it comes.
+    const distance = travelDistance(position);
+    if (distance !== null && distance > SCROLL_SLACK) {
+      scrollTravelling = true;
+      travelClosest = null;
+      armTravelBackstop();
+    } else {
+      endTravel();
+    }
     markUnsettled();
   }
 
