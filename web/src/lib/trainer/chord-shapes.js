@@ -108,7 +108,7 @@ const BARRE_TEMPLATES = {
     offsets: [[6, 0], [5, 2], [4, 2], [3, 0], [2, 0], [1, 0]],
   },
   // The E-shape's minor-seventh and major-seventh forms (issue #252) - the
-  // open Em7 (022030-style: 0 2 0 0 0 0) and Emaj7 (0 2 1 1 0 0) fingerings,
+  // open Em7 (0 2 0 0 0 0) and Emaj7 (0 2 1 1 0 0) fingerings,
   // made movable the same way barre-e-major/minor already are: every fret
   // relative to a base that slides up the neck. shape-tones.spec.js checks
   // every instance this produces against chord-theory.js's own chordTones,

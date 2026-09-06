@@ -36,9 +36,9 @@ const fullScope = { startFret: 0, endFret: 12 };
 test("the three family presets say what issue #28 asks for, in order", () => {
   expect(FAMILY_LIST).toEqual(["major_minor", "sevenths", "barre"]);
   expect(FAMILIES.major_minor.qualities).toEqual(["major", "minor"]);
-  // Sevenths widened by issue #252 to all three seventh qualities - the
-  // dominant's open shapes plus the new minor/major sevenths' movable
-  // barre forms.
+  // Sevenths widened by issue #252 to all three seventh qualities: the
+  // dominant's open shapes, the minor/major sevenths' movable barre forms,
+  // and (since #261) the open Em7, Emaj7, Am7 and Amaj7 shapes.
   expect(FAMILIES.sevenths.qualities).toEqual(["dominant7", "minor7", "major7"]);
   expect(FAMILIES.barre.qualities).toEqual(["major", "minor"]);
   expect(FAMILIES.major_minor.shapeFamilies).toEqual(["open"]);
