@@ -52,6 +52,11 @@
 import { test, expect } from "@playwright/test";
 
 import { POLY_MUSICXML } from "./fixtures/editor-poly.js";
+import {
+  healStaleDivergence,
+  plantStaleDivergence,
+  runSeededEdits,
+} from "./fixtures/editor-fuzz-driver.js";
 import { stubEditorApi } from "./fixtures/editor-score.js";
 
 const wrap = (page) => page.locator(".staff-render .wrap");
@@ -103,103 +108,12 @@ test.describe("note editor - N-random-edits divergence fuzz guard", () => {
   test(`${N} seeded random edits keep the model and the render identical (seed ${SEED})`, async ({ page }) => {
     await openEditor(page, POLY_MUSICXML, 52);
 
-    // The whole sequence runs in one page evaluate for speed and determinism -
-    // the seeded RNG is pure, so this reproduces byte-for-byte. It awaits each
-    // real edit's reload/re-render before the next, and records the first step
-    // (if any) where the per-edit divergence flag went false.
-    const result = await page.evaluate(
-      async ({ seed, n }) => {
-        // mulberry32: a small, fast, well-distributed seeded PRNG. Deterministic
-        // from `seed`, so the same seed replays the same sequence.
-        function mulberry32(a) {
-          return function () {
-            a |= 0;
-            a = (a + 0x6d2b79f5) | 0;
-            let t = Math.imul(a ^ (a >>> 15), 1 | a);
-            t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-          };
-        }
-        const rng = mulberry32(seed);
-        const pick = (arr) => arr[Math.floor(rng() * arr.length)];
-        const h = window.__scoreEditorHarness;
-        const stringCount = h.stringCount();
-        // "restToNote" (#238) joins the menu alongside the other ops that
-        // touch note IDENTITY or ORDERING: like voice/delete, it changes which
-        // ordinal is which sounding note (a rest becomes one), so it belongs
-        // in the SAME "structural" bucket those two are counted in below. It
-        // is addressed differently from every other op here - by a REST
-        // ordinal (h.restCount()), not a sounding one - since "delete" is
-        // exactly what supplies the fresh rests this op then converts back.
-        const OPS = ["fret", "string", "accidental", "enharmonic", "tie", "voice", "delete", "restToNote", "rangeString"];
-        const opCounts = {};
-        let applied = 0;
-        let refused = 0;
-        let firstBadStep = -1;
-        let firstBad = null;
-        let restSkipped = 0;
-        // The widest range a "rangeString" gesture actually covered, so the
-        // assertions can tell a real multi-note write from a run of gestures
-        // that each happened to reach only their anchor (an extension stops at
-        // a rest, at a voice change and at the document edge).
-        let rangeWidest = 0;
-        const steps = [];
-        for (let i = 0; i < n; i++) {
-          const op = pick(OPS);
-          let ordinal;
-          let arg = null;
-          if (op === "restToNote") {
-            const restCount = h.restCount();
-            if (restCount === 0) {
-              // Nothing to convert yet (no rest exists this early in the
-              // sequence) - skip the step rather than force a target that
-              // does not exist; "delete" earlier in the run is what supplies
-              // one.
-              restSkipped += 1;
-              continue;
-            }
-            ordinal = Math.floor(rng() * restCount);
-            arg = { string: 1 + Math.floor(rng() * stringCount), fret: Math.floor(rng() * 13) };
-          } else {
-            const count = h.count();
-            if (count === 0) break;
-            ordinal = Math.floor(rng() * count);
-            if (op === "rangeString") arg = { k: Math.floor(rng() * 4), string: 1 + Math.floor(rng() * stringCount) };
-            else if (op === "fret") arg = Math.floor(rng() * 13);
-            else if (op === "string") arg = 1 + Math.floor(rng() * stringCount);
-            else if (op === "accidental") arg = pick([-2, -1, 0, 1, 2]);
-            else if (op === "enharmonic") arg = pick([-1, 1]);
-            else if (op === "voice") arg = 1 + Math.floor(rng() * 3);
-          }
-          const r = await h.apply(ordinal, op, arg);
-          if (op === "rangeString" && r.range && r.range.length > rangeWidest) rangeWidest = r.range.length;
-          opCounts[op] = (opCounts[op] ?? 0) + 1;
-          if (r.applied) applied += 1;
-          if (r.refused) refused += 1;
-          steps.push({ i, op, ordinal, arg, applied: r.applied, refused: r.refused, divergenceOk: r.divergenceOk });
-          if (r.divergenceOk === false && firstBadStep < 0) {
-            firstBadStep = i;
-            firstBad = { step: steps[steps.length - 1], audit: h.audit() };
-            break;
-          }
-        }
-        return {
-          seed,
-          n,
-          applied,
-          refused,
-          opCounts,
-          restSkipped,
-          rangeWidest,
-          firstBadStep,
-          firstBad,
-          finalCount: h.count(),
-          renderCount: window.__scoreEditor.noteCount(),
-          audit: h.audit(),
-        };
-      },
-      { seed: SEED, n: N },
-    );
+    // The seeded sequence itself lives in fixtures/editor-fuzz-driver.js, so
+    // the SAME driver can be pointed at a second input - a native MusicXML
+    // score opened from its library file (#262) - rather than being copied.
+    // Its design (mulberry32, the op menu, why duration/dots are absent) is
+    // this file's header, unchanged.
+    const result = await runSeededEdits(page, { seed: SEED, n: N });
 
     // The per-edit guard never went red across the whole sequence.
     expect(
@@ -265,13 +179,7 @@ test.describe("note editor - N-random-edits divergence fuzz guard", () => {
     // Plant a divergence: change ordinal 0's fret in the DOCUMENT only, skipping
     // the re-render. The written MusicXML now says one thing; the screen still
     // shows the old note.
-    const planted = await page.evaluate(() => {
-      const h = window.__scoreEditorHarness;
-      const before = h.noteAt(0);
-      const changed = h.corrupt(0, "fret", (before.fret + 5) % 13 === before.fret ? before.fret + 1 : (before.fret + 5) % 13);
-      const audit = h.audit();
-      return { before, changed: changed.changed, audit };
-    });
+    const planted = await plantStaleDivergence(page);
 
     expect(planted.changed, "the planted document edit should have applied").toBe(true);
     // The audit goes red...
@@ -292,13 +200,7 @@ test.describe("note editor - N-random-edits divergence fuzz guard", () => {
     // red above was the divergence, not a guard that is always red. (Re-applying
     // the note's CURRENT fret would be a no-op that skips the reload, so a
     // genuinely different fret is used to force the re-render.)
-    const healed = await page.evaluate(async () => {
-      const h = window.__scoreEditorHarness;
-      const now = h.noteAt(0);
-      const other = (now.fret + 1) % 13;
-      await h.apply(0, "fret", other);
-      return { audit: h.audit(), applied: h.noteAt(0).fret === other };
-    });
+    const healed = await healStaleDivergence(page);
     expect(healed.applied).toBe(true);
     expect(healed.audit.ok, `after a real reload the audit should be clean: ${JSON.stringify(healed.audit.divergences)}`).toBe(true);
   });

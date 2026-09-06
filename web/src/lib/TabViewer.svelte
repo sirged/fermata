@@ -138,6 +138,15 @@
   let scoreTempoFrom = $state("none");
   let countIn = $state(false);
   let loadError = $state("");
+  // The MusicXML text of the library FILE this view is drawing, when it is
+  // drawing one - null while a transcription is being shown instead (`tex`
+  // holds it then), null before a load lands, and null for a file that is not
+  // a part-wise MusicXML document at all. Reported by score-render.js's
+  // onSourceText, deliberately rather than fetched here a second time: it is
+  // the same text the importer was handed, so the editor cannot open on a
+  // different document from the one drawn (#262). Reactive because it decides
+  // whether the "Edit notes" button exists, and it arrives after mount.
+  let fileText = $state(null);
   let ladder = $state(false);
   let ladderStart = $state(60);
   let ladderStep = $state(5);
@@ -258,13 +267,40 @@
   const TWO_DIGIT_MS = 600;
   let fretEntry = null;
 
+  // Where the editor's document comes from, and the ONE place that decides it.
+  //
+  // `tex` is the transcription text when this score is being shown through a
+  // transcription row - a PDF's extraction or hand edit, and (since #262) a
+  // native MusicXML score's own hand edit once one exists. When it is null the
+  // score is being drawn from its library FILE, and `fileText` is that file's
+  // MusicXML as the renderer read it (score-render.js's onSourceText - the same
+  // bytes it imported, not a second fetch). Either way the editor opens on
+  // exactly the document on screen, which is the property the divergence guard
+  // and the whole-model audit are checking against.
+  //
+  // fileText is null for a file that holds no part-wise MusicXML document at
+  // all - a Guitar Pro file, a container that would not open - and that is
+  // precisely the case where there is nothing for this editor to edit, so the
+  // affordance falls away on its own rather than needing a file_type test here.
+  function editText() {
+    return tex != null ? tex : fileText;
+  }
+
+  // What editText() returned IS: the transcription row's declared format when
+  // the text came from a row (a row can carry alphaTex), and musicxml for a
+  // file, which readMusicXml only reports text for when it found
+  // <score-partwise>.
+  function editTextFormat() {
+    return tex != null ? format : "musicxml";
+  }
+
   function canEditNotes() {
-    return editable && format === "musicxml" && tex != null;
+    return editable && editTextFormat() === "musicxml" && editText() != null;
   }
 
   function initEditDoc(text) {
     editError = "";
-    const source = text ?? tex;
+    const source = text ?? editText();
     try {
       doc = createDocument(source);
       editStringCount = doc.stringCount;
@@ -1046,11 +1082,36 @@
   $effect(() => {
     if (!editMode) return;
     const v = view;
-    const t = tex;
-    void t;
+    const t = editText();
     if (!v) return;
     untrack(() => {
       if (!doc) initEditDoc();
+      else if (t != null && t !== doc.text()) {
+        // The document underneath has genuinely CHANGED, which is what a revert
+        // (#262) does: the edited row is deleted and the library file is drawn
+        // again. An editor left holding the discarded edit would be showing
+        // notes the staff no longer draws - exactly the render/model divergence
+        // the whole guard apparatus exists to prevent - so the session re-seeds
+        // from what is now on screen, and the undo history (every entry of
+        // which describes the abandoned document) goes with it.
+        //
+        // A SAVE is deliberately not this case: the row is stored verbatim, so
+        // the `tex` that comes back is character-for-character what `doc`
+        // already holds and this comparison is false - which is what keeps an
+        // edit session, its selection and its undo stack alive across a save,
+        // the behaviour this effect was written for.
+        //
+        // `t == null` is the gap between a source changing and its text
+        // arriving (a file has to be fetched and read); there is nothing to
+        // re-seed FROM yet, so it waits for the load that is already coming.
+        if (initEditDoc(t)) {
+          undoStack = [];
+          redoStack = [];
+          dirty = false;
+          saveError = "";
+          clearSelection();
+        }
+      }
       v.editor.setNotationShown(true);
       if (selectedOrdinal != null) refreshSelection();
       // Test instrumentation, in the same spirit as window.__audioPeak and
@@ -1284,6 +1345,11 @@
     // comment on profileOptions's declaration
     profileOptions = null;
     tabWithheldCount = 0;
+    // Belongs to the load that is starting, not the one that just ended: a
+    // score switched from a native file to a transcription (or to a file this
+    // cannot read) must not keep offering an edit seeded from the PREVIOUS
+    // document. Set again below, from onSourceText, only if this load reads one.
+    fileText = null;
     // untrack: everything below is driven imperatively once the view exists;
     // tracking it here would tear down and rebuild the renderer (and stop
     // playback) on a profile switch or a toggle.
@@ -1307,6 +1373,9 @@
           scoreTempo = t;
           scoreTempoFrom = from;
         },
+        // The document behind a `kind:"file"` source, as text - what makes a
+        // native MusicXML score editable (#262). See fileText's declaration.
+        onSourceText: (text) => (fileText = text),
         // Only which buttons to offer, not which one is highlighted - see
         // onProfileApplied for that. A score with nothing drawable reports an
         // empty array here, not a fallback list; the empty-state notice in
