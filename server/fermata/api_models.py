@@ -1074,6 +1074,16 @@ class ImportOut(BaseModel):
     # before drill history travelled.
     trainer_presets_imported: int
     trainer_preset_strings_imported: int
+    # #260: which of those presets landed under a name other than the one
+    # the archive carried, because that name was already taken - by a
+    # preset already in this library, or by an earlier preset from this same
+    # archive - and the collision was resolved by renaming rather than by
+    # refusing the whole import (see api._derive_preset_renames). Each entry
+    # is `{"from": <archived name>, "to": <name it was actually inserted
+    # under>}`. Empty when nothing collided. Identical on a dry run and an
+    # applied import - the rename is computed the same way in both, not
+    # decided only once writing starts (see import_library's docstring).
+    trainer_scope_presets_renamed: list[dict[str, str]]
 
 
 # ---------------------------------------------------------------------------

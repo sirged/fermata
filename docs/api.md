@@ -262,14 +262,28 @@ someone moving the library folder across by other means and wanting the
 archive to carry only the part that is not already portable that way.
 
 **What import does, exactly: it ADDS.** Every row from a validated archive is
-inserted as a new row with a fresh id - the only exception is a tag whose
+inserted as a new row with a fresh id - the only exceptions are a tag whose
 NAME already matches one already in the target library, which is reused
-rather than duplicated. Import never replaces, and never merges by guessing
-which of two similarly-shaped rows is "the same one" - a wrong guess risks
-silently discarding practice history, which this feature's one absolute rule
-is that it never does. Importing the same archive twice therefore creates two
-copies of everything; the library to import into is an empty one - a fresh
-install, or one just scanned onto an empty database.
+rather than duplicated, and a named drill scope (a "preset") whose NAME
+collides with one already in the target library (or with another preset
+earlier in the same archive), which is **renamed**, not reused and not
+refused: it is inserted under `<name> (imported)` (then `(imported 2)`,
+`(imported 3)`, ... - the first free name, compared the same
+case-insensitive way the preset's own uniqueness rule is), with its string
+set intact and its id remapped so the archive's own sessions still point at
+the imported copy. `ImportOut.trainer_scope_presets_renamed` lists every
+`{from, to}` pair this produced - empty when nothing collided - identically
+on a dry run and an applied import, so a preview never promises a name the
+real restore would not actually use. Import never replaces, and never merges
+by guessing which of two similarly-shaped rows is "the same one" - a wrong
+guess risks silently discarding practice history, which this feature's one
+absolute rule is that it never does; renaming a preset is not that guess,
+since both the existing preset and the archive's own copy survive under
+their own names. Importing the same archive twice therefore creates two
+copies of everything (a second import's preset lands under `(imported 2)`,
+having found `(imported)` already taken by the first); the library to import
+into is an empty one - a fresh install, or one just scanned onto an empty
+database.
 
 **Validated completely before anything is written.** The archive is a real
 zip, its manifest parses, its `schema_version` matches this Fermata's exactly
