@@ -4554,6 +4554,27 @@ def _insert_row(
     return cur.lastrowid
 
 
+def _ascii_fold(name: str) -> str:
+    """Fold the way `(owner, name COLLATE NOCASE)` does - ASCII A-Z only, not
+    Python's str.casefold(), which also folds characters NOCASE does not (the
+    German eszett 'ß' casefolds to 'ss', so 'Straße' and 'STRASSE' would look
+    like a collision here even though the unique index would never raise on
+    them side by side). Comparing this way is what keeps
+    _derive_preset_renames's predictions equal to what the insert itself
+    would - or would not - collide on."""
+    return "".join(chr(ord(ch) + 32) if "A" <= ch <= "Z" else ch for ch in name)
+
+
+def _fit_preset_name(base: str, suffix: str) -> str:
+    """Trim `base` so `base + suffix` still satisfies
+    trainer.MAX_PRESET_NAME_CHARS (#249) - a collision's derived name has to
+    be a name the API's own POST /api/trainer/presets would accept, not just
+    one the unique index would. A base already short enough is returned
+    unchanged."""
+    limit = max(trainer.MAX_PRESET_NAME_CHARS - len(suffix), 0)
+    return base[:limit] + suffix
+
+
 def _derive_preset_renames(conn, presets: list[dict]) -> tuple[dict[int, str], list[dict]]:
     """#260: the one collision import no longer refuses. Everywhere else,
     "added, never merged" means a real uniqueness collision against this
@@ -4565,11 +4586,21 @@ def _derive_preset_renames(conn, presets: list[dict]) -> tuple[dict[int, str], l
     hand, in the archive nobody wants to edit. So a preset whose name is
     already taken - by a row already in this library, or by an earlier
     preset from this SAME import, compared exactly the way the unique index
-    does it (COLLATE NOCASE) - is imported anyway, under
-    "<name> (imported)", then "<name> (imported 2)", "<name> (imported 3)"
-    and so on, until one is free. Every other collision class (a setting's
-    key, a goal's period, the preset id space itself) still reaches the
-    IntegrityError path unchanged.
+    does it (COLLATE NOCASE, folded ASCII-only - see _ascii_fold) - is
+    imported anyway, under "<name> (imported)", then "<name> (imported 2)",
+    "<name> (imported 3)" and so on, trimmed to fit
+    trainer.MAX_PRESET_NAME_CHARS (see _fit_preset_name) until one is free.
+    Every other collision class (a setting's key, a goal's period, the
+    preset id space itself) still reaches the IntegrityError path unchanged.
+
+    A row whose name is not a string at all (missing, null, or some other
+    JSON type - not something this API's own export ever writes, but nothing
+    stops a hand-edited or foreign manifest from carrying one) is not this
+    function's problem to solve: it is passed through completely unexamined,
+    so _apply_import's insert raises on it (or doesn't) exactly the way it
+    would have before this function existed. Manufacturing a rename for a
+    name that isn't one would only trade a clean refusal for a confusing
+    "success".
 
     Returns the {archive row id: name actually used} map `_apply_import`
     inserts under, and the `{from, to}` pairs for whichever presets actually
@@ -4584,7 +4615,7 @@ def _derive_preset_renames(conn, presets: list[dict]) -> tuple[dict[int, str], l
     would make the whole preview worthless.
     """
     taken = {
-        (row["name"] or "").casefold()
+        _ascii_fold(row["name"])
         for row in conn.execute(
             "SELECT name FROM trainer_scope_presets WHERE owner = ?", (DEFAULT_OWNER,)
         )
@@ -4592,20 +4623,21 @@ def _derive_preset_renames(conn, presets: list[dict]) -> tuple[dict[int, str], l
     names: dict[int, str] = {}
     renamed: list[dict] = []
     for row in presets:
-        original = row["name"]
+        original = row.get("name")
+        if not isinstance(original, str):
+            names[row["id"]] = original
+            continue
         candidate = original
-        if candidate.casefold() in taken:
+        if _ascii_fold(candidate) in taken:
             attempt = 1
             while True:
-                candidate = (
-                    f"{original} (imported)" if attempt == 1
-                    else f"{original} (imported {attempt})"
-                )
-                if candidate.casefold() not in taken:
+                suffix = " (imported)" if attempt == 1 else f" (imported {attempt})"
+                candidate = _fit_preset_name(original, suffix)
+                if _ascii_fold(candidate) not in taken:
                     break
                 attempt += 1
             renamed.append({"from": original, "to": candidate})
-        taken.add(candidate.casefold())
+        taken.add(_ascii_fold(candidate))
         names[row["id"]] = candidate
     return names, renamed
 
