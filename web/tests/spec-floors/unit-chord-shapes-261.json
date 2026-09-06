@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/chord-shapes.spec.js",
+  "count": 1,
+  "reason": "issue #261: Em7, Emaj7, Am7 and Amaj7 are all offered as open shapes - base fret 0 with an open string, each checked against chord-theory.js's own chordTones (via the existing exhaustive open-shape loop, unchanged) and, on top of that, read exactly as a guitarist would write the frets (020000, 021100, x02010, x02120)."
+}

@@ -402,6 +402,49 @@ test("sevenths: a minor7 and a major7 card are each offered, answered, and logge
   }
 });
 
+// ---------------------------------------------------------------------------
+// Open-position sevenths (issue #261): Em7, Emaj7, Am7 and Amaj7 are real
+// open shapes now, not only reachable as a barre form. Narrowed to frets
+// 0-2, no barre shape fits at all - its lowest base fret is 1 and its
+// smallest template still needs two frets past that, so this scope's
+// sevenths pool is open shapes only, and any minor7/major7 card drawn here
+// is necessarily the open one.
+// ---------------------------------------------------------------------------
+
+test("sevenths, open position only: a minor7 or major7 card is offered at base fret 0 with an open string", async ({
+  page,
+}) => {
+  await page.locator(".family-choice", { hasText: "Sevenths" }).click();
+  await page.selectOption(".scope-end-fret", "2");
+  await startButton(page).click();
+
+  let openSeventh = null;
+  for (let i = 0; i < 20 && !openSeventh; i++) {
+    const q = await question(page);
+    if (q.quality === "minor7" || q.quality === "major7") {
+      openSeventh = q;
+      break;
+    }
+    await page.locator(`.choice[data-root="${q.root}"][data-quality="${q.quality}"]`).click();
+    await page.locator(".next-question").click();
+  }
+
+  expect(
+    openSeventh,
+    "a minor7 or major7 card was drawn within 20 questions, frets 0-2 only",
+  ).toBeTruthy();
+  expect(["E", "A"]).toContain(openSeventh.root);
+
+  // Confirmed off the neck's own rendered markers, not merely inferred from
+  // the scope: the shown shape really does include an open string, which no
+  // barre instance in this range could ever show.
+  const targetFrets = await page
+    .locator('g.position[data-marker="target"]')
+    .evaluateAll((els) => els.map((el) => Number(el.dataset.fret)));
+  expect(targetFrets.length).toBeGreaterThan(0);
+  expect(targetFrets).toContain(0);
+});
+
 test("leaving the page mid-drill still logs the practice", async ({ page, request }) => {
   await startButton(page).click();
   const q = await question(page);

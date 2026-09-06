@@ -18,13 +18,20 @@
 //      set, and its complement to exactly the untranscribed one.
 //
 // WHY IT IS NAMED TO SORT AMONG THE OTHER zzzz-library-* SPECS: it uploads
-// and deletes scores the same way they do, and carries the same refusal-
-// unless-throwaway-instance guard zzz-library-organise.spec.js's own header
-// explains. Fully emptying the library after EVERY test - rather than
-// tracking its own small "OWN" list, the way zz-library-missing does - is
-// deliberate here: this file's whole subject is what a FRESH scan does, so
-// starting one from a library that already has a transcribed score in it
-// would silently defeat its own premise.
+// and deletes scores the same way they do. Fully emptying the library after
+// EVERY test - rather than tracking its own small "OWN" list, the way
+// zz-library-missing does - is deliberate here: this file's whole subject is
+// what a FRESH scan does, so starting one from a library that already has a
+// transcribed score in it would silently defeat its own premise.
+//
+// THIS FILE ESTABLISHES ITS OWN EMPTY LIBRARY (issue #259) - it used to rely
+// on zz-library-organise.spec.js's own afterAll having already emptied
+// everything, which held only while that spec actually ran before this one.
+// Skip it (or run this file alone) and zz-library-missing.spec.js's own
+// missing-flagged rows - left behind on purpose, see that file's header -
+// are still sitting here when this file's first test starts, failing this
+// file's own guard for a reason that has nothing to do with what this file
+// tests. See the beforeAll below.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -149,20 +156,35 @@ async function emptyTheLibrary(request) {
   }
 }
 
-test.beforeEach(async ({ request }) => {
+// Establishes this file's own precondition instead of inheriting one - the
+// same ordering problem #250 retired for zz-library-missing's own refusal
+// test (see that file's header). Checked, not assumed, before anything is
+// destroyed: "Uploads" is the only folder this file's own uploads ever use
+// (see uploadAndSettle/uploadRowOnly above), so a score outside it - and not
+// already missing-flagged, which is an ordinary inert leftover from
+// zz-library-missing.spec.js, never this file's own doing - means this is
+// not the throwaway instance the suite creates, and nothing below may run.
+// Only once that has passed does this call emptyTheLibrary - through the
+// same GET/DELETE /api/scores and /api/trash routes
+// zz-library-organise.spec.js's own afterAll uses - so the first test below
+// starts from a library that is empty because THIS file made it so, not
+// because some other spec happened to run first.
+test.beforeAll(async ({ request }) => {
   const existing = await (await request.get("/api/scores")).json();
+  const foreign = existing.filter(
+    (s) => !s.missing_since && s.path.split("/")[0] !== "Uploads",
+  );
   expect(
-    existing,
-    "refusing to run: this backend already has scores in its library, so it is not the " +
-      "throwaway instance the suite creates - and this file's whole subject is what a FRESH " +
-      "scan does",
+    foreign,
+    "refusing to run: this backend has scores in folders this suite never creates, so it is " +
+      "not the throwaway instance the suite creates - and this file empties the library",
   ).toEqual([]);
+  await emptyTheLibrary(request);
 });
 
 // After EVERY test, not only at the end - each test in this file starts from
-// a library that reads as genuinely fresh (see beforeEach above), which a
-// later test in the same file could not claim if an earlier one's uploads
-// were still sitting in it.
+// a library that reads as genuinely fresh, which a later test in the same
+// file could not claim if an earlier one's uploads were still sitting in it.
 test.afterEach(async ({ request }) => {
   await emptyTheLibrary(request);
 });

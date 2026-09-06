@@ -36,9 +36,9 @@ const fullScope = { startFret: 0, endFret: 12 };
 test("the three family presets say what issue #28 asks for, in order", () => {
   expect(FAMILY_LIST).toEqual(["major_minor", "sevenths", "barre"]);
   expect(FAMILIES.major_minor.qualities).toEqual(["major", "minor"]);
-  // Sevenths widened by issue #252 to all three seventh qualities - the
-  // dominant's open shapes plus the new minor/major sevenths' movable
-  // barre forms.
+  // Sevenths widened by issue #252 to all three seventh qualities: the
+  // dominant's open shapes, the minor/major sevenths' movable barre forms,
+  // and (since #261) the open Em7, Emaj7, Am7 and Amaj7 shapes.
   expect(FAMILIES.sevenths.qualities).toEqual(["dominant7", "minor7", "major7"]);
   expect(FAMILIES.barre.qualities).toEqual(["major", "minor"]);
   expect(FAMILIES.major_minor.shapeFamilies).toEqual(["open"]);
@@ -66,17 +66,25 @@ test("the sevenths pool contains only the three seventh qualities, and the barre
   expect(barre.every((s) => s.family.startsWith("barre"))).toBe(true);
 });
 
-test("the sevenths pool also offers minor and major sevenths, drawn from the new barre shapes", () => {
+test("the sevenths pool also offers minor and major sevenths, both open and barre", () => {
   const sevenths = chordPool(strings, fullScope, "sevenths");
   const minor7 = sevenths.filter((s) => s.quality === "minor7");
   const major7 = sevenths.filter((s) => s.quality === "major7");
   expect(minor7.length).toBeGreaterThan(0);
   expect(major7.length).toBeGreaterThan(0);
-  // Neither new quality has an open shape (chord-shapes.js only builds one
-  // for major, minor and dominant7) - every instance is one of the two new
-  // movable barre families.
-  expect(minor7.every((s) => s.family.startsWith("barre"))).toBe(true);
-  expect(major7.every((s) => s.family.startsWith("barre"))).toBe(true);
+  // Every instance is either the open Em7/Am7 (or Emaj7/Amaj7) shape
+  // (issue #261) or one of the two movable barre families - never anything
+  // else.
+  expect(minor7.every((s) => s.family === "open" || s.family.startsWith("barre"))).toBe(true);
+  expect(major7.every((s) => s.family === "open" || s.family.startsWith("barre"))).toBe(true);
+  // The open shape itself really is in the pool, at base fret 0 with at
+  // least one open string - the whole point of issue #261.
+  const openEm7 = minor7.find((s) => s.family === "open" && s.root === "E");
+  expect(openEm7).toBeTruthy();
+  expect(openEm7.frets.some((f) => f.fret === 0)).toBe(true);
+  const openAmaj7 = major7.find((s) => s.family === "open" && s.root === "A");
+  expect(openAmaj7).toBeTruthy();
+  expect(openAmaj7.frets.some((f) => f.fret === 0)).toBe(true);
 });
 
 test("narrowing the fret range to open position drops a shape that needs a higher fret", () => {
