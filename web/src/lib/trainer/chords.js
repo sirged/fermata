@@ -58,11 +58,11 @@ export const FAMILIES = {
   },
   sevenths: {
     label: "Sevenths",
-    // Dominant, minor and major sevenths together (issue #252) - the
-    // dominant's open shapes plus the minor and major's movable E/A-form
-    // barre shapes (chord-shapes.js has no OPEN shape for either new
-    // quality, only "one E-form and one A-form movable shape" as the
-    // issue's own appetite asks for).
+    // Dominant, minor and major sevenths together (issue #252, open
+    // minor/major-seventh shapes added by #261) - the dominant's, minor's
+    // and major's open shapes (Em7, Emaj7, Am7, Amaj7 alongside the
+    // existing open E7, A7, D7, G7, B7) plus the minor and major's movable
+    // E/A-form barre shapes for every other root.
     qualities: ["dominant7", "minor7", "major7"],
     shapeFamilies: ["open", "barre-e-minor7", "barre-a-minor7", "barre-e-major7", "barre-a-major7"],
   },

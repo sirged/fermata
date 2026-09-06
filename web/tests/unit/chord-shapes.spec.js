@@ -59,6 +59,36 @@ test("a known open shape's frets read exactly as a guitarist would write them - 
   expect(byString[6]).toBeUndefined(); // muted, same as chord notation's "x"
 });
 
+// -------------------------------------------------- open minor7/major7 shapes (issue #261)
+
+test("Em7, Emaj7, Am7 and Amaj7 are all offered as open shapes, base fret 0 with an open string", () => {
+  const shapes = openShapesFor(strings);
+  const em7 = shapes.find((s) => s.id === "open:E:minor7");
+  const emaj7 = shapes.find((s) => s.id === "open:E:major7");
+  const am7 = shapes.find((s) => s.id === "open:A:minor7");
+  const amaj7 = shapes.find((s) => s.id === "open:A:major7");
+  for (const shape of [em7, emaj7, am7, amaj7]) {
+    expect(shape, `${shape?.id ?? "shape"} is present`).toBeTruthy();
+    expect(shape.frets.some((f) => f.fret === 0), `${shape.id} has an open string`).toBe(true);
+    expect(shape.frets.every((f) => f.fret >= 0), `${shape.id} never frets below the nut`).toBe(true);
+  }
+  // Read exactly as a guitarist would write them - Em7 022000, Emaj7 021100,
+  // Am7 x02010, Amaj7 x02120 (see chord-shapes.js's own comment on why these
+  // are the barre templates' own offsets at base fret 0).
+  expect(Object.fromEntries(em7.frets.map((f) => [f.string, f.fret]))).toEqual({
+    6: 0, 5: 2, 4: 0, 3: 0, 2: 0, 1: 0,
+  });
+  expect(Object.fromEntries(emaj7.frets.map((f) => [f.string, f.fret]))).toEqual({
+    6: 0, 5: 2, 4: 1, 3: 1, 2: 0, 1: 0,
+  });
+  const am7ByString = Object.fromEntries(am7.frets.map((f) => [f.string, f.fret]));
+  expect(am7ByString).toEqual({ 5: 0, 4: 2, 3: 0, 2: 1, 1: 0 });
+  expect(am7ByString[6]).toBeUndefined(); // muted, like the open A shapes above it
+  const amaj7ByString = Object.fromEntries(amaj7.frets.map((f) => [f.string, f.fret]));
+  expect(amaj7ByString).toEqual({ 5: 0, 4: 2, 3: 1, 2: 2, 1: 0 });
+  expect(amaj7ByString[6]).toBeUndefined();
+});
+
 // ---------------------------------------------------------------- barre shapes, generated
 
 test("barre shapes are generated across a fret range, root read off the neck at each one", () => {
