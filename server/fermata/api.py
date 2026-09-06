@@ -2217,6 +2217,20 @@ class TranscriptionEditIn(BaseModel):
     # the wrong format here is not a cosmetic mistake - the renderer dispatches
     # on it, so a MusicXML document labelled alphatex fails to load at all.
     format: str | None = None
+    # The `updated_at` of the edited row this edit was made ON TOP OF, echoed
+    # back as an If-Match-style precondition (#267). Optional, and omitting it
+    # means exactly what it has always meant: write, whatever is there now.
+    # See save_transcription for what each of the four combinations does.
+    expected_updated_at: str | None = Field(
+        default=None,
+        description=(
+            "The `updated_at` of the edited transcription this edit was made on "
+            "top of, echoed back as a precondition. When it does not match the "
+            "row's current value the save is refused with 409 and nothing is "
+            "written. Omit it to save unconditionally, which is how this "
+            "endpoint has always behaved."
+        ),
+    )
 
 
 def _sniff_transcription_format(content: str) -> str:
@@ -2294,29 +2308,140 @@ def _validate_musicxml_edit(content: str) -> None:
             422, f"transcription does not validate against the MusicXML 4.0 schema: {errors}")
 
 
+# The stamp a hand edit's `updated_at` is written with (#267).
+#
+# NOT datetime('now'), which every other updated_at in this file uses, and the
+# difference is the whole precondition. datetime('now') has ONE-SECOND
+# resolution: measured on main c950501, three saves through the real PUT inside
+# one second all stored the identical string, so a stale second save inside
+# that second would have carried a value that still matched and been let
+# through - a version check that is blind for a whole second is not a version
+# check. strftime('%f') is the same format with the seconds carrying three
+# decimal places, so it sorts and compares as text exactly as before (a value
+# written by the old code has no fraction, and "…:17" < "…:17.004" as text as
+# well as in time) and no column, index or reader changes.
+#
+# The EXTRACTED row is deliberately left on datetime('now'): no client ever
+# writes it (see transcribe()), so it has nothing to be raced over.
+_EDIT_STAMP_SQL = "strftime('%Y-%m-%d %H:%M:%f', 'now')"
+
+
+def _edit_stamp(conn, previous: str | None) -> str:
+    """A stamp for this write that is strictly greater than the row's current
+    one, so no two writes to the same row can ever share a value.
+
+    Milliseconds make a collision unlikely rather than impossible - two saves
+    could still land in the same millisecond, and a clock that steps backwards
+    (NTP, a suspended laptop) would make the new stamp SMALLER, which is worse:
+    a client holding the newer value would then be refused forever. Bumping by
+    a millisecond in either case keeps the one property the precondition needs -
+    every write changes the value, and never to one already used - at the cost
+    of a stamp up to a few milliseconds ahead of the clock.
+    """
+    stamp = conn.execute(f"SELECT {_EDIT_STAMP_SQL}").fetchone()[0]
+    if previous is None or stamp > previous:
+        return stamp
+    try:
+        fmt = "%Y-%m-%d %H:%M:%S.%f" if "." in previous else "%Y-%m-%d %H:%M:%S"
+        when = datetime.strptime(previous, fmt) + timedelta(milliseconds=1)
+    except ValueError:
+        # A row whose stamp is not a stamp at all - nothing here wrote it, and
+        # guessing its successor would be inventing one. The clock's own answer
+        # is the honest value; the comparison above is a text compare, so this
+        # only ever happens against a value no client can have loaded meaningfully.
+        return stamp
+    return f"{when:%Y-%m-%d %H:%M:%S}.{when.microsecond // 1000:03d}"
+
+
+def _refuse_stale_edit(row) -> None:
+    """409, naming what is actually stored, and writing nothing (#267)."""
+    raise HTTPException(
+        409,
+        {
+            "error": "stale_transcription",
+            "message": (
+                "This score's transcription changed somewhere else after you "
+                "loaded it, so this save was not written."
+            ),
+            "updated_at": row["updated_at"] if row is not None else None,
+            "source": row["source"] if row is not None else None,
+        },
+    )
+
+
 @router.put(
-    "/scores/{score_id}/transcription", tags=[TAG_TRANSCRIPTION], response_model=TranscriptionOut
+    "/scores/{score_id}/transcription",
+    tags=[TAG_TRANSCRIPTION],
+    response_model=TranscriptionOut,
+    responses={
+        409: {
+            "description": (
+                "The stored edit is not the one `expected_updated_at` named - it "
+                "changed, or was reverted, after this client loaded it. Nothing "
+                "was written. `detail` carries `updated_at` and `source` for what "
+                "is stored now (both null when the edited row is gone), so a "
+                "client can offer to load it."
+            )
+        }
+    },
 )
 def save_transcription(score_id: RowId, body: TranscriptionEditIn):
     """Save a hand edit, replacing any hand edit already stored - never the
     extraction. `format` is sniffed from the content when not given - see
     _sniff_transcription_format. A MusicXML edit is also checked against the
-    real schema when one is configured - see _validate_musicxml_edit."""
+    real schema when one is configured - see _validate_musicxml_edit.
+
+    `expected_updated_at` is an optional precondition (#267): the `updated_at`
+    of the edited row this edit was made on top of, echoed back. Four cases,
+    and only the first two can refuse anything:
+
+    - **sent, and an edited row exists with a different `updated_at`** - 409,
+      nothing written. Somebody else saved between this client's load and its
+      save, and writing would replace their work with a document that never
+      contained it.
+    - **sent, and there is no edited row** - 409, nothing written, with null
+      `updated_at`/`source`. The row this edit was made on top of was reverted
+      (DELETE /transcription) underneath; writing would silently resurrect an
+      edit the reader threw away, and it is the same surprise as the case above
+      seen from the other side. A client that means "save whatever is there"
+      says so by sending nothing.
+    - **sent, and it matches** - written, exactly as an unconditional save.
+    - **not sent (or null)** - written unconditionally. COMPATIBILITY: this is
+      the whole behaviour of this endpoint before #267, unchanged, and it is
+      what a first save (nothing stored yet) and any client that predates the
+      field both do.
+
+    The response carries the new `updated_at`, which is what the client sends
+    as the precondition on its NEXT save.
+    """
     fmt = body.format or _sniff_transcription_format(body.content)
     if fmt not in VALID_TRANSCRIPTION_FORMATS:
         raise HTTPException(
             422, f"format must be one of {sorted(VALID_TRANSCRIPTION_FORMATS)}")
     if fmt == "musicxml":
         _validate_musicxml_edit(body.content)
-    with tx() as conn:
+    # write_tx, not tx: this reads the stored row and then decides whether to
+    # write from what it read, and tx() only takes the write lock at the first
+    # DML statement - so under tx() another save could land between the check
+    # and the write, which is the exact race the precondition exists to close.
+    # See db.write_tx's own docstring.
+    with write_tx() as conn:
         _live_score_row(conn, score_id, "save a transcription for it")
+        current = conn.execute(
+            "SELECT * FROM transcriptions WHERE score_id = ? AND source = 'edited'", (score_id,)
+        ).fetchone()
+        if body.expected_updated_at is not None and (
+            current is None or current["updated_at"] != body.expected_updated_at
+        ):
+            _refuse_stale_edit(current)
+        stamp = _edit_stamp(conn, current["updated_at"] if current is not None else None)
         conn.execute(
             """INSERT INTO transcriptions(score_id, format, content, source, updated_at)
-               VALUES (?, ?, ?, 'edited', datetime('now'))
+               VALUES (?, ?, ?, 'edited', ?)
                ON CONFLICT(score_id, source) DO UPDATE SET
                    format = excluded.format, content = excluded.content,
-                   updated_at = datetime('now')""",
-            (score_id, fmt, body.content),
+                   updated_at = excluded.updated_at""",
+            (score_id, fmt, body.content, stamp),
         )
     conn = connect()
     row = conn.execute(

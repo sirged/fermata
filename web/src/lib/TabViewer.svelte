@@ -89,7 +89,19 @@
     // wires this to the existing edited-transcription save path (PUT
     // /api/scores/{id}/transcription, stored verbatim as source='edited',
     // never re-extracted). null when not editable.
+    //
+    // Called as `onSaveEdit(text)` normally, and as
+    // `onSaveEdit(text, { overwrite: true })` when the reader has been shown a
+    // conflict (#267) and chose to save on top of what is stored now. It sends
+    // the precondition and adopts the value the save returns; it MAY THROW an
+    // ApiError with status 409, which is that conflict and is handled here
+    // rather than shown as a plain message.
     onSaveEdit = null,
+    // Load the stored edit into this viewer, discarding the working document -
+    // `async () => void`. The other half of the conflict resolution above: the
+    // parent re-fetches the row and re-flows it through `tex`, which re-seeds
+    // the edit session (see the rebuild effect). null when not editable.
+    onReloadEdit = null,
   } = $props();
 
   let host;
@@ -263,6 +275,16 @@
   let dirty = $state(false);
   let saving = $state(false);
   let saveError = $state("");
+  // A save the server REFUSED because the stored edit is no longer the one this
+  // session started from (#267): somebody saved from another page, or reverted
+  // the edit, in between. Distinct from saveError - there is something to do
+  // about it, and this holds what the server said is stored now so the two
+  // actions beside it are real ones rather than a shrug. null when there is no
+  // such refusal outstanding.
+  let saveConflict = $state(null);
+  // Which of the two conflict actions is in flight ("" when neither), so both
+  // buttons can be disabled while one is working.
+  let resolvingConflict = $state("");
   let undoStack = $state([]);
   let redoStack = $state([]);
   // One entry per SELECTED NOTE-HEAD (#251): a single selection has one, a
@@ -362,6 +384,7 @@
     redoStack = [];
     dirty = false;
     saveError = "";
+    saveConflict = null;
     clearSelection();
     editMode = true;
     // notation + doc are (re)applied by the $effect below, which also covers a
@@ -1084,16 +1107,71 @@
   }
 
   async function saveEdits() {
+    await runSave(() => onSaveEdit(doc.text()));
+  }
+
+  // One place where a save's outcome is read, so the ordinary Save and the
+  // "save mine over it" the conflict offers cannot drift apart in what they do
+  // with a refusal.
+  async function runSave(attempt) {
     if (!doc || !onSaveEdit) return;
     saving = true;
     saveError = "";
+    saveConflict = null;
     try {
-      await onSaveEdit(doc.text());
+      await attempt();
+      dirty = false;
+    } catch (e) {
+      // 409: the stored edit is not the one this session started from (#267).
+      // NOT shown as a plain message - a message here would leave the reader
+      // holding work with nowhere to put it - so the panel states what
+      // happened and offers the two things that can actually be done.
+      if (e?.status === 409) {
+        saveConflict = {
+          message: String(e?.message ?? e),
+          updatedAt: e?.detail?.updated_at ?? null,
+          // null means the stored edit is GONE (reverted elsewhere) rather
+          // than replaced - a different sentence, and the reason the server
+          // distinguishes the two.
+          source: e?.detail?.source ?? null,
+        };
+      } else {
+        saveError = String(e?.message ?? e);
+      }
+    } finally {
+      saving = false;
+    }
+  }
+
+  // "Load the stored version": the parent re-fetches the row and re-flows it
+  // through `tex`, which re-seeds this edit session from what is now on screen
+  // (the rebuild effect below). The working document goes, which is what the
+  // button says.
+  async function loadStoredEdit() {
+    if (!onReloadEdit || resolvingConflict) return;
+    resolvingConflict = "load";
+    try {
+      await onReloadEdit();
+      saveConflict = null;
       dirty = false;
     } catch (e) {
       saveError = String(e?.message ?? e);
     } finally {
-      saving = false;
+      resolvingConflict = "";
+    }
+  }
+
+  // "Save mine over it": read what is stored NOW and save on top of that,
+  // deliberately. The other version is replaced - which is exactly what used to
+  // happen without anybody being asked, and the whole difference is that this
+  // time it was chosen.
+  async function saveOverStoredEdit() {
+    if (resolvingConflict) return;
+    resolvingConflict = "overwrite";
+    try {
+      await runSave(() => onSaveEdit(doc.text(), { overwrite: true }));
+    } finally {
+      resolvingConflict = "";
     }
   }
 
@@ -1132,6 +1210,10 @@
           redoStack = [];
           dirty = false;
           saveError = "";
+          // The document underneath changed and this session re-seeded from it,
+          // which is precisely what "load the stored version" asks for - there
+          // is nothing left to resolve.
+          saveConflict = null;
           clearSelection();
         }
       }
@@ -1758,6 +1840,7 @@
   data-editor-active={editMode}
   data-editor-error={editError || null}
   data-editor-warn={editWarn || null}
+  data-editor-conflict={saveConflict ? (saveConflict.source ?? "gone") : null}
   data-editor-selected={selectedOrdinal}
   data-editor-selected-extent={selExtent}
   data-editor-selected-count={selectedOrdinal != null ? selRange.length : null}
@@ -2137,6 +2220,44 @@
           {saving ? "Saving…" : "Save"}
         </button>
       </div>
+      {#if saveConflict}
+        <!-- A save the server refused (#267). Nothing was written, and what is
+             typed here is still here - so this states what happened and offers
+             the two things that can be done about it, rather than reporting a
+             number. Reading both versions side by side is deliberately not
+             offered: that is a comparison view, and it is more than this is. -->
+        <div class="save-conflict" role="status">
+          <span class="hint warn">
+            {#if saveConflict.source}
+              This score's notes changed somewhere else after you opened them
+              here, so nothing was saved.
+            {:else}
+              The edit you opened here was thrown away somewhere else, so
+              nothing was saved.
+            {/if}
+          </span>
+          <div class="save-conflict-actions">
+            {#if onReloadEdit}
+              <button
+                class="ghost"
+                disabled={!!resolvingConflict}
+                onclick={loadStoredEdit}
+                title="Show what is stored now. What you have typed here goes."
+              >
+                {resolvingConflict === "load" ? "Loading…" : "Load what is stored"}
+              </button>
+            {/if}
+            <button
+              class="ghost"
+              disabled={!!resolvingConflict}
+              onclick={saveOverStoredEdit}
+              title="Save what is here on top of the stored version, replacing it."
+            >
+              {resolvingConflict === "overwrite" ? "Saving…" : "Save mine over it"}
+            </button>
+          </div>
+        </div>
+      {/if}
     </div>
   {/if}
 
@@ -2458,6 +2579,24 @@
     margin: 0;
     font-size: 12.5px;
     color: var(--ink-dim);
+  }
+
+  /* A refused save (#267) takes the full width of the panel rather than
+     squeezing in beside the note controls: it is a sentence plus two choices,
+     and the choices have to be readable at the width a tablet gives them. */
+  .save-conflict {
+    flex-basis: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+  }
+
+  .save-conflict-actions {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
   }
 
   .edit-panel .hint.warn {

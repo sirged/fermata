@@ -15,6 +15,7 @@ import inspect
 import json
 import os
 import textwrap
+import time
 
 import pytest
 from fastapi import HTTPException
@@ -383,6 +384,399 @@ def test_an_unknown_edit_format_is_rejected(app_env, insert_score):
         api.save_transcription(
             score_id, api.TranscriptionEditIn(content=":4 0.1 |", format="lilypond"))
     assert exc_info.value.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Two people editing the same score at once (#267)
+# ---------------------------------------------------------------------------
+#
+# Measured on main c950501 through the real PUT before any of this was written:
+# a row saved, loaded by two clients, then saved by each in turn - both got 200
+# and the second replaced the first, with nothing anywhere able to notice. All
+# three saves in that construction also stored the IDENTICAL updated_at, which
+# is why _edit_stamp exists: datetime('now') has one-second resolution, so a
+# precondition compared against it would have been blind for a whole second.
+#
+# These tests go through api.save_transcription directly, like every other test
+# in this module; the HTTP status of the refusal is HTTPException.status_code,
+# which is the same 409 FastAPI sends.
+
+
+def _put(score_id, content, expected=None):
+    """One save, the way a client makes it: the content, and the updated_at it
+    loaded (or nothing at all, which is the pre-#267 shape)."""
+    return api.save_transcription(
+        score_id,
+        api.TranscriptionEditIn(content=content, expected_updated_at=expected),
+    )
+
+
+def test_a_client_can_save_over_and_over_by_echoing_what_it_last_got_back(
+    app_env, insert_score
+):
+    """Sequence (1) of #267's done-when: load, save, save again - 200 both
+    times, the second carrying the value the first save handed back.
+
+    This is the sequence the client echo has to keep green. A client that sent
+    the value it LOADED rather than the value its last save RETURNED would be
+    refused here on its own second save, which is the mutation this test is
+    written to catch.
+    """
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+
+    # The first save: no row yet, so no precondition to send.
+    first = _put(score_id, ':4 0.1 |')
+    loaded = api.get_transcription(score_id)
+    assert loaded["updated_at"] == first["updated_at"]
+
+    second = _put(score_id, ':4 0.3 |', expected=first["updated_at"])
+    assert second["content"] == ':4 0.3 |'
+    third = _put(score_id, ':4 0.5 |', expected=second["updated_at"])
+    assert third["content"] == ':4 0.5 |'
+    assert api.get_transcription(score_id)["content"] == ':4 0.5 |'
+
+
+def test_two_saves_inside_one_second_both_land(app_env, insert_score):
+    """Sequence (3): the same client saving twice in immediate succession.
+
+    The point is the CLOCK. datetime('now') - what every other updated_at in
+    this file is written with, and what this row used before #267 - resolves to
+    one second, so two saves this close together shared a value and the second
+    client's echo of the first's value would have matched a row it had never
+    seen. _edit_stamp makes every write change the value, so this passes for
+    the right reason: the second save's precondition matches because it really
+    is the row it was handed, not because both stamps happen to read the same.
+    """
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+    started = time.monotonic()
+    first = _put(score_id, ':4 0.1 |')
+    second = _put(score_id, ':4 0.3 |', expected=first["updated_at"])
+    third = _put(score_id, ':4 0.5 |', expected=second["updated_at"])
+    assert time.monotonic() - started < 1.0, "the three saves did not land inside one second"
+
+    assert first["updated_at"] != second["updated_at"] != third["updated_at"]
+    assert first["updated_at"] < second["updated_at"] < third["updated_at"]
+    assert api.get_transcription(score_id)["content"] == ':4 0.5 |'
+
+
+def test_a_stale_second_save_inside_the_same_second_is_still_refused(app_env, insert_score):
+    """The same one-second window, from the other side: a SECOND client whose
+    stale value was written less than a second ago.
+
+    This is the case a per-second stamp cannot see at all - on main the two
+    stamps are string-identical, so `expected == current` and the stale save
+    goes through. Nothing here sleeps; the whole sequence runs in milliseconds
+    on purpose, because the sub-second handling is exactly what is under test.
+    """
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+    seed = _put(score_id, ':4 0.1 |')
+    both_loaded = seed["updated_at"]
+
+    a_saved = _put(score_id, ':4 0.3 |', expected=both_loaded)
+    assert a_saved["updated_at"] != both_loaded, (
+        "a save inside the same second left updated_at unchanged, so no "
+        "precondition built on it can refuse anything")
+
+    with pytest.raises(HTTPException) as exc_info:
+        _put(score_id, ':4 0.5 |', expected=both_loaded)
+    assert exc_info.value.status_code == 409
+    assert api.get_transcription(score_id)["content"] == ':4 0.3 |'
+
+
+def test_a_save_holding_a_value_someone_else_replaced_is_refused(app_env, insert_score):
+    """Sequence (2) of #267's done-when, and the bug itself: A and B both load,
+    A saves, B saves what it loaded - B is refused and A's content stands."""
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+    _put(score_id, '\\title "seed"\n.\n:4 0.1 |')
+
+    a_loaded = api.get_transcription(score_id)
+    b_loaded = api.get_transcription(score_id)
+    assert a_loaded["updated_at"] == b_loaded["updated_at"], "both clients loaded the same row"
+
+    a_saved = _put(score_id, '\\title "A"\n.\n:4 0.3 |', expected=a_loaded["updated_at"])
+    assert a_saved["source"] == "edited"
+
+    with pytest.raises(HTTPException) as exc_info:
+        _put(score_id, '\\title "B"\n.\n:4 0.5 |', expected=b_loaded["updated_at"])
+    assert exc_info.value.status_code == 409
+
+    # NOTHING WAS WRITTEN: not the content, and not the stamp either - a
+    # refusal that still touched updated_at would invalidate A's own next save.
+    current = api.get_transcription(score_id)
+    assert current["content"] == '\\title "A"\n.\n:4 0.3 |'
+    assert current["updated_at"] == a_saved["updated_at"]
+
+    # And A, who has done nothing wrong, can still save on top of its own row.
+    again = _put(score_id, '\\title "A again"\n.\n:4 0.7 |', expected=a_saved["updated_at"])
+    assert again["content"] == '\\title "A again"\n.\n:4 0.7 |'
+
+
+def test_the_refusal_names_what_is_stored_now(app_env, insert_score):
+    """The 409 body, which is the whole reason a client can offer to load the
+    other version rather than merely apologise: the current updated_at and
+    source, so the reload the panel offers is a real one."""
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+    seed = _put(score_id, ':4 0.1 |')
+    winner = _put(score_id, ':4 0.3 |', expected=seed["updated_at"])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _put(score_id, ':4 0.5 |', expected=seed["updated_at"])
+    detail = exc_info.value.detail
+    assert detail["error"] == "stale_transcription"
+    assert detail["updated_at"] == winner["updated_at"]
+    assert detail["source"] == "edited"
+    assert isinstance(detail["message"], str) and detail["message"]
+
+
+def test_two_concurrent_saves_holding_the_same_stamp_do_not_both_land(app_env, insert_score):
+    """The test above proves the precondition rejects a STALE value once B has
+    already loaded it and A has already saved - but that is two requests taken
+    in a chosen order. What actually has to hold is that whichever of two
+    REAL, OVERLAPPING requests loses the race sees a stamp that already moved
+    - not the one it loaded - because save_transcription reads the stored row
+    and then decides whether to write from what it read, and anything that can
+    interleave a second read or write in between reopens exactly the bug this
+    issue closed.
+
+    That is why `save_transcription` runs the read-then-write under
+    `write_tx()` and not `tx()` (see the comment at its call site): `tx()`
+    only takes SQLite's write lock at the transaction's first DML statement,
+    so the SELECT that reads `current` runs OUTSIDE any lock and two threads
+    can both read the same row before either writes. `write_tx()` opens with
+    `BEGIN IMMEDIATE` (db.py, near line 1440), which takes the write lock
+    before that SELECT - so the loser's SELECT blocks until the winner's
+    transaction commits, and then reads the winner's new stamp instead of the
+    one both clients actually loaded.
+
+    Driven through two real TestClients rather than by calling
+    api.save_transcription directly, because the thing under test is two
+    REQUESTS overlapping - db.connect() caches one connection per thread
+    (db._local), so calling the handler twice from this test's own thread
+    would never open two connections at all and could not show the race
+    either way.
+
+    Repeated for 5 barrier-synchronised rounds rather than once: a race that
+    happens to resolve the same way on one run is not evidence it always
+    does, and this is cheap enough (~1s for all 5, measured) that there is no
+    reason to trust a single roll.
+
+    SQLite's busy timeout is `db.connect()`'s `sqlite3.connect(..., timeout=30)`
+    - 30 seconds. The loser here only ever waits for the winner's own
+    transaction to commit (microseconds), so that timeout is never in play;
+    it is mentioned because a MUCH shorter timeout is exactly the kind of
+    thing that would make this test flaky without changing the bug it tests
+    for.
+    """
+    import threading
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.include_router(api.router)
+    # Two clients, one app, one (monkeypatched, per app_env) database file -
+    # not two connections opened by hand, so this goes through exactly the
+    # request path a real second browser tab would.
+    client_a = TestClient(app)
+    client_b = TestClient(app)
+
+    conn = db.connect()
+    score_id = insert_score(conn, "race.pdf")
+    url = f"/api/scores/{score_id}/transcription"
+    # Seed a first edited row: a save with no precondition can never be
+    # refused, so round 0 needs something already stored to race over.
+    client_a.put(url, json={"content": ":4 0.0 |"})
+
+    for round_number in range(5):
+        stamp = client_a.get(url).json()["updated_at"]
+        barrier = threading.Barrier(2)
+        responses = {}
+
+        def _race(client, key, content):
+            barrier.wait()
+            responses[key] = client.put(
+                url, json={"content": content, "expected_updated_at": stamp}
+            )
+
+        content_a = f":4 1.{round_number} |"
+        content_b = f":4 2.{round_number} |"
+        threads = [
+            threading.Thread(target=_race, args=(client_a, "a", content_a)),
+            threading.Thread(target=_race, args=(client_b, "b", content_b)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        statuses = sorted(r.status_code for r in responses.values())
+        assert statuses == [200, 409], (
+            f"round {round_number}: expected exactly one 200 and one 409, got "
+            f"{[(k, r.status_code) for k, r in responses.items()]}"
+        )
+        winner_key = next(k for k, r in responses.items() if r.status_code == 200)
+        loser_key = "b" if winner_key == "a" else "a"
+        winner_content = content_a if winner_key == "a" else content_b
+        winner_body = responses[winner_key].json()
+
+        # The row holds the winner's content and the winner's new stamp - the
+        # loser's write truly never happened, not merely "returned an error".
+        stored = client_a.get(url).json()
+        assert stored["content"] == winner_content
+        assert stored["updated_at"] == winner_body["updated_at"]
+
+        # The 409 names the stamp the winner just wrote, which is how a real
+        # client would notice its precondition is the STALE one and offer a
+        # reload rather than a generic apology.
+        loser_detail = responses[loser_key].json()["detail"]
+        assert loser_detail["updated_at"] == winner_body["updated_at"]
+        assert loser_detail["source"] == "edited"
+
+
+def test_a_save_holding_a_value_for_an_edit_that_was_reverted_is_refused(
+    app_env, extractable_pdf, monkeypatch, insert_score
+):
+    """Sequence (4): the row is GONE, not merely different - somebody reverted
+    it (DELETE /transcription) while this client was editing.
+
+    Refused, deliberately, rather than treated as a first save. The client
+    believed it was correcting a stored edit; that edit was thrown away, and
+    letting the save through would resurrect it silently - the same surprise as
+    an overwrite, seen from the other side. The 409 names null for both
+    `updated_at` and `source`, which is how a client tells "reverted" from
+    "somebody else saved" and can offer the right thing.
+
+    A client that genuinely means "save whatever is there" sends no
+    precondition, which is the test below.
+    """
+    monkeypatch.setattr(api, "LIBRARY_DIR", extractable_pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, extractable_pdf.name)
+    api.transcribe(score_id, body=None)  # an extraction to revert back TO
+
+    edited = _put(score_id, ':4 0.1 |')
+    api.delete_transcription(score_id)
+
+    with pytest.raises(HTTPException) as exc_info:
+        _put(score_id, ':4 0.3 |', expected=edited["updated_at"])
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["updated_at"] is None
+    assert exc_info.value.detail["source"] is None
+    # Still reverted: the extraction is what the score has, and no edited row
+    # came back from the dead.
+    assert api.get_transcription(score_id)["source"] == "extracted"
+
+
+def test_a_save_with_no_precondition_still_overwrites_an_existing_edit(app_env, insert_score):
+    """Sequence (5), and the compatibility promise stated in
+    save_transcription's docstring: a client that sends no precondition - every
+    client that predates #267, and this endpoint's whole behaviour before it -
+    writes over whatever is stored, exactly as before."""
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+    _put(score_id, ':4 0.1 |')
+    _put(score_id, ':4 0.3 |')  # no expected_updated_at anywhere in this test
+
+    saved = _put(score_id, ':4 0.5 |')
+    assert saved["content"] == ':4 0.5 |'
+    assert api.get_transcription(score_id)["content"] == ':4 0.5 |'
+    # And the field really is absent from the request, not merely None-valued
+    # by accident: the model default is what makes an old client's body parse.
+    assert api.TranscriptionEditIn(content="x").expected_updated_at is None
+
+
+def test_a_matching_precondition_saves_and_hands_back_the_new_value(app_env, insert_score):
+    """The ordinary conditional save: the value matches, the write lands, and
+    the response carries the NEW value - which is the one thing that makes
+    saving twice in a row possible (see the echo test above)."""
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+    first = _put(score_id, ':4 0.1 |')
+    second = _put(score_id, ':4 0.3 |', expected=first["updated_at"])
+    assert second["updated_at"] != first["updated_at"]
+    assert second["updated_at"] == api.get_transcription(score_id)["updated_at"]
+
+
+def test_a_precondition_never_reaches_the_extracted_row(
+    app_env, extractable_pdf, monkeypatch, insert_score
+):
+    """The precondition is about the EDITED row and nothing else. A score with
+    only an extraction has no edited row, so a client that sends the
+    extraction's own updated_at as a precondition is refused - it is asking to
+    replace an edit that does not exist - while a first save with no
+    precondition lands, and the extracted row's stamp is untouched throughout
+    (issue #267 explicitly leaves extracted rows unversioned; nothing but
+    transcribe() ever writes them)."""
+    monkeypatch.setattr(api, "LIBRARY_DIR", extractable_pdf.parent)
+    conn = db.connect()
+    score_id = insert_score(conn, extractable_pdf.name)
+    extracted = api.transcribe(score_id, body=None)
+    assert extracted["source"] == "extracted"
+
+    with pytest.raises(HTTPException) as exc_info:
+        _put(score_id, ':4 0.1 |', expected=extracted["updated_at"])
+    assert exc_info.value.status_code == 409
+
+    saved = _put(score_id, ':4 0.1 |')
+    assert saved["source"] == "edited"
+    still = conn.execute(
+        "SELECT updated_at FROM transcriptions WHERE score_id = ? AND source = 'extracted'",
+        (score_id,),
+    ).fetchone()
+    assert still["updated_at"] == extracted["updated_at"]
+
+
+def test_a_stamp_written_by_the_old_code_can_still_be_echoed_back(app_env, insert_score):
+    """A row stored BEFORE #267 carries a whole-second stamp with no fraction.
+    A client that loads it and echoes it back has to be accepted - the
+    comparison is a text compare either way - and the save that follows has to
+    move the value forward, which for a sub-second stamp against a whole-second
+    one is only true because '…:17.004' sorts after '…:17'."""
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+    conn.execute(
+        """INSERT INTO transcriptions(score_id, format, content, source, updated_at)
+           VALUES (?, 'alphatex', ':4 0.1 |', 'edited', '2026-01-01 12:00:00')""",
+        (score_id,),
+    )
+    conn.commit()
+
+    saved = _put(score_id, ':4 0.3 |', expected="2026-01-01 12:00:00")
+    assert saved["content"] == ':4 0.3 |'
+    assert saved["updated_at"] > "2026-01-01 12:00:00"
+
+    with pytest.raises(HTTPException) as exc_info:
+        _put(score_id, ':4 0.5 |', expected="2026-01-01 12:00:00")
+    assert exc_info.value.status_code == 409
+
+
+def test_a_write_always_moves_the_stamp_forward_even_when_the_clock_does_not(
+    app_env, insert_score
+):
+    """_edit_stamp's bump, exercised where the clock cannot produce it: a row
+    stamped in the FUTURE (a clock that stepped back, a suspended laptop, a
+    restored backup). The new stamp still has to be greater than the stored
+    one, or a client holding the newer value would be refused forever."""
+    conn = db.connect()
+    score_id = insert_score(conn, "x.pdf")
+    future = "2099-01-01 12:00:00.000"
+    conn.execute(
+        """INSERT INTO transcriptions(score_id, format, content, source, updated_at)
+           VALUES (?, 'alphatex', ':4 0.1 |', 'edited', ?)""",
+        (score_id, future),
+    )
+    conn.commit()
+
+    saved = _put(score_id, ':4 0.3 |', expected=future)
+    assert saved["updated_at"] > future
+    # And the client can go straight on saving on top of what it was handed.
+    again = _put(score_id, ':4 0.5 |', expected=saved["updated_at"])
+    assert again["updated_at"] > saved["updated_at"]
 
 
 # ---------------------------------------------------------------------------

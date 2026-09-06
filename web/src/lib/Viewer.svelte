@@ -305,9 +305,48 @@
   // is not touched, and nothing here writes to it. Errors are left to
   // propagate: TabViewer's saveEdits() catches them and shows the message on
   // its own panel, which is where the person who pressed Save is looking.
-  async function saveStaffEdit(content) {
-    const res = await api.saveTranscription(score.id, content);
+  //
+  // The save carries a PRECONDITION (#267): the `updated_at` of the edited row
+  // this session is working on top of, so a save that would replace an edit
+  // made on another page is refused (409) instead of silently winning. Null
+  // when there is no edited row - a native score being edited for the first
+  // time - which is an ordinary unconditional first save.
+  //
+  // `updated_at` is then adopted FROM THE RESPONSE, not kept from the load: the
+  // value loaded is stale the instant this save lands, and a second save
+  // echoing it would be refused by this page's own previous save.
+  async function saveStaffEdit(content, { overwrite = false } = {}) {
+    let expected = staffEdit?.updated_at ?? null;
+    if (overwrite) {
+      // The reader was shown the conflict and chose to replace what is stored.
+      // Ask what that is NOW and save on top of it, rather than dropping the
+      // precondition altogether - the difference matters if a third save has
+      // landed since, which is refused again rather than lost.
+      const current = await currentStoredEdit();
+      expected = current?.updated_at ?? null;
+    }
+    const res = await api.saveTranscription(score.id, content, expected);
     staffEdit = { ...res, content, source: "edited" };
+  }
+
+  /** The stored EDIT for this score right now, or null - a revert elsewhere
+   * (or a score that never had one) makes the row's absence a real answer, not
+   * a failure, and the extraction underneath a pdf is not an edit either. */
+  async function currentStoredEdit() {
+    try {
+      const t = await api.transcription(score.id);
+      return t?.source === "edited" ? t : null;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  // "Load what is stored", offered beside a refused save. Re-flows the stored
+  // row (or its absence, after a revert elsewhere) through `staffEdit`, which
+  // is what TabViewer's edit session re-seeds from.
+  async function reloadStaffEdit() {
+    staffEdit = await currentStoredEdit();
   }
 
   // Throw the edit away and go back to rendering the file. DELETE removes only
@@ -890,6 +929,7 @@
         staffSource={staffEdit ? "edited" : "file"}
         editable={staffScoreId != null && staffEditState === "ready"}
         onSaveEdit={staffScoreId != null ? saveStaffEdit : null}
+        onReloadEdit={staffScoreId != null ? reloadStaffEdit : null}
         {gigMode}
         onToggleGig={toggleGigMode}
         {practiceLabel}
