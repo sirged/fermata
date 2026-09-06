@@ -3986,10 +3986,17 @@ def score_practice_progress(
 # see the module docstring's own rule against that. A row the normaliser
 # only CLEANS is not refused: its name is rewritten in place to the cleaned
 # value before the collision check above ever runs, so #260 collides
-# against the name POST would actually have stored. Every other archived
-# table's rows still travel through `_insert_row` verbatim - this bet
-# validates presets only (see its own issue for why: repeating this for
-# every table is the rabbit hole it explicitly declines).
+# against the name POST would actually have stored. `_apply_import` writes
+# each preset's string rows from the SAME cleaned, deduplicated set rather
+# than the archive's own trainer_scope_preset_strings rows, for the same
+# reason: an archive carrying a duplicate (preset_id, string_number) pair
+# would otherwise pass this validation - normalise_preset dedupes before
+# checking anything else - and then hit that table's own UNIQUE constraint
+# when applied, a divergence from what POST /api/trainer/presets stores for
+# the same input. Every OTHER archived table's rows still travel through
+# `_insert_row` verbatim - this bet validates presets only (see its own
+# issue for why: repeating this for every table is the rabbit hole it
+# explicitly declines).
 #
 # TRANSACTIONAL, AND WHAT THAT ACTUALLY COVERS. Validation - the archive is a
 # real zip, `manifest.json` parses, its schema_version matches, every table
@@ -4548,6 +4555,21 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile) -> dict:
             row.get("string_number")
         )
     original_preset_names: dict[int, str] = {}
+    # `cleaned["strings"]` - the SAME deduplicated, sorted set POST
+    # /api/trainer/presets stores - is kept here by archive preset id, for
+    # `_apply_import` to write instead of the archive's own
+    # trainer_scope_preset_strings rows. Those raw rows are only ever used
+    # above to build the input to normalise_preset; an archive with two
+    # identical (preset_id, string_number) rows (a hand-edited archive, or
+    # one written before this row was deduplicated on its way in) would
+    # otherwise pass this validation - normalise_preset dedupes before
+    # checking anything else - and then hit trainer_scope_preset_strings'
+    # own UNIQUE(preset_id, string_number) at the write in _apply_import,
+    # turning a dry run's 200 into the applied import's 409. Keying this by
+    # the archive's OWN preset id (not the id `_insert_row` will hand out
+    # later) mirrors preset_strings_by_id above; _apply_import remaps it
+    # through preset_id_map the same way it remaps everything else here.
+    preset_strings_cleaned: dict[int, list[int]] = {}
     for index, row in enumerate(tables["trainer_scope_presets"]):
         try:
             cleaned = trainer.normalise_preset(
@@ -4567,7 +4589,9 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile) -> dict:
         if cleaned_name != row.get("name"):
             original_preset_names[row["id"]] = row["name"]
             row["name"] = cleaned_name
+        preset_strings_cleaned[row["id"]] = cleaned["strings"]
     manifest["_preset_name_originals"] = original_preset_names
+    manifest["_preset_strings_cleaned"] = preset_strings_cleaned
     return manifest
 
 
@@ -4840,12 +4864,20 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
             row,
             overrides={"owner": DEFAULT_OWNER, "name": preset_names[row["id"]]},
         )
-    for row in tables["trainer_scope_preset_strings"]:
-        _insert_row(
-            conn,
-            "trainer_scope_preset_strings",
-            row,
-            overrides={"preset_id": preset_id_map[row["preset_id"]]},
+    # #268 close-out: written from `_preset_strings_cleaned` (the set
+    # `trainer.normalise_preset` returned for this preset during validation),
+    # never from the archive's own trainer_scope_preset_strings rows - those
+    # can carry a duplicate (preset_id, string_number) pair, which would
+    # insert twice here and hit that table's own UNIQUE constraint, turning
+    # an import a dry run reported as good into a 409 apply never told the
+    # caller to expect. This way import stores exactly what POST
+    # /api/trainer/presets would have stored for the same string list.
+    preset_strings_cleaned = manifest["_preset_strings_cleaned"]
+    for old_preset_id, string_numbers in preset_strings_cleaned.items():
+        new_preset_id = preset_id_map[old_preset_id]
+        conn.executemany(
+            "INSERT INTO trainer_scope_preset_strings(preset_id, string_number) VALUES (?, ?)",
+            [(new_preset_id, n) for n in string_numbers],
         )
 
     session_id_map: dict[int, int] = {}

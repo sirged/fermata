@@ -1189,6 +1189,65 @@ def test_a_preset_with_an_empty_string_set_is_refused(client, tmp_path, monkeypa
     assert client.get("/api/trainer/presets").json() == []
 
 
+def test_an_archived_duplicate_string_row_is_deduplicated_the_same_as_post(
+    client, tmp_path, monkeypatch
+):
+    """A preset whose trainer_scope_preset_strings rows carry a duplicate
+    (preset_id, string_number) pair - only ever possible in a hand-edited or
+    foreign archive, never one this server wrote itself - passes
+    _read_and_validate_manifest, since trainer.normalise_preset dedupes a
+    string set before checking anything else about it. Before this fix,
+    `_apply_import` then inserted the archive's raw rows verbatim, so the
+    SAME duplicate that made dry run report 200 made the applied import
+    insert the pair twice and hit trainer_scope_preset_strings' own
+    UNIQUE(preset_id, string_number) - a 409 dry run never predicted. Now
+    both modes agree, and the stored set is exactly what `POST
+    /api/trainer/presets` stores for the same (deduplicated) input."""
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Doubled strings", "start_fret": 0, "end_fret": 4, "strings": [1, 3]},
+    )
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    string_rows = manifest["tables"]["trainer_scope_preset_strings"]
+    assert sorted(r["string_number"] for r in string_rows) == [1, 3]
+    preset_id = string_rows[0]["preset_id"]
+    assert all(r["preset_id"] == preset_id for r in string_rows)
+    # Duplicate the row naming string 1 - the archive now carries [1, 1, 3]
+    # for this preset, exactly the shape trainer.normalise_preset dedupes.
+    doubled_row = dict(next(r for r in string_rows if r["string_number"] == 1))
+    string_rows.append(doubled_row)
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+
+    preview = client.post(
+        "/api/import", files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["trainer_scope_presets_renamed"] == []
+
+    applied = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["trainer_scope_presets_renamed"] == []
+
+    imported = client.get("/api/trainer/presets").json()
+    assert len(imported) == 1
+    assert imported[0]["strings"] == [1, 3]
+
+    # The POST route given the same duplicated list stores the same set -
+    # the divergence this test closes was import inserting the raw rows
+    # while POST always deduped through the normaliser first.
+    posted = client.post(
+        "/api/trainer/presets",
+        json={"name": "Doubled via post", "start_fret": 0, "end_fret": 4, "strings": [1, 1, 3]},
+    )
+    assert posted.status_code == 200, posted.text
+    assert posted.json()["strings"] == [1, 3]
+
+
 def test_a_preset_string_number_outside_bounds_is_refused(client, tmp_path, monkeypatch):
     """A string number outside MIN_STRING_NUMBER/MAX_STRING_NUMBER (1..24)
     cannot be saved through the route either - only a hand-edited or
