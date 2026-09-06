@@ -1083,6 +1083,21 @@ class ImportOut(BaseModel):
     # under>}`. Empty when nothing collided. Identical on a dry run and an
     # applied import - the rename is computed the same way in both, not
     # decided only once writing starts (see import_library's docstring).
+    #
+    # #268 adds a THIRD, optional key to some entries: `reason`. Its
+    # absence means exactly what an entry always meant before #268 existed -
+    # a plain #260 collision, the archived name untouched apart from the
+    # rename. `reason: "cleaned"` means the archived name only went through
+    # trainer.normalise_preset's cleaning (whitespace collapsed, ends
+    # trimmed - see trainer._preset_name) and did NOT collide with
+    # anything - an entry #260 never reported at all, since nothing
+    # collided. `reason: "collision"` means BOTH happened: the archived
+    # name was cleaned, and the cleaned name was ALSO already taken, so `to`
+    # is the cleaned name's own #260 rename, not the cleaned name itself. A
+    # row the normaliser refuses outright (a fret or string number outside
+    # this schema's bounds, an empty string set, a name that cleans to
+    # nothing) never reaches this list - the whole import is refused before
+    # anything is written; see `import_library`'s 422 for that.
     trainer_scope_presets_renamed: list[dict[str, str]]
 
 

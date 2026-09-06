@@ -856,19 +856,24 @@ def test_two_identically_named_presets_within_one_archive_do_not_500(
     assert names == ["Alpha", "Alpha (imported)"]
 
 
-def test_a_preset_row_whose_name_is_not_a_string_never_500s(client, tmp_path, monkeypatch):
-    """Follow-up to #260: `_derive_preset_renames` called `.casefold()` on
-    every archived preset's name with no guard, so a manifest carrying a
-    `name` that is null, missing entirely, or some other JSON type (nothing
-    this API's own export ever writes, but nothing stops a hand-edited or
-    foreign one) turned into an unhandled AttributeError/KeyError - a 500 on
-    both dry run and applied. The fix does not invent a rename for a name
-    that isn't one: it passes the row through untouched, so the SAME
-    NOT NULL constraint that refused it before #260 ever existed refuses it
-    again (measured directly against this schema: binding None, or omitting
-    the column, both raise `sqlite3.IntegrityError: NOT NULL constraint
-    failed`; binding a plain int does not - SQLite's TEXT affinity silently
-    stringifies it, so that shape is accepted exactly as it was pre-#260)."""
+def test_a_preset_row_whose_name_is_not_a_string_is_refused_by_the_normaliser(
+    client, tmp_path, monkeypatch
+):
+    """Follow-up to #260, superseded by #268. Before #268, `_derive_preset_renames`
+    passed a `name` that was null, missing entirely, or some other JSON type
+    (nothing this API's own export ever writes, but nothing stops a
+    hand-edited or foreign manifest from carrying one) through completely
+    unexamined: null/missing reached SQLite's own NOT NULL constraint (409),
+    and a stray integer was silently accepted (SQLite's TEXT affinity
+    stringifies it).
+
+    #268 runs every archived preset through trainer.normalise_preset BEFORE
+    any of that - trainer._preset_name refuses anything that is not a real
+    string outright (`isinstance(name, str)`), so all three shapes are now
+    a clean 422, in both dry run and applied mode, naming the row's
+    position in the archive and the normaliser's own reason, with nothing
+    imported either way. The "weird, but not this fix's problem" integer
+    case is now this fix's problem, and it is refused too."""
     client.post(
         "/api/trainer/presets",
         json={"name": "Untouched", "start_fret": 0, "end_fret": 4, "strings": [6]},
@@ -891,19 +896,19 @@ def test_a_preset_row_whose_name_is_not_a_string_never_500s(client, tmp_path, mo
         preview = client.post(
             "/api/import", files={"file": (f"{shape}.zip", archive, "application/zip")},
         )
-        assert preview.status_code == 200, f"{shape} dry run: {preview.text}"
+        assert preview.status_code == 422, f"{shape} dry run: {preview.text}"
+        assert "needs a name" in preview.text, preview.text
+        assert "trainer_scope_presets row 0" in preview.text, preview.text
 
         applied = client.post(
             "/api/import", params={"dry_run": "false"},
             files={"file": (f"{shape}.zip", archive, "application/zip")},
         )
-        if shape == "integer":
-            # Weird, but not this fix's problem to solve - see the docstring:
-            # the exact behaviour import gave this shape before #260 existed.
-            assert applied.status_code == 200, f"{shape} applied: {applied.text}"
-        else:
-            assert applied.status_code == 409, f"{shape} applied: {applied.text}"
-            assert "NOT NULL constraint failed" in applied.text, applied.text
+        assert applied.status_code == 422, f"{shape} applied: {applied.text}"
+        assert "needs a name" in applied.text, applied.text
+
+    # A rejected import leaves nothing behind, whichever shape rejected it.
+    assert client.get("/api/trainer/presets").json() == []
 
 
 def test_a_cap_length_colliding_preset_name_is_trimmed_to_fit(client, tmp_path, monkeypatch):
@@ -1000,6 +1005,271 @@ def test_a_unicode_collision_nocase_would_not_actually_raise_on_is_not_renamed(
     assert renamed == [{"from": "Fifth", "to": "Fifth (imported)"}]
     names = sorted(p["name"] for p in client.get("/api/trainer/presets").json())
     assert names == ["FIFTH", "Fifth (imported)", "STRASSE", "Straße"]
+
+
+# ---------------------------------------------------------------------------
+# #268: every archived preset row (and its string set) goes through
+# trainer.normalise_preset - the same call POST /api/trainer/presets makes -
+# before any of #260's collision handling runs. A row the normaliser
+# refuses refuses the WHOLE import (nothing applied, dry run or applied); a
+# row it only cleans is imported under the cleaned name, which #260's
+# collision check then runs against.
+# ---------------------------------------------------------------------------
+
+
+def test_a_5000_character_preset_name_is_refused_in_both_modes(client, tmp_path, monkeypatch):
+    """The measured premise (#264's delta review): on main, a manifest whose
+    preset name is 5000 characters imported with 200 and stored all 5000 -
+    longer than `POST /api/trainer/presets` itself would ever accept
+    (`TrainerPresetIn.name`'s own `Field(max_length=...)`). #268 refuses it
+    instead, in both dry run and applied mode, with nothing imported."""
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "seed", "start_fret": 0, "end_fret": 4, "strings": [6]},
+    )
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["trainer_scope_presets"][0]["name"] = "N" * 5000
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+
+    preview = client.post(
+        "/api/import", files={"file": ("evil.zip", archive, "application/zip")},
+    )
+    assert preview.status_code == 422, preview.text
+    assert "trainer_scope_presets row 0" in preview.text, preview.text
+    assert "200 characters" in preview.text, preview.text
+
+    applied = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("evil.zip", archive, "application/zip")},
+    )
+    assert applied.status_code == 422, applied.text
+    assert client.get("/api/trainer/presets").json() == []
+
+
+def test_a_whitespace_padded_preset_name_imports_cleaned_and_collides_per_260(
+    client, tmp_path, monkeypatch
+):
+    """A name #268's normaliser only CLEANS (surrounding whitespace, here) is
+    not refused: it is imported under the cleaned name, and #260's collision
+    check runs against THAT name - so a whitespace-padded archived name that
+    happens to match an existing preset once cleaned is renamed exactly as
+    any other collision would be, not inserted as a second "same" name with
+    different spacing. The reported entry carries both facts: `from` is the
+    name exactly as archived (with its whitespace), `to` is the #260-derived
+    name, and `reason` is "collision" - not "cleaned" alone - since the
+    cleaned name was ALSO already taken.
+
+    The whitespace has to be put into the manifest by hand: POST
+    /api/trainer/presets cleans a name on the way IN, so a real save of
+    "  Fifth position  " would already be stored (and exported) as "Fifth
+    position" - never reaching this function with whitespace still on it.
+    A hand-edited or pre-#268 archive is exactly the source this bet is
+    about (see the issue)."""
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Fifth position", "start_fret": 5, "end_fret": 9, "strings": [1, 2, 3]},
+    )
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["trainer_scope_presets"][0]["name"] = "  Fifth position  "
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Fifth position", "start_fret": 0, "end_fret": 12, "strings": [6]},
+    )
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+
+    preview = client.post(
+        "/api/import", files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert preview.status_code == 200, preview.text
+    expected = [
+        {
+            "from": "  Fifth position  ",
+            "to": "Fifth position (imported)",
+            "reason": "collision",
+        }
+    ]
+    assert preview.json()["trainer_scope_presets_renamed"] == expected
+
+    applied = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["trainer_scope_presets_renamed"] == expected
+
+    names = sorted(p["name"] for p in client.get("/api/trainer/presets").json())
+    assert names == ["Fifth position", "Fifth position (imported)"]
+
+
+def test_a_whitespace_padded_preset_name_that_does_not_collide_is_reported_cleaned(
+    client, tmp_path, monkeypatch
+):
+    """The other half of the reporting decision: a name #268 cleans that does
+    NOT collide with anything still shows up in
+    `trainer_scope_presets_renamed` (#260 never reported this case at all,
+    since nothing collided) - `reason: "cleaned"`, `to` the cleaned name
+    itself, no "(imported)" suffix. The whitespace is put into the manifest
+    by hand for the same reason the collision test above does - POST
+    /api/trainer/presets would have cleaned it before it was ever stored."""
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Open position", "start_fret": 0, "end_fret": 4, "strings": [6]},
+    )
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["trainer_scope_presets"][0]["name"] = "  Open position  "
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+
+    resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["trainer_scope_presets_renamed"] == [
+        {"from": "  Open position  ", "to": "Open position", "reason": "cleaned"}
+    ]
+    names = [p["name"] for p in client.get("/api/trainer/presets").json()]
+    assert names == ["Open position"]
+
+
+def test_a_preset_fret_outside_bounds_is_refused(client, tmp_path, monkeypatch):
+    """A fret outside MIN_FRET/MAX_FRET cannot be produced through
+    `POST /api/trainer/presets` (trainer.normalise_preset itself refuses
+    it) - only a hand-edited or pre-#268 archive could carry one. #268
+    refuses it the same way, before anything is written."""
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Valid", "start_fret": 0, "end_fret": 4, "strings": [6]},
+    )
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["trainer_scope_presets"][0]["end_fret"] = 37
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+
+    for dry_run in (True, False):
+        resp = client.post(
+            "/api/import", params={"dry_run": str(dry_run).lower()},
+            files={"file": ("evil.zip", archive, "application/zip")},
+        )
+        assert resp.status_code == 422, f"dry_run={dry_run}: {resp.text}"
+        assert "trainer_scope_presets row 0" in resp.text, resp.text
+        assert "between 0 and 36" in resp.text, resp.text
+    assert client.get("/api/trainer/presets").json() == []
+
+
+def test_a_preset_with_an_empty_string_set_is_refused(client, tmp_path, monkeypatch):
+    """A preset with no strings at all cannot be saved through the route
+    either (trainer._preset_strings refuses an empty set - "every string" is
+    spelled by naming every string, never by an empty list). Only an archive
+    that dropped its trainer_scope_preset_strings rows for a preset - by
+    hand, or from a source that never wrote them - could carry one."""
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Valid", "start_fret": 0, "end_fret": 4, "strings": [6]},
+    )
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["trainer_scope_preset_strings"] = []
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+
+    for dry_run in (True, False):
+        resp = client.post(
+            "/api/import", params={"dry_run": str(dry_run).lower()},
+            files={"file": ("evil.zip", archive, "application/zip")},
+        )
+        assert resp.status_code == 422, f"dry_run={dry_run}: {resp.text}"
+        assert "at least one string" in resp.text, resp.text
+    assert client.get("/api/trainer/presets").json() == []
+
+
+def test_an_archived_duplicate_string_row_is_deduplicated_the_same_as_post(
+    client, tmp_path, monkeypatch
+):
+    """A preset whose trainer_scope_preset_strings rows carry a duplicate
+    (preset_id, string_number) pair - only ever possible in a hand-edited or
+    foreign archive, never one this server wrote itself - passes
+    _read_and_validate_manifest, since trainer.normalise_preset dedupes a
+    string set before checking anything else about it. Before this fix,
+    `_apply_import` then inserted the archive's raw rows verbatim, so the
+    SAME duplicate that made dry run report 200 made the applied import
+    insert the pair twice and hit trainer_scope_preset_strings' own
+    UNIQUE(preset_id, string_number) - a 409 dry run never predicted. Now
+    both modes agree, and the stored set is exactly what `POST
+    /api/trainer/presets` stores for the same (deduplicated) input."""
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Doubled strings", "start_fret": 0, "end_fret": 4, "strings": [1, 3]},
+    )
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    string_rows = manifest["tables"]["trainer_scope_preset_strings"]
+    assert sorted(r["string_number"] for r in string_rows) == [1, 3]
+    preset_id = string_rows[0]["preset_id"]
+    assert all(r["preset_id"] == preset_id for r in string_rows)
+    # Duplicate the row naming string 1 - the archive now carries [1, 1, 3]
+    # for this preset, exactly the shape trainer.normalise_preset dedupes.
+    doubled_row = dict(next(r for r in string_rows if r["string_number"] == 1))
+    string_rows.append(doubled_row)
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+
+    preview = client.post(
+        "/api/import", files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["trainer_scope_presets_renamed"] == []
+
+    applied = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["trainer_scope_presets_renamed"] == []
+
+    imported = client.get("/api/trainer/presets").json()
+    assert len(imported) == 1
+    assert imported[0]["strings"] == [1, 3]
+
+    # The POST route given the same duplicated list stores the same set -
+    # the divergence this test closes was import inserting the raw rows
+    # while POST always deduped through the normaliser first.
+    posted = client.post(
+        "/api/trainer/presets",
+        json={"name": "Doubled via post", "start_fret": 0, "end_fret": 4, "strings": [1, 1, 3]},
+    )
+    assert posted.status_code == 200, posted.text
+    assert posted.json()["strings"] == [1, 3]
+
+
+def test_a_preset_string_number_outside_bounds_is_refused(client, tmp_path, monkeypatch):
+    """A string number outside MIN_STRING_NUMBER/MAX_STRING_NUMBER (1..24)
+    cannot be saved through the route either - only a hand-edited or
+    foreign archive could carry one."""
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Valid", "start_fret": 0, "end_fret": 4, "strings": [6]},
+    )
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["trainer_scope_preset_strings"][0]["string_number"] = 25
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+
+    for dry_run in (True, False):
+        resp = client.post(
+            "/api/import", params={"dry_run": str(dry_run).lower()},
+            files={"file": ("evil.zip", archive, "application/zip")},
+        )
+        assert resp.status_code == 422, f"dry_run={dry_run}: {resp.text}"
+        assert "between 1 and 24" in resp.text, resp.text
+    assert client.get("/api/trainer/presets").json() == []
 
 
 def test_export_can_leave_the_trash_out(client, add_score):

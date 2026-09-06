@@ -433,15 +433,26 @@ MAX_PRESET_STRINGS = MAX_STRING_NUMBER
 def _preset_name(name) -> str:
     """A preset's name, cleaned the way api._clean_setlist_name cleans a
     setlist's: unprintable characters dropped, runs of whitespace collapsed,
-    the ends trimmed, the length bounded. A name that was only whitespace is a
-    ValueError rather than a stored blank - an unnamed entry in a list of
-    named scopes is one nobody can pick on purpose."""
+    the ends trimmed. A name that was only whitespace is a ValueError rather
+    than a stored blank - an unnamed entry in a list of named scopes is one
+    nobody can pick on purpose.
+
+    A name still over MAX_PRESET_NAME_CHARS once cleaned is a ValueError too,
+    not a silent truncation to the cap: `TrainerPresetIn.name`
+    (api.py, `Field(max_length=MAX_PRESET_NAME_CHARS)`) already refuses a
+    longer raw string before this function ever sees it on
+    `POST /api/trainer/presets`, so refusing here is the only way a caller
+    that reaches this function directly - #268's import, checking an
+    archived row nothing routed through that model - gets the same answer
+    the route would have given, rather than a row quietly shortened to fit."""
     if not isinstance(name, str):
         raise ValueError("a preset needs a name")
     cleaned = re.sub(r"\s+", " ", "".join(ch for ch in name if ch.isprintable())).strip()
     if not cleaned:
         raise ValueError("a preset needs a name")
-    return cleaned[:MAX_PRESET_NAME_CHARS]
+    if len(cleaned) > MAX_PRESET_NAME_CHARS:
+        raise ValueError(f"a preset's name must be at most {MAX_PRESET_NAME_CHARS} characters")
+    return cleaned
 
 
 def _preset_strings(string_numbers) -> list[int]:

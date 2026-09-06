@@ -4100,6 +4100,29 @@ def score_practice_progress(
 # a goal's owner/period_start, the preset id space itself) still reaches the
 # IntegrityError -> 409 path below unchanged.
 #
+# #268: before ANY of the above runs, every trainer_scope_presets row (and
+# the string set trainer_scope_preset_strings carries for it) is checked
+# against trainer.normalise_preset - the same call POST /api/trainer/presets
+# makes - in _read_and_validate_manifest, before this import ever opens a
+# transaction. A row the normaliser refuses (a fret or string number outside
+# this schema's bounds, an empty string set, a name that cleans to nothing
+# or stays over trainer.MAX_PRESET_NAME_CHARS) refuses the WHOLE import,
+# named by its position in the archive - nothing here repairs a bad row,
+# see the module docstring's own rule against that. A row the normaliser
+# only CLEANS is not refused: its name is rewritten in place to the cleaned
+# value before the collision check above ever runs, so #260 collides
+# against the name POST would actually have stored. `_apply_import` writes
+# each preset's string rows from the SAME cleaned, deduplicated set rather
+# than the archive's own trainer_scope_preset_strings rows, for the same
+# reason: an archive carrying a duplicate (preset_id, string_number) pair
+# would otherwise pass this validation - normalise_preset dedupes before
+# checking anything else - and then hit that table's own UNIQUE constraint
+# when applied, a divergence from what POST /api/trainer/presets stores for
+# the same input. Every OTHER archived table's rows still travel through
+# `_insert_row` verbatim - this bet validates presets only (see its own
+# issue for why: repeating this for every table is the rabbit hole it
+# explicitly declines).
+#
 # TRANSACTIONAL, AND WHAT THAT ACTUALLY COVERS. Validation - the archive is a
 # real zip, `manifest.json` parses, its schema_version matches, every table
 # is the right shape, every foreign key inside the archive resolves to a row
@@ -4630,6 +4653,70 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile) -> dict:
                 "the archive's practice_sessions table names a preset that is not in the "
                 "archive",
             )
+    # #268: every archived preset row - and its string set, gathered here
+    # from trainer_scope_preset_strings by the id it names - goes through
+    # trainer.normalise_preset, the SAME call POST /api/trainer/presets
+    # makes, before this import ever reaches a collision check or a write.
+    # Without this, a hand-edited or pre-#268 archive could carry a fret
+    # outside MIN_FRET/MAX_FRET, a string number outside
+    # MIN_STRING_NUMBER/MAX_STRING_NUMBER, an empty string set, or a name no
+    # route would ever accept (unbounded length, a key given without its
+    # pair) - and _apply_import inserted every one of those columns
+    # verbatim. A row the normaliser refuses is refused HERE, before
+    # anything is written, in the same validate-before-write shape every
+    # other referential check above already uses - named by its ARCHIVE
+    # POSITION rather than its own content, since the content is exactly
+    # what is wrong with it. A row the normaliser only CLEANS (whitespace
+    # collapsed, ends trimmed) is not refused: its name is rewritten here,
+    # in place, to the cleaned value, so every later step - #260's collision
+    # check included - runs against the name POST would actually have
+    # stored, never the raw one the archive carried. `original_preset_names`
+    # remembers which rows changed and what they carried before, for
+    # `_derive_preset_renames` to report alongside a genuine collision (see
+    # its own note on the two).
+    preset_strings_by_id: dict[int, list] = {}
+    for row in tables["trainer_scope_preset_strings"]:
+        preset_strings_by_id.setdefault(row.get("preset_id"), []).append(
+            row.get("string_number")
+        )
+    original_preset_names: dict[int, str] = {}
+    # `cleaned["strings"]` - the SAME deduplicated, sorted set POST
+    # /api/trainer/presets stores - is kept here by archive preset id, for
+    # `_apply_import` to write instead of the archive's own
+    # trainer_scope_preset_strings rows. Those raw rows are only ever used
+    # above to build the input to normalise_preset; an archive with two
+    # identical (preset_id, string_number) rows (a hand-edited archive, or
+    # one written before this row was deduplicated on its way in) would
+    # otherwise pass this validation - normalise_preset dedupes before
+    # checking anything else - and then hit trainer_scope_preset_strings'
+    # own UNIQUE(preset_id, string_number) at the write in _apply_import,
+    # turning a dry run's 200 into the applied import's 409. Keying this by
+    # the archive's OWN preset id (not the id `_insert_row` will hand out
+    # later) mirrors preset_strings_by_id above; _apply_import remaps it
+    # through preset_id_map the same way it remaps everything else here.
+    preset_strings_cleaned: dict[int, list[int]] = {}
+    for index, row in enumerate(tables["trainer_scope_presets"]):
+        try:
+            cleaned = trainer.normalise_preset(
+                name=row.get("name"),
+                start_fret=row.get("start_fret"),
+                end_fret=row.get("end_fret"),
+                strings=preset_strings_by_id.get(row["id"], []),
+                key_root=row.get("key_root"),
+                key_quality=row.get("key_quality"),
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                422,
+                f"the archive's trainer_scope_presets row {index} is invalid: {exc}",
+            ) from None
+        cleaned_name = cleaned["preset"]["name"]
+        if cleaned_name != row.get("name"):
+            original_preset_names[row["id"]] = row["name"]
+            row["name"] = cleaned_name
+        preset_strings_cleaned[row["id"]] = cleaned["strings"]
+    manifest["_preset_name_originals"] = original_preset_names
+    manifest["_preset_strings_cleaned"] = preset_strings_cleaned
     return manifest
 
 
@@ -4700,7 +4787,9 @@ def _fit_preset_name(base: str, suffix: str) -> str:
     return base[:limit] + suffix
 
 
-def _derive_preset_renames(conn, presets: list[dict]) -> tuple[dict[int, str], list[dict]]:
+def _derive_preset_renames(
+    conn, presets: list[dict], original_names: dict[int, str] | None = None
+) -> tuple[dict[int, str], list[dict]]:
     """#260: the one collision import no longer refuses. Everywhere else,
     "added, never merged" means a real uniqueness collision against this
     library is a 409 (see the except sqlite3.IntegrityError block below) -
@@ -4718,20 +4807,31 @@ def _derive_preset_renames(conn, presets: list[dict]) -> tuple[dict[int, str], l
     Every other collision class (a setting's key, a goal's period, the
     preset id space itself) still reaches the IntegrityError path unchanged.
 
-    A row whose name is not a string at all (missing, null, or some other
-    JSON type - not something this API's own export ever writes, but nothing
-    stops a hand-edited or foreign manifest from carrying one) is not this
-    function's problem to solve: it is passed through completely unexamined,
-    so _apply_import's insert raises on it (or doesn't) exactly the way it
-    would have before this function existed. Manufacturing a rename for a
-    name that isn't one would only trade a clean refusal for a confusing
-    "success".
+    By the time this runs, `_read_and_validate_manifest` has already sent
+    every row through trainer.normalise_preset (#268): a row whose name was
+    not a real, cleanable string was refused there, before this function
+    ever saw it, so `row["name"]` here is always the CLEANED string that
+    row will actually be inserted under - what this function collides
+    against is the name POST /api/trainer/presets would itself have stored.
+
+    `original_names` is `_read_and_validate_manifest`'s
+    `{archive row id: name exactly as archived}` map, carrying only the
+    rows #268's cleaning actually changed (whitespace collapsed, ends
+    trimmed - see trainer._preset_name). For one of those rows, the
+    reported `from` is the name exactly as archived (not the cleaned name
+    this function compares against), and the entry carries `reason:
+    "cleaned"` - or `reason: "collision"` if the cleaned name ALSO turned
+    out to be taken, so the one entry shows the whole trip: archived ->
+    cleaned -> (if needed) suffixed. A row #268 left untouched reports
+    exactly as #260 always did - `{from, to}`, no `reason` key - so a
+    caller (or test) that only ever saw plain collisions before still sees
+    exactly that shape.
 
     Returns the {archive row id: name actually used} map `_apply_import`
-    inserts under, and the `{from, to}` pairs for whichever presets actually
-    got renamed - in archive order, so a second preset in the archive
-    colliding with the first archive preset's OWN derived name still lands
-    on a free one rather than raising.
+    inserts under, and the rename/clean entries described above - in
+    archive order, so a second preset in the archive colliding with the
+    first archive preset's OWN derived name still lands on a free one
+    rather than raising.
 
     Read-only, and safe to call before any write transaction is open: this
     is also how the dry run reports the same renames the applied import
@@ -4739,6 +4839,7 @@ def _derive_preset_renames(conn, presets: list[dict]) -> tuple[dict[int, str], l
     dry run that promised one name and an apply that landed on another
     would make the whole preview worthless.
     """
+    original_names = original_names or {}
     taken = {
         _ascii_fold(row["name"])
         for row in conn.execute(
@@ -4753,6 +4854,7 @@ def _derive_preset_renames(conn, presets: list[dict]) -> tuple[dict[int, str], l
             names[row["id"]] = original
             continue
         candidate = original
+        collided = False
         if _ascii_fold(candidate) in taken:
             attempt = 1
             while True:
@@ -4761,9 +4863,17 @@ def _derive_preset_renames(conn, presets: list[dict]) -> tuple[dict[int, str], l
                 if _ascii_fold(candidate) not in taken:
                     break
                 attempt += 1
-            renamed.append({"from": original, "to": candidate})
+            collided = True
         taken.add(_ascii_fold(candidate))
         names[row["id"]] = candidate
+        as_archived = original_names.get(row["id"])
+        if collided:
+            entry = {"from": as_archived if as_archived is not None else original, "to": candidate}
+            if as_archived is not None:
+                entry["reason"] = "collision"
+            renamed.append(entry)
+        elif as_archived is not None:
+            renamed.append({"from": as_archived, "to": candidate, "reason": "cleaned"})
     return names, renamed
 
 
@@ -4868,7 +4978,9 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
     # so that row has to exist and its new id has to be known first. The
     # string set follows its preset, exactly as setlist_scores follows its
     # setlist.
-    preset_names, presets_renamed = _derive_preset_renames(conn, tables["trainer_scope_presets"])
+    preset_names, presets_renamed = _derive_preset_renames(
+        conn, tables["trainer_scope_presets"], manifest.get("_preset_name_originals")
+    )
     preset_id_map: dict[int, int] = {}
     for row in tables["trainer_scope_presets"]:
         preset_id_map[row["id"]] = _insert_row(
@@ -4877,12 +4989,20 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
             row,
             overrides={"owner": DEFAULT_OWNER, "name": preset_names[row["id"]]},
         )
-    for row in tables["trainer_scope_preset_strings"]:
-        _insert_row(
-            conn,
-            "trainer_scope_preset_strings",
-            row,
-            overrides={"preset_id": preset_id_map[row["preset_id"]]},
+    # #268 close-out: written from `_preset_strings_cleaned` (the set
+    # `trainer.normalise_preset` returned for this preset during validation),
+    # never from the archive's own trainer_scope_preset_strings rows - those
+    # can carry a duplicate (preset_id, string_number) pair, which would
+    # insert twice here and hit that table's own UNIQUE constraint, turning
+    # an import a dry run reported as good into a 409 apply never told the
+    # caller to expect. This way import stores exactly what POST
+    # /api/trainer/presets would have stored for the same string list.
+    preset_strings_cleaned = manifest["_preset_strings_cleaned"]
+    for old_preset_id, string_numbers in preset_strings_cleaned.items():
+        new_preset_id = preset_id_map[old_preset_id]
+        conn.executemany(
+            "INSERT INTO trainer_scope_preset_strings(preset_id, string_number) VALUES (?, ?)",
+            [(new_preset_id, n) for n in string_numbers],
         )
 
     session_id_map: dict[int, int] = {}
@@ -5018,8 +5138,10 @@ async def import_library(file: UploadFile, dry_run: bool = True):
     API uses - see #56) validates the archive completely - it really is a
     Fermata export, its schema_version matches this Fermata's, every row's
     foreign keys resolve within the archive, every archived file's bytes
-    hash to what the archive itself claims for them - and reports what it
-    found, WITHOUT opening a database transaction or writing a single file.
+    hash to what the archive itself claims for them, and every named drill
+    scope (and its string set) passes trainer.normalise_preset (#268) - and
+    reports what it found, WITHOUT opening a database transaction or writing
+    a single file.
     Nothing is compared against what is already in this library on a dry
     run, which is why `tags_reused` is always 0 there - see ImportOut - with
     one exception: `trainer_scope_presets_renamed` IS computed against this
@@ -5072,7 +5194,9 @@ async def import_library(file: UploadFile, dry_run: bool = True):
         # a dry run reporting a rename is that it has to be the SAME rename
         # apply mode will actually make, not a guess made blind to what is
         # already here.
-        _, presets_renamed = _derive_preset_renames(connect(), tables["trainer_scope_presets"])
+        _, presets_renamed = _derive_preset_renames(
+            connect(), tables["trainer_scope_presets"], manifest.get("_preset_name_originals")
+        )
         return {
             "dry_run": True,
             "schema_version": manifest["schema_version"],
