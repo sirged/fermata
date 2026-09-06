@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/chords.spec.js",
+  "count": 1,
+  "reason": "issue #269: answerStatement's name_to_shape wording now reads spellChordTones' spelled tones, not chordTones' own fixed table - A major 7 states its seventh as G#, in all three given.notes branches (no tap, correct, and incorrect)."
+}
