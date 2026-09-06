@@ -61,10 +61,21 @@ const host = (page) => page.locator(".at-host");
 const sourceLine = (page) => page.locator(".staff-source");
 const fretInput = (page) => page.locator(".edit-fields input");
 
-// Every test uploads under its own name: the suite shares one server and one
-// library for the whole run, so a fixed name would have the second test open
-// the first test's already-edited score.
-let uploadSeq = 0;
+// Every upload gets its own name: the suite shares one server and one library
+// for the WHOLE run, so a fixed name would have the second test open the first
+// test's already-edited score.
+//
+// A per-module counter is NOT enough, and the reason is worth writing down
+// because it cost a red run to find. Playwright starts a FRESH WORKER after a
+// failing test, which re-imports this module and resets any counter in it - so
+// a later test re-used an earlier one's filename, waitForScore matched the row
+// that name already had, and the page opened a score whose content was not the
+// one just uploaded (seen as "expected 52 notes, received 8" during the
+// mutation runs, where a deliberate failure caused exactly that restart). A
+// random name cannot collide across a restart.
+function uniqueName() {
+  return `native-editor-${crypto.randomUUID()}.musicxml`;
+}
 
 function libraryPath(name) {
   return path.join(process.env.FERMATA_TEST_LIBRARY_DIR, FOLDER, name);
@@ -91,8 +102,7 @@ async function waitForScore(request, name) {
 }
 
 async function uploadFixture(request, content = EDITOR_MUSICXML) {
-  uploadSeq += 1;
-  const name = `native-editor-${uploadSeq}.musicxml`;
+  const name = uniqueName();
   const res = await request.post(`/api/upload?folder=${FOLDER}`, {
     multipart: {
       file: {
