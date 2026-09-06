@@ -650,6 +650,42 @@ def test_transcription_model_stays_in_sync_with_api_pys_bar_key_tuples():
     assert not extra, f"api_models.TranscriptionOut has field(s) no longer in api.py's tuples: {sorted(extra)}"
 
 
+def test_the_transcription_save_documents_its_precondition_and_its_refusal(openapi_schema):
+    """#267's precondition has to be visible to a reader of the contract, not
+    only to a reader of api.py: `expected_updated_at` on the request body with
+    a description of its own, and the 409 the endpoint answers when it does not
+    match, described. A field added to the model without either would reach the
+    wire undocumented - the exact gap this module exists to close - and a 409
+    left out of `responses` is a status a generated client has no case for.
+
+    The prose version, with the compatibility promise spelled out, is in
+    docs/api.md's "Two people editing the same score" section.
+    """
+    put = openapi_schema["paths"]["/api/scores/{score_id}/transcription"]["put"]
+
+    ref = put["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    name = ref.rsplit("/", 1)[-1]
+    body = openapi_schema["components"]["schemas"][name]
+    assert "expected_updated_at" in body["properties"], (
+        f"{name} does not carry expected_updated_at - #267's precondition is "
+        "not in the published contract")
+    field = body["properties"]["expected_updated_at"]
+    assert field.get("description"), "expected_updated_at is undocumented in the schema"
+    assert "409" in field["description"], (
+        "expected_updated_at's description does not say what happens when it "
+        "does not match")
+    # Optional, so every client written before #267 still validates against
+    # this body - the compatibility promise, checked against the schema rather
+    # than only asserted in prose.
+    assert "expected_updated_at" not in body.get("required", [])
+
+    assert "409" in put["responses"], (
+        "PUT /scores/{id}/transcription answers 409 for a stale precondition "
+        "and does not document it")
+    described = put["responses"]["409"].get("description", "")
+    assert "expected_updated_at" in described and "Nothing was written" in described
+
+
 def test_trainer_responses_match_their_models(client):
     """Issue #27's two routes, through the drift-guarded client - proves both
     that TrainerAttemptOut/TrainerAttemptListOut describe the real response

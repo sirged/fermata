@@ -1,9 +1,15 @@
 // carries the HTTP status so callers can branch on it (e.g. 404 vs a real
 // failure) instead of string-sniffing the message
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, detail = null) {
     super(message);
     this.status = status;
+    // The parsed `detail` when the server sent an OBJECT rather than a string -
+    // null otherwise, which is every existing endpoint. A refusal that has to
+    // be acted on rather than merely shown needs its fields, not its sentence:
+    // the transcription save's 409 (#267) names the stored row's updated_at and
+    // source so the panel can offer to load it.
+    this.detail = detail;
   }
 }
 
@@ -32,14 +38,27 @@ async function j(res) {
     // body isn't JSON or has no detail. res.statusText is empty over
     // HTTP/2, so that fallback can't be relied on alone either.
     let detail = "";
+    let structured = null;
     try {
       const body = await res.json();
       if (typeof body?.detail === "string") detail = body.detail;
       else if (Array.isArray(body?.detail)) detail = describeValidationErrors(body.detail);
+      else if (body?.detail && typeof body.detail === "object") {
+        // A refusal the caller has to ACT on carries its fields as an object
+        // (the transcription save's 409, #267). Its `message` is the sentence
+        // for anyone who only shows the message; the object itself is kept on
+        // the error so a caller that can do better has the values.
+        structured = body.detail;
+        if (typeof body.detail.message === "string") detail = body.detail.message;
+      }
     } catch {
       // not JSON - nothing to extract
     }
-    throw new ApiError(res.status, detail || res.statusText || `Request failed (${res.status})`);
+    throw new ApiError(
+      res.status,
+      detail || res.statusText || `Request failed (${res.status})`,
+      structured,
+    );
   }
   return res.json();
 }
@@ -209,11 +228,22 @@ export const api = {
   // staff never appeared. Sniffing here as well would be a second copy of the
   // rule with its own chance to disagree; the endpoint still accepts an
   // explicit format for a client that genuinely knows.
-  saveTranscription: (id, content) =>
+  //
+  // `expectedUpdatedAt` is the precondition (#267): the `updated_at` of the
+  // EDITED row this edit was made on top of, echoed back, so a save that would
+  // replace somebody else's work is refused with a 409 instead. Pass null (or
+  // nothing) for a first save, or when the loaded row is the extraction - the
+  // precondition is about the edited row and there is none. After a successful
+  // save the caller must adopt `updated_at` from the RESPONSE; the value it
+  // loaded is stale the moment its own save lands.
+  saveTranscription: (id, content, expectedUpdatedAt = null) =>
     fetch(`/api/scores/${id}/transcription`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        content,
+        ...(expectedUpdatedAt ? { expected_updated_at: expectedUpdatedAt } : {}),
+      }),
     }).then(j),
   // deletes only the edited row, leaving the extracted one (if any) as the
   // real revert target; may 404 (nothing left) or 405 (not deployed yet)

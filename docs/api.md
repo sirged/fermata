@@ -183,6 +183,63 @@ was nothing to move. Restoring it (or any score whose trashed file has since
 been removed by hand) answers `file_restored: false` and puts the score back in
 the library flagged `missing_since`, which is the state it was in before.
 
+## Two people editing the same score (issue #267)
+
+`PUT /api/scores/{id}/transcription` stores a hand edit as the score's
+`source='edited'` row. Two clients - a tablet propped on the music stand and
+the desktop it was set up from - can both have that row open, and before this
+existed the second save simply replaced the first, with nothing anywhere able
+to notice it had happened.
+
+The request body may now carry **`expected_updated_at`**: the `updated_at` of
+the edited row the edit was made on top of, echoed back as an `If-Match`-style
+precondition.
+
+- **Send it, and it matches** - the save is written, and the response carries
+  the new `updated_at`. That new value is what the client sends on its *next*
+  save; the value it originally loaded is stale the moment its own save lands.
+- **Send it, and the stored row has a different `updated_at`** - `409`, and
+  **nothing is written**: not the content, and not `updated_at` either, so the
+  client whose edit is stored can still save on top of its own row. The
+  `detail` object names what is stored now, so a client can offer to load it
+  rather than merely apologise:
+
+  ```json
+  {
+    "detail": {
+      "error": "stale_transcription",
+      "message": "This score's transcription changed somewhere else after you loaded it, so this save was not written.",
+      "updated_at": "2026-09-06 20:57:17.418",
+      "source": "edited"
+    }
+  }
+  ```
+
+- **Send it when there is no edited row at all** - `409` as well, with
+  `updated_at` and `source` both `null`. The edit this one was made on top of
+  was reverted (`DELETE /api/scores/{id}/transcription`) underneath; letting
+  the save through would resurrect it silently, which is the same surprise as
+  an overwrite seen from the other side. `null` is how a client tells that case
+  from the one above and offers the right thing.
+- **Omit it (or send `null`)** - the save is written unconditionally.
+
+**Compatibility.** The field is optional and omitting it behaves exactly as
+this endpoint behaved before it existed, so no existing client has to change
+and a first save (nothing stored yet) sends nothing. Fermata's own viewer and
+compare editor both send the value they loaded.
+
+**A note on `updated_at` for an edited row.** Every other `updated_at` in this
+API is written with SQLite's `datetime('now')`, which resolves to one second;
+two saves inside the same second therefore share a value, and a precondition
+compared against one would have been blind for that whole second. The edited
+transcription row is stamped to the millisecond instead
+(`YYYY-MM-DD HH:MM:SS.mmm`), and every write is guaranteed to move the value
+forward even when the clock does not. It is the same column and the same text
+ordering - a value written before this change simply has no fractional part -
+so a client that treats `updated_at` as an opaque token to echo back needs no
+change. **Extracted** rows are unversioned and keep `datetime('now')`: no
+client ever writes one.
+
 ## Transcribing many scores at once (issue #55)
 
 `POST /api/transcribe/batch` starts a background pass over many scores and

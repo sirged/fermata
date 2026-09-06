@@ -78,6 +78,12 @@
   let draft = $state("");
   let saving = $state(false);
   let saveError = $state("");
+  // A save the server refused because this draft was opened from a version of
+  // the row that is no longer stored (#267). `source` is what is stored now -
+  // null meaning the edit was reverted elsewhere rather than replaced. Distinct
+  // from saveError because there is something to do about it.
+  let saveConflict = $state(null);
+  let resolvingConflict = $state("");
   let reverting = $state(false);
 
   // POST /transcribe echoes warnings at the top level; GET /transcription
@@ -374,10 +380,11 @@
   function openEditor() {
     draft = transcription?.content ?? "";
     saveError = "";
+    saveConflict = null;
     editorOpen = true;
   }
 
-  async function saveEdit() {
+  async function saveEdit({ overwrite = false } = {}) {
     if (!draft.trim()) {
       // the backend requires min_length=1 and would otherwise bounce this
       // as an opaque 422 - catch it here with a clear message instead
@@ -386,8 +393,13 @@
     }
     saving = true;
     saveError = "";
+    saveConflict = null;
     try {
-      const res = await api.saveTranscription(score.id, draft);
+      // The precondition (#267): the stamp of the edited row this draft was
+      // opened from, or - when the reader has been shown a conflict and chose
+      // to replace what is stored - the stamp of whatever is stored now.
+      const expected = overwrite ? await currentEditStamp() : editedStamp();
+      const res = await api.saveTranscription(score.id, draft, expected);
       // be defensive about what the endpoint actually echoes back - the
       // edit itself is the source of truth for content/source either way
       // `res` carries the format the server read off the content, which is
@@ -407,9 +419,40 @@
       refreshWarningsDisplay(score.id);
       editorOpen = false;
     } catch (e) {
-      saveError = String(e?.message ?? e);
+      // 409: somebody saved (or reverted) this score's transcription elsewhere
+      // after this editor was opened, and nothing was written. The editor stays
+      // OPEN with the draft intact - the two actions beside the message are the
+      // point, and closing it would throw away the very thing that was refused.
+      if (e?.status === 409) {
+        saveConflict = { source: e?.detail?.source ?? null };
+      } else {
+        saveError = String(e?.message ?? e);
+      }
     } finally {
       saving = false;
+    }
+  }
+
+  /** "Load what is stored", from the source editor: replace the draft with the
+   * stored text. What was typed goes, which is what the button says. */
+  async function loadStoredIntoDraft() {
+    resolvingConflict = "load";
+    try {
+      await reloadTranscription();
+      saveConflict = null;
+    } catch (e) {
+      saveError = String(e?.message ?? e);
+    } finally {
+      resolvingConflict = "";
+    }
+  }
+
+  async function saveDraftOverStored() {
+    resolvingConflict = "overwrite";
+    try {
+      await saveEdit({ overwrite: true });
+    } finally {
+      resolvingConflict = "";
     }
   }
 
@@ -420,11 +463,65 @@
   // to TabViewer, so the badge flips to "edited" and "Revert to extracted"
   // appears, exactly as a source-editor save does. `res` states the cleared
   // bar/warning figures for an edited row, same reason saveEdit spreads it.
-  async function saveNoteEdit(content) {
-    const res = await api.saveTranscription(score.id, content);
+  // The precondition (#267) is the same one saveEdit above sends, through the
+  // same helper, so the two editors on this page cannot disagree about which
+  // row they are writing on top of.
+  async function saveNoteEdit(content, { overwrite = false } = {}) {
+    const expected = overwrite ? await currentEditStamp() : editedStamp();
+    const res = await api.saveTranscription(score.id, content, expected);
     transcription = { ...transcription, ...res, content, source: "edited" };
     draft = content;
     refreshWarningsDisplay(score.id);
+  }
+
+  /** The `updated_at` this page is editing on top of, or null.
+   *
+   * Null for an EXTRACTED row, and that is the point: the precondition is
+   * about the edited row, and a score that has only been extracted has none -
+   * sending the extraction's own stamp would name a row the save never
+   * touches. A first hand edit of an extraction is therefore an ordinary
+   * unconditional save, exactly as it has always been. */
+  function editedStamp() {
+    return transcription?.source === "edited" ? (transcription.updated_at ?? null) : null;
+  }
+
+  /** What is stored RIGHT NOW, for the "save mine over it" the conflict panel
+   * offers: replacing the current version deliberately, rather than dropping
+   * the precondition and replacing whatever turns up. */
+  async function currentEditStamp() {
+    try {
+      const t = await api.transcription(score.id);
+      return t?.source === "edited" ? (t.updated_at ?? null) : null;
+    } catch (e) {
+      if (e?.status === 404) return null; // reverted underneath - a fresh save
+      throw e;
+    }
+  }
+
+  /** "Load what is stored", offered beside a refused save: re-read the row and
+   * re-flow it through `transcription`, which re-seeds the note editor and the
+   * source editor's draft alike.
+   *
+   * Deliberately NOT loadTranscription(): that one flips `transcriptionState`
+   * to "loading", which unmounts the staff pane and takes the open note editor
+   * with it. Here the row is only replaced, so the editor stays where the
+   * reader left it and re-seeds from the new document. The 404 fallback is the
+   * one case that genuinely has no row left to show. */
+  async function reloadTranscription() {
+    const gen = ++loadGen; // invalidates anything else in flight, and vice versa
+    try {
+      const t = await api.transcription(scoreId);
+      if (gen !== loadGen) return;
+      transcription = t;
+      draft = t.content;
+      refreshWarningsDisplay(scoreId);
+    } catch (e) {
+      if (e?.status === 404) {
+        await loadTranscription();
+        return;
+      }
+      throw e;
+    }
   }
 
   async function revertToExtracted() {
@@ -622,10 +719,43 @@
           <div class="editor-actions">
             {#if saveError}<span class="hint warn">{saveError}</span>{/if}
             <button class="ghost" onclick={() => (editorOpen = false)}>Cancel</button>
-            <button class="primary" disabled={saving || !draft.trim()} onclick={saveEdit}>
+            <button class="primary" disabled={saving || !draft.trim()} onclick={() => saveEdit()}>
               {saving ? "Saving…" : "Save & render"}
             </button>
           </div>
+          {#if saveConflict}
+            <!-- A refused save (#267). The editor stays open and the draft is
+                 untouched; these are the two things that can be done with it.
+                 Reading both versions side by side is deliberately not offered -
+                 that is a comparison view, and it is more than this is. -->
+            <div class="editor-conflict" role="status" data-transcription-conflict={saveConflict.source ?? "gone"}>
+              <span class="hint warn">
+                {#if saveConflict.source}
+                  This score's transcription changed somewhere else after you
+                  opened it here, so nothing was saved.
+                {:else}
+                  The edit you opened here was thrown away somewhere else, so
+                  nothing was saved.
+                {/if}
+              </span>
+              <button
+                class="ghost"
+                disabled={!!resolvingConflict || saving}
+                onclick={loadStoredIntoDraft}
+                title="Replace what is in this box with what is stored now."
+              >
+                {resolvingConflict === "load" ? "Loading…" : "Load what is stored"}
+              </button>
+              <button
+                class="ghost"
+                disabled={!!resolvingConflict || saving}
+                onclick={saveDraftOverStored}
+                title="Save what is in this box on top of the stored version, replacing it."
+              >
+                {resolvingConflict === "overwrite" ? "Saving…" : "Save mine over it"}
+              </button>
+            </div>
+          {/if}
         </div>
       {/if}
       <div class="staff-render">
@@ -652,6 +782,7 @@
           active={activeLayout === "staff"}
           editable={!gigMode}
           onSaveEdit={saveNoteEdit}
+          onReloadEdit={reloadTranscription}
         />
       </div>
     {/if}
@@ -1032,5 +1163,20 @@
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
+  }
+
+  /* A refused save (#267): the sentence first, then the two choices, wrapping
+     onto their own line where the panel is narrow. */
+  .editor-conflict {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .editor-conflict .hint {
+    margin-right: auto;
   }
 </style>
