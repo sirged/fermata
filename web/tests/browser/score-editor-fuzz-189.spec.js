@@ -23,7 +23,7 @@
 //     ORDERING: fret, string, accidental, enharmonic, tie, voice move, delete,
 //     and (#238) restToNote - turning one of the rests "delete" itself
 //     produces back into a note, addressed by its OWN ordinal space
-//     (h.restCount(), not h.count() - see the driver below) since it starts
+//     (h.restCount(), not h.count() - see fixtures/editor-fuzz-driver.js) since it starts
 //     from a rest, not a sounding note. And (#251) "rangeString" - extend the
 //     selection by k notes through the real shift+arrow path, then move EVERY
 //     note in it to one string in a single gesture: a multi-note write is the
