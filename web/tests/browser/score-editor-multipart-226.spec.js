@@ -142,12 +142,17 @@ test.describe("a two-part transcription is refused by the note editor (#226)", (
     // Never touches "Edit notes" - this is what the plain viewer draws, which
     // the refusal above is not allowed to withhold (the refusal is the
     // editor's; the viewer is a different consumer of the same document).
-    const texts = await drawnTexts(page);
-    expect(texts).toContain("Upper");
-    expect(texts).toContain("Lower");
+    // POLLED, not read once. data-score-render-ok flips true when alphaTab
+    // reports the render finished, but the <text> and <rect> nodes this reads
+    // land in the SVG over the frames after it - so a single evaluate() here
+    // is a race the review caught losing. expect.poll re-runs the read until
+    // it matches or the timeout expires, which is what the attribute
+    // assertions elsewhere in this file have always done.
+    await expect.poll(() => drawnTexts(page)).toContain("Upper");
+    await expect.poll(() => drawnTexts(page)).toContain("Lower");
     // Measured directly against this fixture (two six-string TAB staves):
     // 12 thin rows with both parts drawn, 6 if only the first one were.
-    expect(await staffLineRowCount(page)).toBe(12);
+    await expect.poll(() => staffLineRowCount(page)).toBe(12);
   });
 
   test("a single-part document still opens in the editor", async ({ page }) => {
@@ -185,9 +190,9 @@ test.describe("a two-part transcription is refused by the note editor (#226)", (
     await expect(wrap(page)).toHaveAttribute("data-editor-active", "false");
     await expect(page.locator("body")).toContainText(REFUSAL_MESSAGE);
     await renderedOk(page);
-    const texts = await drawnTexts(page);
-    expect(texts).toContain("Upper");
-    expect(texts).toContain("Lower");
-    expect(await staffLineRowCount(page)).toBe(12);
+    // Polled for the same reason as the read-only test above.
+    await expect.poll(() => drawnTexts(page)).toContain("Upper");
+    await expect.poll(() => drawnTexts(page)).toContain("Lower");
+    await expect.poll(() => staffLineRowCount(page)).toBe(12);
   });
 });

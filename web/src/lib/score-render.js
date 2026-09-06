@@ -1898,6 +1898,22 @@ async function readMusicXml(bytes) {
  *                          fact about the score: the live playhead tempo goes
  *                          to the engine (and so to the readout), not to this
  *                          callback. See tempoProvenance.
+ * @param opts.onSourceText (text|null) the MusicXML document this view is
+ *                          drawing, as text, once a `kind:"file"` source has
+ *                          been fetched and read - null for bytes that hold no
+ *                          part-wise MusicXML document (a Guitar Pro file, a
+ *                          container this could not open). This is the SAME
+ *                          text the navigation reader gets and the same bytes
+ *                          the renderer imported, which is the whole reason it
+ *                          is reported from here rather than re-fetched by the
+ *                          caller: the note editor (#262) has to open on
+ *                          exactly the document that is on screen, and a
+ *                          second fetch is a second chance for the two to
+ *                          disagree (a rescan, a relink, a container inflated
+ *                          differently). Fires once per load of a file source,
+ *                          before the render lands; not fired for an
+ *                          `alphatex` or `musicxml` source, where the caller
+ *                          already holds the text it passed in.
  * @param opts.onMetronomeTempo  (bpm, limit) the tempo the metronome is actually
  *                          clicking at just changed - see
  *                          metronome-engine.js, and createScoreMetronome
@@ -1923,6 +1939,7 @@ export function createScoreView(host, opts = {}) {
     onProfileApplied = () => {},
     onMetronomeTempo = () => {},
     onScoreTempo = () => {},
+    onSourceText = () => {},
   } = opts;
 
   let profile = SCORE_PROFILES.includes(initialProfile) ? initialProfile : "scoretab";
@@ -3071,6 +3088,13 @@ export function createScoreView(host, opts = {}) {
           const document = await readMusicXml(bytes);
           pendingSourceText = document.text;
           pendingUnreadReason = document.unread;
+          // Reported BEFORE api.load(), while the text is still in hand:
+          // applyLoadedNavigation consumes pendingSourceText (it nulls it) from
+          // inside the synchronous scoreLoaded handler api.load() triggers, so
+          // anything read after that line would already be gone. See
+          // opts.onSourceText for why the caller is handed this instead of
+          // fetching the file a second time for itself.
+          onSourceText(document.text);
           // ALL_TRACKS (issue #93): same reasoning as the musicxml branch
           // above - this is the path a library file (of any track count) and
           // a directly uploaded MusicXML/.mxl/Guitar Pro file both take.

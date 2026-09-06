@@ -1,5 +1,6 @@
 <script>
-  import { api } from "./api.js";
+  import { untrack } from "svelte";
+  import { api, ApiError } from "./api.js";
   import { formatDuration } from "./practice.js";
   import { keySignatureLabel } from "./provenance.js";
   import PdfViewer from "./PdfViewer.svelte";
@@ -183,6 +184,152 @@
       .then((s) => (score = s))
       .catch((e) => (error = String(e)));
   });
+
+  // ------------------------------------------------------------------ #262
+  // Editing a score that IS notation, rather than a transcription of one.
+  //
+  // A PDF is shown through ScoreCompare, which has always fetched a
+  // transcription row and handed it to TabViewer as `tex`. A native MusicXML
+  // score came straight here with no such fetch at all, so the editor had
+  // nothing to save into and nothing to prefer over the file - it rendered
+  // read-only. It now takes the same route a PDF's transcription does, with
+  // one difference that is the whole of this feature: the row is not an
+  // extraction of the file, it is an EDIT of it, and the file itself is never
+  // written. So only a source='edited' row is preferred over the file here;
+  // anything else (an extraction, which nothing can produce for a musicxml
+  // score today) leaves the file showing.
+  //
+  // THE LOAD DECISION IS THIS ONE `tex` PROP. TabViewer's own source()
+  // already chooses the transcription text over the file's bytes whenever
+  // `tex` is non-null (that is how a PDF's staff pane has always worked), so
+  // routing an edited musicxml score to its row is a matter of passing the
+  // row rather than null - there is no second rendering path, and the edited
+  // document goes through exactly the same importer the file did.
+  let staffEdit = $state(null);
+  // Where the lookup for THIS score has got to: "loading" until it lands, so
+  // the panel never states which of the two documents is showing before it
+  // knows, and "error" when it could not be answered at all. "error" is NOT
+  // the 404 case - a score with no row is the ordinary state of nearly every
+  // score, and it resolves to "file" - it is a lookup that FAILED, where "the
+  // file is what is showing" would be a claim this page cannot make: an edited
+  // row may well exist, and offering the editor over the file would let the
+  // next save replace that row with a document its owner never saw.
+  let staffEditState = $state("loading");
+  let staffEditError = $state("");
+  let revertingStaffEdit = $state(false);
+  // Bumped by the retry button, and TRACKED by the lookup effect below - the
+  // one thing besides the score id that re-runs it.
+  let staffEditAttempt = $state(0);
+
+  // Whose transcription row to look up - the score id when this score is drawn
+  // by TabViewer from a library file, null otherwise. A $derived, not the
+  // effect reading `score` directly: `score` is REASSIGNED by every patch on
+  // this page (a tag, a tempo, a favourite), and an effect tracking the object
+  // would refetch - and momentarily blow away - the edit being shown each time
+  // somebody typed a tag. The id is a primitive, so the effect below re-runs
+  // only when it actually changes.
+  let staffScoreId = $derived(score && !demo && score.file_type === "musicxml" ? score.id : null);
+
+  $effect(() => {
+    const id = staffScoreId;
+    // Tracked on purpose: pressing "Try again" re-runs this effect.
+    void staffEditAttempt;
+    let live = true;
+    // NO REQUEST FOR A SCORE THE SERVER HAS ALREADY SAID HAS NO ROW.
+    // `has_transcription` is on every ScoreOut (api._with_tags joins it for
+    // list and detail alike), so the score object this page already holds
+    // answers "is there anything to fetch" without asking. Fetching anyway and
+    // reading the 404 was the obvious shape and the wrong one: the 404 is a
+    // correct answer that Chromium logs as a console ERROR, and every spec in
+    // this suite that asserts a clean console (navigation.spec.js,
+    // score-multi-part.spec.js) went red on scores that had nothing to do with
+    // this feature. The route's own 404 semantics are untouched; this is only
+    // about not asking a question whose answer is already in hand.
+    //
+    // Read through untrack so a `score` reassignment (a tag, a favourite)
+    // cannot re-run this effect - the id is what identifies the lookup, and
+    // this flag is only ever consulted at the moment the lookup starts. It is
+    // deliberately NOT kept in step with a save or a revert either: both set
+    // `staffEdit` here directly, and a re-run mid-session would drop the
+    // editor back to "loading" (and so out of `editable`) under the hands of
+    // somebody who is typing frets into it.
+    const mayHaveRow = untrack(() => id != null && score?.has_transcription === true);
+    untrack(() => {
+      staffEdit = null;
+      staffEditError = "";
+      staffEditState = mayHaveRow ? "loading" : "ready";
+    });
+    if (!mayHaveRow) return;
+    api
+      .transcription(id)
+      .then((t) => {
+        if (!live) return;
+        // Only an edit is preferred over the file - see the note above.
+        staffEdit = t?.source === "edited" ? t : null;
+        staffEditState = "ready";
+      })
+      .catch((e) => {
+        if (!live) return;
+        staffEdit = null;
+        if (e instanceof ApiError && e.status === 404) {
+          // The row went away between the score being read and this asking for
+          // it (a revert in another tab, a purge). Nothing to prefer over the
+          // file, which is exactly what "file" means.
+          staffEditState = "ready";
+          return;
+        }
+        // ANY OTHER FAILURE IS NOT "THERE IS NO EDIT". Saying "showing the
+        // file" here would state as fact the one thing this lookup failed to
+        // establish, and - worse - would offer the editor seeded from the file,
+        // so the next Save would overwrite a stored edit with a document that
+        // never contained it. The panel says so and offers a retry instead,
+        // and `editable` below stands down until the lookup has actually
+        // landed.
+        staffEditError = e?.message ?? "Could not check whether this score has an edit stored.";
+        staffEditState = "error";
+      });
+    return () => {
+      live = false;
+    };
+  });
+
+  // Ask again after a lookup that could not be answered. The effect above is
+  // the only thing that fetches, so this bumps its other dependency rather
+  // than duplicating the request here - one code path, one set of states.
+  function retryStaffEdit() {
+    staffEditAttempt += 1;
+  }
+
+  // The note editor's save. Goes through the SAME PUT a PDF's hand edit uses
+  // (stored verbatim as source='edited', never re-extracted); the library file
+  // is not touched, and nothing here writes to it. Errors are left to
+  // propagate: TabViewer's saveEdits() catches them and shows the message on
+  // its own panel, which is where the person who pressed Save is looking.
+  async function saveStaffEdit(content) {
+    const res = await api.saveTranscription(score.id, content);
+    staffEdit = { ...res, content, source: "edited" };
+  }
+
+  // Throw the edit away and go back to rendering the file. DELETE removes only
+  // the edited row; for a native score there is no extraction underneath it, so
+  // the server answers 404 ("no transcription for this score") - which here is
+  // the SUCCESS case, not a failure: nothing left means the file is what shows.
+  async function revertStaffEdit() {
+    revertingStaffEdit = true;
+    staffEditError = "";
+    try {
+      const t = await api.deleteTranscription(score.id);
+      staffEdit = t?.source === "edited" ? t : null;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        staffEdit = null;
+      } else {
+        staffEditError = e?.message ?? "Could not throw that edit away.";
+      }
+    } finally {
+      revertingStaffEdit = false;
+    }
+  }
 
   const PRACTICE_MIN_SECONDS = 10;
 
@@ -698,7 +845,56 @@
     {#if score.file_type === "pdf"}
       <ScoreCompare {score} {gigMode} onToggleGig={toggleGigMode} {practiceLabel} onStopPractice={() => flushPractice()} />
     {:else}
-      <TabViewer {score} {gigMode} onToggleGig={toggleGigMode} {practiceLabel} onStopPractice={() => flushPractice()} />
+      <!-- Which of the two is on screen, stated rather than left to be
+           inferred from the notes (#262) - the same job the transcription
+           panel's provenance line does for extracted-versus-edited on a PDF.
+           Stated in BOTH directions on purpose: a line that only ever appeared
+           when an edit was showing would leave "no line" meaning both "the
+           file" and "not looked up yet", and those are different claims. Gig
+           mode drops it with the rest of the chrome. -->
+      {#if !gigMode && staffScoreId != null && staffEditState !== "loading"}
+        <div class="staff-source" data-staff-source={staffEditState === "error" ? "unknown" : staffEdit ? "edited" : "file"}>
+          {#if staffEditState === "error"}
+            <!-- The one state that must not be dressed up as either of the
+                 other two. The staff below is drawing the file (that is all
+                 there was to draw), but this page does not KNOW that is the
+                 right document, so it does not say so - and the editor stays
+                 shut, because a save from it would overwrite whatever the
+                 lookup failed to read. -->
+            <span class="staff-source-what">Could not tell whether this score has an edit stored.</span>
+            <span class="staff-source-error">{staffEditError}</span>
+            <button class="staff-source-retry" onclick={retryStaffEdit}>Try again</button>
+          {:else if staffEdit}
+            <span class="staff-source-what">Showing your edit of this score.</span>
+            <span class="staff-source-why">
+              The file in your library is untouched — the edit is stored alongside it.
+            </span>
+            <button class="staff-source-revert" onclick={revertStaffEdit} disabled={revertingStaffEdit}>
+              {revertingStaffEdit ? "Throwing it away…" : "Revert to the file"}
+            </button>
+            {#if staffEditError}
+              <span class="staff-source-error">{staffEditError}</span>
+            {/if}
+          {:else}
+            <span class="staff-source-what">Showing the file as it is in your library.</span>
+            {#if staffEditError}
+              <span class="staff-source-error">{staffEditError}</span>
+            {/if}
+          {/if}
+        </div>
+      {/if}
+      <TabViewer
+        {score}
+        tex={staffEdit?.content ?? null}
+        format={staffEdit?.format ?? "musicxml"}
+        staffSource={staffEdit ? "edited" : "file"}
+        editable={staffScoreId != null && staffEditState === "ready"}
+        onSaveEdit={staffScoreId != null ? saveStaffEdit : null}
+        {gigMode}
+        onToggleGig={toggleGigMode}
+        {practiceLabel}
+        onStopPractice={() => flushPractice()}
+      />
     {/if}
   {/if}
 </div>
@@ -894,5 +1090,41 @@
     color: var(--danger);
     text-align: center;
     margin-top: 60px;
+  }
+
+  /* One quiet line between the header and the staff saying which of the two
+     documents is drawn (#262). flex-shrink: 0 so it never gives up its own
+     height to the staff below it inside .viewer's column - a statement about
+     what you are looking at that can be squeezed to nothing is worse than no
+     statement. It WRAPS instead, the same way the header does at a tablet's
+     portrait width (issue #106). */
+  .staff-source {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px;
+    flex-shrink: 0;
+    padding: 6px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-raised);
+    font-size: 13px;
+  }
+
+  .staff-source-what {
+    color: var(--ink);
+  }
+
+  .staff-source-why {
+    color: var(--ink-dim);
+  }
+
+  .staff-source-error {
+    color: var(--danger);
+  }
+
+  /* Unstyled beyond the app's own button rules - it is offered next to the
+     failure it undoes, not competing with the score for attention. */
+  .staff-source-retry {
+    font-size: 13px;
   }
 </style>
