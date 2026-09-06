@@ -669,6 +669,14 @@ the better choice for a quick local snapshot before an upgrade. See [the API
 guide](api.md#getting-everything-in-and-out-issue-58) for the archive's shape
 and what restoring it (`POST /api/import`) does and does not do.
 
+Restoring an archive into a library that is not empty **adds** rather than
+replaces or refuses outright — the one collision it does not stop the whole
+restore over is a named drill scope (a "preset") whose name the target
+library already has: that preset is imported anyway, under a name like
+`<name> (imported)`, rather than dropped or refused. Every other collision
+(two goals for the same week, say) still refuses the whole archive with
+nothing changed, so restoring twice by mistake is safe.
+
 ### Restoring a backup
 
 Stop the container, replace the live `config/` folder with the backed-up one,

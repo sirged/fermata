@@ -29,6 +29,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from fermata import api, db, scanner
+from fermata import trainer as trainer_module
 
 FIXTURE = b"<score-file-bytes-standing-in-for-a-pdf>"
 OTHER_FIXTURE = b"<a-second-score-entirely>"
@@ -671,6 +672,336 @@ def test_an_archive_naming_a_preset_it_does_not_carry_is_refused_before_anything
     assert "preset" in resp.json()["detail"]
 
 
+# ---------------------------------------------------------------------------
+# #260: a same-named preset is renamed rather than refusing the whole
+# archive. See the module comment above EXPORT_TABLE_NAMES ("THE ONE OTHER
+# EXCEPTION") for why this, and only this, collision class gets this
+# treatment - everything else still reaches the IntegrityError -> 409 path,
+# covered below by test_import_is_transactional_on_a_collision_in_the_target_library
+# (practice_goals' own UNIQUE(owner, period_start), the one other uniqueness
+# rule this feature can trip that is NOT a preset).
+# ---------------------------------------------------------------------------
+
+
+def test_import_renames_a_preset_that_collides_with_one_already_in_the_target_library(
+    client, tmp_path, monkeypatch
+):
+    """The headline claim: import keeps "added, never merged" even here. The
+    colliding preset is imported anyway, under a derived name, with its
+    string set intact, and the archive's own session is remapped to point at
+    the IMPORTED copy - not at the pre-existing preset of the same name.
+    Dry run has to report the identical rename apply mode actually makes.
+    """
+    real = client.post(
+        "/api/trainer/presets",
+        json={"name": "Fifth position", "start_fret": 5, "end_fret": 9, "strings": [1, 2, 3]},
+    ).json()
+    client.post(
+        "/api/practice/sessions",
+        json={"seconds": 120, "activity": "fretboard", "preset_id": real["id"]},
+    )
+    archive = client.get("/api/export").content
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    preexisting = client.post(
+        "/api/trainer/presets",
+        json={"name": "Fifth position", "start_fret": 0, "end_fret": 12, "strings": [6]},
+    ).json()
+
+    expected_rename = [{"from": "Fifth position", "to": "Fifth position (imported)"}]
+
+    preview = client.post(
+        "/api/import", files={"file": ("export.zip", archive, "application/zip")}
+    )
+    assert preview.status_code == 200, preview.text
+    preview_body = preview.json()
+    assert preview_body["dry_run"] is True
+    assert preview_body["trainer_scope_presets_renamed"] == expected_rename
+
+    applied = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert applied.status_code == 200, applied.text
+    applied_body = applied.json()
+    assert applied_body["dry_run"] is False
+    assert applied_body["trainer_scope_presets_renamed"] == expected_rename
+
+    by_name = {p["name"]: p for p in client.get("/api/trainer/presets").json()}
+    assert set(by_name) == {"Fifth position", "Fifth position (imported)"}
+    imported = by_name["Fifth position (imported)"]
+    assert imported["strings"] == [1, 2, 3]
+    assert imported["start_fret"] == 5
+    assert imported["end_fret"] == 9
+    # The pre-existing preset of the same name is untouched.
+    assert by_name["Fifth position"]["id"] == preexisting["id"]
+    assert by_name["Fifth position"]["strings"] == [6]
+
+    imported_session = next(
+        s for s in client.get("/api/practice/sessions").json()["sessions"]
+        if s["seconds"] == 120
+    )
+    assert imported_session["preset_id"] == imported["id"]
+    assert imported_session["preset_id"] != preexisting["id"]
+
+
+def test_a_second_import_of_the_same_archive_derives_imported_2(client, tmp_path, monkeypatch):
+    """`_derive_preset_renames` re-reads the library each call, so importing
+    the SAME archive a second time (a person restoring the same backup
+    twice, say) sees its own first import's "(imported)" copy already sitting
+    there and has to skip past it too."""
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Fifth position", "start_fret": 5, "end_fret": 9, "strings": [1, 2, 3]},
+    )
+    archive = client.get("/api/export").content
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Fifth position", "start_fret": 0, "end_fret": 12, "strings": [6]},
+    )
+
+    first = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["trainer_scope_presets_renamed"] == [
+        {"from": "Fifth position", "to": "Fifth position (imported)"}
+    ]
+
+    second = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["trainer_scope_presets_renamed"] == [
+        {"from": "Fifth position", "to": "Fifth position (imported 2)"}
+    ]
+    names = {p["name"] for p in client.get("/api/trainer/presets").json()}
+    assert names == {
+        "Fifth position", "Fifth position (imported)", "Fifth position (imported 2)",
+    }
+
+
+def test_a_collision_differing_only_in_case_is_renamed(client, tmp_path, monkeypatch):
+    """The unique index this whole feature exists to get past is
+    `(owner, name COLLATE NOCASE)` - a rename decision that compared names
+    case-sensitively would miss exactly this collision and let _apply_import
+    crash into the IntegrityError -> 409 path instead of renaming."""
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "fifth position", "start_fret": 5, "end_fret": 9, "strings": [1, 2, 3]},
+    )
+    archive = client.get("/api/export").content
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "FIFTH POSITION", "start_fret": 0, "end_fret": 12, "strings": [6]},
+    )
+
+    resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["trainer_scope_presets_renamed"] == [
+        {"from": "fifth position", "to": "fifth position (imported)"}
+    ]
+    names = sorted(p["name"] for p in client.get("/api/trainer/presets").json())
+    assert names == ["FIFTH POSITION", "fifth position (imported)"]
+
+
+def test_two_identically_named_presets_within_one_archive_do_not_500(
+    client, tmp_path, monkeypatch
+):
+    """Two presets sharing a name INSIDE THE SAME ARCHIVE - not constructible
+    through this API (the (owner, name COLLATE NOCASE) index refuses it
+    there) but nothing stops a hand-edited manifest, or a merge of two
+    exports, from naming two. `_derive_preset_renames` tracks every name it
+    has already handed out THIS import (not only what the library already
+    held), so the second one still lands on a free name instead of raising
+    an IntegrityError _apply_import has no except clause for."""
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Alpha", "start_fret": 0, "end_fret": 4, "strings": [6, 5]},
+    )
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    presets = manifest["tables"]["trainer_scope_presets"]
+    strings = manifest["tables"]["trainer_scope_preset_strings"]
+    assert len(presets) == 1
+    original_id = presets[0]["id"]
+    dup = dict(presets[0])
+    dup["id"] = original_id + 1000
+    presets.append(dup)
+    for row in list(strings):
+        if row["preset_id"] == original_id:
+            strings.append({**row, "preset_id": dup["id"]})
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("dup-name.zip", archive, "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    summary = resp.json()
+    assert summary["trainer_presets_imported"] == 2
+    assert summary["trainer_scope_presets_renamed"] == [
+        {"from": "Alpha", "to": "Alpha (imported)"}
+    ]
+    names = sorted(p["name"] for p in client.get("/api/trainer/presets").json())
+    assert names == ["Alpha", "Alpha (imported)"]
+
+
+def test_a_preset_row_whose_name_is_not_a_string_never_500s(client, tmp_path, monkeypatch):
+    """Follow-up to #260: `_derive_preset_renames` called `.casefold()` on
+    every archived preset's name with no guard, so a manifest carrying a
+    `name` that is null, missing entirely, or some other JSON type (nothing
+    this API's own export ever writes, but nothing stops a hand-edited or
+    foreign one) turned into an unhandled AttributeError/KeyError - a 500 on
+    both dry run and applied. The fix does not invent a rename for a name
+    that isn't one: it passes the row through untouched, so the SAME
+    NOT NULL constraint that refused it before #260 ever existed refuses it
+    again (measured directly against this schema: binding None, or omitting
+    the column, both raise `sqlite3.IntegrityError: NOT NULL constraint
+    failed`; binding a plain int does not - SQLite's TEXT affinity silently
+    stringifies it, so that shape is accepted exactly as it was pre-#260)."""
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Untouched", "start_fret": 0, "end_fret": 4, "strings": [6]},
+    )
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    template = manifest["tables"]["trainer_scope_presets"][0]
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+
+    shapes = {
+        "null": {**template, "name": None},
+        "missing": {k: v for k, v in template.items() if k != "name"},
+        "integer": {**template, "name": 42},
+    }
+    for shape, bad_row in shapes.items():
+        bad_manifest = json.loads(json.dumps(manifest))  # deep copy - each shape is independent
+        bad_manifest["tables"]["trainer_scope_presets"] = [bad_row]
+        archive = _bytes_of_zip({"manifest.json": json.dumps(bad_manifest).encode()})
+
+        preview = client.post(
+            "/api/import", files={"file": (f"{shape}.zip", archive, "application/zip")},
+        )
+        assert preview.status_code == 200, f"{shape} dry run: {preview.text}"
+
+        applied = client.post(
+            "/api/import", params={"dry_run": "false"},
+            files={"file": (f"{shape}.zip", archive, "application/zip")},
+        )
+        if shape == "integer":
+            # Weird, but not this fix's problem to solve - see the docstring:
+            # the exact behaviour import gave this shape before #260 existed.
+            assert applied.status_code == 200, f"{shape} applied: {applied.text}"
+        else:
+            assert applied.status_code == 409, f"{shape} applied: {applied.text}"
+            assert "NOT NULL constraint failed" in applied.text, applied.text
+
+
+def test_a_cap_length_colliding_preset_name_is_trimmed_to_fit(client, tmp_path, monkeypatch):
+    """#249's cap on a preset's own name (trainer.MAX_PRESET_NAME_CHARS) is an
+    invariant `POST /api/trainer/presets` enforces on every name it accepts -
+    a collision's derived name has to satisfy it too, or import would hand
+    back a row `preset_dict` reports as 211 characters when this same
+    library's own POST would refuse anything over 200. The base is trimmed
+    so `<base> (imported)` still fits, and a second import of the very same
+    archive still finds a free (still-fitting) name."""
+    long_name = "A" * trainer_module.MAX_PRESET_NAME_CHARS
+    assert len(long_name) == 200
+    client.post(
+        "/api/trainer/presets",
+        json={"name": long_name, "start_fret": 5, "end_fret": 9, "strings": [1, 2, 3]},
+    )
+    archive = client.get("/api/export").content
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    client.post(
+        "/api/trainer/presets",
+        json={"name": long_name, "start_fret": 0, "end_fret": 12, "strings": [6]},
+    )
+
+    first = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("long.zip", archive, "application/zip")},
+    )
+    assert first.status_code == 200, first.text
+    renamed = first.json()["trainer_scope_presets_renamed"]
+    assert len(renamed) == 1
+    assert renamed[0]["from"] == long_name
+    assert len(renamed[0]["to"]) <= trainer_module.MAX_PRESET_NAME_CHARS
+    assert renamed[0]["to"].endswith("(imported)")
+
+    names = {p["name"] for p in client.get("/api/trainer/presets").json()}
+    assert long_name in names
+    assert renamed[0]["to"] in names
+    assert all(len(n) <= trainer_module.MAX_PRESET_NAME_CHARS for n in names)
+
+    second = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("long.zip", archive, "application/zip")},
+    )
+    assert second.status_code == 200, second.text
+    second_renamed = second.json()["trainer_scope_presets_renamed"]
+    assert len(second_renamed) == 1
+    assert second_renamed[0]["from"] == long_name
+    assert second_renamed[0]["to"] != renamed[0]["to"]
+    assert len(second_renamed[0]["to"]) <= trainer_module.MAX_PRESET_NAME_CHARS
+    names_after = {p["name"] for p in client.get("/api/trainer/presets").json()}
+    assert len(names_after) == 3
+    assert all(len(n) <= trainer_module.MAX_PRESET_NAME_CHARS for n in names_after)
+
+
+def test_a_unicode_collision_nocase_would_not_actually_raise_on_is_not_renamed(
+    client, tmp_path, monkeypatch
+):
+    """`(owner, name COLLATE NOCASE)` is SQLite's own NOCASE - ASCII A-Z only
+    - not Python's str.casefold(), which also folds characters NOCASE does
+    not: 'ß'.casefold() == 'ss', so a library preset named 'Straße' and an
+    archived one named 'STRASSE' looked identical to casefold() even though
+    the unique index those two would actually hit never collides on them.
+    Renaming one anyway would be exactly backwards - a rename this feature
+    exists to AVOID, on an archive the real insert would have accepted
+    unchanged. 'Fifth'/'FIFTH' - plain ASCII case only - still has to
+    collide, or the fix has gone too far the other way."""
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "STRASSE", "start_fret": 5, "end_fret": 9, "strings": [1, 2, 3]},
+    )
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Fifth", "start_fret": 0, "end_fret": 4, "strings": [1]},
+    )
+    archive = client.get("/api/export").content
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Straße", "start_fret": 0, "end_fret": 12, "strings": [6]},
+    )
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "FIFTH", "start_fret": 0, "end_fret": 4, "strings": [2]},
+    )
+
+    resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    renamed = resp.json()["trainer_scope_presets_renamed"]
+    assert renamed == [{"from": "Fifth", "to": "Fifth (imported)"}]
+    names = sorted(p["name"] for p in client.get("/api/trainer/presets").json())
+    assert names == ["FIFTH", "Fifth (imported)", "STRASSE", "Straße"]
+
+
 def test_export_can_leave_the_trash_out(client, add_score):
     live_id = add_score("Keeper.pdf", title="Keeper")
     trashed_id = add_score("Doomed.pdf", title="Doomed")
@@ -832,6 +1163,12 @@ def test_import_is_transactional_on_a_collision_in_the_target_library(
     through (after its scores and tags have already been inserted, since
     goals are applied last) and the whole thing has to roll back rather than
     leave a second copy of the scores behind.
+
+    Also the (d) case #260 asks for: a collision that is NOT a preset still
+    has to reach the plain 409, with nothing applied - #260 only carves out
+    an exception for trainer_scope_presets' own uniqueness rule, and this
+    goal collision is the other uniqueness rule this feature can actually
+    trip.
     """
     score_id = add_score("Prelude.pdf", title="Prelude")
     client.post(
@@ -852,7 +1189,7 @@ def test_import_is_transactional_on_a_collision_in_the_target_library(
         "/api/import", params={"dry_run": "false"},
         files={"file": ("export.zip", archive, "application/zip")},
     )
-    assert second.status_code != 200
+    assert second.status_code == 409, second.text
     # ROLLED BACK, NOT HALF-APPLIED: the second import's scores must not be
     # sitting in the library even though its own insert ran (and would have
     # committed) before the goal collision was hit.

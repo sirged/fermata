@@ -3959,6 +3959,22 @@ def score_practice_progress(
 # fresh install, or one just scanned onto an empty database - and every test
 # of this feature below imports into exactly that.
 #
+# THE ONE OTHER EXCEPTION (#260): a trainer_scope_presets row whose NAME
+# collides with one already in this library - or with an earlier preset from
+# the SAME archive - is not reused the way a tag is (a preset is a whole
+# arrangement, not just a name; the two rows are not "the same scope" merely
+# for sharing a label) and is not refused the way every other collision is
+# either. It is still INSERTED as a new row with a fresh id, same as always,
+# just under a derived name (`<name> (imported)`, `(imported 2)`, ...) rather
+# than the one it carried - see `_derive_preset_renames`. This is still
+# "added, never merged": nothing about the existing preset changes, the
+# archive's own copy exists standalone under its new name, and the archive's
+# sessions are remapped to point at THAT copy so the restored history still
+# names something real. `ImportOut.trainer_scope_presets_renamed` says which
+# names moved. Every other uniqueness rule in this library (a setting's key,
+# a goal's owner/period_start, the preset id space itself) still reaches the
+# IntegrityError -> 409 path below unchanged.
+#
 # TRANSACTIONAL, AND WHAT THAT ACTUALLY COVERS. Validation - the archive is a
 # real zip, `manifest.json` parses, its schema_version matches, every table
 # is the right shape, every foreign key inside the archive resolves to a row
@@ -4538,6 +4554,94 @@ def _insert_row(
     return cur.lastrowid
 
 
+def _ascii_fold(name: str) -> str:
+    """Fold the way `(owner, name COLLATE NOCASE)` does - ASCII A-Z only, not
+    Python's str.casefold(), which also folds characters NOCASE does not (the
+    German eszett 'ß' casefolds to 'ss', so 'Straße' and 'STRASSE' would look
+    like a collision here even though the unique index would never raise on
+    them side by side). Comparing this way is what keeps
+    _derive_preset_renames's predictions equal to what the insert itself
+    would - or would not - collide on."""
+    return "".join(chr(ord(ch) + 32) if "A" <= ch <= "Z" else ch for ch in name)
+
+
+def _fit_preset_name(base: str, suffix: str) -> str:
+    """Trim `base` so `base + suffix` still satisfies
+    trainer.MAX_PRESET_NAME_CHARS (#249) - a collision's derived name has to
+    be a name the API's own POST /api/trainer/presets would accept, not just
+    one the unique index would. A base already short enough is returned
+    unchanged."""
+    limit = max(trainer.MAX_PRESET_NAME_CHARS - len(suffix), 0)
+    return base[:limit] + suffix
+
+
+def _derive_preset_renames(conn, presets: list[dict]) -> tuple[dict[int, str], list[dict]]:
+    """#260: the one collision import no longer refuses. Everywhere else,
+    "added, never merged" means a real uniqueness collision against this
+    library is a 409 (see the except sqlite3.IntegrityError block below) -
+    but a same-named drill-scope preset is exactly the shape of collision a
+    restore runs into constantly (a backup taken after a preset got renamed,
+    or after this library made one with the same name by hand), and the only
+    workaround available today is renaming presets BEFORE restoring, by
+    hand, in the archive nobody wants to edit. So a preset whose name is
+    already taken - by a row already in this library, or by an earlier
+    preset from this SAME import, compared exactly the way the unique index
+    does it (COLLATE NOCASE, folded ASCII-only - see _ascii_fold) - is
+    imported anyway, under "<name> (imported)", then "<name> (imported 2)",
+    "<name> (imported 3)" and so on, trimmed to fit
+    trainer.MAX_PRESET_NAME_CHARS (see _fit_preset_name) until one is free.
+    Every other collision class (a setting's key, a goal's period, the
+    preset id space itself) still reaches the IntegrityError path unchanged.
+
+    A row whose name is not a string at all (missing, null, or some other
+    JSON type - not something this API's own export ever writes, but nothing
+    stops a hand-edited or foreign manifest from carrying one) is not this
+    function's problem to solve: it is passed through completely unexamined,
+    so _apply_import's insert raises on it (or doesn't) exactly the way it
+    would have before this function existed. Manufacturing a rename for a
+    name that isn't one would only trade a clean refusal for a confusing
+    "success".
+
+    Returns the {archive row id: name actually used} map `_apply_import`
+    inserts under, and the `{from, to}` pairs for whichever presets actually
+    got renamed - in archive order, so a second preset in the archive
+    colliding with the first archive preset's OWN derived name still lands
+    on a free one rather than raising.
+
+    Read-only, and safe to call before any write transaction is open: this
+    is also how the dry run reports the same renames the applied import
+    will make, without writing anything - the two have to agree, since a
+    dry run that promised one name and an apply that landed on another
+    would make the whole preview worthless.
+    """
+    taken = {
+        _ascii_fold(row["name"])
+        for row in conn.execute(
+            "SELECT name FROM trainer_scope_presets WHERE owner = ?", (DEFAULT_OWNER,)
+        )
+    }
+    names: dict[int, str] = {}
+    renamed: list[dict] = []
+    for row in presets:
+        original = row.get("name")
+        if not isinstance(original, str):
+            names[row["id"]] = original
+            continue
+        candidate = original
+        if _ascii_fold(candidate) in taken:
+            attempt = 1
+            while True:
+                suffix = " (imported)" if attempt == 1 else f" (imported {attempt})"
+                candidate = _fit_preset_name(original, suffix)
+                if _ascii_fold(candidate) not in taken:
+                    break
+                attempt += 1
+            renamed.append({"from": original, "to": candidate})
+        taken.add(_ascii_fold(candidate))
+        names[row["id"]] = candidate
+    return names, renamed
+
+
 def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_paths: list) -> dict:
     """Write a validated archive's rows and files into this library. Runs
     entirely inside the caller's write_tx(), so a failure partway through -
@@ -4639,10 +4743,14 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
     # so that row has to exist and its new id has to be known first. The
     # string set follows its preset, exactly as setlist_scores follows its
     # setlist.
+    preset_names, presets_renamed = _derive_preset_renames(conn, tables["trainer_scope_presets"])
     preset_id_map: dict[int, int] = {}
     for row in tables["trainer_scope_presets"]:
         preset_id_map[row["id"]] = _insert_row(
-            conn, "trainer_scope_presets", row, overrides={"owner": DEFAULT_OWNER}
+            conn,
+            "trainer_scope_presets",
+            row,
+            overrides={"owner": DEFAULT_OWNER, "name": preset_names[row["id"]]},
         )
     for row in tables["trainer_scope_preset_strings"]:
         _insert_row(
@@ -4766,6 +4874,7 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
         "trainer_chord_attempts_imported": len(tables["trainer_chord_attempts"]),
         "trainer_presets_imported": len(tables["trainer_scope_presets"]),
         "trainer_preset_strings_imported": len(tables["trainer_scope_preset_strings"]),
+        "trainer_scope_presets_renamed": presets_renamed,
     }
 
 
@@ -4787,7 +4896,11 @@ async def import_library(file: UploadFile, dry_run: bool = True):
     hash to what the archive itself claims for them - and reports what it
     found, WITHOUT opening a database transaction or writing a single file.
     Nothing is compared against what is already in this library on a dry
-    run, which is why `tags_reused` is always 0 there - see ImportOut.
+    run, which is why `tags_reused` is always 0 there - see ImportOut - with
+    one exception: `trainer_scope_presets_renamed` IS computed against this
+    library on a dry run too (a read, not a write - see
+    `_derive_preset_renames`), so the rename it reports is the one apply
+    mode will actually make, not a guess.
 
     A REJECTED IMPORT LEAVES NOTHING CHANGED, whether it was rejected by
     validation (a malformed archive, the wrong schema version - nothing was
@@ -4828,6 +4941,13 @@ async def import_library(file: UploadFile, dry_run: bool = True):
 
     tables = manifest["tables"]
     if dry_run:
+        # #260: the one thing dry run DOES compare against this library, the
+        # exception to the paragraph above - because _derive_preset_renames is
+        # a read (a SELECT, no BEGIN, nothing written), and the whole point of
+        # a dry run reporting a rename is that it has to be the SAME rename
+        # apply mode will actually make, not a guess made blind to what is
+        # already here.
+        _, presets_renamed = _derive_preset_renames(connect(), tables["trainer_scope_presets"])
         return {
             "dry_run": True,
             "schema_version": manifest["schema_version"],
@@ -4852,6 +4972,7 @@ async def import_library(file: UploadFile, dry_run: bool = True):
             "trainer_chord_attempts_imported": len(tables["trainer_chord_attempts"]),
             "trainer_presets_imported": len(tables["trainer_scope_presets"]),
             "trainer_preset_strings_imported": len(tables["trainer_scope_preset_strings"]),
+            "trainer_scope_presets_renamed": presets_renamed,
         }
 
     _require_library()
