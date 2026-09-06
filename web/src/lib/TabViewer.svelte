@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import { api } from "./api.js";
   import { createScoreView, UNRENDERABLE_MESSAGE, tabWithheldMessage } from "./score-render.js";
+  import { midiFilename } from "./filename.js";
   import { getSettings, setSetting, STAFF_THEMES, STAFF_THEME_LABELS } from "./settings.svelte.js";
   import Metronome from "./Metronome.svelte";
   import { createDocument, DURATION_TYPES } from "./editor/document.js";
@@ -1474,6 +1475,30 @@
     view?.setCountIn(countIn);
   }
 
+  // Download the current score's MIDI (issue #270) - the same bytes the
+  // renderer plays from, handed over exactly the way DataPortability.svelte's
+  // library export already does: a Blob, an object URL, and a throwaway <a
+  // download> clicked once and torn back down. No server round trip - the
+  // bytes never leave the browser that rendered them.
+  //
+  // Filename sanitising lives in filename.js, not here - see that file for
+  // the length bound, control-character stripping and leading/trailing-dot
+  // handling the review on this issue asked for.
+  function downloadMidi() {
+    const exported = view?.exportMidi();
+    if (!exported) return;
+    const filename = midiFilename(exported.title ?? "");
+    const blob = new Blob([exported.bytes], { type: "audio/midi" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
   function clamp(n, lo, hi) {
     if (Number.isNaN(n)) return lo;
     return Math.min(hi, Math.max(lo, n));
@@ -1830,6 +1855,18 @@
           {editMode ? "Done editing" : "Edit notes"}
         </button>
       {/if}
+      <!-- Disabled together with the "nothing drawable" notice below
+      (profileOptions null before a score has loaded, or empty once one has
+      loaded with nothing to draw) - the same render-ok signal that notice
+      already reads, not a second one. A render that throws for some other
+      reason surfaces through loadError, which disables this too. -->
+      <button
+        disabled={!profileOptions?.length || !!loadError}
+        onclick={downloadMidi}
+        title="Download this score's MIDI, as the renderer plays it — bends approximated as pitch-bend events; not a re-engraving of the score"
+      >
+        Download MIDI
+      </button>
       <div class="player">
         <button class="primary" disabled={!playerReady} onclick={() => view?.playPause()}>
           {playing ? "❚❚ Pause ((Space))" : "▶ Play ((Space))"}

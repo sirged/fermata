@@ -3366,6 +3366,76 @@ export function createScoreView(host, opts = {}) {
       return lastRenderMs;
     },
 
+    /**
+     * The current score's MIDI bytes (issue #270) - built fresh from the
+     * renderer's OWN generator (MidiFileGenerator, the exact class that
+     * produces the midi alphaTab plays from - see the note on
+     * loadMidiForScore below), not a re-engraving and not a recording of
+     * whatever the synthesiser happened to play. Returns
+     * `{ bytes: Uint8Array, trackCount, title }` or **null**.
+     *
+     * null covers every state that leaves nothing honest to export: no
+     * score has loaded yet (`api.score` unset), the loaded score has
+     * nothing drawable under any profile (`unrenderable` - see
+     * supportedProfiles), or the most recent render attempt failed outright
+     * (`renderOk` false - set in the api.error handler below). A caller
+     * that built bytes from a half-drawn or nonexistent model would be
+     * handing over something that does not describe what is, or isn't, on
+     * screen.
+     *
+     * `format` is deliberately MidiFileFormat.MultiTrack (SMF Type 1) and
+     * NOT the SingleTrackMultiChannel default api.downloadMidi() itself
+     * uses: MidiFileGenerator writes one event stream per SCORE track
+     * (`_generateTrack` is called once per `score.tracks` entry, keyed on
+     * that track's own `.index`), and MidiFile.addEvent only ever opens a
+     * new track chunk for an event's own `.track` index when the format is
+     * MultiTrack - Type 0 collapses every channel onto tracks[0]
+     * regardless of how many the score has. MultiTrack is therefore what
+     * makes `trackCount` (== `midiFile.tracks.length`, which is also the
+     * exact number the SMF header's own track-count field gets written
+     * with - see MidiFile.writeTo) equal `api.tracks.length`/
+     * `host.dataset.scoreTracks`, the same count the scoreLoaded handler
+     * above already reports - measured against alphaTab.core.mjs's own
+     * MidiFile/AlphaSynthMidiFileHandler source, not assumed from the
+     * typings alone.
+     *
+     * The handler is built with smf1Mode=true, exactly like
+     * api.downloadMidi()'s own construction - not a shortcut taken only
+     * here. That is what turns a per-note bend into a single, channel-wide
+     * PitchBendEvent instead of the newer MIDI 2.0-flavoured per-note bend
+     * message (see AlphaSynthMidiFileHandler.addNoteBend); this is the
+     * "bends approximated as pitch-bend events" half of the control's own
+     * tooltip caveat, and it is true of every export this method produces.
+     *
+     * A caveat of its own: this is a snapshot of the score exactly as
+     * MidiFileGenerator sees it right now, generated synchronously on
+     * demand rather than cached - a second call after an edit or a profile
+     * change regenerates rather than replaying a stale buffer, at the cost
+     * of repeating the generation work on every call. No caller here needs
+     * more than one call per click, so that cost was never measured against
+     * an alternative.
+     */
+    exportMidi() {
+      if (destroyed || unrenderable || !renderOk) return null;
+      const score = api.score;
+      if (!score) return null;
+      try {
+        const { MidiFile, MidiFileFormat, AlphaSynthMidiFileHandler, MidiFileGenerator } = alphaTab.midi;
+        const midiFile = new MidiFile();
+        midiFile.format = MidiFileFormat.MultiTrack;
+        const handler = new AlphaSynthMidiFileHandler(midiFile, true);
+        new MidiFileGenerator(score, api.settings, handler).generate();
+        return {
+          bytes: midiFile.toBinary(),
+          trackCount: midiFile.tracks.length,
+          title: score.title ?? "",
+        };
+      } catch (e) {
+        console.warn("score-render: exportMidi() failed to generate a MIDI file.", e);
+        return null;
+      }
+    },
+
     setProfile(next) {
       // Keyed on appliedProfile, not profile: profile is set eagerly, right
       // below, the moment a switch is requested, whether or not it ever

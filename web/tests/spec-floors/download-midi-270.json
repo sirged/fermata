@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/download-midi.spec.js",
+  "count": 2,
+  "reason": "issue #270: TabViewer had no way to take a rendered score's MIDI out of the browser. This spec uploads a real two-part MusicXML fixture, clicks the new Download MIDI toolbar control, and reads the downloaded file byte-for-byte (MThd header, MultiTrack format, track count matching data-score-tracks, filename sanitised from the score's own title). A second test proves the control is disabled for a score that fails to render."
+}

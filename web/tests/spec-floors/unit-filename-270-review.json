@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/filename.spec.js",
+  "count": 7,
+  "reason": "issue #270 review nit: sanitizeFilename() moved to its own module with a length bound, control-character stripping and leading/trailing-dot stripping - the reviewer's torture cases (a 300-char title, an all-reserved-character title, \"..\", a tab/NUL) plus the ordinary-title and mixed-character paths."
+}
