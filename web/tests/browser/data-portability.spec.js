@@ -34,6 +34,7 @@ const exportButton = (page) => page.getByTestId("export-button");
 const fileInput = (page) => page.getByTestId("import-file-input");
 const importError = (page) => page.getByTestId("import-error");
 const importPreview = (page) => page.getByTestId("import-preview");
+const importRenames = (page) => page.getByTestId("import-renames");
 
 test("exporting the library downloads a real archive", async ({ page }) => {
   await page.goto("/#/settings");
@@ -82,4 +83,44 @@ test("choosing a real exported archive shows what it actually holds", async ({ p
   // applicable preview rather than an error rendered under a different
   // testid - but is never clicked; see the module comment on why.
   await expect(page.getByTestId("import-confirm")).toBeVisible();
+});
+
+test("previewing an archive that collides with a preset already here shows the rename", async ({
+  page,
+  request,
+}) => {
+  // #260's rename is reported on a dry run too (server/fermata/api.py's
+  // _derive_preset_renames), which is exactly what keeps this test inside
+  // the module comment's own rule above: the archive is only ever
+  // PREVIEWED, never confirmed, so this never adds a second copy of
+  // anything to the shared library. A preset made here, still present when
+  // the same library's own export is re-uploaded, collides with itself -
+  // deleted again in `finally` regardless of how the assertions come out,
+  // so this spec leaves the shared library exactly as it found it.
+  const created = await (
+    await request.post("/api/trainer/presets", {
+      data: {
+        name: "Data portability rename check",
+        start_fret: 0,
+        end_fret: 4,
+        strings: [6],
+      },
+    })
+  ).json();
+  try {
+    await page.goto("/#/settings");
+    const downloadPromise = page.waitForEvent("download");
+    await exportButton(page).click();
+    const download = await downloadPromise;
+    const archivePath = await download.path();
+
+    await fileInput(page).setInputFiles(archivePath);
+    await expect(importPreview(page)).toBeVisible();
+    await expect(importRenames(page)).toBeVisible();
+    await expect(importRenames(page)).toContainText(
+      "Data portability rename check → Data portability rename check (imported)",
+    );
+  } finally {
+    await request.delete(`/api/trainer/presets/${created.id}`);
+  }
 });
