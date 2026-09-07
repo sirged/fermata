@@ -39,8 +39,13 @@ them.
 - **Tab out of a PDF** — engraved guitar PDFs carry their tab as real text and
   their rhythm in the music font's own glyphs, so Fermata reads both directly
   instead of guessing at pixels, and renders the result as a playable,
-  editable staff beside the original page. Three music-font vocabularies are
-  calibrated: Finale's Maestro, Sibelius's Opus, and any font following the
+  editable staff beside the original page. The same editor works on a native
+  MusicXML score too — turning a rest into a note, and extending a selection
+  across a run of notes so a whole passage retunes or re-rhythms at once
+  rather than one note at a time — and it refuses to open at all on a score
+  with more than one part, rather than silently editing just the first. Three
+  music-font vocabularies are calibrated: Finale's Maestro, Sibelius's Opus,
+  and any font following the
   SMuFL standard, which covers what free engravers such as MuseScore produce.
   A score drawn in something else still gives up its fret numbers, with the
   rhythm estimated from note spacing and labelled as such. The transcription
@@ -104,12 +109,16 @@ them.
   and counts towards a weekly goal like anything else.
 - **Fretboard drills** — *Fret to note* asks in both directions: a position is
   shown and you name what it sounds, or a note is named and you tap where it
-  lies. *Chord flash cards* does the same for major, minor and seventh shapes.
-  Either can be narrowed to the strings, the fret range and the key you are
-  actually working on, and every answered question is stored as a structured
-  row — which positions and which chords were missed, counted, never divided
-  into an accuracy percentage ([the data model](docs/practice-data.md)). The
-  time lands in your practice history like anything else.
+  lies. *Chord flash cards* does the same for major, minor and seventh
+  shapes, both open-position and moveable barre forms, with each chord's
+  tones named from its own root rather than off a fixed table. Either can be
+  narrowed to the strings, the fret range and the key you are actually
+  working on, and that scope can be saved under a name and picked up again in
+  either drill. Every answered question is stored as a structured row —
+  which positions and which chords were missed, counted, never divided into
+  an accuracy percentage, and shown back beside the drill as its own
+  weak-spots panel ([the data model](docs/practice-data.md)). The time lands
+  in your practice history like anything else.
 - **Weekly goals, and an honest review** — how many days you mean to practise
   and for how long, on what. While the week runs it says where you stand so the
   goal can still change it; afterwards it states plainly what happened and asks
@@ -236,7 +245,7 @@ it — see [the tab profile](docs/musicxml-tab-profile.md#checking-a-file).
 | PDF, engraved with a tab staff | Practice reader, plus transcription to MusicXML — a playable staff beside the page, and a file other notation software reads ([profile](docs/musicxml-tab-profile.md)) |
 | PDF, engraved without tab | Practice reader; nothing to transcribe from |
 | PDF, scanned | Practice reader only — a scan holds no text or glyphs to read |
-| MusicXML (`.musicxml`, `.mxl`) | Interactive: notation / tab / both, audio, full fidelity |
+| MusicXML (`.musicxml`, `.mxl`) | Interactive: notation / tab / both, audio, full fidelity, and hand-editable — a correction is kept as its own transcription row, the file on disk never rewritten |
 | Guitar Pro (`.gp3`–`.gp5`, `.gpx`, `.gp`) | Scanned and indexed, then handed to the renderer's own importer, which reads the format natively[^gp] |
 
 A PDF is a fixed rendering, so the notation/tab toggle belongs to the

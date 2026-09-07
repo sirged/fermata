@@ -115,6 +115,8 @@ piece or one kind of work.
 
 | Column | Meaning |
 | --- | --- |
+| `id` | Stable for the life of the row. |
+| `owner` | `'local'`, same as everywhere else. |
 | `period` | `'week'`. Nothing else is implemented. |
 | `period_start`, `period_end` | Inclusive dates. Stored, not derived. |
 | `target_days` | Days with practice in them, 1 to 7. |
@@ -123,6 +125,7 @@ piece or one kind of work.
 | `score_id`, `activity` | Whichever the scope names. The other is `NULL`. |
 | `intent` | What they mean to work on, in their words. |
 | `reflection`, `realistic` | Written afterwards, by them, and by nothing else. |
+| `created_at`, `updated_at` | When the row was written, and last changed. |
 
 At least one target is required: a goal has to be concrete enough to be either
 met or missed, which is the point of setting one. Setting another goal for the
@@ -204,6 +207,8 @@ the questions rather than around the tables.
 - `POST /api/scores/{id}/practice` - log practice against a piece. Only
   `seconds` is required; the response carries the new session's `id` so detail
   can be added afterwards.
+- `GET /api/scores/{id}/practice` - this piece's recent sessions (up to 50)
+  and its all-time totals, in one response.
 - `POST /api/practice/sessions` - log practice that need not be against a
   piece.
 - `PATCH /api/practice/sessions/{id}` - add or correct detail. The whole record
@@ -488,7 +493,7 @@ rules exist to keep facts out of. It is two tables now.
 | --- | --- |
 | `id` | `AUTOINCREMENT`, so a deleted preset's id is never handed to the next one. |
 | `owner` | `'local'`, as everywhere else here. |
-| `name` | What the person called it. Unique per owner. |
+| `name` | What the person called it. Unique per owner, case-insensitively, and at most 200 characters. |
 | `start_fret`, `end_fret` | The fret range, 0-36, `start_fret` never past `end_fret`. |
 | `key_root`, `key_quality` | The key, `major` or `minor` - both set or both `NULL`, and both `NULL` means every note. |
 | `created_at` | UTC timestamp. |
@@ -527,6 +532,18 @@ here is - by asking whether the row still says anything once the thing it
 names is gone. It does: the minutes were still practised, on that day, in that
 activity. Deleting a preset is a tidy-up, never a statement that the practice
 did not happen.
+
+**Export and import.** All six tables this document describes -
+`practice_sessions`, `practice_goals`, `trainer_attempts`,
+`trainer_chord_attempts`, `trainer_scope_presets` and
+`trainer_scope_preset_strings` - ride the same portable archive every other
+row does (`EXPORT_TABLE_NAMES` in `server/fermata/api.py`). On the way back
+in, every named scope is re-validated and cleaned the same way the API's own
+`POST /api/trainer/presets` would clean it, and a name that collides with one
+already in the target library is imported anyway, renamed rather than
+dropped or refused. See [the API guide's import
+section](api.md#getting-everything-in-and-out-issue-58) for the archive's
+shape and exactly what importing does.
 
 ### Asking questions
 

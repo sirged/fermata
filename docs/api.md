@@ -297,7 +297,7 @@ that ties them together.
 
 | Endpoint | What it does |
 | --- | --- |
-| `GET /api/export` | Every score row, transcription, practice session, goal, tag, instrument, setting, setlist (with its ordered membership), fretboard-drill attempt and named drill scope, plus the score files themselves, as one zip. |
+| `GET /api/export` | Every score row, transcription, practice session, goal, tag (and which tags are on which score), instrument, setting, setlist (with its ordered membership), both fretboard-drill attempt tables (fret positions and chords) and named drill scope, plus the score files themselves, as one zip. |
 | `POST /api/import` | Restores an archive `GET /api/export` produced. **Dry run by default.** |
 
 **The archive.** A zip with `manifest.json` at its root - a JSON object naming
