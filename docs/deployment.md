@@ -675,14 +675,11 @@ copy of the database file. It
 is the better choice for scripting a backup onto another machine, or for
 taking one without touching the host filesystem at all.
 
-**Not across an upgrade, though.** `POST /api/import` refuses an archive
-whose `schema_version` does not match exactly what the running Fermata
-understands, so an archive exported before an upgrade cannot be restored
-into the version you upgraded to. Copying `config/` before you upgrade is
-the working backup across a schema bump, until issue #275 (letting import
-carry an older archive forward) lands. See [the API
-guide](api.md#getting-everything-in-and-out-issue-58) for the archive's shape
-and what restoring it (`POST /api/import`) does and does not do.
+See [the API guide](api.md#getting-everything-in-and-out-issue-58) for the
+archive's shape, which older archives a newer Fermata still accepts, and what
+restoring it (`POST /api/import`) does and does not do. Copying `config/`
+before an upgrade remains the recommended step regardless: it is the only
+backup an older image can start from.
 
 Restoring an archive into a library that is not empty **adds** rather than
 replaces or refuses outright — the one collision it does not stop the whole
