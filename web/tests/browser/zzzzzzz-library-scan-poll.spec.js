@@ -39,7 +39,7 @@
 // before this point. The third test never touches the library at all, but
 // stays in this file rather than a new one because it is testing the same
 // poll the first two are.
-import { spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -129,42 +129,50 @@ async function openLibrary(page) {
   await Promise.all([firstStatus, firstScores]);
 }
 
-/** Hold a real, OS-level exclusive lock on a file until told to let go.
+/** Make a file's bytes unreadable by this OS user, portably, and return a
+ *  function that undoes it.
  *
- * Neither Node's fs.open nor Python's own open() deny other readers by
- * default on Windows, so a second handle from either would simply succeed -
- * there is no way to reproduce "a file locked by something else" without a
- * handle opened with FileShare.None specifically, which only .NET's own
- * File.Open exposes here. PowerShell is used as the one thing on this box
- * that can hold such a handle across the scan below without becoming this
- * test's own subject. */
-function lockFileExclusively(absPath) {
-  const escaped = absPath.replace(/'/g, "''");
-  const ps = spawn("powershell.exe", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    `$fs = [System.IO.File]::Open('${escaped}', 'Open', 'Read', 'None'); ` +
-      "Write-Output 'locked'; " +
-      "[Console]::In.ReadLine() | Out-Null; " +
-      "$fs.Close()",
-  ]);
-  let settle;
-  const ready = new Promise((resolve, reject) => {
-    settle = resolve;
-    ps.once("error", reject);
-    ps.stdout.on("data", (chunk) => {
-      if (chunk.toString().includes("locked")) settle();
-    });
-  });
-  return {
-    ready,
-    release: () =>
-      new Promise((resolve) => {
-        ps.once("exit", resolve);
-        ps.stdin.write("go\n");
-      }),
-  };
+ * The previous version of this held a real, OS-level EXCLUSIVE LOCK open for
+ * the whole scan, via a `powershell.exe` process spawned just to hold a
+ * .NET `FileShare.None` handle open across it - the one thing on Windows
+ * that denies even other readers. Two things sank that approach the moment
+ * it had to run somewhere other than this box: CI's Browser tests job runs
+ * on `ubuntu-latest` (.github/workflows/ci.yml), which has no
+ * `powershell.exe` at all, so the `spawn` itself failed there - not
+ * skipped, failed, on every run; and even a `pwsh` build of the same
+ * FileShare.None handle is merely ADVISORY on Linux, so Python's own
+ * `open()` would not have raised for it regardless.
+ *
+ * A permission denial needs no process held open on either OS, and is a
+ * real OSError from Python's own `open()`, not an advisory lock:
+ *
+ *   - POSIX (Linux, where CI's Browser tests job actually runs): `chmod 0`
+ *     removes read permission outright, and `open()` raises
+ *     PermissionError as long as this process is not root - which the
+ *     GitHub Actions runner user is not.
+ *   - Windows: `chmod` does not gate reads at all here - it only toggles
+ *     the read-only attribute, which blocks writes, not reads - so an ACL
+ *     deny entry is used instead (`icacls ... /deny`), which Python's
+ *     `open()` also surfaces as PermissionError. This branch never runs in
+ *     CI; it exists so this test still demonstrates the errors line when
+ *     the suite is run locally on Windows.
+ *
+ * Either way this lands in scanner.py's own per-file `except OSError`
+ * around its `_scan_file` call (scanner.py:587), which is what actually
+ * increments `errors` and sets `last_error` - the same handler the
+ * corresponding server-side unit test drives with a mocked OSError
+ * (server/tests/test_scanner.py, `test_the_scan_survives_a_file_that_cannot_be_read...`).
+ * This test needs the real thing, end to end, because what it is proving is
+ * that the count and the message reach the SCREEN, not that the handler
+ * exists. */
+function breakFileForReading(absPath) {
+  if (process.platform === "win32") {
+    const user = process.env.USERNAME;
+    execFileSync("icacls", [absPath, "/deny", `${user}:(R)`]);
+    return () => execFileSync("icacls", [absPath, "/remove:d", user]);
+  }
+  fs.chmodSync(absPath, 0o000);
+  return () => fs.chmodSync(absPath, 0o644);
 }
 
 test.beforeEach(async ({ request }) => {
@@ -344,17 +352,16 @@ test("a file the scan cannot read shows an errors line naming what went wrong", 
 }) => {
   // ScanStatusOut's `errors` and `last_error` were never read anywhere
   // (issue #284): a scan that hit a locked or vanishing file looked, on
-  // screen, exactly like one that finished cleanly. The file is locked for
-  // the whole scan rather than only briefly, so this is not a race against
-  // the scanner - the OSError is guaranteed, not hoped for.
+  // screen, exactly like one that finished cleanly. The file is denied read
+  // permission for the whole scan rather than only briefly, so this is not
+  // a race against the scanner - the OSError is guaranteed, not hoped for.
   placeFile(NAMES.locked);
-  const lock = lockFileExclusively(filePath(NAMES.locked));
-  await lock.ready;
+  const repair = breakFileForReading(filePath(NAMES.locked));
   let status;
   try {
     status = await scanAndWait(request);
   } finally {
-    await lock.release();
+    repair();
   }
   expect(status.errors, JSON.stringify(status)).toBe(1);
   expect(status.last_error, JSON.stringify(status)).toContain(relPath(NAMES.locked));

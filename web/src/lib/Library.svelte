@@ -938,14 +938,18 @@
       </div>
     {/if}
 
-    {#if scan && (scan.scanning || scan.finished_at)}
+    {#if scan && (scan.scanning || scan.added || scan.updated)}
       <!-- What a scan actually did to the library, not only that it ran. The
            button already says how far a running scan has got
            (processed/total); this says what it is FINDING as it goes, and
            what it found once it stopped - added and updated were both on
            ScanStatusOut from the start and neither was ever read anywhere
            (issue #284), so a scan that quietly relabelled half the library
-           looked the same on screen as one that touched nothing. -->
+           looked the same on screen as one that touched nothing. Gated on a
+           nonzero added or updated (or still scanning) the same way the
+           errors and restored notes below are gated on their own nonzero
+           facts, rather than on finished_at alone - a scan that added and
+           updated nothing has nothing here to report. -->
       <p class="scan-note" data-testid="scan-added-updated">
         {scan.scanning ? "So far" : "Last scan"}: {scan.added} score{scan.added === 1 ? "" : "s"} added,
         {scan.updated} updated.

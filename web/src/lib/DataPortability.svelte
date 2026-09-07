@@ -53,20 +53,22 @@
       if (n > 0) counts.push(`${n} ${n === 1 ? singular : plural}`);
       else zeros += 1;
     }
-    const verb = result.dry_run ? "This archive holds" : "Imported";
-    let body;
-    if (counts.length === 0) {
-      body = "nothing else was in the archive";
-    } else if (zeros > 0) {
-      body = `${joinList(counts)} - nothing else was in the archive`;
-    } else {
-      body = joinList(counts);
-    }
-    return (
-      `${verb} ${body}, written ${result.exported_at} by Fermata ${result.fermata_version}. ` +
+    const tail =
+      `, written ${result.exported_at} by Fermata ${result.fermata_version}. ` +
       `Read from a schema version ${result.schema_version_read} archive into this Fermata's ` +
-      `own schema version ${result.schema_version}.`
-    );
+      `own schema version ${result.schema_version}.`;
+    // The all-zero case gets its own sentence rather than reusing the
+    // "verb + body" template below with an empty body: that template read
+    // "This archive holds nothing else was in the archive, written …" when
+    // every count was zero, because "nothing else" only makes sense next to
+    // something that was named first.
+    if (counts.length === 0) {
+      return `${result.dry_run ? "This archive holds nothing" : "Nothing was imported"}${tail}`;
+    }
+    const verb = result.dry_run ? "This archive holds" : "Imported";
+    const body =
+      zeros > 0 ? `${joinList(counts)} - nothing else was in the archive` : joinList(counts);
+    return `${verb} ${body}${tail}`;
   }
 
   /** One rename line, saying why the archived name did not survive - #260's
