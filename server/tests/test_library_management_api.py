@@ -28,6 +28,7 @@ library shows it.
 """
 
 import errno
+import threading
 import time
 from pathlib import Path
 
@@ -1599,6 +1600,11 @@ def test_an_upload_is_not_held_against_a_change_and_the_scan_it_starts_is(
         assert scanner.scan_status()["scanning"] is False
 
     assert (library / "Uploads/new.pdf").is_file()
+    # Leaving the library held queues exactly one follow-up scan (see
+    # hold_library_still's own finally) - drained here, like every sibling
+    # test that triggers one, so it does not still be running when the next
+    # test's request lands (#278).
+    _wait_for_scan()
 
 
 def test_a_score_that_is_not_in_the_trash_cannot_be_restored_or_destroyed(
@@ -1611,6 +1617,55 @@ def test_a_score_that_is_not_in_the_trash_cannot_be_restored_or_destroyed(
     # is what makes destroying a score always the second of two steps.
     assert client.delete(f"/api/trash/{score_id}").status_code == 404
     assert client.get(f"/api/scores/{score_id}").json()["deleted_at"] is None
+
+
+def test_a_scan_left_running_by_one_test_does_not_leak_into_the_next(
+    client, monkeypatch
+):
+    """Issue #278's deterministic pin, half one: start a follow-up scan the
+    same way the upload-during-a-hold test above does, but make it slow
+    enough on purpose that it is still running when this test function
+    returns - and, unlike that test, deliberately do not drain it.
+
+    `threading.Event` rather than a sleep to know the swapped-in `_scan` has
+    actually been entered (past monkeypatch's lookup of the name) before this
+    test ends and monkeypatch reverts the attribute - reverting the module
+    attribute does not touch the frame already executing inside it.
+    """
+    entered = threading.Event()
+
+    def slow_scan(acknowledge=None):
+        entered.set()
+        time.sleep(1.0)
+
+    monkeypatch.setattr(scanner, "_scan", slow_scan)
+    with scanner.hold_library_still():
+        res = client.post(
+            "/api/upload?folder=Uploads",
+            files={"file": ("leaked.pdf", b"%PDF-1.4 leaked follow-up scan", "application/pdf")},
+        )
+        assert res.status_code == 200, res.text
+    if not entered.wait(timeout=5.0):
+        raise AssertionError("the follow-up scan this upload queued never started")
+    assert scanner.scan_status()["scanning"] is True
+    # No _wait_for_scan() here - on purpose. This is the leak #278 is about,
+    # reproduced deterministically rather than waited out.
+
+
+def test_restore_after_a_leaked_scan_still_gets_a_404_not_a_409(client, add_score):
+    """Issue #278's deterministic pin, half two - ordered right after the one
+    above (pytest runs a module's tests in file order), so it inherits
+    whatever the previous test left scanner._state holding.
+
+    Without the autouse scanner fixture draining and resetting that state
+    between tests, the
+    scan the previous test left running answers this restore with 409
+    (LibraryBusy) before ever reaching the not-in-trash check; with it, this
+    is indistinguishable from calling restore in a clean process and reads
+    404.
+    """
+    score_id = add_score("Inbox/Study.pdf")
+    assert client.post(f"/api/trash/{score_id}/restore").status_code == 404
 
 
 def test_a_score_in_the_trash_cannot_be_moved_back_out_by_a_move(client, library, add_score):

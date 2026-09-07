@@ -21,6 +21,7 @@ of the extraction suite is exactly how this gap went unnoticed.
 """
 
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -790,6 +791,111 @@ def app_env(tmp_path, monkeypatch):
     db.init_db()
     yield
     db._local.conn = None
+
+
+@pytest.fixture(autouse=True)
+def _scanner_idle_between_tests():
+    """Wait out any scan a test left running, then reset scanner._state to
+    idle - the counterpart, for `scanner._state`, to `app_env`'s own reset of
+    `db._local.conn` (#278).
+
+    Deliberately its OWN autouse fixture, taking no fixture arguments of its
+    own - in particular not `monkeypatch`, even though `app_env` uses it and
+    this could have lived in app_env's own teardown instead. Some tests fake
+    a running scan with `monkeypatch.setitem(scanner._state, "scanning",
+    True)` rather than starting a real one (see
+    test_a_move_is_refused_while_a_scan_is_running) - a plain dict write, so
+    nothing here can distinguish it from a real scan, and it stays True until
+    `monkeypatch`'s OWN finalizer undoes it. A fixture that itself depends on
+    `monkeypatch` (as `app_env` does) tears down BEFORE `monkeypatch`'s own
+    finalizer runs (pytest tears down in the reverse of setup order, and
+    `app_env` cannot be set up before the `monkeypatch` it requires) - so
+    from inside app_env's teardown this would see that fake `True` as if it
+    were a real, permanently-stuck scan and time out. Taking no arguments
+    keeps this fixture out of that dependency chain entirely, so pytest sets
+    it up independently of `monkeypatch` and tears it down after
+    `monkeypatch` has already put the faked value back.
+    """
+    yield
+    _drain_and_reset_scanner()
+
+
+def _drain_and_reset_scanner(timeout: float = 5.0) -> None:
+    """Wait out any scan this test left running, then reset scanner._state to
+    idle - the counterpart, for `scanner._state`, to the `db._local.conn`
+    reset in `app_env` (#278).
+
+    `scanner._state` is a bare module global, not per-test state, so a test
+    that starts a follow-up scan (directly, or via `hold_library_still`'s own
+    finally) and does not drain it with the module's `_wait_for_scan` leaves
+    it running for whichever test happens to run next. That test then gets
+    the CURRENT scan's answer to a question it never asked - most visibly a
+    409 (scanner.LibraryBusy, api._busy) from a route that holds the library
+    for its own change and has no idea a previous test is why one is running.
+
+    Waits on `scan_status()["scanning"]` - the same real completion signal
+    every `_wait_for_scan` helper in this test suite already polls - rather
+    than a sleep. Bounded, and loud on a timeout: a scan that has not
+    finished in five seconds against an empty throwaway library did not hang
+    by accident, and the test that left it running is worth naming.
+    """
+    from fermata import scanner
+
+    # The reset lives in a `finally` so a timeout still leaves the NEXT test
+    # a clean state: raising alone would blame the test that left the scan
+    # and then hand its leftovers on anyway, so the following tests would
+    # fail too and be named in error.
+    deadline = time.monotonic() + timeout
+    try:
+        while scanner.scan_status()["scanning"]:
+            if time.monotonic() > deadline:
+                raise AssertionError(
+                    f"{_current_test_id()} left a library scan running "
+                    "and it did not finish in time - the next test would have "
+                    "inherited it"
+                )
+            time.sleep(0.02)
+    finally:
+        _reset_scanner_state(scanner)
+
+
+def _reset_scanner_state(scanner) -> None:
+    with scanner._state_lock:
+        scanner._state.update(
+            scanning=False,
+            total=0,
+            processed=0,
+            added=0,
+            updated=0,
+            missing=0,
+            restored=0,
+            unmatched_moves=0,
+            refused=False,
+            refused_reason=None,
+            unmatched_paths=[],
+            unmatched_count=0,
+            acknowledge_token=None,
+            errors=0,
+            last_error=None,
+            started_at=None,
+            finished_at=None,
+            transcribe_batch_started=None,
+            transcribe_batch_note=None,
+        )
+    scanner._mutating = False
+    scanner._rescan_pending = False
+
+
+def _current_test_id() -> str:
+    """The nodeid pytest is currently running, for the timeout message above.
+
+    Read from the environment variable pytest itself sets for exactly this
+    (`PYTEST_CURRENT_TEST`) rather than threaded through as a fixture
+    argument, so `_drain_and_reset_scanner` can be called from an
+    argument-free autouse fixture without also taking `request`.
+    """
+    current = os.environ.get("PYTEST_CURRENT_TEST", "")
+    return current.split(" ", 1)[0] if current else "a test"
 
 
 @pytest.fixture
