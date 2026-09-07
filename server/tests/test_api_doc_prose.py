@@ -524,6 +524,11 @@ def test_batch_transcription_prose_matches_the_response_model(doc_text, openapi_
 def test_import_export_prose_matches_the_response_model(doc_text, openapi_schema, app_env):
     section_name = "Getting everything in and out (issue #58)"
     section = _section(doc_text, section_name)
+    # `SCHEMA_VERSION` names db.SCHEMA_VERSION, imported at module level
+    # (an import error there - a renamed constant - fails this whole module
+    # loudly); it is also, per the prose, distinct from the application's
+    # own release number, which is a string, never an int.
+    assert isinstance(SCHEMA_VERSION, int)
     routes = _routes_named_in(section)
     universe = _route_universe(openapi_schema, routes)
     from fermata.api import EXPORT_TABLE_NAMES
