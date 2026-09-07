@@ -34,11 +34,12 @@ second, hand-copied description of it:
    through `responses=` in api.py, unlike most of this codebase's other
    409s, which are raised via bare HTTPException and were never added to
    `responses=` (a real gap, but a code change, out of scope for a
-   docs-and-tests-only bet - see the module docstring's own note by
-   STATUS_CODE_ANCHORS). Also checks that the two routes named beside `422`
-   for issue #55's batch selection and #58's import each still exist and
-   still carry a 422 (FastAPI's own default for any route with a request
-   body, so this mostly guards against the route disappearing outright).
+   docs-and-tests-only bet). Also checks that the route named beside `422`
+   for issue #55's batch selection still exists and still carries a 422
+   (FastAPI's own default for any route with a request body, so this mostly
+   guards against the route disappearing outright). Issue #58's import
+   section names no status code in prose today, so there is nothing for
+   this module to pin there.
 3. The MCP tool-count sentence agrees with len(mcp_tools.READ_TOOLS).
 4. The archive-contents sentence names every server/fermata/api.py
    EXPORT_TABLE_NAMES entry, directly or as a documented group.
@@ -54,6 +55,7 @@ on; adding one would be a docs rewrite this bet's own no-gos rule out
 ("no docs rewrite beyond corrections the test forces").
 """
 
+import importlib
 import re
 from pathlib import Path
 
@@ -125,6 +127,8 @@ def _section(doc_text: str, heading_text: str) -> str:
 # heading is reported once, clearly, rather than as a pytest.fixture error
 # buried inside whichever test happened to need it first.
 _ANCHORED_HEADINGS = [
+    "Where the contract actually lives",
+    "What to expect between releases",
     "The endpoints that write to your files",
     "What a deleted score may still be asked for",
     "Two people editing the same score (issue #267)",
@@ -144,6 +148,24 @@ def test_every_anchored_heading_is_present(doc_text):
         except AssertionError as exc:
             missing.append(str(exc))
     assert not missing, "\n".join(missing)
+
+
+def test_every_top_level_heading_is_anchored(doc_text):
+    """A `##` heading born in docs/api.md after this test was written must
+    either join _ANCHORED_HEADINGS (and, ideally, get its own prose-matching
+    test) or be refused here by name - so a new section cannot silently ship
+    unchecked the way "Where the contract actually lives" and "What to
+    expect between releases" originally did (issue #285's review). `###`
+    subsections are not required here: "What a deleted score may still be
+    asked for" is one, already anchored explicitly above, and this check
+    only guards the top level a reader skims."""
+    top_level = {text for _, level, text in _headings(doc_text) if level == 2}
+    unanchored = top_level - set(_ANCHORED_HEADINGS)
+    assert not unanchored, (
+        f"docs/api.md has `##` heading(s) {sorted(unanchored)} that "
+        "_ANCHORED_HEADINGS does not cover - add each to that list (and, "
+        "if it names checkable fields, params or codes, a test for it)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -316,14 +338,44 @@ _ALLOWLIST = {
     "STRASSE",  # collation example - a proper noun, not an identifier
     "trainer_scope_presets row 3",  # illustrative row reference in an error message
     "fifths",  # MusicXML's own attribute name, not one of ours
-    "..",
-    ".fermata-trash",
-    "YYYY-MM-DD HH:MM:SS.mmm",
+    # ".." and ".fermata-trash" are NOT listed here - both contain "." and
+    # are already caught by _is_code_or_file_ref as file references; kept
+    # out to prove that check actually covers them (see
+    # test_redundant_allowlist_entries_are_already_classified below).
+    "YYYY-MM-DD HH:MM:SS.mmm",  # contains a space, so _is_code_or_file_ref's
+    # own space guard would NOT catch this one - it has to stay listed.
     "Straße",  # collation example (a proper noun), paired with STRASSE above
     "SCHEMA_VERSION",  # db.SCHEMA_VERSION - imported at module level below,
     # so an import error (renamed constant) fails this whole module loudly
     # rather than only this one check quietly passing something misspelled.
+    "TranscriptionOut",  # bare model-name mention ("...had to be added to
+    # that model...`TranscriptionOut`") in "What to expect between
+    # releases" - the fields the sentence actually claims (`bars_defective`,
+    # `time_signature_source`) are checked against that same model's real
+    # properties by test_release_expectations_prose_matches_the_response_model
+    # below, which would fail if the model itself were renamed away.
+    "'local'",  # illustrative literal value of the `owner` field, in
+    # "What to expect between releases" - not an identifier itself.
+    "response_model",  # FastAPI's own decorator-kwarg name, in "Where the
+    # contract actually lives" - not a response field.
 }
+
+
+def test_redundant_allowlist_entries_are_already_classified():
+    """`..` and `.fermata-trash` used to sit in _ALLOWLIST alongside genuinely
+    unclassifiable tokens, but both contain a "." and so are already caught
+    by _is_code_or_file_ref - proven here directly, rather than trusted,
+    so a future change to that function's shape cannot silently make this
+    comment wrong."""
+    for token in ("..", ".fermata-trash"):
+        assert token not in _ALLOWLIST, (
+            f"{token!r} is back in _ALLOWLIST, but _is_code_or_file_ref "
+            "already classifies it - remove the redundant entry"
+        )
+        assert _is_code_or_file_ref(token), (
+            f"{token!r} is no longer classified as a code/file reference by "
+            "_is_code_or_file_ref - it must go back into _ALLOWLIST"
+        )
 
 
 def _is_route_mention(token: str) -> bool:
@@ -334,10 +386,24 @@ def _is_code_or_file_ref(token: str) -> bool:
     """A token containing '.', '(' or a '/' with no spaces reads as a code
     or file reference (`scanner.hash_file`, `fermata/db.py`,
     `casefold()`, `manifest.json`) rather than an API field name - real API
-    field names in this document are always bare snake_case words. The two
-    deliberate exceptions this module carves back out - `table.column` and
-    `Model.field` - are handled by _check_table_column and
-    _check_model_dot_field before this classifier ever runs."""
+    field names in this document are always bare snake_case words. The three
+    deliberate exceptions this module carves back out - `table.column`,
+    `Model.field` and `module.function` - are handled by
+    _check_table_column, _check_model_dot_field and _check_module_function
+    before this classifier ever runs, so a module that happens to share its
+    name with an export table (`instruments` is both) is read as the code
+    reference it is rather than forced through the table.column check.
+
+    A lowercase dotted mention of a NESTED response field, like
+    `score.deleted_at` (a setlist member's own `score` sub-object, not a
+    component named `score`), also matches this shape and is treated as a
+    plain code reference rather than independently verified - a narrower,
+    documented gap than table.column/Model.field/module.function, since
+    `score` names neither a table, a component nor a fermata submodule. Left
+    unclosed because `deleted_at` itself is already pinned as a real
+    ScoreOut field by the sections that name DELETE /api/scores/{id} and
+    POST /api/trash/{score_id}/restore directly, so a rename of that field
+    would still fail loudly there - just not by this token."""
     if " " in token:
         return False
     if "(" in token or "." in token or "/" in token:
@@ -346,6 +412,32 @@ def _is_code_or_file_ref(token: str) -> bool:
     # convention for "private, internal" - never an API field name, which
     # this codebase always spells without one.
     return token.startswith("_")
+
+
+def _check_module_function(token: str) -> bool:
+    """`instruments.normalise` - a module.function reference - is real when
+    `function` is an attribute `fermata.<module>` actually defines. Checked
+    BEFORE _check_table_column: `instruments` is both an EXPORT_TABLE_NAMES
+    entry and a real module (`fermata/instruments.py`), and without this
+    check running first, `instruments.normalise` would be forced through the
+    table.column check and fail there, since `normalise` is a function, not
+    a column of the `instruments` table. Returns False (not handled, so the
+    caller falls through to the next check) for anything not shaped
+    `module.attr` with `module` a real fermata submodule, INCLUDING a
+    `module.attr` pair where the module exists but has no such attribute -
+    that case is left for a later check (table.column, here, for the
+    `instruments` collision this module actually has to handle) to give its
+    own, more specific failure."""
+    if "." not in token or " " in token:
+        return False
+    module_name, _, attr = token.partition(".")
+    if "." in attr:
+        return False  # e.g. fastapi.routing.run_endpoint_function - not ours
+    try:
+        module = importlib.import_module(f"fermata.{module_name}")
+    except ImportError:
+        return False
+    return hasattr(module, attr)
 
 
 def _strip_suffix(token: str) -> str:
@@ -417,6 +509,12 @@ def _assert_tokens_known(
     for raw in tokens:
         if raw in _ALLOWLIST or _is_route_mention(raw):
             continue
+        # Module-function reference checked BEFORE table.column: a module
+        # that shares its name with an export table (`instruments` is both)
+        # must be read as the code reference it is, not forced into a
+        # table.column check that fails because a function is not a column.
+        if _check_module_function(raw):
+            continue
         if _check_table_column(raw, export_tables, app_env):
             continue
         if _check_model_dot_field(raw, schema["components"]):
@@ -435,6 +533,38 @@ def _assert_tokens_known(
         "request fields or query parameters - misspelled, renamed in code, "
         "or missing from this test's allow-list?"
     )
+
+
+def test_module_function_reference_beats_table_column_check(openapi_schema, app_env):
+    """`instruments` is both an EXPORT_TABLE_NAMES entry and a real module
+    (`fermata/instruments.py`, which defines `normalise`) - the exact shape
+    #290's docs/api.md adds (`instruments.normalise`). Without
+    _check_module_function running before _check_table_column, this token
+    would be forced through the table.column check and fail, since
+    `normalise` is a function, not a column of the `instruments` table.
+    `instruments.nonexistent` must still fail - real module, no such
+    attribute - falling through to the table.column check, which correctly
+    reports `instruments` has no such column either."""
+    from fermata.api import EXPORT_TABLE_NAMES
+
+    assert "instruments" in EXPORT_TABLE_NAMES
+    _assert_tokens_known(
+        "synthetic: module-function beats table-column",
+        ["instruments.normalise"],
+        set(),
+        openapi_schema,
+        EXPORT_TABLE_NAMES,
+        app_env,
+    )
+    with pytest.raises(AssertionError):
+        _assert_tokens_known(
+            "synthetic: module-function beats table-column",
+            ["instruments.nonexistent"],
+            set(),
+            openapi_schema,
+            EXPORT_TABLE_NAMES,
+            app_env,
+        )
 
 
 # docs/api.md sometimes names a route without its method or `/api` prefix,
@@ -462,6 +592,31 @@ def _routes_named_in(section_text: str) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 # 1. Backticked field/param names, per section.
 # ---------------------------------------------------------------------------
+
+
+def test_contract_overview_prose_names_only_real_routes(doc_text, openapi_schema):
+    section_name = "Where the contract actually lives"
+    section = _section(doc_text, section_name)
+    routes = _routes_named_in(section)
+    universe = _route_universe(openapi_schema, routes)
+    _assert_tokens_known(section_name, _backticked_tokens(section), universe, openapi_schema, (), None)
+
+
+def test_release_expectations_prose_matches_the_response_model(doc_text, openapi_schema):
+    section_name = "What to expect between releases"
+    section = _section(doc_text, section_name)
+    routes = _routes_named_in(section)
+    universe = _route_universe(openapi_schema, routes)
+    # `bars_defective` / `time_signature_source` are named as TranscriptionOut
+    # fields directly in prose ("...had to be added to that model...
+    # `TranscriptionOut`"), not via a route named by backtick in this section.
+    universe = universe | _all_field_names(openapi_schema["components"], "TranscriptionOut")
+    # `sessions_inferred` (a goal's, when not countable) and `owner` (exists
+    # "in several tables") are both real GoalOut fields - `owner` directly,
+    # `sessions_inferred` nested under GoalOut.progress (GoalProgressOut) -
+    # checked against that one model rather than allow-listed blind.
+    universe = universe | _all_field_names(openapi_schema["components"], "GoalOut")
+    _assert_tokens_known(section_name, _backticked_tokens(section), universe, openapi_schema, (), None)
 
 
 def test_write_endpoints_prose_matches_the_response_models(doc_text, openapi_schema):
