@@ -25,6 +25,7 @@ import re
 import struct
 
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -1450,6 +1451,80 @@ def test_import_rejects_a_corrupted_file_and_writes_nothing(client, add_score, t
     )
     assert resp.status_code == 422
     assert "hash" in resp.json()["detail"] or "corrupt" in resp.json()["detail"]
+    assert client.get("/api/scores").json() == []
+
+
+def _corrupt_deflate_stream(archive: bytes, member: str) -> bytes:
+    """Flip one byte INSIDE `member`'s compressed data so that decompressing
+    it raises `zlib.error` - the other exception `ZipFile.read()` can raise
+    on a corrupt member, and the half of api.py's `(BadZipFile, zlib.error)`
+    that a CRC flip alone never exercises (a CRC flip decompresses fine and
+    fails the checksum afterwards). Not every byte position produces a
+    decoder error - many just decompress to different bytes and fail the
+    CRC instead - so this walks the stream until one does, and asserts it
+    found one rather than silently handing back a CRC-shaped corruption.
+
+    Local file header (`PK\x03\x04`): name length at +26, extra length at
+    +28, name at +30, then the data; the central directory entry gives the
+    compressed size (+20) and the local header offset (+42)."""
+    cd_sig = b"PK"
+    idx = 0
+    while True:
+        idx = archive.find(cd_sig, idx)
+        assert idx != -1, f"{member!r} not found in central directory"
+        name_len = struct.unpack_from("<H", archive, idx + 28)[0]
+        if archive[idx + 46 : idx + 46 + name_len] == member.encode():
+            method = struct.unpack_from("<H", archive, idx + 10)[0]
+            csize = struct.unpack_from("<I", archive, idx + 20)[0]
+            local = struct.unpack_from("<I", archive, idx + 42)[0]
+            break
+        idx += len(cd_sig)
+    assert method == zipfile.ZIP_DEFLATED, f"{member!r} is stored, not deflated"
+    assert archive[local : local + 4] == b"PK"
+    lname, lextra = struct.unpack_from("<HH", archive, local + 26)
+    start = local + 30 + lname + lextra
+    for k in range(csize):
+        buf = bytearray(archive)
+        buf[start + k] ^= 0xFF
+        try:
+            zipfile.ZipFile(io.BytesIO(bytes(buf))).read(member)
+        except zlib.error:
+            return bytes(buf)
+        except zipfile.BadZipFile:
+            continue
+    raise AssertionError(f"no byte of {member!r}'s deflate stream raises zlib.error")
+
+
+@pytest.mark.parametrize("which", ["manifest", "score-file"])
+def test_import_rejects_a_corrupted_deflate_stream_in_both_modes(
+    client, add_score, tmp_path, monkeypatch, which
+):
+    """The `zlib.error` half of #292's fix, pinned on its own: a flipped byte
+    inside a member's compressed data makes `ZipFile.read()` raise
+    `zlib.error`, not `BadZipFile`, and the review of the fix showed that
+    narrowing the except tuple to `BadZipFile` alone left both CRC tests
+    green while this shape escaped as a 500 again. One parametrized test per
+    `zf.read()` site, same two-mode, nothing-imported contract as the CRC
+    tests above."""
+    add_score("Prelude.pdf", title="Prelude")
+    archive = client.get("/api/export").content
+    if which == "manifest":
+        member = "manifest.json"
+    else:
+        names = [n for n in zipfile.ZipFile(io.BytesIO(archive)).namelist() if n.startswith("files/")]
+        assert len(names) == 1
+        member = names[0]
+    corrupted = _corrupt_deflate_stream(archive, member)
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+
+    for dry_run in ("true", "false"):
+        res = client.post(
+            "/api/import", params={"dry_run": dry_run},
+            files={"file": ("corrupt.zip", corrupted, "application/zip")},
+        )
+        assert res.status_code == 422, (dry_run, res.text)
+        assert member in res.json()["detail"]
     assert client.get("/api/scores").json() == []
 
 
