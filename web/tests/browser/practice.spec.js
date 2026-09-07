@@ -392,6 +392,18 @@ test("a failing presets fetch drops the scope label, not the practice history", 
   });
   expect(logged.ok(), await logged.text()).toBe(true);
 
+  // Caught, not merely unobserved: presets is fetched fire-and-forget (see
+  // Practice.svelte), so a missing .catch would not blank anything this test
+  // already reads - it would surface only as an unhandled rejection, which
+  // Chromium reports through `pageerror` rather than through `console` (the
+  // routed 500 itself already logs a console "Failed to load resource" of
+  // its own, which is the network layer working as intended and not this
+  // test's business). Watching pageerror is what makes the mutation this
+  // file's discipline requires (dropping the .catch) actually turn this test
+  // red.
+  const pageErrors = [];
+  page.on("pageerror", (e) => pageErrors.push(String(e)));
+
   await page.route("**/api/trainer/presets", (route) =>
     route.request().method() === "GET" ? route.fulfill({ status: 500 }) : route.fallback(),
   );
@@ -400,6 +412,8 @@ test("a failing presets fetch drops the scope label, not the practice history", 
   await expect(sessionRows(page)).toHaveCount(1);
   await expect(sessionRows(page).first()).toContainText("1m");
   await expect(notices(page)).toHaveCount(0);
+  await page.waitForTimeout(200);
+  expect(pageErrors).toEqual([]);
 });
 
 test("a finished week asks whether the goal was realistic, and remembers the answer", async ({

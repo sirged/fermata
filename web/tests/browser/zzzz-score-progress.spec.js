@@ -383,6 +383,18 @@ test("a failing presets fetch drops the scope label, not this piece's practice h
   const score = await upload(request, "progress-preset-500.musicxml");
   await practise(request, score.id, { seconds: 180, local_date: today, activity: "fretboard" });
 
+  // Caught, not merely unobserved: presets is fetched fire-and-forget (see
+  // ScoreProgress.svelte), so a missing .catch would not blank anything this
+  // test already reads - it would surface only as an unhandled rejection,
+  // which Chromium reports through `pageerror` rather than through `console`
+  // (the routed 500 itself already logs a console "Failed to load resource"
+  // of its own, which is the network layer working as intended and not this
+  // test's business). Watching pageerror is what makes the mutation this
+  // file's discipline requires (dropping the .catch) actually turn this test
+  // red.
+  const pageErrors = [];
+  page.on("pageerror", (e) => pageErrors.push(String(e)));
+
   await page.route("**/api/trainer/presets", (route) =>
     route.request().method() === "GET" ? route.fulfill({ status: 500 }) : route.fallback(),
   );
@@ -391,6 +403,8 @@ test("a failing presets fetch drops the scope label, not this piece's practice h
   await expect(sessions(page)).toHaveCount(1);
   await expect(headline(page)).toHaveText("1 session, 3m in total");
   await expect(page.locator(".notice")).toHaveCount(0);
+  await page.waitForTimeout(200);
+  expect(pageErrors).toEqual([]);
 });
 
 test("nothing on this page is styled as an error", async ({ page, request }) => {
