@@ -15,10 +15,9 @@ parallel description of it" discipline test_export_table_names_matches_
 every_table_the_schema_creates (test_portability_api.py) already applies to
 the export catalog.
 
-Deliberately does NOT check every table this doc describes - practice_goals
-and its prose are out of scope for #259 (see that issue's no-gos), and adding
-a table here later is a decision for whoever adds it, not something this
-guard should invent an opinion about by omission.
+Does not check every table this doc describes - a table added here later is
+a decision for whoever adds it, not something this guard should invent an
+opinion about by omission.
 """
 
 import re
@@ -175,6 +174,7 @@ def test_key_quality_enumeration_matches_trainer_py(doc_text):
 
 _TABLE_ANCHORS = {
     "practice_sessions": "## Sessions",
+    "practice_goals": "## Goals",
     "trainer_attempts": "## Trainer attempts",
     "trainer_chord_attempts": "## Trainer chord attempts",
     "trainer_scope_presets": "`trainer_scope_presets`:",

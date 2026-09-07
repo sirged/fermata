@@ -258,6 +258,45 @@ test("removing a saved scope leaves the practice logged under it, without the re
   expect(after.preset_id).toBeNull();
 });
 
+test("removing a saved scope states how many sessions kept their time, and it drops out of the other drill's picker (#277)", async ({
+  page,
+  request,
+}) => {
+  await page.goto("/#/fretboard");
+  await expect(drill(page)).toBeVisible();
+  await narrowScope(page, NARROW);
+  await saveScopeAs(page, "Top two, fifth position");
+
+  // One session logged under it, so the count in the sentence below is
+  // asserted against something real rather than a hardcoded zero.
+  await page.locator(".start-drill").click();
+  const note = await drill(page).getAttribute("data-question-note");
+  await page.locator(`.choice[data-note="${note}"]`).click();
+  await page.locator(".stop-drill").click();
+  await expect(page.locator(".logged")).toBeVisible();
+  expect(
+    (await (await request.get("/api/practice/sessions?limit=1000")).json()).sessions.length,
+  ).toBe(1);
+
+  await page.locator(".delete-preset").click();
+  await expect(presets(page)).toHaveAttribute("data-preset-count", "0");
+  const notice = page.locator(".preset-notice");
+  await expect(notice).toBeVisible();
+  const noticeText = await notice.textContent();
+  expect(noticeText).toContain("1 session");
+  expect(noticeText).toMatch(/kept their time/);
+  expect(forbiddenWord(noticeText), noticeText).toBeNull();
+
+  // Gone from the OTHER drill's picker too - one row, one table, no
+  // per-drill copy of it left behind to disagree.
+  await page.goto("/#/chords");
+  await expect(drill(page)).toBeVisible();
+  await expect(presets(page)).toHaveAttribute("data-preset-count", "0");
+  await expect(
+    page.locator('.preset-choice[data-preset-name="Top two, fifth position"]'),
+  ).toHaveCount(0);
+});
+
 test("a name already in use is refused in words rather than by making a second entry of it", async ({
   page,
 }) => {
