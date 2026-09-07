@@ -64,7 +64,7 @@ npm run test:browser
 Whole thing, as it actually ships:
 
 ```bash
-docker compose up --build
+BUILD_COMMIT=$(git rev-parse --short HEAD) BUILD_DATE=$(date -u +%Y-%m-%d)   docker compose up --build
 ```
 
 ## A note on accuracy

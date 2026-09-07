@@ -47,10 +47,15 @@ Now copy some sheet music into `library/` — a PDF is enough to start. If you
 don't have anything handy yet, that's fine too; you can add files later and
 Fermata will pick them up.
 
-Build and start the container:
+Build and start the container. `BUILD_COMMIT`/`BUILD_DATE` stamp the image
+with the commit it was built from, which is what the sidebar's build tag and
+`GET /api/version` read back — leave them unset and the image is stamped
+`"dev"` instead, which is fine for a first run but leaves no way to tell one
+build from the next later on, so it is worth getting into the habit now:
 
 ```bash
-docker compose up --build -d
+BUILD_COMMIT=$(git rev-parse --short HEAD) BUILD_DATE=$(date -u +%Y-%m-%d) \
+  docker compose up --build -d
 ```
 
 The first run builds the image, which takes a minute or two — you'll see
@@ -471,8 +476,9 @@ on.** Nothing below runs, and nothing listens, until you set `FERMATA_MCP`.
 
 - **Read only.** The tools list and search scores, read a score's metadata
   and its transcription status, read practice history and summaries, read
-  goals, and read trainer attempts. There is no tool that changes anything —
-  not "log a session", not "rename a score", not "delete". That is not a
+  goals, read trainer attempts, and read named drill scopes. There is no tool
+  that changes anything — not "log a session", not "rename a score", not
+  "delete". That is not a
   setting; there is no code path in it that can send anything but a `GET`.
 - **It wraps the REST API, it does not replace it.** Every tool is one
   documented route from [the REST API](api.md), called over ordinary HTTP,
@@ -600,11 +606,14 @@ feature on there is an environment variable rather than a rebuild.
 
 This is the section to actually act on, not just read. Everything in
 `library/` is your own files — if you lost them, you'd still have the
-originals somewhere. Everything in `config/` is not recoverable any other
-way: your practice history, your tags, and any hand-corrected tab
-transcriptions live only in the database in that folder. Losing `config/`
-without a backup means losing that work, even though every PDF is still
-sitting untouched in `library/`.
+originals somewhere. Nothing in `config/` is recoverable any other way: your
+practice history, your tags, any hand-corrected tab transcriptions, and any
+correction made to a native MusicXML score's own notes in the browser, which
+is never written back to the file in `library/` and lives only as its own
+row in `config/fermata.db` — the library copy stays exactly as it was
+scanned.
+Losing `config/` without a backup means losing that work, even though every
+PDF is still sitting untouched in `library/`.
 
 ### The one folder in `library/` that is Fermata's
 
@@ -664,10 +673,13 @@ practice sessions, goals, setlists, tags, instruments, settings and drill
 history — plus the score files themselves: a portable archive rather than a
 copy of the database file. It
 is the better choice for scripting a backup onto another machine, or for
-taking one without touching the host filesystem at all; copying `config/` is
-the better choice for a quick local snapshot before an upgrade. See [the API
-guide](api.md#getting-everything-in-and-out-issue-58) for the archive's shape
-and what restoring it (`POST /api/import`) does and does not do.
+taking one without touching the host filesystem at all.
+
+See [the API guide](api.md#getting-everything-in-and-out-issue-58) for the
+archive's shape, which older archives a newer Fermata still accepts, and what
+restoring it (`POST /api/import`) does and does not do. Copying `config/`
+before an upgrade remains the recommended step regardless: it is the only
+backup an older image can start from.
 
 **An export survives an upgrade.** An archive is imported by any Fermata from
 the version that wrote it onwards, back as far as schema version 3 — so an
@@ -707,11 +719,15 @@ transcription stay attached and come back with the file.
 
 ## Upgrading
 
-To upgrade, pull the new version and rebuild:
+To upgrade, pull the new version and rebuild — pass `BUILD_COMMIT` and
+`BUILD_DATE` as in the initial build, so the sidebar's build tag and
+`GET /api/version` actually change instead of both reading `"dev"` before and
+after:
 
 ```bash
 git pull
-docker compose up --build -d
+BUILD_COMMIT=$(git rev-parse --short HEAD) BUILD_DATE=$(date -u +%Y-%m-%d) \
+  docker compose up --build -d
 ```
 
 Check the build tag in the sidebar (or `GET /api/version`) before assuming an upgrade didn't take or reporting a bug for a feature you expect to see — a container that is still on the old image looks exactly like a missing feature, and this is the fastest way to tell the two apart.
@@ -723,14 +739,18 @@ its rows into a new shape) runs then too, once, inside a single transaction. It
 has never required a manual step, and you do not need to run a migration
 command.
 
-That said, take a backup first anyway, the same way you would before any
-software upgrade you can't easily undo:
+That said, taking a backup first is not optional caution here. The schema
+stamp an upgrade writes only ever moves forward — see the refusal message
+below — so once the new version has started once, there is no `git checkout`
+back to the old code that undoes it. The `config/` copy taken before
+upgrading is the only way back:
 
 ```bash
 docker compose stop
 cp -r config config-backup-before-upgrade
 git pull
-docker compose up --build -d
+BUILD_COMMIT=$(git rev-parse --short HEAD) BUILD_DATE=$(date -u +%Y-%m-%d) \
+  docker compose up --build -d
 ```
 
 If something looks wrong after an upgrade, restoring that backup and going
@@ -752,8 +772,8 @@ recognises — but if the newer version changed the schema, the older one refuse
 to start rather than write to a database it does not understand, and says so:
 
 ```
-RuntimeError: this database is at schema version 4, but this version of
-Fermata understands 3. It was written by a newer release - upgrade, or
+RuntimeError: this database is at schema version N, but this version of
+Fermata understands N-1. It was written by a newer release - upgrade, or
 restore a backup taken before it.
 ```
 
@@ -806,6 +826,11 @@ does not follow it is the sound: the built-in player discards that element,
 so it plays the fretted pitch rather than the harmonic, and a harmonic
 engraved as a half note is still read at a quarter's length. This is a known,
 current gap in what gets extracted and rendered, not a display setting.
+
+**The note editor works on one part at a time.** Opening the editor on a
+MusicXML document with more than one part is refused outright, rather than
+silently editing the first part while leaving the others drawn but
+unreachable. A single-part transcription or score is unaffected.
 
 **There is one user, and no login.** Fermata does not have accounts, a
 sign-in screen, or any way to separate what a teacher sees from what a
