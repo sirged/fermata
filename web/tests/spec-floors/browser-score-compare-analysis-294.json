@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-compare-analysis.spec.js",
+  "count": 3,
+  "reason": "issue #294: TranscriptionAnalysisOut's vector/tab_staff_count/standard_staff_count/reason had zero consumers in web/src - a non-extractable score now shows one sentence built from all four, an extractable-but-not-yet-transcribed score still gets the ordinary transcribe offering, and singular/plural staff wording is checked directly."
+}

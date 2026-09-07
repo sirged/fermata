@@ -30,20 +30,23 @@ _VENDORED_PATH = (
 )
 
 # The Rule 8 conformance figures inside _BAR_KEYS that are NOT structural
-# disclosures - already shown elsewhere (ScoreCompare's bar-count headline,
-# and the warning prose the *_bars lists feed), not through the disclosures
-# panel issue #155 built. Every other key in _BAR_KEYS is a structural
-# disclosure and belongs in the vendored file.
+# disclosures - already shown elsewhere, through ScoreCompare's bar-count
+# headline, not through the disclosures panel issue #155 built. Every other
+# key in _BAR_KEYS (including the other five Rule 8 figures below) IS a
+# structural disclosure and belongs in the vendored file.
+#
+# Only these two - `bars_defective` and `bars_measured` are the pair the
+# headline reads directly. `bars_overfull`, `bars_short`, `bars_padded`,
+# `bars_unread` and `bars_anacrusis` used to sit in this set too, on the
+# theory that the warning prose those five feed already reached a reader -
+# but that prose is server-built text in a generic warnings list, and the
+# COUNT each sentence is built from never reached web/src by field name
+# (issue #294 found `grep -rn "bars_overfull\|bars_short\|bars_padded\|
+# bars_unread\|bars_anacrusis" web/src` matched only a comment). They are
+# structural disclosures like any other _BAR_KEYS member now and belong in
+# the vendored file, so they were removed from this set in that same change.
 _RULE8_CONFORMANCE_KEYS = {
-    "bars_overfull", "bars_short", "bars_defective", "bars_measured",
-    "bars_padded", "bars_unread",
-    # `bars_anacrusis` (issue #174) is the Rule 8 arithmetic itself, adjusted
-    # for a first-bar pickup that is normal notation rather than a misread: it
-    # is how many bars were lifted out of bars_short / bars_defective. Shown
-    # through the bar-count headline and the warning prose (which names
-    # `anacrusis_bars`) exactly like bars_padded / bars_unread, not through the
-    # #155 disclosures panel, so it belongs here and stays off the web mirror.
-    "bars_anacrusis",
+    "bars_defective", "bars_measured",
 }
 
 

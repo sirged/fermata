@@ -1,15 +1,25 @@
 // The structural-form and inference disclosures TranscriptionOut carries
-// beside the Rule 8 conformance figures (issue #155).
+// beside the Rule 8 conformance figures (issue #155), plus the five Rule 8
+// bar counters that are themselves structural disclosures with no other
+// reader (issue #294).
 //
 // Every one of these counters was computed, stored, reloaded through the
 // API, and mirrored in the response model - and then read by no interface
-// code. Only the warning PROSE reached a reader, through ScoreCompare.svelte's
-// generic warnings list; the count each sentence is built from never did. See
-// api_models.py's TranscriptionOut for the authoritative field list this
-// mirrors - every field it carries in the "_BAR_KEYS" group past
-// bars_overfull/bars_short/bars_defective/bars_measured/bars_padded/
-// bars_unread (which already reach a reader through ScoreCompare's bar-count
-// headline and the warning prose the *_bars lists feed) has a row here.
+// code. This file used to claim bars_overfull/bars_short/bars_padded/
+// bars_unread/bars_anacrusis "already reach a reader through ScoreCompare's
+// bar-count headline and the warning prose the *_bars lists feed" - that was
+// WRONG (issue #294): the bar-count headline reads only bars_defective and
+// bars_measured (ScoreCompare.svelte's bar-headline block), and the warning
+// PROSE those five feed is server-built text in the generic warnings list -
+// the count each sentence is built from never reaches web/src by field name,
+// only as already-formatted words inside a string nothing here parses back
+// apart. `grep -rn "bars_overfull\|bars_short\|bars_padded\|bars_unread\|
+// bars_anacrusis" web/src` matched only this comment. They get rows below
+// like every other counter. See api_models.py's TranscriptionOut for the
+// authoritative field list this mirrors - every field it carries in the
+// "_BAR_KEYS" group past bars_defective/bars_measured (the two Rule 8
+// figures that genuinely do reach a reader through ScoreCompare's bar-count
+// headline, and stay off this list for that reason) has a row here.
 //
 // ONE ROW PER COUNTER, on purpose - the issue's own fix shape is "decide the
 // presentation once for the family... the next decoder disclosure should
@@ -154,6 +164,23 @@ export const DISCLOSURE_ROWS = [
     label: "Tie ends whose other end was not found",
     barsKey: "tie_ends_unpaired_bars",
   },
+  // The five Rule 8 bar counters (issue #294) - `bars_defective` and
+  // `bars_measured` stay off this list because ScoreCompare's bar-count
+  // headline already reads those two directly; the other five _BAR_KEYS
+  // members had no reader anywhere until now (see this file's top comment).
+  // No barsKey: neither api_models.py's TranscriptionOut nor
+  // tabextract.py's ExtractionResult carries an `overfull_bars` or
+  // `short_bars` list - _bar_conformance only ever counted these two, it
+  // never kept which bars.
+  { key: "bars_overfull", label: "Bars with more beats than the time signature allows" },
+  { key: "bars_short", label: "Bars with fewer beats than the time signature requires" },
+  { key: "bars_padded", label: "Bars padded to length", barsKey: "padded_bars" },
+  { key: "bars_unread", label: "Bars that could not be read", barsKey: "unread_bars" },
+  // A Rule 8 exemption, not a defect - the count of bars a first-bar pickup
+  // let Rule 8 excuse, not bars that are wrong. Still a fact worth a row: it
+  // says which of the score's opening bars was assumed to be a pickup, an
+  // assumption about the page a reader must be able to check.
+  { key: "bars_anacrusis", label: "Pickup bars", barsKey: "anacrusis_bars" },
 ];
 
 /**
