@@ -1128,8 +1128,8 @@ class ImportOut(BaseModel):
     # reports the same map the real restore will produce - the same guarantee
     # `trainer_scope_presets_renamed` makes.
     #
-    # Tables with no normaliser to run (scores, tags, score_tags,
-    # transcriptions, settings, setlists, setlist_scores,
+    # Tables with no rule of their own to run (scores, tags, score_tags,
+    # transcriptions, settings, setlist_scores,
     # trainer_scope_preset_strings) can never appear here; they keep the
     # referential and shape checks they have always had. See docs/api.md's
     # import section for that list and why each entry is on it.

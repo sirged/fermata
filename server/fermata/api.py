@@ -4929,8 +4929,8 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile, conn) -> dict:
     manifest["_preset_name_originals"] = original_preset_names
     manifest["_preset_strings_cleaned"] = preset_strings_cleaned
 
-    # #286: the other five tables that have a normaliser, each run through the
-    # SAME function its own POST route calls. See this section's module
+    # #286: the other six tables that have a rule of their own, each run
+    # through the SAME function its own POST route calls. See this section's module
     # comment for what changed and why - in short, #268 checked presets and
     # nothing else, so an archive could still carry a session with a negative
     # duration, an attempt at fret 99, a goal with no target or an instrument
@@ -5007,6 +5007,23 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile, conn) -> dict:
         except (ValueError, TypeError) as exc:
             _refuse_row("practice_sessions", index, exc)
         _store_cleaned("practice_sessions", row, values)
+
+    # A setlist's only rule is its NAME, and `_clean_setlist_name` is where
+    # both POST /api/setlists and PATCH /api/setlists/{id} apply it - so an
+    # archived setlist called nothing but spaces would otherwise import as a
+    # blank entry in a list of named arrangements, which neither route would
+    # ever have stored. That function refuses with an HTTPException of its own
+    # rather than a ValueError (it lives among the routes, not in a domain
+    # module); its `detail` is the reason, re-raised here under this section's
+    # own naming so the message says which archived row is at fault.
+    for index, row in enumerate(tables["setlists"]):
+        if not isinstance(row.get("name"), str):
+            _refuse_row("setlists", index, "a setlist needs a name")
+        try:
+            cleaned_name = _clean_setlist_name(row["name"])
+        except HTTPException as exc:
+            _refuse_row("setlists", index, exc.detail)
+        _store_cleaned("setlists", row, {"name": cleaned_name})
 
     for index, row in enumerate(tables["practice_goals"]):
         try:

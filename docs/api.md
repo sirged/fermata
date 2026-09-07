@@ -405,8 +405,7 @@ only CLEANS (whitespace collapsed, ends trimmed) is not refused: it is
 imported under the cleaned name, and #260's collision check runs against
 THAT name, not the raw one the archive carried - a whitespace-padded name
 that happens to collide once cleaned is renamed exactly as any other
-collision would be. Every other archived table's rows still travel across
-verbatim (`_insert_row`, unchanged by #268) - this bet checks presets only.
+collision would be.
 
 `ImportOut.trainer_scope_presets_renamed` reports both: an entry with no
 `reason` key is a plain #260 collision (the archived name was already a
@@ -417,6 +416,69 @@ changed it, and the cleaned name did not collide with anything; `reason:
 cleaned name was ALSO already taken, so `to` is that cleaned name's own
 #260-derived rename. `from` is always the name exactly as the archive
 carried it, whichever reason applies.
+
+**Every table that has a rule is now checked, not only drill scopes (#286).**
+#268 checked presets and nothing else, which left the archive - a JSON file
+anybody can open, and the documented way to move a library onto this stack -
+as the one route into the database that skipped the rules every `POST`
+applies. Measured before this changed: a manifest whose `practice_sessions`
+row said `seconds: -30` and whose `trainer_attempts` row said
+`target_fret: 99` imported with 200 in both modes and stored both, while
+posting those same two values to `/api/practice/sessions` and
+`/api/trainer/attempts` was refused with 422. Every row of every table below
+now goes through the SAME function that table's own route calls, in the same
+validate-before-anything-is-written pass #268 runs in:
+
+| Table | The rule it is run through |
+| --- | --- |
+| `instruments` | `instruments.normalise` |
+| `setlists` | `api._clean_setlist_name` (its name is a setlist's only rule) |
+| `practice_sessions` | `practice.normalise_session` |
+| `practice_goals` | `practice.normalise_goal` |
+| `trainer_attempts` | `trainer.normalise_attempt` |
+| `trainer_chord_attempts` | `trainer.normalise_chord_attempt` |
+| `trainer_scope_presets` | `trainer.normalise_preset` (#268) |
+
+A row the rule REFUSES refuses the whole import - nothing applied, in either
+mode - naming the table, the row's position in the archive
+(`the archive's practice_sessions row 3 is invalid: ...`) and the rule's own
+reason. Nothing is repaired: a negative duration, a fret outside the drill's
+bounds, a goal with no target, an instrument whose tuning names fewer strings
+than it claims are all refusals, never guesses at what was meant.
+
+A row the rule only CLEANS is imported as the value the route would have
+stored, and counted in the response's `cleaned` map (table name to row count,
+tables with a non-zero count only, so `{}` means nothing needed touching).
+That covers a note that was only padding stored as empty, a string pitch
+typed `e2` stored as `E2`, a goal's `period_end` recomputed from its own
+start, an attempt's `correct` recomputed from the notes the row itself
+records (`correct` is never accepted from a caller either, at any route), and
+a preset name whose whitespace was collapsed - which
+`trainer_scope_presets_renamed` also reports, in more detail. `cleaned` reads
+identically on a dry run and an applied import, the same guarantee the rename
+list makes.
+
+**Two rules are deliberately NOT applied to an archived row**, both because
+an archived row is an already-stored row rather than a claim being made now -
+and both passed exactly the way `PATCH /api/practice/sessions/{id}` and
+`PATCH /api/practice/goals/{id}` already pass them for a stored row:
+
+- How far back a practice day may sit from today. Applied to an archive it
+  would make every backup older than that window unrestorable, which is the
+  opposite of what an archive is for.
+- The requirement that a session on a piece, or a goal about one, names a
+  score. Export itself writes such a row with an empty `score_id` whenever
+  the score was left out of the archive or destroyed while its history
+  stayed; refusing it on the way back in would discard practice history.
+
+**Tables with no rule to run keep the checks they have always had** - a
+manifest that carries them in the right shape, with every foreign key
+resolving inside the archive. They are `scores` (created by the scanner from
+files on disk, never by a `POST` with a rule of its own),
+`tags`, `score_tags`, `transcriptions`, `settings`,
+`setlist_scores` and `trainer_scope_preset_strings` (whose rows are the INPUT
+to a preset's own rule, deduplicated and bounds-checked there rather than one
+row at a time - see #268 above).
 
 **`dry_run` defaults to true**, the same default every bulk operation in this
 API uses (see the five rules above). It validates the archive completely and
