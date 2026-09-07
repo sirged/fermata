@@ -29,7 +29,7 @@ second, hand-copied description of it:
    dot, illustrative examples ("(imported 2)"). A separate, structurally
    marked _PENDING_ALLOWLIST holds entries needed only once a not-yet-merged
    PR lands (keyed by the issue it belongs to) - checked identically to
-   _ALLOWLIST, but exempt from test_no_dead_allowlist_entries_stay_used's
+   _ALLOWLIST, but exempt from test_no_dead_allowlist_entries's
    "every entry must match a real token today" rule, so a promotion made too
    early (before that PR's prose actually exists) is still caught. A
    backticked fragment containing a space that matches, verbatim, a string
@@ -355,6 +355,17 @@ _ALLOWLIST = {
     "<name> (imported)",
     "STRASSE",  # collation example - a proper noun, not an identifier
     "trainer_scope_presets row 3",  # illustrative row reference in an error message
+    # The next five arrived with #286 (PR #290), which rewrote "Getting
+    # everything in and out (issue #58)"; they sat in _PENDING_ALLOWLIST
+    # until that merged and were promoted the same day.
+    "POST",  # HTTP verb mentioned bare ("skipped the rules every `POST`
+    # applies") - same treatment as the bare "GET" entry above.
+    "e2",  # illustrative pitch spelling example ("a string pitch typed
+    "E2",  # `e2` stored as `E2`") - neither is a real identifier.
+    "{}",  # illustrative empty `cleaned` map ("so `{}` means nothing
+    # needed touching") - a JSON literal, not an identifier.
+    "the archive's practice_sessions row 3 is invalid: ...",  # illustrative
+    # _refuse_row message shape, like "trainer_scope_presets row 3" above.
     "fifths",  # MusicXML's own attribute name, not one of ours
     # ".." and ".fermata-trash" are NOT listed here - both contain "." and
     # are already caught by _is_code_or_file_ref as file references; kept
@@ -392,23 +403,8 @@ _ALLOWLIST = {
 # catch it immediately if one is promoted into _ALLOWLIST before its prose
 # actually exists.
 _PENDING_ALLOWLIST: dict[str, set[str]] = {
-    "#286 (PR #290)": {
-        # #286 rewrites "Getting everything in and out (issue #58)" to add
-        # each of these. Verified against #290's actual branch text, not
-        # guessed - the same false positives #285's own review already
-        # found and fixed once (`instruments.normalise` beating
-        # table.column) do not need re-discovering there.
-        "POST",  # HTTP verb mentioned bare ("skipped the rules every
-        # `POST` applies", "never by a `POST` with a rule of its own") -
-        # same treatment as the existing bare "GET" entry above.
-        "e2",  # illustrative pitch spelling example ("a string pitch typed
-        "E2",  # `e2` stored as `E2`") - neither is a real identifier.
-        "{}",  # illustrative empty `cleaned` map ("so `{}` means nothing
-        # needed touching") - a JSON literal, not an identifier.
-        "the archive's practice_sessions row 3 is invalid: ...",  # illustrative
-        # _refuse_row message shape - same treatment as the existing
-        # "trainer_scope_presets row 3" entry above.
-    },
+    # Empty since #286 (PR #290) merged; its five entries moved into
+    # _ALLOWLIST above. Add the next not-yet-merged PR's tokens here.
 }
 
 
@@ -577,7 +573,45 @@ def _check_quoted_message(token: str, *sources: str) -> bool:
     already matches before this check ever runs."""
     if " " not in token:
         return False
-    return any(f'"{token}"' in src or f"'{token}'" in src for src in sources)
+    return any(token in _message_literals(src) for src in sources)
+
+
+_MESSAGE_LITERALS_CACHE: dict = {}
+
+
+def _message_literals(src: str) -> frozenset:
+    """Every string literal a module's source actually carries as code -
+    read from the parsed tree, never from the raw text, so a comment or a
+    docstring that QUOTES a message cannot vouch for it. The first review
+    of this rule showed exactly that hole: rewording practice.py's
+    `local_date is in the future` while its stale comment one line up still
+    quoted the old text left the doc's dead message "verified". Docstrings
+    of the module, its classes and its functions are dropped the same way
+    _string_constants_excluding_docstring drops a function's own."""
+    cached = _MESSAGE_LITERALS_CACHE.get(src)
+    if cached is not None:
+        return cached
+    tree = ast.parse(src)
+    docstring_nodes: set = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = node.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                docstring_nodes.add(id(body[0].value))
+    literals = frozenset(
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstring_nodes
+    )
+    _MESSAGE_LITERALS_CACHE[src] = literals
+    return literals
 
 
 def _real_route_paths() -> set:
