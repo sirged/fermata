@@ -1,5 +1,5 @@
 {
   "file": "tests/browser/zzz-library-organise.spec.js",
-  "count": 5,
-  "reason": "issue #56: moving, renaming a folder, deleting to the trash and restoring, destroying in two presses, and a batch move whose collision is blocked - each previewed or explained on the page before it happens."
+  "count": 7,
+  "reason": "issue #56: moving, renaming a folder, deleting to the trash and restoring, destroying in two presses, and a batch move whose collision is blocked - each previewed or explained on the page before it happens. Issue #284 adds two: a score already missing when it is deleted needs no file moved, and a score whose file already left the trash by hand still comes back, flagged missing rather than silently restored."
 }

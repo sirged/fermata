@@ -7,6 +7,119 @@
   // of its logic.
   import { api } from "./api.js";
 
+  // Every count ImportOut carries (issue #284), in the order a person would
+  // want to hear it - the scores themselves first, then what travels with
+  // them. Singular/plural pairs are spelled out rather than run through a
+  // generic pluraliser, because a couple of them do not just take an "s".
+  const IMPORT_COUNT_FIELDS = [
+    ["scores_imported", "score", "scores"],
+    ["scores_trashed_imported", "trashed score", "trashed scores"],
+    ["files_written", "file written", "files written"],
+    ["transcriptions_imported", "transcription", "transcriptions"],
+    ["tags_imported", "tag", "tags"],
+    ["tags_reused", "tag reused rather than duplicated", "tags reused rather than duplicated"],
+    ["score_tags_imported", "tag assignment", "tag assignments"],
+    ["instruments_imported", "instrument", "instruments"],
+    ["practice_sessions_imported", "practice session", "practice sessions"],
+    ["practice_goals_imported", "practice goal", "practice goals"],
+    ["settings_imported", "setting", "settings"],
+    ["setlists_imported", "setlist", "setlists"],
+    ["setlist_scores_imported", "setlist entry", "setlist entries"],
+    ["trainer_attempts_imported", "fret-to-note drill attempt", "fret-to-note drill attempts"],
+    ["trainer_chord_attempts_imported", "chord drill attempt", "chord drill attempts"],
+    ["trainer_presets_imported", "saved drill scope", "saved drill scopes"],
+    ["trainer_preset_strings_imported", "drill scope string set", "drill scope string sets"],
+  ];
+
+  /** Every word of an ordinary English list: "a", "a and b", "a, b and c". */
+  function joinList(items) {
+    if (items.length === 0) return "";
+    if (items.length === 1) return items[0];
+    if (items.length === 2) return `${items[0]} and ${items[1]}`;
+    return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+  }
+
+  /** Every count an ImportOut carries, as one sentence - a compact list of
+   * whatever is not zero, with every count that IS zero folded into a single
+   * closing clause rather than named one by one (#284). Also states the two
+   * schema versions and where the archive came from (#282, #275), so this one
+   * sentence covers every field of ImportOut apart from `trainer_scope_presets_renamed`,
+   * which gets its own line below since it is a list, not a count. */
+  function importSummaryText(result) {
+    const counts = [];
+    let zeros = 0;
+    for (const [key, singular, plural] of IMPORT_COUNT_FIELDS) {
+      const n = result[key] ?? 0;
+      if (n > 0) counts.push(`${n} ${n === 1 ? singular : plural}`);
+      else zeros += 1;
+    }
+    const tail =
+      `, written ${result.exported_at} by Fermata ${result.fermata_version}. ` +
+      `Read from a schema version ${result.schema_version_read} archive into this Fermata's ` +
+      `own schema version ${result.schema_version}.`;
+    // The all-zero case gets its own sentence rather than reusing the
+    // "verb + body" template below with an empty body: that template read
+    // "This archive holds nothing else was in the archive, written …" when
+    // every count was zero, because "nothing else" only makes sense next to
+    // something that was named first.
+    if (counts.length === 0) {
+      return `${result.dry_run ? "This archive holds nothing" : "Nothing was imported"}${tail}`;
+    }
+    const verb = result.dry_run ? "This archive holds" : "Imported";
+    const body =
+      zeros > 0 ? `${joinList(counts)} - nothing else was in the archive` : joinList(counts);
+    return `${verb} ${body}${tail}`;
+  }
+
+  // ImportOut.cleaned's own closed list of tables (#286) - a table name to
+  // the singular noun this component already uses for that table's own
+  // *_imported count above, in the same order IMPORT_COUNT_FIELDS lists
+  // them. A table with no rule of its own (scores, tags, score_tags,
+  // transcriptions, settings, setlist_scores, trainer_scope_preset_strings)
+  // can never appear in `cleaned` at all - see ImportOut.cleaned's own
+  // docstring in api_models.py.
+  const CLEANED_TABLE_LABELS = [
+    ["instruments", "instrument"],
+    ["practice_sessions", "practice session"],
+    ["practice_goals", "practice goal"],
+    ["setlists", "setlist"],
+    ["trainer_attempts", "fret-to-note drill attempt"],
+    ["trainer_chord_attempts", "chord drill attempt"],
+    ["trainer_scope_presets", "saved drill scope"],
+  ];
+
+  /** One sentence per table `cleaned` names with a non-zero count - the
+   * receipt for the half of #286 the counts above never show: a row a
+   * normaliser only tidied (a lowercase pitch stored as "E2", say) is
+   * imported rather than refused, and this is the one thing that tells a
+   * person it happened, BEFORE they apply an import as much as after (a dry
+   * run reports the identical map - see ImportOut.cleaned's own docstring).
+   * Empty when `cleaned` is `{}`, the common case: a row nothing needed to
+   * touch is not itself news, so no "0 cleaned" line is ever shown for it. */
+  function cleanedText(cleaned) {
+    const lines = [];
+    for (const [table, noun] of CLEANED_TABLE_LABELS) {
+      const n = cleaned?.[table] ?? 0;
+      if (n === 0) continue;
+      const verb = n === 1 ? "was" : "were";
+      lines.push(`${n} ${noun} row${n === 1 ? "" : "s"} ${verb} tidied to the stored form.`);
+    }
+    return lines.join(" ");
+  }
+
+  /** One rename line, saying why the archived name did not survive - #260's
+   * plain collision, or #268's cleaning (with or without a second collision
+   * behind it). */
+  function renameReasonText(entry) {
+    if (entry.reason === "cleaned") {
+      return `${entry.from} → ${entry.to} (its name only needed tidying up, nothing collided)`;
+    }
+    if (entry.reason === "collision") {
+      return `${entry.from} → ${entry.to} (tidied, then that name was already taken too)`;
+    }
+    return `${entry.from} → ${entry.to} (that name was already taken)`;
+  }
+
   let exporting = $state(false);
   let exportError = $state("");
 
@@ -132,22 +245,19 @@
     {/if}
     {#if preview}
       <div class="preview" data-testid="import-preview">
-        <p>
-          This archive holds {preview.scores_imported} score(s) ({preview.scores_trashed_imported}
-          in the trash), {preview.practice_sessions_imported} practice session(s),
-          {preview.practice_goals_imported} goal(s), {preview.tags_imported} tag(s) and
-          {preview.instruments_imported} instrument(s) - written {preview.exported_at} by Fermata
-          {preview.fermata_version}.
-        </p>
+        <p data-testid="import-counts">{importSummaryText(preview)}</p>
+        {#if cleanedText(preview.cleaned)}
+          <p class="hint" data-testid="import-cleaned">{cleanedText(preview.cleaned)}</p>
+        {/if}
         <p class="hint">
           Importing adds this to your library - it never replaces or overwrites what is already
           there. Import into an empty library to restore a backup exactly.
         </p>
         {#if preview.trainer_scope_presets_renamed?.length}
           <p class="hint" data-testid="import-renames">
-            Renamed on import: {preview.trainer_scope_presets_renamed
-              .map((r) => `${r.from} → ${r.to}`)
-              .join(", ")}
+            Renamed on import: {joinList(
+              preview.trainer_scope_presets_renamed.map(renameReasonText),
+            )}
           </p>
         {/if}
         <div class="row">
@@ -162,15 +272,15 @@
       <p class="error" data-testid="import-apply-error">{applyError}</p>
     {/if}
     {#if applied}
-      <p class="success" data-testid="import-success">
-        Imported {applied.scores_imported} score(s), {applied.practice_sessions_imported} practice
-        session(s) and {applied.practice_goals_imported} goal(s).
-      </p>
+      <p class="success" data-testid="import-success">{importSummaryText(applied)}</p>
+      {#if cleanedText(applied.cleaned)}
+        <p class="hint" data-testid="import-cleaned">{cleanedText(applied.cleaned)}</p>
+      {/if}
       {#if applied.trainer_scope_presets_renamed?.length}
         <p class="hint" data-testid="import-renames">
-          Renamed on import: {applied.trainer_scope_presets_renamed
-            .map((r) => `${r.from} → ${r.to}`)
-            .join(", ")}
+          Renamed on import: {joinList(
+            applied.trainer_scope_presets_renamed.map(renameReasonText),
+          )}
         </p>
       {/if}
     {/if}

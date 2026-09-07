@@ -409,13 +409,23 @@ test("a scan that found a missing file again says so, rather than only clearing 
   await expect(page.locator(`.card[href="#/score/${first.id}"] .missing-flag`)).toBeVisible();
   await expect(page.locator(".scan-note")).toHaveCount(0);
 
-  // Back at the path it left from.
+  // Back at the path it left from - but via fs.writeFileSync, not a real
+  // remount. An ordinary remount leaves size and mtime exactly as they were,
+  // which is what lets scanner.py's own shortcut (_scan_file's size/mtime
+  // check, around line 733) return before the updated counter ever
+  // increments - so a genuine "put back unchanged" remount is NOT also an
+  // update. Rewriting the bytes here, though, does change the mtime even
+  // though the content is identical, so THIS scan is also an update - an
+  // artifact of how this test puts the file back, not something a real
+  // remount would show - which is why the assertions below target the
+  // restored note by its own testid rather than the shared `.scan-note`
+  // class.
   fs.writeFileSync(filePath(FIRST), bytes);
   const recovered = await scanAndWait(request);
   expect(recovered.restored, JSON.stringify(recovered)).toBe(1);
 
   await page.reload();
-  const note = page.locator(".scan-note");
+  const note = page.locator('[data-testid="scan-restored"]');
   await expect(note).toBeVisible();
   await expect(note).toContainText("1 score found again");
   await expect(note).toContainText("at the path it went missing from");

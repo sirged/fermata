@@ -1,5 +1,5 @@
 {
   "file": "tests/browser/data-portability.spec.js",
-  "count": 4,
-  "reason": "issue #58: exporting the library downloads a real archive, a non-archive file is refused with a clear message, a real exported archive previews what it actually holds through the same upload path, and a preview colliding with a preset already in the library shows the rename it would make (#260 follow-up)."
+  "count": 6,
+  "reason": "issue #58: exporting the library downloads a real archive, a non-archive file is refused with a clear message, a real exported archive previews what it actually holds through the same upload path, a preview colliding with a preset already in the library shows the rename it would make and why (#260, #268), a preview of a real export edited to also carry a setlist, a drill scope and drill history names every one of those counts too (#284), and a preview of an archive carrying only scores states the exact sentence importSummaryText's zero-fold produces when every other count is genuinely zero."
 }

@@ -194,19 +194,40 @@
     busy = true;
     deleteError = "";
     try {
+      // Every one of ScoreDeleteOut's four `_kept` counts, summed across a
+      // bulk selection, plus how many of the underlying files actually moved
+      // - tags_kept and goals_kept were on this response from the start and
+      // neither was ever added to this receipt (issue #284). `deleted`,
+      // `title`, `deleted_from` and `trashed_to` are per-score facts a
+      // multi-select summary cannot restate individually without a list per
+      // item, so they are not named here - the library list itself shows
+      // each one back in place under Trash.
       let sessions = 0;
       let transcriptions = 0;
+      let tags = 0;
+      let goals = 0;
+      let filesMoved = 0;
       for (const id of selected) {
         const result = await api.deleteScore(id);
         sessions += result.practice_sessions_kept;
         transcriptions += result.transcriptions_kept;
+        tags += result.tags_kept;
+        goals += result.goals_kept;
+        if (result.file_moved) filesMoved += 1;
       }
       const count = selected.length;
+      const movedNote =
+        filesMoved === count
+          ? "every file moved to Trash"
+          : filesMoved === 0
+            ? "no file needed moving"
+            : `${filesMoved} of ${count} file${count === 1 ? "" : "s"} moved to Trash`;
       notice =
-        `Moved ${count} score${count === 1 ? "" : "s"} to the trash. ` +
-        `${sessions} practice session${sessions === 1 ? "" : "s"} and ${transcriptions} ` +
-        `transcription${transcriptions === 1 ? "" : "s"} are still attached - nothing was ` +
-        `destroyed. They are in Trash until you say otherwise.`;
+        `Moved ${count} score${count === 1 ? "" : "s"} to the trash - ${movedNote}. ` +
+        `${sessions} practice session${sessions === 1 ? "" : "s"}, ${transcriptions} ` +
+        `transcription${transcriptions === 1 ? "" : "s"}, ${tags} tag${tags === 1 ? "" : "s"} ` +
+        `and ${goals} goal${goals === 1 ? "" : "s"} are still attached - nothing was destroyed. ` +
+        `They are in Trash until you say otherwise.`;
       deleteOpen = false;
       leaveOrganising();
       await refresh();
@@ -230,8 +251,16 @@
     busy = true;
     try {
       const result = await api.restoreScore(score.id);
-      notice =
-        result.restored_to === result.restored_from
+      // `file_restored` was on ScoreRestoreOut from the start and nothing
+      // ever read it, so a score whose file was gone from Trash came back
+      // reading exactly like an ordinary restore instead of the missing-flag
+      // fallback it actually got (issue #284). `restored` and `score` are not
+      // named here: `restored` is always 1 for a single score, and `score` is
+      // superseded by the refresh() below.
+      notice = !result.file_restored
+        ? `${score.title} is back in your library, but there was no file in Trash to restore - ` +
+          `it will show as missing until a file turns up at ${result.restored_to}.`
+        : result.restored_to === result.restored_from
           ? `${score.title} is back at ${result.restored_to}.`
           : `${score.title} is back, at ${result.restored_to} - something else had taken ` +
             `${result.restored_from}, and Fermata did not overwrite it.`;
@@ -248,14 +277,22 @@
     busy = true;
     try {
       const result = await api.destroyScore(score.id);
+      // Every kept/destroyed fact ScorePurgeOut carries apart from `deleted`,
+      // which is always 1 for a single score and redundant with the title
+      // already named here. `goals_kept` and `file_deleted` were unread
+      // before this (issue #284): a purge that also removed the file on disk
+      // looked identical to one that found no file there at all.
+      const fileNote = result.file_deleted
+        ? "its file is deleted too"
+        : "it had no file on disk to delete";
       notice =
         `${result.title} is gone for good, with ${result.tags_destroyed} tag${
           result.tags_destroyed === 1 ? "" : "s"
         } and ${result.transcriptions_destroyed} transcription${
           result.transcriptions_destroyed === 1 ? "" : "s"
-        }. ${result.practice_sessions_kept} practice session${
+        } - ${fileNote}. ${result.practice_sessions_kept} practice session${
           result.practice_sessions_kept === 1 ? "" : "s"
-        } stayed in your history.`;
+        } and ${result.goals_kept} goal${result.goals_kept === 1 ? "" : "s"} stayed in your history.`;
       destroyConfirmId = null;
       await loadTrash();
       await refresh();
@@ -901,6 +938,37 @@
       </div>
     {/if}
 
+    {#if scan && (scan.scanning || scan.added || scan.updated)}
+      <!-- What a scan actually did to the library, not only that it ran. The
+           button already says how far a running scan has got
+           (processed/total); this says what it is FINDING as it goes, and
+           what it found once it stopped - added and updated were both on
+           ScanStatusOut from the start and neither was ever read anywhere
+           (issue #284), so a scan that quietly relabelled half the library
+           looked the same on screen as one that touched nothing. Gated on a
+           nonzero added or updated (or still scanning) the same way the
+           errors and restored notes below are gated on their own nonzero
+           facts, rather than on finished_at alone - a scan that added and
+           updated nothing has nothing here to report. -->
+      <p class="scan-note" data-testid="scan-added-updated">
+        {scan.scanning ? "So far" : "Last scan"}: {scan.added} score{scan.added === 1 ? "" : "s"} added,
+        {scan.updated} updated.
+      </p>
+    {/if}
+
+    {#if !scan?.scanning && scan?.errors > 0}
+      <!-- A file the scan could not read at all - locked, or gone between the
+           directory listing and the read - used to vanish into `errors` and
+           `last_error` on ScanStatusOut with nothing on screen ever asking
+           for either, so a scan that hit a bad file looked exactly like one
+           that finished cleanly (issue #284). Gated on `errors > 0` alone,
+           the same way the restored-count note above is gated on a nonzero
+           count, rather than always shown once a scan has run. -->
+      <p class="scan-note scan-error" data-testid="scan-errors" role="alert">
+        Last scan: {scan.errors} file{scan.errors === 1 ? "" : "s"} could not be read - {scan.last_error}
+      </p>
+    {/if}
+
     {#if !scan?.scanning && scan?.restored}
       <!-- The other half of the missing-file story, and until now the half
            nobody was told. The scanner counts rows whose file turned up again
@@ -912,8 +980,22 @@
            statement that anything had been recovered (issue #103).
 
            Attributed to the LAST SCAN rather than stated as a bare number,
-           because that is what it is - the counter resets when a scan starts. -->
-      <p class="scan-note">
+           because that is what it is - the counter resets when a scan starts.
+
+           A restored file is NOT usually also an update: scanner.py's own
+           remount shortcut (_scan_file's size/mtime check, around line 733)
+           clears missing_since and returns before the updated counter can
+           ever increment, whenever the file came back with the exact size
+           and mtime it left with - the ordinary case for a drive that was
+           simply unplugged and plugged back in unchanged. The two notes CAN
+           still appear together, but only when the file's bytes were
+           actually rewritten (which changes the mtime) - a real update, not
+           a consequence of the restore itself. Its own testid, rather than
+           sharing `.scan-note`
+           with every other note here, is what lets a test address this one
+           without also matching whichever of its siblings happens to be
+           showing. -->
+      <p class="scan-note" data-testid="scan-restored">
         Last scan: {scan.restored} score{scan.restored === 1 ? "" : "s"} found again
         {scan.restored === 1 ? "at the path it" : "at the paths they"} went missing from.
       </p>
@@ -1748,6 +1830,13 @@
     color: var(--ink-dim);
     font-size: 13px;
     margin: 0 0 12px;
+  }
+
+  /* A file the scan could not read at all IS worth flagging - same colour as
+     the other alert text on this page, kept in the quiet .scan-note layout
+     rather than the boxed .alert since it is one line, not a refusal. */
+  .scan-error {
+    color: var(--danger);
   }
 
   .alert-error {

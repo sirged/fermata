@@ -242,6 +242,17 @@ test("deleting a score takes it to the trash with its history, and one press bri
   await request.post(`/api/scores/${score.id}/practice`, {
     data: { seconds: 3600, note: "hours on this" },
   });
+  // ScoreDeleteOut's tags_kept and goals_kept were never named in the receipt
+  // (issue #284) - seeded here so deleting actually carries a nonzero count
+  // of each, not only the sessions and transcriptions the receipt already
+  // stated. A period far from "this week" so it cannot collide with a goal
+  // any other spec in this shared library has set for the current one.
+  await request.patch(`/api/scores/${score.id}`, { data: { tags: ["organise-delete-tag"] } });
+  const goal = await (
+    await request.post("/api/practice/goals", {
+      data: { period_start: "2019-03-04", target_days: 1, scope: "score", score_id: score.id },
+    })
+  ).json();
 
   await organise(page);
   await choose(page, score);
@@ -253,9 +264,14 @@ test("deleting a score takes it to the trash with its history, and one press bri
   await expect(dialog).toContainText("practice history");
   await dialog.locator(".delete-apply").click();
 
-  // Gone from the grid, and the receipt says what is still attached.
+  // Gone from the grid, and the receipt says what is still attached - every
+  // fact ScoreDeleteOut carries about what was kept and moved, not only the
+  // two this receipt named before.
   await expect(page.locator(`.card[href="#/score/${score.id}"]`)).toHaveCount(0);
+  await expect(page.locator(".notice")).toContainText("every file moved to Trash");
   await expect(page.locator(".notice")).toContainText("1 practice session");
+  await expect(page.locator(".notice")).toContainText("1 tag");
+  await expect(page.locator(".notice")).toContainText("1 goal");
   await expect(page.locator(".notice")).toContainText("nothing was destroyed");
 
   // In the trash, saying where it came from.
@@ -280,6 +296,67 @@ test("deleting a score takes it to the trash with its history, and one press bri
   // there - which is exactly what this assertion must not be reading.
   await page.reload();
   await expect(page.locator(`.card[href="#/score/${score.id}"]`)).toBeVisible();
+  await request.delete(`/api/practice/goals/${goal.id}`);
+});
+
+test("deleting a score whose file was already missing needs no file moved", async ({
+  page,
+  request,
+}) => {
+  // The other end of ScoreDeleteOut's `file_moved` fold (issue #284): a score
+  // that was already flagged missing before it was deleted has nothing on
+  // disk to move to Trash, and the receipt says so rather than the "every
+  // file moved" wording the test above expects. A second file is left in
+  // place so the scan that marks the first one missing sees a library that
+  // still has SOME readable files - scanner._implausible refuses a pass that
+  // finds none at all, on purpose, regardless of how small the library is.
+  const score = await upload(request, "organise-delete-missing.musicxml");
+  await upload(request, "organise-delete-keepalive.musicxml");
+  fs.unlinkSync(path.join(libraryDir(), "Uploads", "organise-delete-missing.musicxml"));
+  await (await request.post("/api/scan")).json();
+  await scanSettled(request);
+  await expect(async () => {
+    const after = await (await request.get(`/api/scores/${score.id}`)).json();
+    expect(after.missing_since, "the scan should have flagged it missing").not.toBeNull();
+  }).toPass({ timeout: SCAN_DEADLINE_MS });
+
+  await page.goto("/#/");
+  await organise(page);
+  await choose(page, score);
+  await page.locator(".delete-open").click();
+  await page.locator(".dialog.delete .delete-apply").click();
+
+  await expect(page.locator(".notice")).toContainText("no file needed moving");
+});
+
+test("restoring a score whose file already left the trash still comes back, flagged missing", async ({
+  page,
+  request,
+}) => {
+  // ScoreRestoreOut's `file_restored` was never read (issue #284): the trash
+  // folder is a real folder a person may empty by hand (docs/deployment.md),
+  // and until now restoring after that said exactly the same "is back at"
+  // words as an ordinary restore, with nothing on screen distinguishing the
+  // row that actually needs a file put back from the one that does not.
+  const score = await upload(request, "organise-restore-nofile.musicxml");
+  const deleted = await request.delete(`/api/scores/${score.id}`);
+  expect(deleted.ok(), await deleted.text()).toBe(true);
+  const trashed = await deleted.json();
+  fs.unlinkSync(path.join(libraryDir(), trashed.trashed_to));
+
+  await page.goto("/#/");
+  await page.locator(".trash-link").click();
+  const row = page.locator(".trash-row");
+  await expect(row).toHaveCount(1);
+  await row.locator(".trash-restore").click();
+
+  await expect(page.locator(".notice")).toContainText("there was no file in Trash to restore");
+  await expect(page.locator(".notice")).toContainText("show as missing");
+  await expect(async () => {
+    const after = await (await request.get(`/api/scores/${score.id}`)).json();
+    expect(after.deleted_at).toBeNull();
+    expect(after.missing_since, "no file came back, so it must read as missing").not.toBeNull();
+  }).toPass({ timeout: SCAN_DEADLINE_MS });
 });
 
 test("destroying a score takes two presses and says what it destroys", async ({
@@ -289,6 +366,15 @@ test("destroying a score takes two presses and says what it destroys", async ({
   const score = await upload(request, "organise-destroy.musicxml");
   const logged = await (
     await request.post(`/api/scores/${score.id}/practice`, { data: { seconds: 600 } })
+  ).json();
+  // ScorePurgeOut's goals_kept and file_deleted were never named in the
+  // "gone for good" receipt (issue #284) - a goal here makes the first
+  // nonzero, and this score's real file on disk (see upload()) makes the
+  // second true rather than the "no file on disk" case.
+  const goal = await (
+    await request.post("/api/practice/goals", {
+      data: { period_start: "2019-03-11", target_days: 1, scope: "score", score_id: score.id },
+    })
   ).json();
   const deleted = await request.delete(`/api/scores/${score.id}`);
   expect(deleted.ok(), await deleted.text()).toBe(true);
@@ -308,6 +394,8 @@ test("destroying a score takes two presses and says what it destroys", async ({
   await confirm.click();
   await expect(page.locator(".trash-row")).toHaveCount(0);
   await expect(page.locator(".notice")).toContainText("gone for good");
+  await expect(page.locator(".notice")).toContainText("its file is deleted too");
+  await expect(page.locator(".notice")).toContainText("1 goal");
   await expect(page.locator(".notice")).toContainText("stayed in your history");
 
   await expect(async () => {
@@ -321,6 +409,7 @@ test("destroying a score takes two presses and says what it destroys", async ({
   expect(survivor, "the practice session went with the score").toBeTruthy();
   expect(survivor.seconds).toBe(600);
   expect(survivor.score_id).toBeNull();
+  await request.delete(`/api/practice/goals/${goal.id}`);
 });
 
 test("practice on a deleted score still counts, and stops being a way into it", async ({

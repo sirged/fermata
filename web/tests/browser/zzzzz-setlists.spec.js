@@ -227,10 +227,37 @@ test("deleting a setlist removes it while its scores remain", async ({ page, req
   await expect(page.locator(".setlists")).toBeVisible();
   await expect(setlistRows(page)).toHaveCount(0);
   await expect(page.locator(".empty")).toBeVisible();
+  // SetlistDeleteOut's scores_untouched was never read anywhere (issue #284) -
+  // the confirmation dialog already promised the scores would be kept, and
+  // until now nothing on the list page that arrives at said whether that
+  // promise actually held for THIS setlist.
+  await expect(page.getByTestId("setlist-delete-notice")).toContainText("1 score");
+  await expect(page.getByTestId("setlist-delete-notice")).toContainText("untouched");
 
   // The score it held is still in the library.
   const stillThere = await (await request.get(`/api/scores/${a.id}`)).json();
   expect(stillThere.id).toBe(a.id);
+});
+
+test("deleting an empty setlist says so - zero scores, stated rather than hidden", async ({
+  page,
+  request,
+}) => {
+  // The other end of the same receipt: an empty setlist's scores_untouched
+  // is 0, and that is worth a sentence too rather than a blank one, the same
+  // "0 tags"-style rule the other receipts in this issue follow.
+  const created = await (
+    await request.post("/api/setlists", { data: { name: "Empty on purpose" } })
+  ).json();
+
+  await page.goto(`/#/setlists/${created.id}`);
+  await expect(members(page)).toHaveCount(0);
+
+  await page.locator(".delete-setlist").click();
+  await page.locator(".confirm-delete-yes").click();
+
+  await expect(page.locator(".setlists")).toBeVisible();
+  await expect(page.getByTestId("setlist-delete-notice")).toContainText("0 scores");
 });
 
 test("Start practising opens the first member in the real viewer", async ({ page, request }) => {
