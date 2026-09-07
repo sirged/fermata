@@ -347,6 +347,23 @@ export function rangeLabel(session) {
   return parts.join(", ");
 }
 
+/** The named drill scope a session was practised under, by name (issue #236
+ * gave sessions `preset_id` instead of a sentence in `note`; issue #276 is
+ * this function - nothing had read the column since).
+ *
+ * `presetsById` is an id-to-name map the caller builds once per page load
+ * from `GET /api/trainer/presets`, so this stays a function that puts
+ * already-fetched facts into words rather than one that fetches anything
+ * itself. A `preset_id` absent from the map - the preset was deleted, which
+ * nulls the column on every session that named it, so this is only the gap
+ * between that delete and this page's own reload - says nothing rather than
+ * guessing at a name.
+ */
+export function presetLabel(session, presetsById) {
+  if (!session || session.preset_id == null) return "";
+  return presetsById?.[session.preset_id] ?? "";
+}
+
 // ---------------------------------------------------------------------------
 // ONE PIECE: how is this piece going (#57).
 //

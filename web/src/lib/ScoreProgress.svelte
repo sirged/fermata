@@ -39,6 +39,7 @@
     localDay,
     modeLabel,
     periodLabel,
+    presetLabel,
     ratingStatement,
     rangeLabel,
     shortDate,
@@ -62,11 +63,27 @@
   let data = $state(null);
   let loading = $state(true);
   let error = $state("");
+  // Named drill scopes (issue #236), fetched once per load so a session's
+  // preset_id can be shown as the name it was saved under (issue #276)
+  // instead of the id no row anywhere else prints.
+  let presets = $state([]);
 
   async function refresh() {
     error = "";
     try {
       data = await api.scoreProgress(id, HISTORY_DAYS, today);
+      // Fired, not awaited: presets only supply the scope NAME a session's
+      // preset_id is shown under (issue #276), and a failure here is not a
+      // reason to blank this piece's practice history. Left out of the
+      // scoreProgress await above so a slow trainer endpoint does not hold up
+      // the first paint of history that has nothing to do with it.
+      api.trainerPresets()
+        .then((nextPresets) => {
+          presets = nextPresets;
+        })
+        .catch(() => {
+          presets = [];
+        });
     } catch (e) {
       error = e?.message ?? "Could not load this piece's practice history.";
     } finally {
@@ -81,6 +98,9 @@
   // Scaled inside this window, like every other bar in this application: a bar
   // that shrank because some other stretch was busier is a comparison drawn in
   // pixels.
+  // id -> name, for presetLabel() below. Built once per load rather than
+  // looked up per row.
+  let presetsById = $derived(Object.fromEntries(presets.map((p) => [p.id, p.name])));
   let windowBars = $derived(dayBars(data?.window?.days ?? []));
   let chart = $derived(tempoChart(data?.tempo));
   // The line through the points, in the order the sessions happened. Not a fit
@@ -354,7 +374,12 @@
                 </span>
                 <span class="session-length">{formatDuration(session.seconds)}</span>
                 <span class="quiet session-extra">
-                  {[modeLabel(session.mode), rangeLabel(session), tempoLabel(session)]
+                  {[
+                    modeLabel(session.mode),
+                    rangeLabel(session),
+                    tempoLabel(session),
+                    presetLabel(session, presetsById),
+                  ]
                     .filter(Boolean)
                     .join(" · ")}
                 </span>

@@ -87,6 +87,13 @@ async function emptyTheLibrary(request) {
   for (const session of sessions) await request.delete(`/api/practice/sessions/${session.id}`);
   const goals = (await (await request.get(`/api/practice/goals?today=${today}`)).json()).goals;
   for (const goal of goals) await request.delete(`/api/practice/goals/${goal.id}`);
+  // Presets last, after every session referencing one is already gone. This
+  // deletes EVERY preset in the throwaway library, not only one this file's
+  // own preset-label test saved - the suite shares one database, and a
+  // preset left behind would leak into the next spec's history page.
+  for (const preset of await (await request.get("/api/trainer/presets")).json()) {
+    await request.delete(`/api/trainer/presets/${preset.id}`);
+  }
 }
 
 test.beforeEach(async ({ request }) => {
@@ -333,6 +340,71 @@ test("a piece in the trash keeps every hour and stops being a way into the libra
   // And no route into a score the library no longer holds.
   await expect(page.locator(`a[href="#/score/${score.id}"]`)).toHaveCount(0);
   await expect(page.locator(".open-score")).toHaveCount(0);
+});
+
+test("a session logged under a named scope shows that scope's name on this piece's row too", async ({
+  page,
+  request,
+}) => {
+  // Issue #276: the same drill-scope label practice.spec.js proves on the
+  // library-wide page, proved here instead of assumed, because this page
+  // fetches presets and builds presetsById independently of Practice.svelte -
+  // nothing about the one review stubbing it establishes the other actually
+  // wires the same column through.
+  const score = await upload(request, "progress-preset-label.musicxml");
+  const preset = await request.post("/api/trainer/presets", {
+    data: { name: "Top two, fifth position", start_fret: 5, end_fret: 9, strings: [1, 2] },
+  });
+  expect(preset.ok(), await preset.text()).toBe(true);
+  const presetId = (await preset.json()).id;
+
+  await practise(request, score.id, {
+    seconds: 120,
+    local_date: today,
+    activity: "fretboard",
+    preset_id: presetId,
+  });
+  await open(page, score.id);
+
+  await expect(sessions(page)).toHaveCount(1);
+  await expect(sessions(page).first().locator(".session-extra")).toContainText(
+    "Top two, fifth position",
+  );
+});
+
+test("a failing presets fetch drops the scope label, not this piece's practice history", async ({
+  page,
+  request,
+}) => {
+  // Same review finding as Practice.svelte's version of this test: presets
+  // used to sit in the same Promise.all as the progress data this page
+  // exists to show, so a trainer endpoint failure blanked a piece's whole
+  // history instead of just losing a label nothing else here depends on.
+  const score = await upload(request, "progress-preset-500.musicxml");
+  await practise(request, score.id, { seconds: 180, local_date: today, activity: "fretboard" });
+
+  // Caught, not merely unobserved: presets is fetched fire-and-forget (see
+  // ScoreProgress.svelte), so a missing .catch would not blank anything this
+  // test already reads - it would surface only as an unhandled rejection,
+  // which Chromium reports through `pageerror` rather than through `console`
+  // (the routed 500 itself already logs a console "Failed to load resource"
+  // of its own, which is the network layer working as intended and not this
+  // test's business). Watching pageerror is what makes the mutation this
+  // file's discipline requires (dropping the .catch) actually turn this test
+  // red.
+  const pageErrors = [];
+  page.on("pageerror", (e) => pageErrors.push(String(e)));
+
+  await page.route("**/api/trainer/presets", (route) =>
+    route.request().method() === "GET" ? route.fulfill({ status: 500 }) : route.fallback(),
+  );
+
+  await open(page, score.id);
+  await expect(sessions(page)).toHaveCount(1);
+  await expect(headline(page)).toHaveText("1 session, 3m in total");
+  await expect(page.locator(".notice")).toHaveCount(0);
+  await page.waitForTimeout(200);
+  expect(pageErrors).toEqual([]);
 });
 
 test("nothing on this page is styled as an error", async ({ page, request }) => {
