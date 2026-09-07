@@ -4072,10 +4072,12 @@ def score_practice_progress(
 # refuses the whole import, and a row the normaliser only CLEANS travels on
 # as the cleaned value and is counted in `ImportOut.cleaned`. The first
 # premise stands and is what keeps that safe: nothing is repaired, nothing is
-# defaulted over a value the archive actually states, and the two flags that
-# would have let today's rules bite yesterday's rows
-# (`check_day_window`, `allow_missing_score`) are passed exactly as the
-# routes that edit an ALREADY STORED row pass them. What is validated, and
+# defaulted over a value the archive actually states, and the two rules that
+# would have let today's calendar bite yesterday's rows are relaxed only as
+# far as an archive needs: the backdating floor is lifted
+# (`max_backdate_days=None`) while the future-date refusal still runs, and
+# `allow_missing_score` is passed as the routes that edit an ALREADY STORED
+# row pass it. What is validated, and
 # what is deliberately not, is listed in docs/api.md's import section.
 #
 # `_dump_table` and `_insert_row` below are still the only two functions
