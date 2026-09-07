@@ -681,6 +681,15 @@ restoring it (`POST /api/import`) does and does not do. Copying `config/`
 before an upgrade remains the recommended step regardless: it is the only
 backup an older image can start from.
 
+**An export survives an upgrade.** An archive is imported by any Fermata from
+the version that wrote it onwards, back as far as schema version 3 — so an
+archive you take today is still restorable after Fermata's database schema
+changes, which is what makes it a backup rather than a snapshot with a
+shelf life. Columns that did not exist when the archive was written simply
+fill in as empty on the way back in. What is *not* supported is the other
+direction: an archive from a **newer** Fermata than the one reading it is
+refused, with a message saying to upgrade first.
+
 Restoring an archive into a library that is not empty **adds** rather than
 replaces or refuses outright — the one collision it does not stop the whole
 restore over is a named drill scope (a "preset") whose name the target
@@ -746,6 +755,14 @@ BUILD_COMMIT=$(git rev-parse --short HEAD) BUILD_DATE=$(date -u +%Y-%m-%d) \
 
 If something looks wrong after an upgrade, restoring that backup and going
 back to the previous `git` commit gets you back to where you started.
+
+Copy `config/` even though an export now survives an upgrade (see
+[Backups](#backups)). The two are for different jobs: an export restores
+*forwards*, into the new version, and a copy of `config/` is the only thing
+that puts you *back* on the old one — the old version refuses to open a
+database the new one has written, and an archive from the new version is
+refused by the old one for the same reason. So the pre-upgrade `config/`
+copy stays the recommended step regardless.
 
 Going back without restoring the backup is a different matter, and this is why
 the backup is worth taking. Once a version has started, its schema changes have

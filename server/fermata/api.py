@@ -4224,6 +4224,54 @@ LEGACY_OPTIONAL_TABLES = (
     "trainer_scope_preset_strings",
 )
 
+# The oldest db.SCHEMA_VERSION an archive may be stamped with and still be
+# imported (issue #275). Import used to demand the running SCHEMA_VERSION
+# exactly, which made an archive worthless the moment the schema moved - the
+# opposite of what docs/deployment.md recommends `GET /api/export` for.
+#
+# WHY 3, AND NOT LOWER. An archive is a dump of a database that had already
+# been brought up to the version it is stamped with, so an archive stamped N
+# has had every db.MIGRATIONS step up to N applied to it. Two of those steps
+# REWRITE ROWS rather than only reshaping a table, and this path cannot
+# reproduce either one:
+#
+#   Step 3 (_repair_dangling_practice_references) points a practice row at
+#   nothing when the score it names is gone. A database stamped 2 has NOT had
+#   that repair, so an archive stamped 2 may still carry such a row - and
+#   validation below refuses an archive whose practice row names a score the
+#   archive does not carry, rather than nulling it. So a pre-3 archive that a
+#   real upgrade would have quietly repaired would instead be refused here,
+#   with a message about a missing score that says nothing about why. Growing a
+#   second, divergent repair path just for archives - one that silently detaches
+#   somebody's practice from a piece, which this feature never does elsewhere -
+#   is worse than saying plainly that the archive is too old.
+#
+#   Step 2 rebuilt practice_sessions from `score_id INTEGER NOT NULL`. Its own
+#   rewrite (activity = 'piece', owner = DEFAULT_OWNER) IS reproduced here for
+#   free - the column defaults and _apply_import's owner override land on the
+#   same values - so step 2 alone would not have set the floor. Step 3 does.
+#
+# EVERY COLUMN ADDED SINCE 3 IS NULLABLE OR DEFAULTED, which is what makes the
+# range above the floor safe to insert into: db.COLUMN_ADDITIONS holds
+# scores.deleted_at, scores.deleted_from (the 4 -> 5 step), scores.key,
+# scores.tempo, scores.difficulty and practice_sessions.preset_id, and not one
+# of them is NOT NULL. A future NOT-NULL-without-default column cannot arrive
+# through that mechanism at all (see db.COLUMN_ADDITIONS' own comment); one
+# arriving through a MIGRATIONS step would have to raise this floor, and the
+# refusal message below is what would then name it.
+#
+# WHAT THIS DOES NOT CLAIM. No released Fermata has ever WRITTEN an archive
+# below 5: export landed three days after SCHEMA_VERSION last moved, so 5 is
+# the only stamp any real manifest carries today. The range exists for the NEXT
+# bump, when every archive anybody already holds becomes an old one.
+OLDEST_IMPORTABLE_SCHEMA_VERSION = 3
+
+# Keys a manifest row carries that are NOT columns of the table it belongs to,
+# and so are exempt from the column-existence check below. `file_included` is
+# export's own bookkeeping - whether the archive bundled that score's bytes -
+# and _apply_import already excludes it from the INSERT.
+MANIFEST_NON_COLUMN_KEYS = {"scores": frozenset({"file_included"})}
+
 
 def _dump_table(conn, sql: str, params=()) -> list[dict]:
     """Every row a query returns, as plain dicts - the shape both the
@@ -4470,11 +4518,26 @@ def _validate_import_score_path(path) -> None:
     _safe_filename(parts[-1])
 
 
-def _read_and_validate_manifest(zf: zipfile.ZipFile) -> dict:
+def _live_columns(conn, table: str) -> set[str]:
+    """The columns this database actually has on `table`, read back rather
+    than assumed. PRAGMA table_info is the only honest source here: the
+    column set an upgraded install ends up with is SCHEMA plus whatever
+    db.COLUMN_ADDITIONS added on the way, and restating either one in this
+    file is how the two quietly stop matching."""
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _read_and_validate_manifest(zf: zipfile.ZipFile, conn) -> dict:
     """Everything about the archive that can be checked without writing
     anything - see the module comment on why this runs to completion, naming
     every problem it can find that matters, before import touches the
     database or the library at all.
+
+    `conn` is READ FROM AND NEVER WRITTEN TO: the only thing it is for is
+    PRAGMA table_info, which is what makes the column check below a statement
+    about the database this import would actually land in rather than about a
+    list kept in this file. No transaction is opened here, so a rejected
+    archive still leaves nothing changed - see import_library's docstring.
     """
     try:
         raw = zf.read(EXPORT_MANIFEST_NAME)
@@ -4498,14 +4561,27 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile) -> dict:
     version = manifest.get("schema_version")
     if not isinstance(version, int) or isinstance(version, bool):
         raise HTTPException(422, "the archive's schema_version is missing or not a whole number")
-    if version != SCHEMA_VERSION:
+    # #275: an archive OLDER than this Fermata is the ordinary case after an
+    # upgrade, and is accepted - see OLDEST_IMPORTABLE_SCHEMA_VERSION for the
+    # floor and why it sits where it does. What is refused is an archive from
+    # the FUTURE, whose rows may carry columns and meanings this code knows
+    # nothing about, and an archive from before the floor.
+    if version > SCHEMA_VERSION:
         raise HTTPException(
             422,
             f"this archive is at schema version {version}, but this Fermata understands "
-            f"{SCHEMA_VERSION}. Import only accepts an archive written by the exact version "
-            "of Fermata that is running now - restore it with that version, or export again "
-            "once this one has produced a database at the version it understands. Nothing "
-            "has been changed.",
+            f"{SCHEMA_VERSION} - this archive was written by a newer Fermata; upgrade first, "
+            "then import it again. Nothing has been changed.",
+        )
+    if version < OLDEST_IMPORTABLE_SCHEMA_VERSION:
+        raise HTTPException(
+            422,
+            f"this archive is at schema version {version}, and this Fermata can only read "
+            f"archives from version {OLDEST_IMPORTABLE_SCHEMA_VERSION} onwards. Versions "
+            "below that are the far side of a change that had to repair practice rows as it "
+            "went, and import cannot make that repair on an archive - restore it with a "
+            "Fermata that reads it, let that one bring the database up to date, and export "
+            "again. Nothing has been changed.",
         )
     tables = manifest.get("tables")
     # A key this Fermata does not know at all, or a REQUIRED key missing
@@ -4524,7 +4600,20 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile) -> dict:
         )
     provided = set(tables)
     required = set(EXPORT_TABLE_NAMES) - set(LEGACY_OPTIONAL_TABLES)
-    if provided - set(EXPORT_TABLE_NAMES) or not required <= provided:
+    # #275: a table this Fermata no longer has is NAMED, rather than reported
+    # as the same "not exactly the tables export writes" the missing-key case
+    # gets. Now that an older archive is accepted at all, this is the message
+    # somebody actually meets when a table was renamed or dropped between the
+    # version that wrote the archive and this one, and "which table" is the
+    # whole of what they need to know.
+    gone = sorted(provided - set(EXPORT_TABLE_NAMES))
+    if gone:
+        raise HTTPException(
+            422,
+            f"the archive carries a table this Fermata no longer has ({', '.join(gone)}), so "
+            "it cannot be imported here. Nothing has been changed.",
+        )
+    if not required <= provided:
         raise HTTPException(
             422,
             "the archive's manifest does not carry exactly the tables Fermata's export "
@@ -4535,6 +4624,36 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile) -> dict:
     for name in EXPORT_TABLE_NAMES:
         if not isinstance(tables[name], list) or not all(isinstance(r, dict) for r in tables[name]):
             raise HTTPException(422, f"the archive's {name!r} table is not a list of objects")
+
+    # #275, the other half of accepting an older archive: every column a row
+    # carries has to still BE a column here, because _insert_row names the
+    # archive's own keys in its INSERT and an unknown one is an OperationalError
+    # in the middle of write_tx() rather than a message anybody can act on. The
+    # reverse direction needs no check at all - a column this schema has and the
+    # archive does not is simply not named in the INSERT, so it takes its
+    # default (NULL for every addition since the floor; see
+    # OLDEST_IMPORTABLE_SCHEMA_VERSION).
+    #
+    # Read from the live database rather than from any list in this file, and
+    # checked per table over the union of the keys its rows actually carry - so
+    # a hand-edited archive with one stray key in one row is caught as surely as
+    # a whole table written by a version that named its columns differently.
+    for name in EXPORT_TABLE_NAMES:
+        rows = tables[name]
+        if not rows:
+            continue
+        here = _live_columns(conn, name) | MANIFEST_NON_COLUMN_KEYS.get(name, frozenset())
+        carried: set[str] = set()
+        for row in rows:
+            carried |= set(row)
+        unknown = sorted(carried - here)
+        if unknown:
+            raise HTTPException(
+                422,
+                f"the archive's {name!r} table carries {len(unknown)} column(s) this Fermata "
+                f"no longer has ({', '.join(unknown)}), so it cannot be imported here. "
+                "Nothing has been changed.",
+            )
 
     # Every row this import will ever index by `["id"]` (never `.get`, once
     # apply actually runs) has to have one, and has to have it as a real
@@ -4567,7 +4686,11 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile) -> dict:
     tag_ids = {row["id"] for row in tables["tags"]}
     score_ids = {_require_id(row, "scores") for row in tables["scores"]}
     for row in tables["scores"]:
-        if "deleted_at" not in row:
+        # `deleted_at` arrived with schema 5 (#56), so an archive stamped 4 or
+        # lower legitimately has no such key and no trash to describe - #275.
+        # From 5 on, an export always writes it, and its absence means a
+        # hand-edited manifest rather than an old one.
+        if version >= 5 and "deleted_at" not in row:
             raise HTTPException(
                 422, f"score {row.get('path')!r} in the archive is missing 'deleted_at'"
             )
@@ -4926,7 +5049,9 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
             },
         )
         score_id_map[row["id"]] = new_id
-        if row["deleted_at"] is not None:
+        # `.get`, not `[...]`: an archive from before schema 5 has no
+        # `deleted_at` key at all and nothing in the trash to count (#275).
+        if row.get("deleted_at") is not None:
             scores_trashed += 1
         data = file_bytes.get(row["hash"]) if row.get("file_included") else None
         if data is None:
@@ -5099,7 +5224,8 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
     scanner.record_deliberate_shrink(conn)
 
     return {
-        "schema_version": manifest["schema_version"],
+        "schema_version": SCHEMA_VERSION,
+        "schema_version_read": manifest["schema_version"],
         "exported_at": manifest["exported_at"],
         "fermata_version": manifest.get("fermata_version") or "unknown",
         "scores_imported": len(tables["scores"]),
@@ -5161,7 +5287,7 @@ async def import_library(file: UploadFile, dry_run: bool = True):
         zf = zipfile.ZipFile(file.file)
     except zipfile.BadZipFile:
         raise HTTPException(422, "that is not a valid zip archive") from None
-    manifest = _read_and_validate_manifest(zf)
+    manifest = _read_and_validate_manifest(zf, connect())
 
     file_bytes: dict[str, bytes] = {}
     for file_hash, suffix in _referenced_files(manifest):
@@ -5199,7 +5325,8 @@ async def import_library(file: UploadFile, dry_run: bool = True):
         )
         return {
             "dry_run": True,
-            "schema_version": manifest["schema_version"],
+            "schema_version": SCHEMA_VERSION,
+            "schema_version_read": manifest["schema_version"],
             "exported_at": manifest["exported_at"],
             "fermata_version": manifest.get("fermata_version") or "unknown",
             "scores_imported": len(tables["scores"]),

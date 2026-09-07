@@ -301,7 +301,7 @@ that ties them together.
 | `POST /api/import` | Restores an archive `GET /api/export` produced. **Dry run by default.** |
 
 **The archive.** A zip with `manifest.json` at its root - a JSON object naming
-the exact `schema_version` (`fermata/db.py`'s `SCHEMA_VERSION`, not the
+the `schema_version` (`fermata/db.py`'s `SCHEMA_VERSION`, not the
 application's own release number) the rest of it was written against, and
 carrying every table's rows verbatim under `tables` (drill history included
 since #243, named drill scopes since #236). Score files themselves
@@ -350,10 +350,35 @@ having found `(imported)` already taken by the first); the library to import
 into is an empty one - a fresh install, or one just scanned onto an empty
 database.
 
+**An archive from an older Fermata still imports (#275).** `schema_version`
+does not have to match the running one. An archive written at schema version
+3 or later imports into any Fermata from that version onwards: rows are
+inserted with the columns the archive actually carries, so a column added
+after it was written fills from the schema instead of being demanded of it
+(a version 4 archive restores its practice sessions with `preset_id` empty,
+which is what "practised under no named scope" already means). Two things
+are still refused, both with a message that says which and change nothing:
+
+- An archive from a **newer** Fermata than the one reading it. Its rows may
+  carry columns and meanings this version knows nothing about, so the answer
+  is to upgrade first and import again.
+- An archive carrying a **table or column this Fermata no longer has** -
+  renamed or dropped since it was written. The message names the table, or
+  the table and the columns.
+
+Version 3 is the floor because everything below it is on the far side of a
+schema change that had to repair practice rows as it went, and import cannot
+make that repair on an archive. Restore such an archive with a Fermata that
+reads it, let that one bring the database up to date, and export again.
+
+The import response says both numbers: `schema_version_read` is the version
+the archive was written at, and `schema_version` is the one its rows now live
+under (always the running Fermata's). They are equal for an archive written
+by the version reading it.
+
 **Validated completely before anything is written.** The archive is a real
-zip, its manifest parses, its `schema_version` matches this Fermata's exactly
-(cross-version migration is not implemented yet - restore an old archive with
-the Fermata version that wrote it), every foreign key inside the archive
+zip, its manifest parses, its `schema_version` is one this Fermata can read
+(see above), every foreign key inside the archive
 resolves to a row also in the archive, and every archived file's bytes hash
 to what the archive itself records for them. A malformed or
 incompatible archive is rejected with a clear message and changes nothing -
