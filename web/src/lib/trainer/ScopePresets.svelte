@@ -43,6 +43,10 @@
   let name = $state("");
   let saving = $state(false);
   let problem = $state("");
+  // What removing a preset just told us, so the sessions it covered are not
+  // left an open question - see remove() and TrainerPresetDeleteOut's own
+  // docstring for why the count is the whole point of the response.
+  let notice = $state("");
 
   async function load() {
     try {
@@ -64,6 +68,7 @@
     if (!typed || saving || disabled) return;
     saving = true;
     problem = "";
+    notice = "";
     try {
       const saved = await api.createTrainerPreset(presetFromScope(typed, strings, scope));
       presets = [saved, ...presets];
@@ -87,10 +92,19 @@
   async function remove(preset) {
     if (disabled) return;
     problem = "";
+    notice = "";
     try {
-      await api.deleteTrainerPreset(preset.id);
+      const result = await api.deleteTrainerPreset(preset.id);
       presets = presets.filter((p) => p.id !== preset.id);
       if (selectedId === preset.id) onSelect(null, null);
+      // sessions_kept: the whole reason TrainerPresetDeleteOut carries it -
+      // a session logged under a scope that is now gone keeps its day, its
+      // length and its activity, and this says so plainly rather than
+      // leaving that unstated.
+      const kept = result?.sessions_kept ?? 0;
+      notice =
+        `${preset.name} is gone. ${kept} session${kept === 1 ? "" : "s"} logged under it ` +
+        `kept their time.`;
     } catch (e) {
       problem = e?.message || "That scope could not be removed.";
     }
@@ -162,6 +176,10 @@
       No scope has been saved yet. Set the strings, the frets and the key you want, give it a
       name, and it will be here in this drill and in the other one.
     </p>
+  {/if}
+
+  {#if notice}
+    <p class="notice preset-notice">{notice}</p>
   {/if}
 
   {#if problem}
