@@ -142,6 +142,51 @@ test("undefined is treated the same as null for both the per-row and whole-row g
 // can make that check, since a browser test cannot import api.py), and
 // checked against DISCLOSURE_ROWS here, in BOTH directions, so a config row
 // that goes missing OR a vendored key nothing renders each fail by name.
+// Per-family gate (issue #294 follow-up): disclosures live in one stored
+// `confidence` JSON blob that is never backfilled, so a pre-#294
+// transcription carries the five bar counters as `undefined` while its
+// structural counters (issue #155's seventeen) are real numbers, or vice
+// versa. A single whole-object gate would render either an "all bar rows
+// missing" wall beside real structural rows, or the converse - both state
+// an absence of measurement as fact for a family that just predates the
+// other one. The fix gates each family independently.
+const BAR_KEYS = DISCLOSURE_ROWS.filter((row) => row.family === "bar").map((row) => row.key);
+const STRUCTURAL_KEYS = DISCLOSURE_ROWS.filter((row) => row.family !== "bar").map((row) => row.key);
+
+test("a legacy blob with bar counters but no structural ones renders exactly the bar rows", () => {
+  const t = {};
+  for (const key of STRUCTURAL_KEYS) t[key] = null; // never computed on this old blob
+  for (const key of BAR_KEYS) t[key] = 2; // measured, and non-zero so it would render
+  for (const row of DISCLOSURE_ROWS) {
+    if (row.barsKey) t[row.barsKey] = row.family === "bar" ? [1, 2] : [];
+  }
+
+  const rows = disclosureRows(t);
+  const renderedKeys = rows.map((r) => r.key).sort();
+  expect(renderedKeys).toEqual([...BAR_KEYS].sort());
+  for (const row of rows) {
+    expect(row.measured).toBe(true);
+    expect(row.value).toBe(2);
+  }
+});
+
+test("the converse legacy blob - structural counters measured, bars null - renders exactly the structural rows", () => {
+  const t = {};
+  for (const key of BAR_KEYS) t[key] = null; // never computed on this old blob
+  for (const key of STRUCTURAL_KEYS) t[key] = 2; // measured, and non-zero so it would render
+  for (const row of DISCLOSURE_ROWS) {
+    if (row.barsKey) t[row.barsKey] = row.family !== "bar" ? [3] : [];
+  }
+
+  const rows = disclosureRows(t);
+  const renderedKeys = rows.map((r) => r.key).sort();
+  expect(renderedKeys).toEqual([...STRUCTURAL_KEYS].sort());
+  for (const row of rows) {
+    expect(row.measured).toBe(true);
+    expect(row.value).toBe(2);
+  }
+});
+
 test("DISCLOSURE_ROWS carries exactly the vendored disclosure-keys.json key set - no more, no fewer", () => {
   const configKeys = DISCLOSURE_ROWS.map((row) => row.key).sort();
   const vendoredKeys = [...VENDORED_KEYS].sort();

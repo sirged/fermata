@@ -476,7 +476,7 @@ test.describe("ScoreCompare structural disclosures", () => {
     await expect(unread.locator(".disclosure-bars")).toHaveText("bars 7, 8, 9, 10");
 
     const anacrusis = page.locator('[data-disclosure="bars_anacrusis"]');
-    await expect(anacrusis).toContainText("Pickup bars");
+    await expect(anacrusis).toContainText("Bars excused by a first-bar pickup");
     await expect(anacrusis.locator(".disclosure-value")).toHaveText("1");
     await expect(anacrusis.locator(".disclosure-bars")).toHaveText("bar 1");
 

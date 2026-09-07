@@ -332,7 +332,15 @@
   // return with extractable: false sets one) - the fallback exists so a
   // future non-extractable path that forgets to set `reason` still shows
   // something sensible instead of "undefined".
+  //
+  // `page_count === 0` means the file was never analysed at all - open
+  // failed, or the pdf had no pages - and analyze() hardcodes vector: false
+  // and both staff counts to 0 on those paths as unmeasured placeholders,
+  // not as a measured "raster, no staves" finding. Showing the parenthetical
+  // there would state those placeholders as fact, so it is only shown once
+  // page_count > 0 proves the fields were actually measured.
   function analysisSentence(a) {
+    if (a.page_count === 0) return a.reason || "No tab staff found";
     const staffNoun = a.standard_staff_count === 1 ? "staff" : "staves";
     const counts = `${a.standard_staff_count} standard ${staffNoun}, ${a.vector ? "vector" : "raster"} PDF`;
     return a.reason ? `${a.reason} (${counts})` : `No tab staff found: ${counts}`;

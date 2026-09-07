@@ -59,6 +59,33 @@ test.describe("ScoreCompare transcription-analysis sentence", () => {
     expect(text).not.toContain("standard staves");
   });
 
+  test("a corrupt pdf that was never analysed shows the reason alone, with no unmeasured staff/vector clause", async ({
+    page,
+  }) => {
+    // page_count: 0 means analyze() never got past opening the file -
+    // vector/tab_staff_count/standard_staff_count are hardcoded placeholders
+    // here, not a measurement, so the sentence must be the reason and
+    // nothing else.
+    await stubScoreApi(page, null, {
+      analysis: {
+        extractable: false,
+        reason: "could not open pdf: corrupt xref table",
+        vector: false,
+        tab_staff_count: 0,
+        standard_staff_count: 0,
+        page_count: 0,
+      },
+    });
+    await page.goto("/#/score/1");
+
+    const text = await page.locator(".empty-state p").first().innerText();
+    expect(text).toBe("could not open pdf: corrupt xref table");
+    expect(text).not.toContain("standard staff");
+    expect(text).not.toContain("standard staves");
+    expect(text).not.toContain("PDF");
+    expect(text).not.toContain("(");
+  });
+
   test("a score that is extractable, or one whose analysis has not loaded, still offers the transcribe button instead", async ({
     page,
   }) => {

@@ -172,15 +172,25 @@ export const DISCLOSURE_ROWS = [
   // tabextract.py's ExtractionResult carries an `overfull_bars` or
   // `short_bars` list - _bar_conformance only ever counted these two, it
   // never kept which bars.
-  { key: "bars_overfull", label: "Bars with more beats than the time signature allows" },
-  { key: "bars_short", label: "Bars with fewer beats than the time signature requires" },
-  { key: "bars_padded", label: "Bars padded to length", barsKey: "padded_bars" },
-  { key: "bars_unread", label: "Bars that could not be read", barsKey: "unread_bars" },
+  { key: "bars_overfull", label: "Bars with more beats than the time signature allows", family: "bar" },
+  { key: "bars_short", label: "Bars with fewer beats than the time signature requires", family: "bar" },
+  { key: "bars_padded", label: "Bars padded to length", barsKey: "padded_bars", family: "bar" },
+  { key: "bars_unread", label: "Bars that could not be read", barsKey: "unread_bars", family: "bar" },
   // A Rule 8 exemption, not a defect - the count of bars a first-bar pickup
-  // let Rule 8 excuse, not bars that are wrong. Still a fact worth a row: it
-  // says which of the score's opening bars was assumed to be a pickup, an
-  // assumption about the page a reader must be able to check.
-  { key: "bars_anacrusis", label: "Pickup bars", barsKey: "anacrusis_bars" },
+  // let Rule 8 excuse, not bars that are wrong. NOT "Pickup bars": in the
+  // compensated pairing _anacrusis_bars recognises (tabextract.py's
+  // _anacrusis_bars, the "final_short" branch), the counter and bars list
+  // include the score's FINAL bar too - the one that corroborates the
+  // pickup by being short in exactly the complementary way, not a pickup
+  // itself. "Pickup bars" would call that final bar a pickup, which it is
+  // not. The label instead names what _bar_conformance's `excused` list
+  // actually is (tabextract.py, the loop building `excused` right after
+  // `anacrusis = _anacrusis_bars(...)`): bars lifted out of the
+  // short/defective counts because a first-bar pickup excused them. Still a
+  // fact worth a row: it says which of the score's bars was assumed to be
+  // part of a pickup, an assumption about the page a reader must be able to
+  // check.
+  { key: "bars_anacrusis", label: "Bars excused by a first-bar pickup", barsKey: "anacrusis_bars", family: "bar" },
 ];
 
 /**
@@ -197,31 +207,50 @@ export const DISCLOSURE_ROWS = [
  *   - a `*_bars` (or `*_pages`) list rides along as the counter's detail:
  *     the bar/page numbers it exists to name.
  *
- * The one thing that gates the WHOLE section rather than one row: if every
- * single counter below is null, nothing here was ever computed for this row
- * at all (the common shape of a hand-edited row - see saveEdit() in
- * ScoreCompare.svelte, which states every one of these `null` on purpose).
- * That state already renders as nothing elsewhere on this panel (no bar
- * headline, no warnings block), and a wall of one "not measured" row per
- * counter above would be exactly the noise this function exists to avoid
- * (there were seventeen of them when issue #155 wrote this, and the list only
- * grows, which is why the sentence no longer names a number) - so this
- * returns no rows at all rather than that wall. A row that measured SOME of
- * these counters (a real extraction whose schema predates one particular
- * counter) still shows the gap on that one counter specifically, because in
- * that case something else on this same object is a real number and the
- * absence of this one is worth knowing.
+ * The gate that used to cover the WHOLE section now applies PER FAMILY (the
+ * five `family: "bar"` Rule 8 counters, versus every other, "structural",
+ * counter): if every counter in a family is null, nothing in that family was
+ * ever computed for this row, and that family renders no rows at all rather
+ * than a wall of "not measured" lines. A family with at least one real number
+ * still shows the gap on any null counter of ITS OWN family specifically,
+ * unchanged from before - the null-vs-zero contract inside a rendered family
+ * is untouched by this.
+ *
+ * This is a legacy-blob problem, not a hypothetical one: disclosures live in
+ * one stored `confidence` JSON blob that is never backfilled, so a
+ * transcription stored before issue #294 added the five bar counters carries
+ * real structural numbers and simply has no bar keys at all (`undefined`,
+ * not zero) - a single whole-object gate would have rendered all five bar
+ * rows as "not measured" beside the real structural ones, stating a total
+ * absence of measurement as fact for counters that were never even asked
+ * for on that extraction. Symmetrically, a blob with bar counters but no
+ * structural ones (the reverse legacy shape) must show only the bar rows.
+ *
+ * Before issue #294 there was only one family (this is why the original gate
+ * used a single `anyMeasured`, and why there were seventeen counters in it -
+ * the list only grows, which is why the sentence no longer names a number).
  */
+const BAR_FAMILY = "bar";
+
+function familyOf(row) {
+  return row.family === BAR_FAMILY ? BAR_FAMILY : "structural";
+}
+
 export function disclosureRows(t) {
   if (!t) return [];
-  const anyMeasured = DISCLOSURE_ROWS.some((row) => t[row.key] !== null && t[row.key] !== undefined);
-  if (!anyMeasured) return [];
+  const isMeasured = (row) => t[row.key] !== null && t[row.key] !== undefined;
+  const familyHasMeasurement = {
+    [BAR_FAMILY]: DISCLOSURE_ROWS.some((row) => familyOf(row) === BAR_FAMILY && isMeasured(row)),
+    structural: DISCLOSURE_ROWS.some((row) => familyOf(row) === "structural" && isMeasured(row)),
+  };
+  if (!familyHasMeasurement[BAR_FAMILY] && !familyHasMeasurement.structural) return [];
 
   const rows = [];
   for (const row of DISCLOSURE_ROWS) {
+    if (!familyHasMeasurement[familyOf(row)]) continue; // whole family unmeasured - no row
     const value = t[row.key];
     if (value === 0) continue; // hidden - good news needs no row
-    const measured = value !== null && value !== undefined;
+    const measured = isMeasured(row);
     const barsRaw = row.barsKey ? t[row.barsKey] : null;
     rows.push({
       key: row.key,

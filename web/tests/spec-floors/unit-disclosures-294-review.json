@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/disclosures.spec.js",
+  "count": 2,
+  "reason": "issue #294 review finding 3: a legacy stored confidence blob carries the five bar counters and the seventeen structural counters as two independently-backfilled families, never one - disclosureRows() now gates each family on whether ANY of its own counters are measured, so a pre-#294 blob (bar counters real, structural absent) renders only its bar rows, and the converse legacy shape (structural real, bars absent) renders only its structural rows, instead of a wall of false 'not measured' rows for the family nothing on that blob was ever asked to compute."
+}
