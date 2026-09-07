@@ -41,8 +41,9 @@ them.
   instead of guessing at pixels, and renders the result as a playable,
   editable staff beside the original page. The same editor works on a native
   MusicXML score too — turning a rest into a note, and extending a selection
-  across a run of notes so a whole passage retunes or re-rhythms at once
-  rather than one note at a time — and it refuses to open at all on a score
+  across a run of notes so a passage's durations, dots, spelling or string
+  change at once rather than one note at a time (fret entry, ties and voice
+  moves stay per note) — and it refuses to open at all on a score
   with more than one part, rather than silently editing just the first. Three
   music-font vocabularies are calibrated: Finale's Maestro, Sibelius's Opus,
   and any font following the
@@ -116,8 +117,9 @@ them.
   working on, and that scope can be saved under a name and picked up again in
   either drill. Every answered question is stored as a structured row —
   which positions and which chords were missed, counted, never divided into
-  an accuracy percentage, and shown back beside the drill as its own
-  weak-spots panel ([the data model](docs/practice-data.md)). The time lands
+  an accuracy percentage — and the fretboard drill shows its most-missed
+  positions back beside the questions as its own weak-spots panel
+  ([the data model](docs/practice-data.md)). The time lands
   in your practice history like anything else.
 - **Weekly goals, and an honest review** — how many days you mean to practise
   and for how long, on what. While the week runs it says where you stand so the
@@ -174,8 +176,10 @@ git clone <this repo>
 cd fermata
 mkdir -p library config
 # put some sheet music in ./library (PDF, MusicXML, Guitar Pro)
-docker compose up --build -d
+BUILD_COMMIT=$(git rev-parse --short HEAD) BUILD_DATE=$(date -u +%Y-%m-%d)   docker compose up --build -d
 ```
+The two build variables stamp the image so `GET /api/version` can tell you
+which commit is running; without them it reports `dev`.
 
 Open http://localhost:8080 — your library is scanned automatically on startup,
 or hit **Scan library** in the sidebar.

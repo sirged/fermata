@@ -477,8 +477,8 @@ on.** Nothing below runs, and nothing listens, until you set `FERMATA_MCP`.
 - **Read only.** The tools list and search scores, read a score's metadata
   and its transcription status, read practice history and summaries, read
   goals, read trainer attempts, and read named drill scopes. There is no tool
-  that changes anything —
-  not "log a session", not "rename a score", not "delete". That is not a
+  that changes anything — not "log a session", not "rename a score", not
+  "delete". That is not a
   setting; there is no code path in it that can send anything but a `GET`.
 - **It wraps the REST API, it does not replace it.** Every tool is one
   documented route from [the REST API](api.md), called over ordinary HTTP,
@@ -606,12 +606,12 @@ feature on there is an environment variable rather than a rebuild.
 
 This is the section to actually act on, not just read. Everything in
 `library/` is your own files — if you lost them, you'd still have the
-originals somewhere, with one exception: a correction made to a native
-MusicXML score's own notes in the browser is never written back to that
-file, only stored as its own row in `config/fermata.db` — the library copy
-stays exactly as it was scanned. Everything else in `config/` is not
-recoverable any other way either: your practice history, your tags, and any
-hand-corrected tab transcriptions live only in the database in that folder.
+originals somewhere. Nothing in `config/` is recoverable any other way: your
+practice history, your tags, any hand-corrected tab transcriptions, and any
+correction made to a native MusicXML score's own notes in the browser, which
+is never written back to the file in `library/` and lives only as its own
+row in `config/fermata.db` — the library copy stays exactly as it was
+scanned.
 Losing `config/` without a backup means losing that work, even though every
 PDF is still sitting untouched in `library/`.
 
