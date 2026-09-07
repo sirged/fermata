@@ -440,11 +440,12 @@ validate-before-anything-is-written pass #268 runs in:
 | `trainer_scope_presets` | `trainer.normalise_preset` (#268) |
 
 A row the rule REFUSES refuses the whole import - nothing applied, in either
-mode - naming the table, the row's position in the archive
-(`the archive's practice_sessions row 3 is invalid: ...`) and the rule's own
-reason. Nothing is repaired: a negative duration, a fret outside the drill's
-bounds, a goal with no target, an instrument whose tuning names fewer strings
-than it claims are all refusals, never guesses at what was meant.
+mode - naming the table, the row's position in the archive, 0-based
+(`the archive's practice_sessions row 3 is invalid: ...` names the FOURTH row
+of that table) and the rule's own reason. Nothing is repaired: a negative
+duration, a fret outside the drill's bounds, a goal with no target, an
+instrument whose tuning names fewer strings than it claims are all refusals,
+never guesses at what was meant.
 
 A row the rule only CLEANS is imported as the value the route would have
 stored, and counted in the response's `cleaned` map (table name to row count,
@@ -458,18 +459,26 @@ a preset name whose whitespace was collapsed - which
 identically on a dry run and an applied import, the same guarantee the rename
 list makes.
 
-**Two rules are deliberately NOT applied to an archived row**, both because
-an archived row is an already-stored row rather than a claim being made now -
-and both passed exactly the way `PATCH /api/practice/sessions/{id}` and
-`PATCH /api/practice/goals/{id}` already pass them for a stored row:
+**Two rules are deliberately NOT applied in full to an archived row**, both
+because an archived row is an already-stored row rather than a claim being
+made now:
 
-- How far back a practice day may sit from today. Applied to an archive it
-  would make every backup older than that window unrestorable, which is the
-  opposite of what an archive is for.
+- Only the FLOOR on how far back a practice day may sit from today - not the
+  ceiling. `local_date is in the future` is still refused on import exactly as
+  it is on `POST /api/practice/sessions`, because restoring an archive still
+  claims each session happened on the date it names. What is lifted is the
+  lower bound alone: applying it would make every backup older than that
+  window unrestorable, which is the opposite of what an archive is for. (This
+  is narrower than the exemption `PATCH /api/practice/sessions/{id}` uses,
+  which turns the whole window - both bounds - off when `local_date` is not
+  the field being changed; import always writes a `local_date`, so it cannot
+  use that broader exemption without also silently accepting a future one.)
 - The requirement that a session on a piece, or a goal about one, names a
   score. Export itself writes such a row with an empty `score_id` whenever
   the score was left out of the archive or destroyed while its history
-  stayed; refusing it on the way back in would discard practice history.
+  stayed; refusing it on the way back in would discard practice history. This
+  one IS passed exactly the way `PATCH /api/practice/sessions/{id}` and
+  `PATCH /api/practice/goals/{id}` already pass it for a stored row.
 
 **Tables with no rule to run keep the checks they have always had** - a
 manifest that carries them in the right shape, with every foreign key

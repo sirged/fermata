@@ -4954,14 +4954,17 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile, conn) -> dict:
     # THE TWO FLAGS BOTH ROUTES ALREADY HAVE are passed the way the route that
     # edits a STORED row passes them, because an archived row is a stored row:
     #
-    #   `check_day_window=False` (practice_sessions). How far back a practice
-    #   day may sit from today is a rule about what somebody may CLAIM now -
-    #   patch_session already turns it off when the date is not what is being
-    #   written, for exactly the reason that applying it to an already-stored
-    #   date makes a session permanently uneditable once it is old enough.
-    #   Applied to an archive it would be worse still: every backup older than
-    #   practice.MAX_BACKDATE_DAYS would become unrestorable, which is the
-    #   opposite of what this feature is for.
+    #   `max_backdate_days=None` (practice_sessions). How far back a NEW
+    #   practice day may be claimed is a rule about what somebody may CLAIM
+    #   now, and applying it to an already-stored date would make a session
+    #   permanently uneditable once it is old enough - which is why
+    #   patch_session turns the whole window off (both bounds) when the date
+    #   is not what is being written. An archive is different: restoring it
+    #   still claims each session happened on the date it names, so "local_date
+    #   is in the future" stays enforced (`check_day_window` stays True) -
+    #   only the backdating FLOOR is lifted, since every backup older than
+    #   practice.MAX_BACKDATE_DAYS becoming unrestorable would be the opposite
+    #   of what this feature is for.
     #
     #   `allow_missing_score` (practice_sessions, practice_goals). A 'piece'
     #   session or a 'score' goal whose score_id is NULL is a real, already
@@ -5001,7 +5004,7 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile, conn) -> dict:
                 allow_missing_score=practice.is_orphaned(
                     row.get("activity"), row.get("score_id")
                 ),
-                check_day_window=False,
+                max_backdate_days=None,
                 **{key: row.get(key) for key in _SESSION_COLUMNS},
             )
         except (ValueError, TypeError) as exc:
