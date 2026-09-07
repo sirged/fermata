@@ -4053,15 +4053,33 @@ def score_practice_progress(
 # accumulated is not an acceptable price for a file that happened to be
 # offline that day.
 #
-# ROW VALUES TRAVEL VERBATIM, deliberately, rather than through the
-# normalising functions (practice.normalise_session, instruments.normalise,
-# ...) every ordinary write goes through. Those functions exist to validate
-# and default a REQUEST from a person typing into a form today; an archived
-# row already passed them once, when it was first written, and running it
-# through them again on the way back in would let today's defaults quietly
-# overwrite yesterday's actual values - the opposite of a lossless round
-# trip. `_dump_table` and `_insert_row` below are the only two functions
-# either direction needs, and neither one hand-picks which columns matter:
+# ROW VALUES TRAVEL VERBATIM ONCE THEY ARE VALID (#286). The original design
+# ran nothing through the normalising functions (practice.normalise_session,
+# instruments.normalise, ...) every ordinary write goes through, reasoning
+# that those functions validate a REQUEST from a person typing into a form
+# today, that an archived row already passed them once when it was first
+# written, and that running it through them again would let today's defaults
+# quietly overwrite yesterday's actual values.
+#
+# The middle premise turned out to be the weak one: an archive is a JSON file
+# a person can open, and one hand-edited (or written by a Fermata older than
+# the rule in question) carries rows that never passed anything. Measured on
+# 0279b50: a manifest whose practice_sessions row said `seconds: -30` and
+# whose trainer_attempts row said `target_fret: 99` imported with 200 in both
+# modes and stored both, while POST refused each with 422. So every table
+# that HAS a normaliser is now run through it, in
+# `_read_and_validate_manifest` before any transaction opens - a refused row
+# refuses the whole import, and a row the normaliser only CLEANS travels on
+# as the cleaned value and is counted in `ImportOut.cleaned`. The first
+# premise stands and is what keeps that safe: nothing is repaired, nothing is
+# defaulted over a value the archive actually states, and the two flags that
+# would have let today's rules bite yesterday's rows
+# (`check_day_window`, `allow_missing_score`) are passed exactly as the
+# routes that edit an ALREADY STORED row pass them. What is validated, and
+# what is deliberately not, is listed in docs/api.md's import section.
+#
+# `_dump_table` and `_insert_row` below are still the only two functions
+# either direction needs to MOVE a row, and neither one hand-picks columns:
 # every column the live table has going out, every key an archived row
 # carries coming back in. That is what keeps this feature from becoming a
 # third hand-mirrored copy of the schema, alongside the bugs issues #143 and
@@ -4118,10 +4136,9 @@ def score_practice_progress(
 # would otherwise pass this validation - normalise_preset dedupes before
 # checking anything else - and then hit that table's own UNIQUE constraint
 # when applied, a divergence from what POST /api/trainer/presets stores for
-# the same input. Every OTHER archived table's rows still travel through
-# `_insert_row` verbatim - this bet validates presets only (see its own
-# issue for why: repeating this for every table is the rabbit hole it
-# explicitly declines).
+# the same input. #268 validated presets ONLY; #286 then repeated the shape
+# for every other table with a normaliser - see the paragraph above and the
+# blocks that follow the preset one in `_read_and_validate_manifest`.
 #
 # TRANSACTIONAL, AND WHAT THAT ACTUALLY COVERS. Validation - the archive is a
 # real zip, `manifest.json` parses, its schema_version matches, every table
@@ -4797,6 +4814,72 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile, conn) -> dict:
     # remembers which rows changed and what they carried before, for
     # `_derive_preset_renames` to report alongside a genuine collision (see
     # its own note on the two).
+    # #286 turned the three helpers below into the shared shape every
+    # validated table uses; #268's preset block was the first caller and still
+    # produces exactly the message it always did.
+    #
+    # `_refuse_row` is the ONE naming rule for a row a normaliser turned down:
+    # the table, the row's position in the archive, and the normaliser's own
+    # sentence. Position rather than content, because the content is exactly
+    # what is wrong with it - and one rule rather than a message per table, so
+    # a person meeting this for a session reads the same shape they would for
+    # a preset.
+    #
+    # A TypeError is caught alongside ValueError wherever a normaliser is
+    # called from here. The POST routes reach these functions through a
+    # pydantic model that has already settled every field's TYPE, so a
+    # normaliser is entitled to compare an int against its bounds without
+    # first asking whether it is one; an ARCHIVE has no such layer in front of
+    # it, and a hand-edited manifest carrying `"seconds": "lots"` would
+    # otherwise surface as a 500 rather than as the clean 4xx this whole
+    # section promises.
+    cleaned_counts: dict[str, int] = {}
+
+    def _refuse_row(table_name: str, index: int, reason) -> None:
+        raise HTTPException(
+            422, f"the archive's {table_name} row {index} is invalid: {reason}"
+        ) from None
+
+    def _store_cleaned(table_name: str, row: dict, values: dict) -> None:
+        """Write what the normaliser returned back into the archive row, and
+        count the row ONCE if any value it already carried actually changed.
+
+        This is the "imported cleaned, not refused" half of the rule (#268's
+        preset names were the first case): a row the normaliser only tidied -
+        whitespace collapsed, an empty note turned to NULL, a pitch spelling
+        canonicalised, a derived column recomputed - travels on, but travels
+        as the value `POST` would have stored, never as the raw one the
+        archive carried. Everything downstream (`_insert_row`, #260's
+        collision check) then runs against the cleaned row.
+
+        A key the row does not carry at all is still written: it is a real
+        column of this table (the column check above already proved that for
+        every key the archive DOES carry) holding the value the route would
+        have stored, and an archive predating the column simply had nothing to
+        clean. It is not COUNTED as cleaning for the same reason - nothing the
+        archive stated was changed.
+        """
+        changed = False
+        for key, value in values.items():
+            if key in row and row[key] != value:
+                changed = True
+            row[key] = value
+        if changed:
+            cleaned_counts[table_name] = cleaned_counts.get(table_name, 0) + 1
+
+    def _archived_json(row: dict, key: str, table_name: str, index: int):
+        """A column this schema stores as JSON TEXT, back as the Python value
+        the normaliser takes (`trainer_chord_attempts`' shapes and note lists,
+        `instruments.string_pitches`). Anything that is not a string is passed
+        through untouched, so the normaliser gives its own verdict on it."""
+        value = row.get(key)
+        if not isinstance(value, str):
+            return value
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            _refuse_row(table_name, index, f"{key} is not readable JSON")
+
     preset_strings_by_id: dict[int, list] = {}
     for row in tables["trainer_scope_preset_strings"]:
         preset_strings_by_id.setdefault(row.get("preset_id"), []).append(
@@ -4828,18 +4911,163 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile, conn) -> dict:
                 key_root=row.get("key_root"),
                 key_quality=row.get("key_quality"),
             )
-        except ValueError as exc:
-            raise HTTPException(
-                422,
-                f"the archive's trainer_scope_presets row {index} is invalid: {exc}",
-            ) from None
+        except (ValueError, TypeError) as exc:
+            _refuse_row("trainer_scope_presets", index, exc)
         cleaned_name = cleaned["preset"]["name"]
         if cleaned_name != row.get("name"):
             original_preset_names[row["id"]] = row["name"]
             row["name"] = cleaned_name
+            # #286's count, alongside #268's own richer report of the same
+            # fact in `trainer_scope_presets_renamed` (which says what the
+            # name was and what it became). The count is here so `cleaned`
+            # covers every validated table by the same rule rather than
+            # having one table quietly absent from it.
+            cleaned_counts["trainer_scope_presets"] = (
+                cleaned_counts.get("trainer_scope_presets", 0) + 1
+            )
         preset_strings_cleaned[row["id"]] = cleaned["strings"]
     manifest["_preset_name_originals"] = original_preset_names
     manifest["_preset_strings_cleaned"] = preset_strings_cleaned
+
+    # #286: the other five tables that have a normaliser, each run through the
+    # SAME function its own POST route calls. See this section's module
+    # comment for what changed and why - in short, #268 checked presets and
+    # nothing else, so an archive could still carry a session with a negative
+    # duration, an attempt at fret 99, a goal with no target or an instrument
+    # whose tuning names more strings than it has, none of which the API
+    # itself would ever have created. Measured on 0279b50 before this
+    # changed: an archive whose practice_sessions row carried `seconds: -30`
+    # and whose trainer_attempts row carried `target_fret: 99` imported with
+    # 200 in BOTH modes and stored both values verbatim, while the same two
+    # values posted to /api/practice/sessions and /api/trainer/attempts were
+    # refused 422.
+    #
+    # WHERE A RELATED ROW IS NEEDED, IT IS RESOLVED AGAINST THE ARCHIVE, never
+    # against this library: a session's score, a session's preset and a goal's
+    # score are all checked against the archive's own rows by the referential
+    # block above, which has already refused the archive if any of them
+    # dangles. So the route's own live lookups (_normalise_session's
+    # _live_score_row / _trainer_preset_row) have no counterpart here - the
+    # ids in an archive name rows in the ARCHIVE, and _apply_import remaps
+    # every one of them to this import's own new rows afterwards.
+    #
+    # THE TWO FLAGS BOTH ROUTES ALREADY HAVE are passed the way the route that
+    # edits a STORED row passes them, because an archived row is a stored row:
+    #
+    #   `check_day_window=False` (practice_sessions). How far back a practice
+    #   day may sit from today is a rule about what somebody may CLAIM now -
+    #   patch_session already turns it off when the date is not what is being
+    #   written, for exactly the reason that applying it to an already-stored
+    #   date makes a session permanently uneditable once it is old enough.
+    #   Applied to an archive it would be worse still: every backup older than
+    #   practice.MAX_BACKDATE_DAYS would become unrestorable, which is the
+    #   opposite of what this feature is for.
+    #
+    #   `allow_missing_score` (practice_sessions, practice_goals). A 'piece'
+    #   session or a 'score' goal whose score_id is NULL is a real, already
+    #   stored row - export itself writes one whenever the score it named was
+    #   left out of the archive (a trashed score under include_trash=false) or
+    #   destroyed while the history stayed. patch_session and patch_goal grant
+    #   the same allowance from the STORED row's own values; the expressions
+    #   below are theirs, unchanged.
+    for index, row in enumerate(tables["instruments"]):
+        pitches = _archived_json(row, "string_pitches", "instruments", index)
+        try:
+            values = instruments.normalise(
+                kind=row.get("kind"),
+                name=row.get("name"),
+                fretted=row.get("fretted"),
+                string_count=row.get("string_count"),
+                string_pitches=pitches,
+                fret_count=row.get("fret_count"),
+                capo=row.get("capo"),
+                reference_pitch=row.get("reference_pitch"),
+            )
+        except (ValueError, TypeError) as exc:
+            _refuse_row("instruments", index, exc)
+        # Back into the two shapes the COLUMNS hold, so what is compared and
+        # stored is what create_instrument itself writes: the pitch list as
+        # JSON text, `fretted` as the 0/1 SQLite keeps (a bool would compare
+        # equal to it either way, but only one of the two is what the column
+        # has held since the table existed).
+        values["string_pitches"] = json.dumps(values["string_pitches"])
+        values["fretted"] = int(values["fretted"])
+        _store_cleaned("instruments", row, values)
+
+    for index, row in enumerate(tables["practice_sessions"]):
+        try:
+            values = practice.normalise_session(
+                recorded_on=_server_today(),
+                allow_missing_score=practice.is_orphaned(
+                    row.get("activity"), row.get("score_id")
+                ),
+                check_day_window=False,
+                **{key: row.get(key) for key in _SESSION_COLUMNS},
+            )
+        except (ValueError, TypeError) as exc:
+            _refuse_row("practice_sessions", index, exc)
+        _store_cleaned("practice_sessions", row, values)
+
+    for index, row in enumerate(tables["practice_goals"]):
+        try:
+            values = practice.normalise_goal(
+                allow_missing_score=(
+                    row.get("scope") == "score" and row.get("score_id") is None
+                ),
+                **{key: row.get(key) for key in _GOAL_INPUT_FIELDS},
+            )
+        except (ValueError, TypeError) as exc:
+            _refuse_row("practice_goals", index, exc)
+        # `period_end` is in what comes back but not in what went in: the
+        # normaliser derives it from the start and the period's length, so an
+        # archive whose stored end disagrees with its own start is corrected
+        # to what the period actually means rather than carried across as a
+        # week of some other number of days.
+        _store_cleaned("practice_goals", row, values)
+
+    # `session_id` is left out of what is checked and put back untouched, in
+    # both attempt tables: it is a foreign key into practice_sessions that the
+    # referential block above has already resolved within the archive and
+    # _apply_import remaps, exactly as both POST routes hold it out of the
+    # normaliser and set it themselves afterwards. `correct` is left out for
+    # the opposite reason - it is never an input at all, at either route or
+    # here: the normaliser computes it, so an archived row claiming a verdict
+    # its own target/given values do not support is corrected to the verdict
+    # those values give, which is the one thing this table exists to be
+    # queried on.
+    for index, row in enumerate(tables["trainer_attempts"]):
+        try:
+            values = trainer.normalise_attempt(
+                **{
+                    key: row.get(key)
+                    for key in _ATTEMPT_COLUMNS
+                    if key not in ("session_id", "correct")
+                }
+            )
+        except (ValueError, TypeError) as exc:
+            _refuse_row("trainer_attempts", index, exc)
+        _store_cleaned("trainer_attempts", row, values)
+
+    for index, row in enumerate(tables["trainer_chord_attempts"]):
+        fields = {
+            key: row.get(key)
+            for key in _CHORD_ATTEMPT_COLUMNS
+            if key not in ("session_id", "correct")
+        }
+        # The three columns this table stores as JSON text - a shape shown, a
+        # shape tapped, the notes it sounded. The normaliser takes and returns
+        # the Python values (and re-encodes them itself on the way out), so
+        # what _store_cleaned compares is text against text, encoded the one
+        # way log_trainer_chord_attempt encodes it.
+        for key in ("target_shape", "given_shape", "given_notes"):
+            fields[key] = _archived_json(row, key, "trainer_chord_attempts", index)
+        try:
+            values = trainer.normalise_chord_attempt(**fields)
+        except (ValueError, TypeError) as exc:
+            _refuse_row("trainer_chord_attempts", index, exc)
+        _store_cleaned("trainer_chord_attempts", row, values)
+
+    manifest["_cleaned_counts"] = cleaned_counts
     return manifest
 
 
@@ -5246,6 +5474,11 @@ def _apply_import(conn, manifest: dict, file_bytes: dict[str, bytes], written_pa
         "trainer_presets_imported": len(tables["trainer_scope_presets"]),
         "trainer_preset_strings_imported": len(tables["trainer_scope_preset_strings"]),
         "trainer_scope_presets_renamed": presets_renamed,
+        # #286. Read off the manifest rather than recounted here: the cleaning
+        # itself happened in _read_and_validate_manifest, before any
+        # transaction was open, which is what lets the dry run below report
+        # the identical map without writing anything.
+        "cleaned": manifest.get("_cleaned_counts", {}),
     }
 
 
@@ -5264,10 +5497,13 @@ async def import_library(file: UploadFile, dry_run: bool = True):
     API uses - see #56) validates the archive completely - it really is a
     Fermata export, its schema_version matches this Fermata's, every row's
     foreign keys resolve within the archive, every archived file's bytes
-    hash to what the archive itself claims for them, and every named drill
-    scope (and its string set) passes trainer.normalise_preset (#268) - and
-    reports what it found, WITHOUT opening a database transaction or writing
-    a single file.
+    hash to what the archive itself claims for them, and every row of every
+    table that has a normaliser passes the SAME function that table's own
+    POST route calls (#268 for drill scopes, #286 for instruments, sessions,
+    goals and both attempt tables) - and reports what it found, WITHOUT
+    opening a database transaction or writing a single file. `cleaned` says
+    how many rows per table the normaliser tidied on the way through, and
+    reads the same here as it does on the applied import.
     Nothing is compared against what is already in this library on a dry
     run, which is why `tags_reused` is always 0 there - see ImportOut - with
     one exception: `trainer_scope_presets_renamed` IS computed against this
@@ -5349,6 +5585,7 @@ async def import_library(file: UploadFile, dry_run: bool = True):
             "trainer_presets_imported": len(tables["trainer_scope_presets"]),
             "trainer_preset_strings_imported": len(tables["trainer_scope_preset_strings"]),
             "trainer_scope_presets_renamed": presets_renamed,
+            "cleaned": manifest.get("_cleaned_counts", {}),
         }
 
     _require_library()

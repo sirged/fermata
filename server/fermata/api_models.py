@@ -1110,6 +1110,30 @@ class ImportOut(BaseModel):
     # nothing) never reaches this list - the whole import is refused before
     # anything is written; see `import_library`'s 422 for that.
     trainer_scope_presets_renamed: list[dict[str, str]]
+    # #286: how many rows of each validated table the normaliser CHANGED on
+    # the way in - table name to row count, and only tables with a non-zero
+    # count, so `{}` means every row was already exactly what the API itself
+    # would have stored. Cleaning is not repair: a row a normaliser refuses
+    # (a negative duration, a fret outside the drill's bounds, a goal with no
+    # target at all) refuses the whole import instead and never appears here.
+    # What DOES appear is a row that was only tidied - a note that was
+    # nothing but spaces stored as NULL, a string pitch spelled "e2" stored
+    # as "E2", a goal's `period_end` recomputed from its own start, an
+    # attempt's `correct` recomputed from the notes it records, a preset name
+    # with its whitespace collapsed (which #268's
+    # `trainer_scope_presets_renamed` also reports, in more detail).
+    #
+    # Identical on a dry run and an applied import: the normalising happens
+    # during validation, before any transaction exists, so the preview
+    # reports the same map the real restore will produce - the same guarantee
+    # `trainer_scope_presets_renamed` makes.
+    #
+    # Tables with no normaliser to run (scores, tags, score_tags,
+    # transcriptions, settings, setlists, setlist_scores,
+    # trainer_scope_preset_strings) can never appear here; they keep the
+    # referential and shape checks they have always had. See docs/api.md's
+    # import section for that list and why each entry is on it.
+    cleaned: dict[str, int]
 
 
 # ---------------------------------------------------------------------------
