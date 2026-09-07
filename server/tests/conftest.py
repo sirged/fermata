@@ -841,15 +841,25 @@ def _drain_and_reset_scanner(timeout: float = 5.0) -> None:
     """
     from fermata import scanner
 
+    # The reset lives in a `finally` so a timeout still leaves the NEXT test
+    # a clean state: raising alone would blame the test that left the scan
+    # and then hand its leftovers on anyway, so the following tests would
+    # fail too and be named in error.
     deadline = time.monotonic() + timeout
-    while scanner.scan_status()["scanning"]:
-        if time.monotonic() > deadline:
-            raise AssertionError(
-                f"{_current_test_id()} left a library scan running "
-                "and it did not finish in time - the next test would have "
-                "inherited it"
-            )
-        time.sleep(0.02)
+    try:
+        while scanner.scan_status()["scanning"]:
+            if time.monotonic() > deadline:
+                raise AssertionError(
+                    f"{_current_test_id()} left a library scan running "
+                    "and it did not finish in time - the next test would have "
+                    "inherited it"
+                )
+            time.sleep(0.02)
+    finally:
+        _reset_scanner_state(scanner)
+
+
+def _reset_scanner_state(scanner) -> None:
     with scanner._state_lock:
         scanner._state.update(
             scanning=False,
@@ -881,8 +891,8 @@ def _current_test_id() -> str:
 
     Read from the environment variable pytest itself sets for exactly this
     (`PYTEST_CURRENT_TEST`) rather than threaded through as a fixture
-    argument, so `_drain_and_reset_scanner` can be called from `app_env`'s
-    plain teardown without also taking `request`.
+    argument, so `_drain_and_reset_scanner` can be called from an
+    argument-free autouse fixture without also taking `request`.
     """
     current = os.environ.get("PYTEST_CURRENT_TEST", "")
     return current.split(" ", 1)[0] if current else "a test"

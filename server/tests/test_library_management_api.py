@@ -1657,7 +1657,8 @@ def test_restore_after_a_leaked_scan_still_gets_a_404_not_a_409(client, add_scor
     above (pytest runs a module's tests in file order), so it inherits
     whatever the previous test left scanner._state holding.
 
-    Without app_env draining and resetting that state between tests, the
+    Without the autouse scanner fixture draining and resetting that state
+    between tests, the
     scan the previous test left running answers this restore with 409
     (LibraryBusy) before ever reaching the not-in-trash check; with it, this
     is indistinguishable from calling restore in a clean process and reads
