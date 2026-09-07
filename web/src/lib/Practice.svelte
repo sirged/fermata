@@ -118,18 +118,29 @@
   async function refresh() {
     error = "";
     try {
-      const [nextCurrent, nextReview, nextHistory, nextScores, nextPresets] = await Promise.all([
+      const [nextCurrent, nextReview, nextHistory, nextScores] = await Promise.all([
         api.currentGoal(today),
         api.practiceReview(REVIEW_WEEKS, today),
         api.practiceHistory(HISTORY_DAYS, today),
         api.scores(),
-        api.trainerPresets(),
       ]);
       current = nextCurrent;
       review = nextReview;
       history = nextHistory;
       scores = nextScores;
-      presets = nextPresets;
+      // Fired, not awaited: presets only supply the scope NAME a session's
+      // preset_id is shown under (issue #276), and a failure here is not a
+      // reason to blank the practice history those rows are the point of.
+      // Left out of the Promise.all above for the same reason - the trainer
+      // endpoint settling slowly must not hold up the first paint of history
+      // that has nothing to do with it.
+      api.trainerPresets()
+        .then((nextPresets) => {
+          presets = nextPresets;
+        })
+        .catch(() => {
+          presets = [];
+        });
       // Sent after the first call, because the week to ask for comes back from
       // it - the server decides which seven days "this week" is, from the
       // week-start preference, and asking for a week the client worked out

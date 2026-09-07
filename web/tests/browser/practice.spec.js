@@ -44,9 +44,10 @@ async function reset(request) {
     await (await request.get("/api/practice/sessions?limit=1000")).json()
   ).sessions;
   for (const session of sessions) await request.delete(`/api/practice/sessions/${session.id}`);
-  // Presets last, after every session referencing one is already gone - a
-  // named scope one of these tests saved would otherwise leak into the next
-  // test's history page.
+  // Presets last, after every session referencing one is already gone. This
+  // deletes EVERY preset in the throwaway library, not only ones a test
+  // happened to name - the suite shares one database, and a preset left
+  // behind by any means would leak into the next test's history page.
   for (const preset of await (await request.get("/api/trainer/presets")).json()) {
     await request.delete(`/api/trainer/presets/${preset.id}`);
   }
@@ -375,6 +376,30 @@ test("a session logged under a named scope shows that scope's name, and one logg
   const unscopedRow = rowText.find((t) => t.includes("1m"));
   expect(scopedRow, rowText.join("\n")).toContain("Top two, fifth position");
   expect(unscopedRow, rowText.join("\n")).not.toContain("Top two, fifth position");
+});
+
+test("a failing presets fetch drops the scope label, not the practice history", async ({
+  page,
+  request,
+}) => {
+  // Issue #276 follow-up: `api.trainerPresets()` used to sit inside the same
+  // `Promise.all` that gates every other call this page needs, so a trainer
+  // endpoint failure - unrelated to the sessions being shown - took the whole
+  // page down with it. Presets exist here only to put a NAME on a row that
+  // already renders without one; losing them is not a reason to lose the row.
+  const logged = await request.post("/api/practice/sessions", {
+    data: { activity: "fretboard", seconds: 90, local_date: today },
+  });
+  expect(logged.ok(), await logged.text()).toBe(true);
+
+  await page.route("**/api/trainer/presets", (route) =>
+    route.request().method() === "GET" ? route.fulfill({ status: 500 }) : route.fallback(),
+  );
+
+  await page.reload();
+  await expect(sessionRows(page)).toHaveCount(1);
+  await expect(sessionRows(page).first()).toContainText("1m");
+  await expect(notices(page)).toHaveCount(0);
 });
 
 test("a finished week asks whether the goal was realistic, and remembers the answer", async ({

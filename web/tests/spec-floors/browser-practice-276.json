@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/practice.spec.js",
+  "count": 2,
+  "reason": "issue #276: a session logged under a named scope shows that scope's name on this page, and a failing presets fetch drops only the label rather than blanking the practice history under it."
+}

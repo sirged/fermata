@@ -71,12 +71,19 @@
   async function refresh() {
     error = "";
     try {
-      const [nextData, nextPresets] = await Promise.all([
-        api.scoreProgress(id, HISTORY_DAYS, today),
-        api.trainerPresets(),
-      ]);
-      data = nextData;
-      presets = nextPresets;
+      data = await api.scoreProgress(id, HISTORY_DAYS, today);
+      // Fired, not awaited: presets only supply the scope NAME a session's
+      // preset_id is shown under (issue #276), and a failure here is not a
+      // reason to blank this piece's practice history. Left out of the
+      // scoreProgress await above so a slow trainer endpoint does not hold up
+      // the first paint of history that has nothing to do with it.
+      api.trainerPresets()
+        .then((nextPresets) => {
+          presets = nextPresets;
+        })
+        .catch(() => {
+          presets = [];
+        });
     } catch (e) {
       error = e?.message ?? "Could not load this piece's practice history.";
     } finally {

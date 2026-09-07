@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/zzzz-score-progress.spec.js",
+  "count": 2,
+  "reason": "issue #276: a session scoped to a named preset shows that scope's name on this piece's own progress page too, and a failing presets fetch drops only the label rather than blanking this piece's practice history under it."
+}
