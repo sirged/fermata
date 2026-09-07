@@ -1465,3 +1465,224 @@ def test_import_is_transactional_on_a_collision_in_the_target_library(
     # committed) before the goal collision was hit.
     assert len(client.get("/api/scores").json()) == 1
     assert len(client.get("/api/practice/goals").json()["goals"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# #275: an archive from an OLDER schema imports into this one, so the backup
+# route docs/deployment.md recommends survives a schema bump. The exact-match
+# check that used to sit here made every archive worthless the moment
+# db.SCHEMA_VERSION moved.
+#
+# EVERY OLDER ARCHIVE IN THIS SECTION IS SYNTHETIC, AND HAS TO BE. Export
+# landed on 2026-08-31, three days AFTER db.SCHEMA_VERSION last moved (to 5),
+# so no released Fermata has ever written a manifest stamped 4 or lower and
+# there is no real one to copy - see `_as_written_by_schema`, which derives
+# one from a real export by removing exactly the columns that arrived after
+# the version being simulated, rather than hand-copying rows.
+# ---------------------------------------------------------------------------
+
+
+# Which db.COLUMN_ADDITIONS entries had NOT arrived yet at a given schema
+# version - and so which keys a manifest written at that version could not
+# have carried. Read off db.py's own history: instrument_id came with 1,
+# missing_since with 4, deleted_at/deleted_from with the 4 -> 5 step (#56),
+# and key/tempo/difficulty (#8) plus practice_sessions.preset_id (#236) came
+# after 5 was already stamped, so no pre-5 archive can hold any of them.
+_ABSENT_BELOW_5 = {
+    "scores": ("deleted_at", "deleted_from", "key", "tempo", "difficulty"),
+    "practice_sessions": ("preset_id",),
+}
+_ABSENT_BELOW_4 = {"scores": ("missing_since",)}
+
+
+def _as_written_by_schema(manifest: dict, version: int) -> dict:
+    """A real export's manifest, reduced to what a Fermata at `version` could
+    have written: the stamp changed, every column that arrived later removed
+    from every row, and the tables that arrived later dropped outright (which
+    is exactly what api.LEGACY_OPTIONAL_TABLES already tolerates). Derived
+    from the live export rather than typed out, so a column added tomorrow
+    travels through here the same way it travels through _dump_table."""
+    out = json.loads(json.dumps(manifest))
+    out["schema_version"] = version
+    absent = dict(_ABSENT_BELOW_5)
+    if version < 4:
+        for table, columns in _ABSENT_BELOW_4.items():
+            absent[table] = absent.get(table, ()) + columns
+    if version < 5:
+        for table, columns in absent.items():
+            for row in out["tables"][table]:
+                for column in columns:
+                    row.pop(column, None)
+        for table in api.LEGACY_OPTIONAL_TABLES:
+            out["tables"].pop(table, None)
+    return out
+
+
+def _archive_of(manifest: dict) -> bytes:
+    return _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+
+
+def _exported_manifest(client) -> dict:
+    return json.loads(
+        _zip_of(client.get("/api/export?include_files=false")).read("manifest.json")
+    )
+
+
+def test_an_archive_from_the_schema_before_this_one_imports(client, add_score):
+    """The headline of #275. A manifest stamped 4 - no `deleted_at`, no
+    `deleted_from`, no `preset_id` on a session, and none of the four tables
+    that arrived after 5 - lands in a version 5 database, with the columns it
+    does not carry taking their schema defaults rather than being demanded of
+    it. `schema_version_read` is what says which version was actually read;
+    `schema_version` is the one the rows now live under."""
+    add_score("Prelude.pdf", title="Prelude")
+    client.post("/api/practice/sessions", json={"seconds": 300, "activity": "fretboard"})
+    older = _as_written_by_schema(_exported_manifest(client), 4)
+    assert "deleted_at" not in older["tables"]["scores"][0]
+    assert "preset_id" not in older["tables"]["practice_sessions"][0]
+
+    resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("v4.zip", _archive_of(older), "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    summary = resp.json()
+    assert summary["schema_version_read"] == 4
+    assert summary["schema_version"] == db.SCHEMA_VERSION
+    assert summary["scores_imported"] == 1
+    assert summary["scores_trashed_imported"] == 0
+    assert summary["practice_sessions_imported"] == 1
+    assert summary["trainer_presets_imported"] == 0
+
+    # Import ADDS, so the source rows and the restored ones are both here.
+    titles = sorted(s["title"] for s in client.get("/api/scores").json())
+    assert titles == ["Prelude", "Prelude"]
+    restored = client.get("/api/practice/sessions").json()["sessions"]
+    assert [s["seconds"] for s in restored] == [300, 300]
+    # The column the archive could not carry filled from the schema, not from
+    # a guess - NULL is what "practised under no named scope" already means.
+    assert [s["preset_id"] for s in restored] == [None, None]
+
+
+def test_a_dry_run_of_an_older_archive_reports_the_version_it_read(client, add_score):
+    """The dry run has to say the same thing the applied import does, or the
+    preview is worthless - `schema_version_read` included."""
+    add_score("Prelude.pdf", title="Prelude")
+    older = _as_written_by_schema(_exported_manifest(client), 4)
+
+    resp = client.post(
+        "/api/import", params={"dry_run": "true"},
+        files={"file": ("v4.zip", _archive_of(older), "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    summary = resp.json()
+    assert summary["dry_run"] is True
+    assert summary["schema_version_read"] == 4
+    assert summary["schema_version"] == db.SCHEMA_VERSION
+    # A dry run writes nothing, so the library still holds only the fixture's
+    # own score.
+    assert len(client.get("/api/scores").json()) == 1
+
+
+def test_the_oldest_accepted_schema_version_still_imports(client, add_score):
+    """api.OLDEST_IMPORTABLE_SCHEMA_VERSION is an accepted version, not the
+    first refused one - the boundary is checked from both sides here and in
+    the test below it."""
+    add_score("Prelude.pdf", title="Prelude")
+    oldest = api.OLDEST_IMPORTABLE_SCHEMA_VERSION
+    older = _as_written_by_schema(_exported_manifest(client), oldest)
+    assert "missing_since" not in older["tables"]["scores"][0]
+
+    resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("oldest.zip", _archive_of(older), "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["schema_version_read"] == oldest
+    assert len(client.get("/api/scores").json()) == 2
+
+
+def test_an_archive_from_before_the_practice_repair_is_refused_and_changes_nothing(
+    client, add_score
+):
+    """One below the floor. A database stamped 2 has not been through
+    db.MIGRATIONS' step 3, so an archive taken from one may carry a practice
+    row naming a score that is gone - which that step repairs and this import
+    path cannot. Refused with a message that says so, rather than accepted
+    and then rejected downstream for a missing score."""
+    add_score("Prelude.pdf", title="Prelude")
+    too_old = _as_written_by_schema(
+        _exported_manifest(client), api.OLDEST_IMPORTABLE_SCHEMA_VERSION - 1
+    )
+
+    resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("too-old.zip", _archive_of(too_old), "application/zip")},
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert str(api.OLDEST_IMPORTABLE_SCHEMA_VERSION) in detail
+    assert "practice" in detail
+    assert len(client.get("/api/scores").json()) == 1
+
+
+def test_an_archive_from_a_newer_fermata_is_refused_and_says_to_upgrade(client, add_score):
+    """The direction that stays refused, and the one the old exact-match
+    check was actually right about: a newer archive's rows may carry columns
+    and meanings this code knows nothing about."""
+    add_score("Prelude.pdf", title="Prelude")
+    manifest = _exported_manifest(client)
+    manifest["schema_version"] = db.SCHEMA_VERSION + 1
+
+    resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("newer.zip", _archive_of(manifest), "application/zip")},
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert "newer Fermata" in detail
+    assert "upgrade first" in detail
+    assert len(client.get("/api/scores").json()) == 1
+
+
+def test_an_archive_carrying_a_column_this_fermata_no_longer_has_is_refused_by_name(
+    client, add_score
+):
+    """The other half of accepting an older archive: a column that has since
+    been renamed or dropped cannot be inserted, and _insert_row names the
+    archive's own keys - so an unknown one would be an OperationalError in
+    the middle of write_tx() rather than a message anybody can act on. Named
+    here, before anything is written. Engineered by adding a column no
+    schema has ever had to an otherwise-importable version 4 manifest."""
+    add_score("Prelude.pdf", title="Prelude")
+    older = _as_written_by_schema(_exported_manifest(client), 4)
+    older["tables"]["scores"][0]["binding_colour"] = "green"
+
+    resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("stray-column.zip", _archive_of(older), "application/zip")},
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert "binding_colour" in detail
+    assert "scores" in detail
+    assert len(client.get("/api/scores").json()) == 1
+
+
+def test_an_archive_carrying_a_table_this_fermata_no_longer_has_is_refused_by_name(
+    client, add_score
+):
+    """The table-level form of the same rule. A key under `tables` that this
+    Fermata has no table for is refused, and the message NAMES it - which is
+    the whole of what somebody restoring an old archive needs to know."""
+    add_score("Prelude.pdf", title="Prelude")
+    older = _as_written_by_schema(_exported_manifest(client), 4)
+    older["tables"]["practice_diaries"] = []
+
+    resp = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("stray-table.zip", _archive_of(older), "application/zip")},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "practice_diaries" in resp.json()["detail"]
+    assert len(client.get("/api/scores").json()) == 1

@@ -1035,7 +1035,18 @@ class ImportOut(BaseModel):
     also a count of what is new since this call."""
 
     dry_run: bool
+    # The schema the imported rows now live under - always this Fermata's own
+    # `db.SCHEMA_VERSION`, since that is the database they were written into.
     schema_version: int
+    # #275: the version the ARCHIVE itself was stamped with, which since that
+    # issue may be older than the field above. Equal to it for an archive
+    # written by the running version, which is what every archive was before
+    # import accepted an older one at all - so this pair says exactly what was
+    # read and what it was read into, rather than leaving one number to mean
+    # both. An archive from a NEWER Fermata is refused outright and never
+    # reaches this response; so is one older than
+    # `api.OLDEST_IMPORTABLE_SCHEMA_VERSION`.
+    schema_version_read: int
     exported_at: str
     fermata_version: str
     scores_imported: int
