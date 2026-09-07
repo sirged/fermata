@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/neck-geometry.spec.js",
+  "count": 4,
+  "reason": "review follow-up to #287: adjacent hit circles never overlap at 12/22/24 frets, a 12-fret board leaves the hit radius unclamped, 22- and 24-fret boards DO clamp it below the unclamped 22, and a fixed (unclamped) radius is shown to fail the disjointness claim at 22/24 frets - the overlapping-hit-circle regression this follow-up fixes."
+}
