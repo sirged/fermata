@@ -147,6 +147,29 @@ test("string count and fret count are published on the neck, matching the standa
   await expect(neck).toHaveAttribute("data-fret-count", "12");
 });
 
+// Real fret spacing (issue #287): the rendered neck narrows toward the
+// body, not the evenly-spaced diagram it used to draw. Read directly off
+// the fret wires' own x1 attributes (neck-geometry.js's fretX, via
+// Neck.svelte's fretWireX) rather than any tap helper's assumption about
+// where a fret sits - every drill spec above locates a tap target by its
+// data-string/data-fret attributes, never by computed coordinates, so this
+// is the one place geometry itself needs checking.
+test("frets narrow toward the body: the gap between frets 1 and 2 is wider than between 11 and 12", async ({
+  page,
+}) => {
+  await startButton(page).click();
+  await expect(page.locator(".neck")).toHaveAttribute("data-fret-count", "12");
+
+  async function wireX(fret) {
+    const x = await page.locator(`.wire[data-fret="${fret}"]`).getAttribute("x1");
+    return Number(x);
+  }
+
+  const gapFirst = (await wireX(2)) - (await wireX(1));
+  const gapLast = (await wireX(12)) - (await wireX(11));
+  expect(gapFirst).toBeGreaterThan(gapLast);
+});
+
 test("a saved instrument's own tuning drives the neck, not a hardcoded six strings", async ({
   page,
   request,

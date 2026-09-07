@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/fretboard-trainer.spec.js",
+  "count": 1,
+  "reason": "issue #287: the rendered neck's fret spacing narrows toward the body - the gap between frets 1 and 2 is wider than between frets 11 and 12, read off the fret wires' own x1 attributes."
+}

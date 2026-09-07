@@ -44,6 +44,7 @@
   // how that stays legible and touch-target-sized down to tablet width
   // without a break-point, which issue #25 asks for directly.
   import { DEFAULT_FRET_COUNT, inlayDots, noteAt, pitchClass, posKey } from "./neck.js";
+  import { fretMarkerX, fretX } from "./neck-geometry.js";
 
   let {
     strings = [],
@@ -60,25 +61,35 @@
 
   // ---- geometry, in SVG user units -----------------------------------------
   const NUT_GAP = 44; // space left of the nut wire, for open-string markers
+  // A per-fret pixel unit used ONLY to size the board's TOTAL width for a
+  // given fret count - never to place an individual fret, which real fret
+  // spacing (neck-geometry.js's fretX) narrows toward the body. Keeping the
+  // total the same as the old linear layout is what keeps this component's
+  // outer size and every consumer's existing layout unchanged (issue #287).
   const FRET_WIDTH = 62;
   const STRING_GAP = 34;
   const MARGIN = 22;
   const DOT_R = 5;
   const MARKER_R = 14;
 
-  const width = $derived(NUT_GAP + Math.max(1, fretCount) * FRET_WIDTH + MARGIN);
+  const boardWidth = $derived(Math.max(1, fretCount) * FRET_WIDTH);
+  const width = $derived(NUT_GAP + boardWidth + MARGIN);
   const height = $derived(MARGIN * 2 + Math.max(0, sorted.length - 1) * STRING_GAP);
 
   function stringY(index) {
     return MARGIN + index * STRING_GAP;
   }
 
+  // Every fret wire and marker on this neck reads its x-position from here -
+  // the one function (neck-geometry.js's fretX) that knows real fret
+  // spacing, so a fret line, its inlay dot and its tap target can never
+  // disagree about where the fret is.
   function fretWireX(fret) {
-    return NUT_GAP + fret * FRET_WIDTH;
+    return NUT_GAP + fretX(fret, fretCount, boardWidth);
   }
 
   function positionX(fret) {
-    return fret === 0 ? NUT_GAP / 2 : NUT_GAP + (fret - 0.5) * FRET_WIDTH;
+    return fret === 0 ? NUT_GAP / 2 : NUT_GAP + fretMarkerX(fret, fretCount, boardWidth);
   }
 
   const fretWires = $derived(
@@ -136,7 +147,7 @@
       class="board"
       x={NUT_GAP}
       y={MARGIN - STRING_GAP / 2}
-      width={Math.max(1, fretCount) * FRET_WIDTH}
+      width={boardWidth}
       height={Math.max(0, sorted.length - 1) * STRING_GAP + STRING_GAP}
     />
 
@@ -166,6 +177,7 @@
       <line
         class="wire"
         class:nut={fret === 0}
+        data-fret={fret}
         x1={fretWireX(fret)}
         x2={fretWireX(fret)}
         y1={MARGIN - STRING_GAP / 2}
