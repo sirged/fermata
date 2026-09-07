@@ -791,13 +791,39 @@ def app_env(tmp_path, monkeypatch):
     db.init_db()
     yield
     db._local.conn = None
+
+
+@pytest.fixture(autouse=True)
+def _scanner_idle_between_tests():
+    """Wait out any scan a test left running, then reset scanner._state to
+    idle - the counterpart, for `scanner._state`, to `app_env`'s own reset of
+    `db._local.conn` (#278).
+
+    Deliberately its OWN autouse fixture, taking no fixture arguments of its
+    own - in particular not `monkeypatch`, even though `app_env` uses it and
+    this could have lived in app_env's own teardown instead. Some tests fake
+    a running scan with `monkeypatch.setitem(scanner._state, "scanning",
+    True)` rather than starting a real one (see
+    test_a_move_is_refused_while_a_scan_is_running) - a plain dict write, so
+    nothing here can distinguish it from a real scan, and it stays True until
+    `monkeypatch`'s OWN finalizer undoes it. A fixture that itself depends on
+    `monkeypatch` (as `app_env` does) tears down BEFORE `monkeypatch`'s own
+    finalizer runs (pytest tears down in the reverse of setup order, and
+    `app_env` cannot be set up before the `monkeypatch` it requires) - so
+    from inside app_env's teardown this would see that fake `True` as if it
+    were a real, permanently-stuck scan and time out. Taking no arguments
+    keeps this fixture out of that dependency chain entirely, so pytest sets
+    it up independently of `monkeypatch` and tears it down after
+    `monkeypatch` has already put the faked value back.
+    """
+    yield
     _drain_and_reset_scanner()
 
 
 def _drain_and_reset_scanner(timeout: float = 5.0) -> None:
     """Wait out any scan this test left running, then reset scanner._state to
     idle - the counterpart, for `scanner._state`, to the `db._local.conn`
-    reset just above (#278).
+    reset in `app_env` (#278).
 
     `scanner._state` is a bare module global, not per-test state, so a test
     that starts a follow-up scan (directly, or via `hold_library_still`'s own
