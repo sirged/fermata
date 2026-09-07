@@ -1824,6 +1824,26 @@ def test_an_archived_instrument_with_too_few_string_pitches_is_refused(
     )
 
 
+def test_an_archived_instrument_with_a_wrong_type_field_names_it_in_the_reason(
+    client, tmp_path, monkeypatch
+):
+    """The measured premise: `instruments.normalise` compares string_count,
+    fret_count, capo and reference_pitch against their bounds without first
+    checking they are numbers, which POST /api/instruments never has to
+    worry about (pydantic settles the type first) but an archive can carry
+    anything. On 0279b50 the 422 for a string `string_count` was Python's own
+    `'<=' not supported between instances of 'int' and 'str'` - this asserts
+    a sentence a person could act on instead."""
+    _an_instrument(client)
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["instruments"][0]["string_count"] = "6"
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _refused_in_both_modes(
+        client, manifest, "instruments row 0", "string_count must be a whole number"
+    )
+
+
 def test_an_archived_instrument_is_imported_with_its_name_and_pitches_cleaned(
     client, tmp_path, monkeypatch
 ):
@@ -1920,6 +1940,27 @@ def test_an_archived_session_note_is_imported_trimmed_and_counted(
     assert len(sessions) == 1
     assert sessions[0]["note"] == "bar 12 still rushes"
     assert sessions[0]["seconds"] == 600
+
+
+def test_an_archived_session_dated_into_the_future_is_still_refused(
+    client, tmp_path, monkeypatch
+):
+    """The measured premise behind #290's fix: `check_day_window=False` used
+    to gate BOTH bounds on local_date, so exempting import from the
+    backdating floor silently exempted it from "local_date is in the
+    future" too. An archive is still a claim that each session happened on
+    the date it names - restoring one should not be a way to log practice
+    for a day that has not happened, which posting the same date to
+    /api/practice/sessions still refuses. Nothing is applied in either
+    mode."""
+    client.post("/api/practice/sessions", json={"seconds": 600, "activity": "technique"})
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["practice_sessions"][0]["local_date"] = "2099-01-01"
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _refused_in_both_modes(
+        client, manifest, "practice_sessions row 0", "local_date is in the future"
+    )
 
 
 def test_an_archived_session_older_than_the_backdating_window_still_imports(
