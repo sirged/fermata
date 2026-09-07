@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/scope-presets.spec.js",
+  "count": 1,
+  "reason": "issue #277: deleting a saved scope states how many sessions logged under it kept their time, using sessions_kept from the route's response, and the removed scope drops out of the other drill's picker too."
+}
