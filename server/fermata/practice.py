@@ -282,6 +282,7 @@ def normalise_session(
     preset_id=None,
     allow_missing_score=False,
     check_day_window=True,
+    max_backdate_days=MAX_BACKDATE_DAYS,
 ) -> dict:
     """Check a session and return the values to store.
 
@@ -301,11 +302,18 @@ def normalise_session(
     an honest claim into a rule about keeping one.
 
     `check_day_window` is False when the practice day is not what is being
-    written. How far back a NEW date may be is a rule about what somebody may
-    claim now; applied to a date already stored it becomes a rule that makes a
-    session permanently uneditable once it is old enough - so a note or a
-    rating on last year's practice could not be corrected, for reasons that
-    have nothing to do with either.
+    written at all - patch_session's case, where the value in `local_date`
+    is only the already-stored one being carried forward unchanged. Turning
+    the window off there is right for BOTH bounds, because neither one is a
+    claim being made now.
+
+    `max_backdate_days` is the separate, narrower exemption import uses: it
+    still wants "local_date is in the future" enforced (an archive claims a
+    date exists, exactly as a POST does), but not the backdating floor, since
+    that floor bounds how far back a NEW claim may reach and a restored
+    archive is not a new claim. Passing None here lifts only that floor,
+    while `check_day_window` stays True and the future check still runs. It
+    has no effect when `check_day_window` is False.
     """
     activity = activity or DEFAULT_ACTIVITY
     if activity not in ACTIVITIES:
@@ -331,8 +339,11 @@ def normalise_session(
         if check_day_window:
             if day > recorded_on + timedelta(days=MAX_FUTURE_DAYS):
                 raise ValueError("local_date is in the future")
-            if day < recorded_on - timedelta(days=MAX_BACKDATE_DAYS):
-                raise ValueError(f"local_date is more than {MAX_BACKDATE_DAYS} days ago")
+            if (
+                max_backdate_days is not None
+                and day < recorded_on - timedelta(days=max_backdate_days)
+            ):
+                raise ValueError(f"local_date is more than {max_backdate_days} days ago")
 
     from_bar, to_bar = _range(from_bar, to_bar, "from_bar", "to_bar", MAX_BAR)
     from_page, to_page = _range(from_page, to_page, "from_page", "to_page", MAX_PAGE)

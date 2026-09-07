@@ -280,6 +280,27 @@ def _clean_name(name) -> str:
     return re.sub(r"\s+", " ", stripped).strip()
 
 
+def _whole_number(value, field: str) -> int:
+    """A range check below this needs an int already, not merely something
+    orderable against one: a POST body's pydantic model has settled that
+    before `normalise` ever runs, but an archived row (import runs this same
+    function against a hand-editable manifest, with no such layer in front of
+    it) has not, and comparing an int bound against a str or a None raises
+    TypeError with Python's own wording ("'<=' not supported between
+    instances of..."), not a sentence a person reading a 422 could act on."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field} must be a whole number")
+    return value
+
+
+def _finite_number(value, field: str) -> float:
+    """Same reasoning as `_whole_number`, for the one field that is a float
+    rather than an int."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a number")
+    return value
+
+
 def normalise(
     *,
     kind,
@@ -312,6 +333,7 @@ def normalise(
 
     fretted = bool(fretted)
 
+    string_count = _whole_number(string_count, "string_count")
     if not MIN_STRINGS <= string_count <= MAX_STRINGS:
         raise ValueError(f"string_count must be between {MIN_STRINGS} and {MAX_STRINGS}")
 
@@ -321,9 +343,10 @@ def normalise(
     if fretted:
         if fret_count is None:
             raise ValueError("fret_count is required on a fretted instrument")
+        fret_count = _whole_number(fret_count, "fret_count")
         if not MIN_FRETS <= fret_count <= MAX_FRETS:
             raise ValueError(f"fret_count must be between {MIN_FRETS} and {MAX_FRETS}")
-        capo = 0 if capo is None else capo
+        capo = 0 if capo is None else _whole_number(capo, "capo")
         if not 0 <= capo <= fret_count:
             raise ValueError(f"capo must be between 0 and the fret count ({fret_count})")
     else:
@@ -373,6 +396,7 @@ def normalise(
         # distinction to whoever typed one.
         canonical.append(pitch_name(step, alter, octave))
 
+    reference_pitch = _finite_number(reference_pitch, "reference_pitch")
     if not MIN_REFERENCE_HZ <= reference_pitch <= MAX_REFERENCE_HZ:
         raise ValueError(
             f"reference_pitch must be between {MIN_REFERENCE_HZ} and {MAX_REFERENCE_HZ} Hz"

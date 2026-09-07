@@ -21,14 +21,16 @@ feature exists not to have.
 import hashlib
 import io
 import json
+import re
 
 import zipfile
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from fermata import api, db, scanner
+from fermata import api, db, instruments, practice, scanner
 from fermata import trainer as trainer_module
 
 FIXTURE = b"<score-file-bytes-standing-in-for-a-pdf>"
@@ -1686,3 +1688,620 @@ def test_an_archive_carrying_a_table_this_fermata_no_longer_has_is_refused_by_na
     assert resp.status_code == 422, resp.text
     assert "practice_diaries" in resp.json()["detail"]
     assert len(client.get("/api/scores").json()) == 1
+
+
+# ---------------------------------------------------------------------------
+# #286: every table that has a normaliser is run through it on the way in.
+#
+# #268 did this for named drill scopes and said outright that it did presets
+# only. That left the archive - the documented migration path onto the server
+# stack, and a JSON file anybody can open in an editor - as the one way into
+# this database that skipped the rules every POST route applies. Measured on
+# 0279b50 before this section existed: a manifest whose practice_sessions row
+# carried `seconds: -30` and whose trainer_attempts row carried
+# `target_fret: 99` imported with 200 in BOTH modes and stored both values
+# verbatim, while POST /api/practice/sessions and POST /api/trainer/attempts
+# refused those same two values with 422.
+#
+# Each table below gets the same pair of tests: a REFUSED row (4xx, nothing
+# applied, dry run and applied identical) and a CLEANED row (imported as the
+# value POST would have stored, and counted in `ImportOut.cleaned`).
+# ---------------------------------------------------------------------------
+
+
+def _target_library_is_untouched(client):
+    """Every table this feature writes, read back through the API, still
+    empty. Asserted after each refusal rather than trusting the status code:
+    a clean 422 that still left one row behind is exactly the bug this
+    feature exists not to have (see this module's own docstring)."""
+    assert client.get("/api/scores").json() == []
+    assert client.get("/api/instruments").json() == []
+    assert client.get("/api/practice/sessions").json()["sessions"] == []
+    assert client.get("/api/practice/goals").json()["goals"] == []
+    assert client.get("/api/trainer/attempts").json()["attempts"] == []
+    assert client.get("/api/trainer/chord-attempts").json()["attempts"] == []
+    assert client.get("/api/trainer/presets").json() == []
+    assert client.get("/api/tags").json() == []
+    assert client.get("/api/setlists").json() == []
+
+
+def _refused_in_both_modes(client, manifest, *fragments):
+    """Post one hand-edited manifest as a dry run AND as an applied import,
+    and require the two answers to be identical - the parity half of the
+    promise, which is the whole point of validating before a transaction is
+    ever opened. `fragments` are substrings the message has to carry: the
+    table and row position, and the normaliser's own reason."""
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+    answers = []
+    for dry_run in (True, False):
+        resp = client.post(
+            "/api/import", params={"dry_run": str(dry_run).lower()},
+            files={"file": ("hand-edited.zip", archive, "application/zip")},
+        )
+        assert resp.status_code == 422, f"dry_run={dry_run}: {resp.text}"
+        for fragment in fragments:
+            assert fragment in resp.text, f"dry_run={dry_run}: {resp.text}"
+        answers.append((resp.status_code, resp.json()))
+    assert answers[0] == answers[1]
+    _target_library_is_untouched(client)
+
+
+def _imported_in_both_modes(client, manifest, expected_cleaned):
+    """The other side: an archive whose rows the normaliser only CLEANS is
+    imported, and both modes report the same `cleaned` map. Returns the
+    applied import's own response body."""
+    archive = _bytes_of_zip({"manifest.json": json.dumps(manifest).encode()})
+    preview = client.post(
+        "/api/import", files={"file": ("hand-edited.zip", archive, "application/zip")},
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["cleaned"] == expected_cleaned
+    _target_library_is_untouched(client)
+
+    applied = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("hand-edited.zip", archive, "application/zip")},
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["cleaned"] == expected_cleaned
+    return applied.json()
+
+
+def _an_instrument(client):
+    resp = client.post(
+        "/api/instruments",
+        json={
+            "name": "Parlour guitar",
+            "string_count": 6,
+            "string_pitches": ["E2", "A2", "D3", "G3", "B3", "E4"],
+            "fretted": True,
+            "fret_count": 19,
+            "capo": 2,
+            "reference_pitch": 442.0,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _a_chord_attempt(client, **overrides):
+    body = {
+        "drill": "chord_flashcards",
+        "direction": "shape_to_name",
+        "target_root": "C",
+        "target_quality": "major",
+        "target_shape": [
+            {"string": 5, "fret": 3},
+            {"string": 4, "fret": 2},
+            {"string": 3, "fret": 0},
+            {"string": 2, "fret": 1},
+            {"string": 1, "fret": 0},
+        ],
+        "given_root": "C",
+        "given_quality": "major",
+    }
+    body.update(overrides)
+    resp = client.post("/api/trainer/chord-attempts", json=body)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_an_archived_instrument_with_too_few_string_pitches_is_refused(
+    client, tmp_path, monkeypatch
+):
+    """A six-string instrument whose tuning names no strings at all. POST
+    /api/instruments cannot produce one (instruments.normalise counts the
+    pitches against string_count), so only a hand-edited archive carries it -
+    and stored, it is an instrument whose neck cannot be drawn."""
+    _an_instrument(client)
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    # The column holds JSON text, which is what the manifest carries.
+    manifest["tables"]["instruments"][0]["string_pitches"] = "[]"
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _refused_in_both_modes(
+        client, manifest, "instruments row 0", "0 string pitch(es) were given"
+    )
+
+
+def test_an_archived_instrument_with_a_wrong_type_field_names_it_in_the_reason(
+    client, tmp_path, monkeypatch
+):
+    """The measured premise: `instruments.normalise` compares string_count,
+    fret_count, capo and reference_pitch against their bounds without first
+    checking they are numbers, which POST /api/instruments never has to
+    worry about (pydantic settles the type first) but an archive can carry
+    anything. On 0279b50 the 422 for a string `string_count` was Python's own
+    `'<=' not supported between instances of 'int' and 'str'` - this asserts
+    a sentence a person could act on instead."""
+    _an_instrument(client)
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["instruments"][0]["string_count"] = "6"
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _refused_in_both_modes(
+        client, manifest, "instruments row 0", "string_count must be a whole number"
+    )
+
+
+def test_an_archived_instrument_is_imported_with_its_name_and_pitches_cleaned(
+    client, tmp_path, monkeypatch
+):
+    """The cleaned half. A name with doubled spaces and pitch names in
+    lowercase are both things instruments.normalise tidies rather than
+    refuses - so the row is imported as POST would have stored it ("E2", not
+    "e2": storing the typed spelling is what makes a later comparison against
+    a preset or a tuning miss), and the ONE row it changed is counted."""
+    _an_instrument(client)
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    row = manifest["tables"]["instruments"][0]
+    row["name"] = "  Parlour   guitar  "
+    row["string_pitches"] = json.dumps(["e2", "a2", "d3", "g3", "b3", "e4"])
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _imported_in_both_modes(client, manifest, {"instruments": 1})
+
+    imported = client.get("/api/instruments").json()
+    assert len(imported) == 1
+    assert imported[0]["name"] == "Parlour guitar"
+    assert imported[0]["string_pitches"] == ["E2", "A2", "D3", "G3", "B3", "E4"]
+
+
+def test_an_archived_setlist_named_only_whitespace_is_refused(
+    client, tmp_path, monkeypatch
+):
+    """A setlist's name is the only rule it has, and `_clean_setlist_name` -
+    which both POST /api/setlists and the rename endpoint apply - refuses a
+    name that is nothing but whitespace rather than storing a blank. An
+    archived one would otherwise restore as an unnamed entry in a list of
+    named arrangements."""
+    created = client.post("/api/setlists", json={"name": "Recital order"})
+    assert created.status_code == 200, created.text
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["setlists"][0]["name"] = "   "
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _refused_in_both_modes(client, manifest, "setlists row 0", "a setlist needs a name")
+
+
+def test_an_archived_setlist_name_is_imported_with_its_whitespace_collapsed(
+    client, tmp_path, monkeypatch
+):
+    """And the cleaned half: doubled spaces and padded ends are collapsed and
+    trimmed, exactly as the route would have stored the same name, with the
+    one row it changed counted."""
+    created = client.post("/api/setlists", json={"name": "Recital order"})
+    assert created.status_code == 200, created.text
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["setlists"][0]["name"] = "  Recital   order  "
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _imported_in_both_modes(client, manifest, {"setlists": 1})
+
+    setlists = client.get("/api/setlists").json()
+    assert [s["name"] for s in setlists] == ["Recital order"]
+
+
+def test_an_archived_session_with_a_negative_duration_is_refused(
+    client, tmp_path, monkeypatch
+):
+    """The issue's own example, and the measured premise: on 0279b50 this
+    archive imported with 200 in both modes and stored `seconds: -30`, a
+    duration POST /api/practice/sessions refuses with 422 - practice time
+    that ran backwards, counted into every total this library reports."""
+    client.post("/api/practice/sessions", json={"seconds": 600, "activity": "technique"})
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["practice_sessions"][0]["seconds"] = -30
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _refused_in_both_modes(
+        client, manifest, "practice_sessions row 0", "seconds must be between 1 and 86400"
+    )
+
+
+def test_an_archived_session_note_is_imported_trimmed_and_counted(
+    client, tmp_path, monkeypatch
+):
+    """A note that is nothing but padding around a sentence. practice's
+    `_optional_text` trims it (and stores a note that is ONLY whitespace as
+    NULL, so "nothing was written" is one value rather than two), which is a
+    cleaning, not a refusal."""
+    client.post(
+        "/api/practice/sessions",
+        json={"seconds": 600, "activity": "technique", "note": "bar 12 still rushes"},
+    )
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["practice_sessions"][0]["note"] = "   bar 12 still rushes   "
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _imported_in_both_modes(client, manifest, {"practice_sessions": 1})
+
+    sessions = client.get("/api/practice/sessions").json()["sessions"]
+    assert len(sessions) == 1
+    assert sessions[0]["note"] == "bar 12 still rushes"
+    assert sessions[0]["seconds"] == 600
+
+
+def test_an_archived_session_dated_into_the_future_is_still_refused(
+    client, tmp_path, monkeypatch
+):
+    """The measured premise behind #290's fix: `check_day_window=False` used
+    to gate BOTH bounds on local_date, so exempting import from the
+    backdating floor silently exempted it from "local_date is in the
+    future" too. An archive is still a claim that each session happened on
+    the date it names - restoring one should not be a way to log practice
+    for a day that has not happened, which posting the same date to
+    /api/practice/sessions still refuses. Nothing is applied in either
+    mode."""
+    client.post("/api/practice/sessions", json={"seconds": 600, "activity": "technique"})
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["practice_sessions"][0]["local_date"] = "2099-01-01"
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _refused_in_both_modes(
+        client, manifest, "practice_sessions row 0", "local_date is in the future"
+    )
+
+
+def test_an_archived_session_older_than_the_backdating_window_still_imports(
+    client, tmp_path, monkeypatch
+):
+    """The one rule this section deliberately does NOT apply to an archive.
+    How far back a practice day may sit from today bounds what somebody may
+    CLAIM now (practice.MAX_BACKDATE_DAYS); applied to an already-stored
+    date it would make every backup older than that unrestorable, which is
+    the opposite of what an archive is for. patch_session already turns the
+    same check off when the date is not what is being written, and import
+    passes the flag the same way - so a session from years ago imports
+    untouched and is not counted as cleaned either."""
+    client.post("/api/practice/sessions", json={"seconds": 600, "activity": "technique"})
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["practice_sessions"][0]["local_date"] = "2019-04-01"
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _imported_in_both_modes(client, manifest, {})
+
+    sessions = client.get("/api/practice/sessions").json()["sessions"]
+    assert [s["local_date"] for s in sessions] == ["2019-04-01"]
+
+
+def test_an_archived_goal_with_no_target_at_all_is_refused(client, tmp_path, monkeypatch):
+    """A goal has to be concrete enough to be either met or missed, which is
+    the whole point of setting one - practice.normalise_goal requires at
+    least one of days or minutes. A goal with neither cannot be created
+    through POST /api/practice/goals and cannot be counted by anything that
+    reads it back."""
+    resp = client.post("/api/practice/goals", json={"target_days": 3})
+    assert resp.status_code == 200, resp.text
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["practice_goals"][0]["target_days"] = None
+    manifest["tables"]["practice_goals"][0]["target_minutes"] = None
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _refused_in_both_modes(client, manifest, "practice_goals row 0", "a goal needs a target")
+
+
+def test_an_archived_goals_period_end_is_recomputed_from_its_own_start(
+    client, tmp_path, monkeypatch
+):
+    """`period_end` is derived, never stated: normalise_goal computes it from
+    the start and the period's length, which is why POST cannot be given one.
+    An archive CAN carry one - and one that disagrees with its own start
+    describes a week of some other number of days, which every query that
+    counts practice into a period would then read as truth. Corrected on the
+    way in, and counted."""
+    resp = client.post("/api/practice/goals", json={"target_days": 3})
+    assert resp.status_code == 200, resp.text
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    goal_row = manifest["tables"]["practice_goals"][0]
+    real_end = goal_row["period_end"]
+    goal_row["period_end"] = "2099-12-31"
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _imported_in_both_modes(client, manifest, {"practice_goals": 1})
+
+    goals = client.get("/api/practice/goals").json()["goals"]
+    assert len(goals) == 1
+    assert goals[0]["period_end"] == real_end
+
+
+def test_an_archived_attempt_at_a_fret_outside_the_bounds_is_refused(
+    client, tmp_path, monkeypatch
+):
+    """The issue's second example, and the other half of the measured
+    premise: on 0279b50 an archive carrying `target_fret: 99` imported with
+    200 in both modes and stored it, while POST /api/trainer/attempts refuses
+    the same value with 422. A position no instrument this app accepts could
+    have is not a hard question about drills - it is a row that makes "which
+    positions get missed" answer with a fret nobody ever played."""
+    client.post(
+        "/api/trainer/attempts",
+        json={
+            "drill": "fret_to_note", "direction": "position_to_note",
+            "target_string": 6, "target_fret": 3, "target_note": "G", "given_note": "G",
+        },
+    )
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["trainer_attempts"][0]["target_fret"] = 99
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _refused_in_both_modes(
+        client, manifest, "trainer_attempts row 0", "target_fret must be between 0 and 36"
+    )
+
+
+def test_an_archived_attempts_verdict_is_recomputed_from_the_notes_it_records(
+    client, tmp_path, monkeypatch
+):
+    """`correct` is computed by trainer.normalise_attempt and is NEVER
+    accepted from a caller - TrainerAttemptIn has no such field at all. An
+    archive carries the column, so a hand-edited one can claim a verdict its
+    own target/given notes do not support: here, a wrong answer marked
+    correct. Recomputed on the way in from the two notes, which is the one
+    thing this table exists to be queried on, and counted as cleaned."""
+    client.post(
+        "/api/trainer/attempts",
+        json={
+            "drill": "fret_to_note", "direction": "position_to_note",
+            "target_string": 1, "target_fret": 0, "target_note": "E", "given_note": "F",
+        },
+    )
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    assert manifest["tables"]["trainer_attempts"][0]["correct"] == 0
+    manifest["tables"]["trainer_attempts"][0]["correct"] = 1
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _imported_in_both_modes(client, manifest, {"trainer_attempts": 1})
+
+    attempts = client.get("/api/trainer/attempts").json()["attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["target_note"] == "E" and attempts[0]["given_note"] == "F"
+    assert attempts[0]["correct"] is False
+
+
+def test_an_archived_chord_attempt_with_a_shape_outside_the_bounds_is_refused(
+    client, tmp_path, monkeypatch
+):
+    """The same bounds a single position is held to, applied to every
+    position in a shown fingering (trainer._shape). A shape reaching fret 99
+    cannot be posted and cannot be drawn."""
+    _a_chord_attempt(client)
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    row = manifest["tables"]["trainer_chord_attempts"][0]
+    shape = json.loads(row["target_shape"])
+    shape[0]["fret"] = 99
+    row["target_shape"] = json.dumps(shape)
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _refused_in_both_modes(
+        client, manifest,
+        "trainer_chord_attempts row 0", "target_shape fret must be between 0 and 36",
+    )
+
+
+def test_an_archived_chord_attempts_verdict_is_recomputed_from_its_tone_sets(
+    client, tmp_path, monkeypatch
+):
+    """The chord drill's own form of the rule above: `correct` is decided by
+    comparing TONE SETS, in trainer.normalise_chord_attempt, and is never
+    accepted from a caller. A C major shape answered "A minor" is wrong; an
+    archive claiming otherwise is corrected, not carried."""
+    attempt = _a_chord_attempt(client, given_root="A", given_quality="minor")
+    assert attempt["correct"] is False
+    manifest = json.loads(_zip_of(client.get("/api/export")).read("manifest.json"))
+    manifest["tables"]["trainer_chord_attempts"][0]["correct"] = 1
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    _imported_in_both_modes(client, manifest, {"trainer_chord_attempts": 1})
+
+    attempts = client.get("/api/trainer/chord-attempts").json()["attempts"]
+    assert len(attempts) == 1
+    assert attempts[0]["correct"] is False
+    assert attempts[0]["given_root"] == "A" and attempts[0]["given_quality"] == "minor"
+
+
+def test_a_real_export_of_every_validated_table_round_trips_with_nothing_cleaned(
+    client, add_score, tmp_path, monkeypatch
+):
+    """The guard on the whole section: everything above rewrites values on
+    the way in, and a rule applied a little too eagerly would show up here as
+    a real export coming back changed. One row in each of the five tables
+    #286 validates (plus the preset #268 already did), written through the
+    API itself, exported and imported - `cleaned` is empty in BOTH modes,
+    which is the claim that normalising an archive Fermata itself wrote is a
+    no-op, and every value is read back identical."""
+    score_id = add_score("Classical/Prelude.pdf", title="Prelude")
+    _an_instrument(client)
+    client.post("/api/setlists", json={"name": "Recital order"})
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Fifth position", "start_fret": 5, "end_fret": 9, "strings": [1, 2, 3]},
+    )
+    session = client.post(
+        f"/api/scores/{score_id}/practice",
+        json={"seconds": 900, "tempo_bpm": 88, "mode": "section", "rating": 4,
+              "note": "bar 12 still rushes"},
+    ).json()["session"]
+    client.post(
+        "/api/practice/goals",
+        json={"scope": "score", "score_id": score_id, "target_days": 3,
+              "intent": "clean at full tempo"},
+    )
+    client.post(
+        "/api/trainer/attempts",
+        json={
+            "session_id": session["id"], "drill": "fret_to_note",
+            "direction": "position_to_note", "target_string": 6, "target_fret": 3,
+            "target_note": "G", "given_note": "G",
+        },
+    )
+    _a_chord_attempt(client, session_id=session["id"])
+
+    expected_instruments = client.get("/api/instruments").json()
+    expected_sessions = client.get("/api/practice/sessions").json()["sessions"]
+    expected_goals = client.get("/api/practice/goals").json()["goals"]
+    expected_attempts = client.get("/api/trainer/attempts").json()["attempts"]
+    expected_chords = client.get("/api/trainer/chord-attempts").json()["attempts"]
+    expected_setlists = [s["name"] for s in client.get("/api/setlists").json()]
+    archive = client.get("/api/export").content
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+    preview = client.post(
+        "/api/import", files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["cleaned"] == {}
+
+    applied = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["cleaned"] == {}
+
+    def _without_ids(rows, *drop):
+        return [
+            {k: v for k, v in row.items() if k not in ("id", "session_id", "score_id", *drop)}
+            for row in rows
+        ]
+
+    assert _without_ids(client.get("/api/instruments").json()) == _without_ids(
+        expected_instruments
+    )
+    assert _without_ids(
+        client.get("/api/practice/sessions").json()["sessions"]
+    ) == _without_ids(expected_sessions)
+    assert _without_ids(client.get("/api/practice/goals").json()["goals"]) == _without_ids(
+        expected_goals
+    )
+    assert _without_ids(
+        client.get("/api/trainer/attempts").json()["attempts"], "created_at"
+    ) == _without_ids(expected_attempts, "created_at")
+    assert _without_ids(
+        client.get("/api/trainer/chord-attempts").json()["attempts"], "created_at"
+    ) == _without_ids(expected_chords, "created_at")
+    assert [s["name"] for s in client.get("/api/setlists").json()] == expected_setlists
+
+
+def test_one_definition_per_rule_and_both_the_route_and_import_run_it(
+    client, tmp_path, monkeypatch
+):
+    """The contract this bet actually rests on: a rule has ONE definition,
+    and the import path and the POST route both call THAT one - not a second
+    copy that can drift from it. Checked two ways, because neither alone is
+    enough. First by source: each rule's `def` appears exactly once in the
+    package, so `grep -n "def normalise_"` shows one definition per rule.
+    Then by behaviour: each definition is replaced with a spy, and both a
+    POST and an import are made - a copy of the rule anywhere would leave one
+    of the two callers unrecorded."""
+    package = Path(api.__file__).resolve().parent
+    sources = {p.name: p.read_text(encoding="utf-8") for p in package.glob("*.py")}
+    # (module, attribute) for every rule import now shares with a route.
+    rules = (
+        (instruments, "normalise"),
+        (practice, "normalise_session"),
+        (practice, "normalise_goal"),
+        (trainer_module, "normalise_attempt"),
+        (trainer_module, "normalise_chord_attempt"),
+        (trainer_module, "normalise_preset"),
+        # A setlist's name is its only rule, and it lives among the routes
+        # rather than in a domain module - three lines with nothing else to
+        # keep them company (see its own docstring). Import calls that one,
+        # not a second copy of the same three lines.
+        (api, "_clean_setlist_name"),
+    )
+    for module, name in rules:
+        definitions = sum(
+            len(re.findall(rf"^def {name}\(", text, re.MULTILINE))
+            for text in sources.values()
+        )
+        assert definitions == 1, f"{name} is defined {definitions} times, not once"
+        # And the one definition lives in the module the route imports it
+        # from, rather than being re-exported from somewhere else.
+        assert re.search(
+            rf"^def {name}\(", sources[Path(module.__file__).name], re.MULTILINE
+        ), f"{name} is not defined in {Path(module.__file__).name}"
+
+    # --- A source library with one row per validated table. ---
+    _an_instrument(client)
+    client.post("/api/setlists", json={"name": "Recital order"})
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Fifth position", "start_fret": 5, "end_fret": 9, "strings": [1, 2, 3]},
+    )
+    client.post("/api/practice/sessions", json={"seconds": 600, "activity": "technique"})
+    client.post("/api/practice/goals", json={"target_days": 3})
+    client.post(
+        "/api/trainer/attempts",
+        json={
+            "drill": "fret_to_note", "direction": "position_to_note",
+            "target_string": 6, "target_fret": 3, "target_note": "G", "given_note": "G",
+        },
+    )
+    _a_chord_attempt(client)
+    archive = client.get("/api/export").content
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+
+    callers: dict[str, set[str]] = {name: set() for _, name in rules}
+    phase = {"who": "route"}
+
+    def _spy(module, name):
+        real = getattr(module, name)
+
+        def wrapper(*args, **kwargs):
+            callers[name].add(phase["who"])
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(module, name, wrapper)
+
+    for module, name in rules:
+        _spy(module, name)
+
+    # --- The routes, on the fresh library. ---
+    _an_instrument(client)
+    client.post("/api/setlists", json={"name": "Encores"})
+    client.post(
+        "/api/trainer/presets",
+        json={"name": "Ninth position", "start_fret": 9, "end_fret": 12, "strings": [1]},
+    )
+    client.post("/api/practice/sessions", json={"seconds": 600, "activity": "technique"})
+    client.post("/api/practice/goals", json={"target_days": 3})
+    client.post(
+        "/api/trainer/attempts",
+        json={
+            "drill": "fret_to_note", "direction": "position_to_note",
+            "target_string": 6, "target_fret": 3, "target_note": "G", "given_note": "G",
+        },
+    )
+    _a_chord_attempt(client)
+
+    # --- The same six rules, reached through import instead. ---
+    phase["who"] = "import"
+    resp = client.post(
+        "/api/import", files={"file": ("export.zip", archive, "application/zip")},
+    )
+    assert resp.status_code == 200, resp.text
+
+    for _, name in rules:
+        assert callers[name] == {"route", "import"}, f"{name}: only {sorted(callers[name])}"
