@@ -22,6 +22,7 @@ import hashlib
 import io
 import json
 import re
+import struct
 
 import zipfile
 from pathlib import Path
@@ -1359,6 +1360,35 @@ def _bytes_of_zip(entries: dict[str, bytes]) -> bytes:
     return buf.getvalue()
 
 
+def _corrupt_one_crc_byte(archive: bytes, member: str) -> bytes:
+    """Flip one byte of `member`'s CRC-32 as recorded in the archive's
+    central directory - #292's exact shape: the zip itself stays well-formed
+    (still opens, still lists every name), but `ZipFile.read()` on that ONE
+    member raises `zipfile.BadZipFile` partway through decompressing it,
+    rather than the `KeyError` a missing name raises. That is a different
+    exception than every other rejection test in this file provokes, and is
+    the one the two `zf.read()` calls in api.py did not used to catch.
+
+    Central directory file header layout (`PK\\x01\\x02`): the CRC-32 field
+    sits 16 bytes past the signature - see APPNOTE.TXT section 4.3.12, or
+    just count the fixed fields before it (sig, ver-made-by, ver-needed,
+    flags, method, time, date, then crc)."""
+    sig = b"PK\x01\x02"
+    buf = bytearray(archive)
+    idx = 0
+    while True:
+        idx = buf.find(sig, idx)
+        if idx == -1:
+            raise AssertionError(f"{member!r} not found in central directory")
+        name_len = struct.unpack_from("<H", buf, idx + 28)[0]
+        name = bytes(buf[idx + 46 : idx + 46 + name_len])
+        if name == member.encode():
+            crc_offset = idx + 16
+            buf[crc_offset] ^= 0xFF
+            return bytes(buf)
+        idx += len(sig)
+
+
 def test_import_rejects_a_zip_with_no_manifest(client):
     archive = _bytes_of_zip({"nothing.txt": b"not an export"})
     resp = client.post(
@@ -1420,6 +1450,73 @@ def test_import_rejects_a_corrupted_file_and_writes_nothing(client, add_score, t
     )
     assert resp.status_code == 422
     assert "hash" in resp.json()["detail"] or "corrupt" in resp.json()["detail"]
+    assert client.get("/api/scores").json() == []
+
+
+def test_import_rejects_a_corrupted_manifest_crc_in_both_modes(
+    client, add_score, tmp_path, monkeypatch
+):
+    """#292: a real export whose manifest.json CRC-32 is off by one byte in
+    the central directory used to reach `ZipFile.read()` unhandled -
+    `zipfile.BadZipFile` isn't `KeyError`, so it fell through the manifest
+    reader's existing `except KeyError` and reached the framework as a bare
+    500 instead of this feature's usual unreadable-archive 422. Both dry run
+    and applied import call `_read_and_validate_manifest` before either one
+    opens a transaction, so one corrupted archive proves both."""
+    add_score("Prelude.pdf", title="Prelude")
+    archive = client.get("/api/export").content
+    corrupted = _corrupt_one_crc_byte(archive, "manifest.json")
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+
+    dry = client.post(
+        "/api/import", params={"dry_run": "true"},
+        files={"file": ("corrupt.zip", corrupted, "application/zip")},
+    )
+    assert dry.status_code == 422, dry.text
+    assert "manifest.json" in dry.json()["detail"]
+
+    applied = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("corrupt.zip", corrupted, "application/zip")},
+    )
+    assert applied.status_code == 422, applied.text
+    assert "manifest.json" in applied.json()["detail"]
+    assert client.get("/api/scores").json() == []
+
+
+def test_import_rejects_a_corrupted_score_file_crc_in_both_modes(
+    client, add_score, tmp_path, monkeypatch
+):
+    """Same shape as the manifest case above, but for the OTHER `zf.read()`
+    this route makes: a score file's own bytes under `files/`, read inside
+    the `_referenced_files` loop that runs identically before dry run and
+    apply branch apart, so a `BadZipFile` there used to escape its own
+    `except KeyError` the same way manifest.json's did."""
+    add_score("Prelude.pdf", title="Prelude")
+    archive = client.get("/api/export").content
+    names = [n for n in zipfile.ZipFile(io.BytesIO(archive)).namelist() if n.startswith("files/")]
+    assert len(names) == 1
+    corrupted = _corrupt_one_crc_byte(archive, names[0])
+
+    _switch_to_a_fresh_environment(monkeypatch, tmp_path, "target")
+
+    dry = client.post(
+        "/api/import", params={"dry_run": "true"},
+        files={"file": ("corrupt.zip", corrupted, "application/zip")},
+    )
+    assert dry.status_code == 422, dry.text
+    assert names[0] in dry.json()["detail"]
+
+    applied = client.post(
+        "/api/import", params={"dry_run": "false"},
+        files={"file": ("corrupt.zip", corrupted, "application/zip")},
+    )
+    assert applied.status_code == 422, applied.text
+    assert names[0] in applied.json()["detail"]
+    # The refusal happens in the pre-transaction file-collection loop, before
+    # _apply_import ever opens write_tx() - so this is nothing inserted, not
+    # merely something rolled back.
     assert client.get("/api/scores").json() == []
 
 
