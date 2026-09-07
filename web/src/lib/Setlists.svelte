@@ -44,6 +44,15 @@
   let renaming = $state(false);
   let nameDraft = $state("");
   let confirmingDelete = $state(false);
+  // What the last setlist deletion actually did (issue #284) - SetlistDeleteOut
+  // carries `scores_untouched` and nothing ever read it, so deleting a setlist
+  // said nothing about the scores it held even though the confirmation above
+  // already promises they are kept. destroy() below navigates straight to
+  // #/setlists on success, which App.svelte routes to a fresh mount of this
+  // component at id === null - not a continuation of destroy()'s call stack -
+  // so the message travels through sessionStorage rather than component
+  // state, and is read once by the $effect below and cleared immediately.
+  let deleteNotice = $state("");
   let busy = $state(false); // a membership/order write is in flight
   let adding = $state(false); // the add-scores panel is open
   let candidates = $state([]); // library scores not already in this setlist
@@ -71,6 +80,11 @@
   $effect(() => {
     id;
     load();
+    if (id == null) {
+      const stored = sessionStorage.getItem("fermata:setlist-deleted");
+      if (stored) sessionStorage.removeItem("fermata:setlist-deleted");
+      deleteNotice = stored ?? "";
+    }
   });
 
   // --- List view ------------------------------------------------------------
@@ -152,7 +166,14 @@
     busy = true;
     error = "";
     try {
-      await api.deleteSetlist(id);
+      const result = await api.deleteSetlist(id);
+      const kept = result.scores_untouched;
+      sessionStorage.setItem(
+        "fermata:setlist-deleted",
+        `That setlist is gone. ${kept} score${kept === 1 ? "" : "s"} ${
+          kept === 1 ? "stays" : "stay"
+        } in your library, untouched.`,
+      );
       location.hash = "#/setlists";
     } catch (e) {
       error = e instanceof ApiError && e.message ? e.message : "Could not delete the setlist.";
@@ -218,6 +239,9 @@
     <main>
       {#if error}
         <p class="notice" role="status">{error}</p>
+      {/if}
+      {#if deleteNotice}
+        <p class="notice" role="status" data-testid="setlist-delete-notice">{deleteNotice}</p>
       {/if}
 
       <form

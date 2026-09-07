@@ -39,6 +39,7 @@
 // before this point. The third test never touches the library at all, but
 // stays in this file rather than a new one because it is testing the same
 // poll the first two are.
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,6 +55,14 @@ const FIXTURE = path.join(here, "..", "..", "test-fixtures", "notation-only.musi
 const NAMES = {
   noticed: "scan-poll-noticed.musicxml",
   survived: "scan-poll-survived.musicxml",
+  // .gp, not .pdf or .musicxml: scanner.py's PDF and MusicXML metadata readers
+  // (thumbs.pdf_info, metadata.musicxml_info) both catch every exception and
+  // return empty metadata, so a corrupt file of either kind is never an
+  // `errors` count - only a file the scan cannot even OPEN is (see
+  // scanner._scan's per-file OSError handler and its own test in
+  // server/tests/test_scanner.py). A .gp file is hashed and nothing else, so
+  // locking it below is what actually reaches that handler.
+  locked: "scan-poll-locked.gp",
 };
 
 const libraryDir = () => {
@@ -120,6 +129,44 @@ async function openLibrary(page) {
   await Promise.all([firstStatus, firstScores]);
 }
 
+/** Hold a real, OS-level exclusive lock on a file until told to let go.
+ *
+ * Neither Node's fs.open nor Python's own open() deny other readers by
+ * default on Windows, so a second handle from either would simply succeed -
+ * there is no way to reproduce "a file locked by something else" without a
+ * handle opened with FileShare.None specifically, which only .NET's own
+ * File.Open exposes here. PowerShell is used as the one thing on this box
+ * that can hold such a handle across the scan below without becoming this
+ * test's own subject. */
+function lockFileExclusively(absPath) {
+  const escaped = absPath.replace(/'/g, "''");
+  const ps = spawn("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    `$fs = [System.IO.File]::Open('${escaped}', 'Open', 'Read', 'None'); ` +
+      "Write-Output 'locked'; " +
+      "[Console]::In.ReadLine() | Out-Null; " +
+      "$fs.Close()",
+  ]);
+  let settle;
+  const ready = new Promise((resolve, reject) => {
+    settle = resolve;
+    ps.once("error", reject);
+    ps.stdout.on("data", (chunk) => {
+      if (chunk.toString().includes("locked")) settle();
+    });
+  });
+  return {
+    ready,
+    release: () =>
+      new Promise((resolve) => {
+        ps.once("exit", resolve);
+        ps.stdin.write("go\n");
+      }),
+  };
+}
+
 test.beforeEach(async ({ request }) => {
   // The same tolerant refusal every spec that shares Uploads/ makes: rows this
   // suite left under Uploads/, and rows already marked missing, are expected;
@@ -178,6 +225,11 @@ test("a scan started while the page is open is noticed without a reload", async 
 
   // One idle interval (15s) plus margin, and no reload anywhere in this test.
   await expect(card).toBeVisible({ timeout: 45_000 });
+  // ScanStatusOut's `added` was never read anywhere on this page (issue
+  // #284) - the same poll that put the card on screen also carries the count
+  // that says why, and this is the one test in the suite where "1 score
+  // added" is a real, nonzero fact rather than a fixture.
+  await expect(page.locator('[data-testid="scan-added-updated"]')).toContainText("1 score added");
 });
 
 test("one failed status request does not end the poll", async ({ page, request }) => {
@@ -284,4 +336,36 @@ test("the scan button reflects a scan the page did not start, at the fast poll c
       message: "expected at least 3 status requests within 5s at the fast cadence",
     })
     .toBeGreaterThanOrEqual(3);
+});
+
+test("a file the scan cannot read shows an errors line naming what went wrong", async ({
+  page,
+  request,
+}) => {
+  // ScanStatusOut's `errors` and `last_error` were never read anywhere
+  // (issue #284): a scan that hit a locked or vanishing file looked, on
+  // screen, exactly like one that finished cleanly. The file is locked for
+  // the whole scan rather than only briefly, so this is not a race against
+  // the scanner - the OSError is guaranteed, not hoped for.
+  placeFile(NAMES.locked);
+  const lock = lockFileExclusively(filePath(NAMES.locked));
+  await lock.ready;
+  let status;
+  try {
+    status = await scanAndWait(request);
+  } finally {
+    await lock.release();
+  }
+  expect(status.errors, JSON.stringify(status)).toBe(1);
+  expect(status.last_error, JSON.stringify(status)).toContain(relPath(NAMES.locked));
+
+  await page.goto("/#/");
+  const errorsLine = page.locator('[data-testid="scan-errors"]');
+  await expect(errorsLine).toContainText("1 file could not be read");
+  await expect(errorsLine).toContainText(relPath(NAMES.locked));
+
+  // A second, real scan (the lock is gone now) proves the file was only ever
+  // unreadable rather than genuinely broken, and lets afterEach's cleanup
+  // find the row it expects instead of a file that was never added.
+  await scanAndWait(request);
 });

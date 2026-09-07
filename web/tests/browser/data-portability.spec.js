@@ -79,10 +79,119 @@ test("choosing a real exported archive shows what it actually holds", async ({ p
   await expect(importPreview(page)).toBeVisible();
   await expect(importPreview(page)).toContainText("This archive holds");
   await expect(importPreview(page)).toContainText("written");
+  // schema_version_read (#282) - always readable on a dry run, since a
+  // preview never gets far enough to see an archive whose version this
+  // Fermata refuses.
+  await expect(importPreview(page)).toContainText("schema version");
+  // ImportOut.tags_reused is 0 on every dry run by construction (the merge
+  // decision it counts is never made without a write transaction open - see
+  // ImportOut's own docstring), which makes this the one count in the whole
+  // response a preview can never show as nonzero. Its absence here is what
+  // proves the zero-fold in importSummaryText actually folds it away rather
+  // than the field simply never having been wired up.
+  await expect(importPreview(page)).not.toContainText("reused");
   // The confirm control is offered - proving this got as far as a real,
   // applicable preview rather than an error rendered under a different
   // testid - but is never clicked; see the module comment on why.
   await expect(page.getByTestId("import-confirm")).toBeVisible();
+});
+
+test("a preview names the newer tables too, when the archive actually carries them", async ({
+  page,
+  request,
+}) => {
+  // ImportOut carries counts for setlists, saved drill scopes and drill
+  // history that the preview never named before this (issue #284). Seeded
+  // here so each is a real, nonzero fact in the exported archive rather than
+  // depending on whatever the shared library happens to hold when this spec
+  // runs - and torn down in `finally` regardless of how the assertions come
+  // out, the same discipline the rename test above uses.
+  // /api/upload answers with only { saved: <path> } - the score row it
+  // starts a scan to create is read back separately, the same way
+  // zzz-library-organise.spec.js's own upload() helper does.
+  const uploadName = "data-portability-seed.musicxml";
+  await request.post("/api/upload?folder=Uploads", {
+    multipart: {
+      file: {
+        name: uploadName,
+        mimeType: "application/xml",
+        buffer: Buffer.from(
+          '<?xml version="1.0"?><score-partwise><part-list>' +
+            '<score-part id="P1"><part-name>Seed</part-name></score-part>' +
+            "</part-list><part id=\"P1\"></part></score-partwise>",
+        ),
+      },
+    },
+  });
+  let score;
+  await expect(async () => {
+    const found = (await (await request.get("/api/scores")).json()).find(
+      (s) => s.path === `Uploads/${uploadName}`,
+    );
+    expect(found, `${uploadName} never appeared in the library`).toBeTruthy();
+    score = found;
+  }).toPass({ timeout: 30_000 });
+  const setlist = await (
+    await request.post("/api/setlists", { data: { name: "Data portability setlist check" } })
+  ).json();
+  const preset = await (
+    await request.post("/api/trainer/presets", {
+      data: {
+        name: "Data portability preset check",
+        start_fret: 0,
+        end_fret: 4,
+        strings: [1, 2],
+      },
+    })
+  ).json();
+  try {
+    await request.post(`/api/setlists/${setlist.id}/scores`, { data: { score_id: score.id } });
+    await request.post("/api/trainer/attempts", {
+      data: {
+        drill: "fret_to_note",
+        direction: "position_to_note",
+        target_string: 6,
+        target_fret: 3,
+        target_note: "G",
+        given_note: "G",
+      },
+    });
+    await request.post("/api/trainer/chord-attempts", {
+      data: {
+        drill: "chord_flashcards",
+        direction: "shape_to_name",
+        target_root: "C",
+        target_quality: "major",
+        target_shape: [{ string: 5, fret: 3 }],
+        given_root: "C",
+        given_quality: "major",
+      },
+    });
+
+    await page.goto("/#/settings");
+    const downloadPromise = page.waitForEvent("download");
+    await exportButton(page).click();
+    const download = await downloadPromise;
+    const archivePath = await download.path();
+
+    await fileInput(page).setInputFiles(archivePath);
+    const preview = importPreview(page);
+    await expect(preview).toBeVisible();
+    // One count named for each table this component could not say anything
+    // about before - the wording each field's own label produces in
+    // importSummaryText, not a paraphrase of it.
+    await expect(preview).toContainText("setlist");
+    await expect(preview).toContainText("setlist entr"); // entry/entries
+    await expect(preview).toContainText("saved drill scope");
+    await expect(preview).toContainText("drill scope string set");
+    await expect(preview).toContainText("fret-to-note drill attempt");
+    await expect(preview).toContainText("chord drill attempt");
+  } finally {
+    await request.delete(`/api/trainer/presets/${preset.id}`);
+    await request.delete(`/api/setlists/${setlist.id}`);
+    await request.delete(`/api/scores/${score.id}`);
+    await request.delete(`/api/trash/${score.id}`);
+  }
 });
 
 test("previewing an archive that collides with a preset already here shows the rename", async ({
@@ -117,8 +226,13 @@ test("previewing an archive that collides with a preset already here shows the r
     await fileInput(page).setInputFiles(archivePath);
     await expect(importPreview(page)).toBeVisible();
     await expect(importRenames(page)).toBeVisible();
+    // The rename line now also names WHY (#260 vs #268's cleaning), read from
+    // ImportOut.trainer_scope_presets_renamed's own `reason` field - a plain
+    // name collision here, since nothing about this preset's name needed
+    // cleaning up.
     await expect(importRenames(page)).toContainText(
-      "Data portability rename check → Data portability rename check (imported)",
+      "Data portability rename check → Data portability rename check (imported) " +
+        "(that name was already taken)",
     );
   } finally {
     await request.delete(`/api/trainer/presets/${created.id}`);
