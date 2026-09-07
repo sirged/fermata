@@ -358,6 +358,26 @@ _ALLOWLIST = {
     # "What to expect between releases" - not an identifier itself.
     "response_model",  # FastAPI's own decorator-kwarg name, in "Where the
     # contract actually lives" - not a response field.
+    # -----------------------------------------------------------------
+    # PENDING #286 (PR #290): these six entries name no token in THIS
+    # tree's docs/api.md today - #286 rewrites "Getting everything in and
+    # out (issue #58)" to add each of them. Kept here, ahead of that
+    # merge, as dead entries on this tree and live ones the moment #286
+    # lands, rather than left for that PR to discover the same false
+    # positives #285's own review already found and fixed once
+    # (`instruments.normalise` beating table.column). Verified against
+    # #286's actual branch text, not guessed.
+    # -----------------------------------------------------------------
+    "POST",  # HTTP verb mentioned bare ("skipped the rules every `POST`
+    # applies", "never by a `POST` with a rule of its own") - same
+    # treatment as the existing bare "GET" entry above.
+    "e2",  # illustrative pitch spelling example ("a string pitch typed
+    "E2",  # `e2` stored as `E2`") - neither is a real identifier.
+    "{}",  # illustrative empty `cleaned` map ("so `{}` means nothing
+    # needed touching") - a JSON literal, not an identifier.
+    "the archive's practice_sessions row 3 is invalid: ...",  # illustrative
+    # _refuse_row message shape - same treatment as the existing
+    # "trainer_scope_presets row 3" entry above.
 }
 
 
@@ -700,6 +720,15 @@ def test_import_export_prose_matches_the_response_model(doc_text, openapi_schema
     # where the sessions/presets routes are actually named) - checked
     # against that model directly rather than allow-listed blind.
     universe = universe | _all_field_names(openapi_schema["components"], "PracticeSessionOut")
+    # `target_fret` and `correct` are not named by this doc today - added
+    # ahead of #286, whose rewrite of this section names both directly
+    # (a "target_fret: 99" example, "an attempt's `correct` recomputed") -
+    # both are real TrainerAttemptOut/TrainerChordAttemptOut fields, checked
+    # against those models rather than allow-listed blind, so a rename
+    # would still be caught once #286 lands. A no-op on this tree today:
+    # no token in this section currently resolves to either identifier.
+    universe = universe | _all_field_names(openapi_schema["components"], "TrainerAttemptOut")
+    universe = universe | _all_field_names(openapi_schema["components"], "TrainerChordAttemptOut")
     _assert_tokens_known(
         section_name, _backticked_tokens(section), universe, openapi_schema, EXPORT_TABLE_NAMES, app_env
     )
