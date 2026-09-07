@@ -23,12 +23,23 @@ second, hand-copied description of it:
    never from a parallel list of "the fields this section should have".
    Values glued on with `: ` or `=` (`` `score_deleted: true` ``,
    `` `transcribed=yes` ``) are split first; only the identifier is checked.
-   A short, explicit, commented allow-list (_ALLOWLIST, _SUFFIX_TOKENS
+   A short, explicit, commented allow-list (_ALLOWLIST, _strip_suffix
    handling) covers backticked words that are genuinely neither a field, a
    param nor a route: SQL syntax, file names, code references containing a
-   dot, illustrative examples ("(imported 2)"). Route mentions themselves
-   are resolved against app.openapi() too - a route named in prose that no
-   longer exists fails loudly, naming the section and the route.
+   dot, illustrative examples ("(imported 2)"). A separate, structurally
+   marked _PENDING_ALLOWLIST holds entries needed only once a not-yet-merged
+   PR lands (keyed by the issue it belongs to) - checked identically to
+   _ALLOWLIST, but exempt from test_no_dead_allowlist_entries_stay_used's
+   "every entry must match a real token today" rule, so a promotion made too
+   early (before that PR's prose actually exists) is still caught. A
+   backticked fragment containing a space that matches, verbatim, a string
+   literal in api.py or practice.py's own source is read as prose QUOTING a
+   real server-raised message (`` `local_date is in the future` ``), not an
+   identifier - checked against the source directly rather than allow-listed
+   blind. Route mentions themselves are resolved against app.openapi() and,
+   for FastAPI's own built-ins app.openapi() cannot describe (`GET /docs`,
+   `GET /openapi.json`), against full_app.routes - a route named in prose
+   that no longer exists fails loudly, naming the section and the route.
 2. The one status code this module can check without touching server code:
    PUT /api/scores/{id}/transcription's documented `409` (#267) - declared
    through `responses=` in api.py, unlike most of this codebase's other
@@ -55,6 +66,7 @@ on; adding one would be a docs rewrite this bet's own no-gos rule out
 ("no docs rewrite beyond corrections the test forces").
 """
 
+import ast
 import importlib
 import re
 from pathlib import Path
@@ -67,6 +79,7 @@ from fermata.main import app as full_app
 
 DOC_PATH = Path(__file__).resolve().parents[2] / "docs" / "api.md"
 API_PY = Path(__file__).resolve().parents[2] / "server" / "fermata" / "api.py"
+PRACTICE_PY = Path(__file__).resolve().parents[2] / "server" / "fermata" / "practice.py"
 
 _BACKTICK = re.compile(r"`([^`\n]+)`")
 _FENCE = re.compile(r"```.*?```", re.S)
@@ -88,6 +101,11 @@ def openapi_schema():
 @pytest.fixture(scope="module")
 def api_py_text():
     return API_PY.read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def practice_py_text():
+    return PRACTICE_PY.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -358,27 +376,47 @@ _ALLOWLIST = {
     # "What to expect between releases" - not an identifier itself.
     "response_model",  # FastAPI's own decorator-kwarg name, in "Where the
     # contract actually lives" - not a response field.
-    # -----------------------------------------------------------------
-    # PENDING #286 (PR #290): these six entries name no token in THIS
-    # tree's docs/api.md today - #286 rewrites "Getting everything in and
-    # out (issue #58)" to add each of them. Kept here, ahead of that
-    # merge, as dead entries on this tree and live ones the moment #286
-    # lands, rather than left for that PR to discover the same false
-    # positives #285's own review already found and fixed once
-    # (`instruments.normalise` beating table.column). Verified against
-    # #286's actual branch text, not guessed.
-    # -----------------------------------------------------------------
-    "POST",  # HTTP verb mentioned bare ("skipped the rules every `POST`
-    # applies", "never by a `POST` with a rule of its own") - same
-    # treatment as the existing bare "GET" entry above.
-    "e2",  # illustrative pitch spelling example ("a string pitch typed
-    "E2",  # `e2` stored as `E2`") - neither is a real identifier.
-    "{}",  # illustrative empty `cleaned` map ("so `{}` means nothing
-    # needed touching") - a JSON literal, not an identifier.
-    "the archive's practice_sessions row 3 is invalid: ...",  # illustrative
-    # _refuse_row message shape - same treatment as the existing
-    # "trainer_scope_presets row 3" entry above.
 }
+
+# Entries that name no token in THIS tree's docs/api.md today, keyed by the
+# issue whose not-yet-merged PR adds the token they cover - a STRUCTURAL
+# marker (a separate dict, not a comment) so test_no_dead_allowlist_entries
+# below can exempt exactly these from its "every _ALLOWLIST entry must
+# appear somewhere in docs/api.md" rule, rather than trusting a comment to
+# say so. Once the PR named by a key actually merges, its entries stop being
+# no-ops - _assert_tokens_known treats every _PENDING_ALLOWLIST value exactly
+# like _ALLOWLIST, so nothing breaks the moment they go live - but they also
+# become checkable by test_no_dead_allowlist_entries the moment someone
+# moves them into _ALLOWLIST proper; leaving them here after that merge is
+# harmless (they still work, unioned in below) but the dead-entry test will
+# catch it immediately if one is promoted into _ALLOWLIST before its prose
+# actually exists.
+_PENDING_ALLOWLIST: dict[str, set[str]] = {
+    "#286 (PR #290)": {
+        # #286 rewrites "Getting everything in and out (issue #58)" to add
+        # each of these. Verified against #290's actual branch text, not
+        # guessed - the same false positives #285's own review already
+        # found and fixed once (`instruments.normalise` beating
+        # table.column) do not need re-discovering there.
+        "POST",  # HTTP verb mentioned bare ("skipped the rules every
+        # `POST` applies", "never by a `POST` with a rule of its own") -
+        # same treatment as the existing bare "GET" entry above.
+        "e2",  # illustrative pitch spelling example ("a string pitch typed
+        "E2",  # `e2` stored as `E2`") - neither is a real identifier.
+        "{}",  # illustrative empty `cleaned` map ("so `{}` means nothing
+        # needed touching") - a JSON literal, not an identifier.
+        "the archive's practice_sessions row 3 is invalid: ...",  # illustrative
+        # _refuse_row message shape - same treatment as the existing
+        # "trainer_scope_presets row 3" entry above.
+    },
+}
+
+
+def _pending_allowlist_tokens() -> set:
+    tokens: set = set()
+    for issue_tokens in _PENDING_ALLOWLIST.values():
+        tokens |= issue_tokens
+    return tokens
 
 
 def test_redundant_allowlist_entries_are_already_classified():
@@ -396,6 +434,29 @@ def test_redundant_allowlist_entries_are_already_classified():
             f"{token!r} is no longer classified as a code/file reference by "
             "_is_code_or_file_ref - it must go back into _ALLOWLIST"
         )
+
+
+def test_no_dead_allowlist_entries(doc_text):
+    """Every _ALLOWLIST entry earns its place by matching some backticked
+    token that actually appears in docs/api.md today - an entry that stops
+    matching anything (the prose it covered was reworded or deleted, or the
+    entry was copy-pasted for a token that never existed) is dead weight
+    nobody would ever notice was safe to delete, so this fails loudly the
+    moment that happens instead. _PENDING_ALLOWLIST entries are exempt by
+    construction - a STRUCTURAL marker, not a comment this test would have
+    to trust - because they are deliberately not expected to match anything
+    on THIS tree until the PR that introduces their tokens lands; once that
+    PR merges and its entries are promoted into _ALLOWLIST proper, this same
+    test starts covering them, which is what makes the pending set
+    self-cleaning rather than a place allow-list entries go to be
+    forgotten."""
+    all_tokens = set(_backticked_tokens(doc_text))
+    dead = sorted(token for token in _ALLOWLIST if token not in all_tokens)
+    assert not dead, (
+        f"_ALLOWLIST entries {dead} match no backticked token anywhere in "
+        "docs/api.md - remove them, or, if they cover a not-yet-merged PR's "
+        "prose, move them into _PENDING_ALLOWLIST instead"
+    )
 
 
 def _is_route_mention(token: str) -> bool:
@@ -499,6 +560,69 @@ def _check_table_column(token: str, export_tables: tuple, app_env) -> bool:
     return True
 
 
+def _check_quoted_message(token: str, *sources: str) -> bool:
+    """A backticked token containing a space, that appears verbatim as a
+    quoted Python string literal in one of `sources`, is prose QUOTING a
+    real server-raised message (`` `local_date is in the future` `` quotes
+    practice.py's own `raise ValueError("local_date is in the future")`)
+    rather than naming a field, a param or a route - checked directly
+    against the source that raises it, a general rule rather than a
+    one-off allow-list entry, so a reworded message fails loudly here
+    instead of being silently "documented" by an entry that never actually
+    checked anything. A single identifier never contains a space, so this
+    only ever fires for backticked prose fragments; returns False (not
+    handled) for anything else - including an _ALLOWLIST entry that merely
+    happens to contain a space but names no real message
+    (`YYYY-MM-DD HH:MM:SS.mmm`, `{from, to}`), which _ALLOWLIST itself
+    already matches before this check ever runs."""
+    if " " not in token:
+        return False
+    return any(f'"{token}"' in src or f"'{token}'" in src for src in sources)
+
+
+def _real_route_paths() -> set:
+    """Every (method, path) pair the running app actually serves, read
+    straight from `full_app.routes` - not just the ones `app.openapi()`
+    describes. `GET /docs` and `GET /openapi.json` are FastAPI's own
+    built-in routes: real endpoints a browser can hit, but never entries in
+    app.openapi()'s own `paths` (which only ever describes the API this
+    codebase declares), so a route mention naming one of them has nothing
+    to resolve against there. Reading `full_app.routes` directly closes
+    that gap without an allow-list: a route named in prose - built-in or
+    declared - either matches a real Starlette route here or it does not."""
+    paths: set = set()
+    for route in full_app.routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None)
+        if not path or not methods:
+            continue
+        for method in methods:
+            paths.add((method, path))
+    return paths
+
+
+def _route_mention_is_real(token: str, schema: dict) -> bool:
+    """A `GET /some/path`-shaped token is real when it structurally matches
+    (see `_path_matches`) a path FastAPI actually serves for that method -
+    either one `app.openapi()` describes, or one of FastAPI's own built-ins
+    (`_real_route_paths`) that `app.openapi()` has no way to describe.
+    Checked as a boolean here (never asserting directly) so a misspelled
+    route - `GET /opnapi.json`, `GET /dcos` - can be reported as an unknown
+    identifier by the caller, naming the section, rather than raising from
+    two levels down."""
+    m = _ROUTE.match(token)
+    if not m:
+        return False
+    method, path = m.group(1), m.group(2)
+    for real_path, ops in schema.get("paths", {}).items():
+        if method.lower() in ops and _path_matches(path, real_path):
+            return True
+    for real_method, real_path in _real_route_paths():
+        if real_method == method and _path_matches(path, real_path):
+            return True
+    return False
+
+
 def _check_model_dot_field(token: str, components: dict) -> bool:
     """`ImportOut.trainer_scope_presets_renamed` - a Class.field reference -
     is real when `field` is an actual property of the OpenAPI component
@@ -524,10 +648,19 @@ def _assert_tokens_known(
     schema: dict,
     export_tables: tuple,
     app_env,
+    message_sources: tuple = (),
 ):
     unknown = []
+    pending = _pending_allowlist_tokens()
     for raw in tokens:
-        if raw in _ALLOWLIST or _is_route_mention(raw):
+        if raw in _ALLOWLIST or raw in pending:
+            continue
+        if _is_route_mention(raw):
+            assert _route_mention_is_real(raw, schema), (
+                f"docs/api.md, section {section_name!r}: route {raw!r} does not "
+                "match any real route in app.openapi() or on the running app "
+                "(full_app.routes) - misspelled, or removed?"
+            )
             continue
         # Module-function reference checked BEFORE table.column: a module
         # that shares its name with an export table (`instruments` is both)
@@ -539,12 +672,14 @@ def _assert_tokens_known(
             continue
         if _check_model_dot_field(raw, schema["components"]):
             continue
+        if _check_quoted_message(raw, *message_sources):
+            continue
         if _is_code_or_file_ref(raw):
             continue
         if _STATUS_CODE.match(raw):
             continue  # checked separately, by name, below
         identifier = _strip_suffix(raw)
-        if identifier in universe or identifier in _ALLOWLIST:
+        if identifier in universe or identifier in _ALLOWLIST or identifier in pending:
             continue
         unknown.append(raw)
     assert not unknown, (
@@ -614,17 +749,21 @@ def _routes_named_in(section_text: str) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 
-def test_contract_overview_prose_names_only_real_routes(doc_text, openapi_schema):
+def test_contract_overview_prose_routes_and_terms_resolve_against_the_real_app(
+    doc_text, openapi_schema
+):
+    """`GET /docs` and `GET /openapi.json` are FastAPI's own built-in routes,
+    not ones this app declares - they never appear in app.openapi()'s own
+    `paths`, so this section is not given a `_route_universe` built from
+    them the way other sections are. Both are still resolved for real,
+    though: `_assert_tokens_known`'s `_is_route_mention` branch calls
+    `_route_mention_is_real`, which falls back to `full_app.routes` - the
+    Starlette route table FastAPI itself serves from - for exactly the
+    routes app.openapi() has no way to describe. A misspelled route
+    (`GET /opnapi.json`, `GET /dcos`) therefore still fails loudly here,
+    which passing `set()` as the universe alone would not have caught."""
     section_name = "Where the contract actually lives"
     section = _section(doc_text, section_name)
-    # `GET /docs` and `GET /openapi.json` are FastAPI's own built-in routes,
-    # not ones this app declares - they never appear in app.openapi()'s own
-    # paths, so _route_universe (which asserts every route it is given
-    # resolves) is not called with them. Both still skip the identifier
-    # check below via _is_route_mention, which only asks "does this look
-    # like a route", never "does app.openapi() actually serve it" - the
-    # right behaviour for the two routes app.openapi() is definitionally
-    # unable to describe.
     _assert_tokens_known(section_name, _backticked_tokens(section), set(), openapi_schema, (), None)
 
 
@@ -702,7 +841,9 @@ def test_batch_transcription_prose_matches_the_response_model(doc_text, openapi_
     _assert_tokens_known(section_name, _backticked_tokens(section), universe, openapi_schema, (), None)
 
 
-def test_import_export_prose_matches_the_response_model(doc_text, openapi_schema, app_env):
+def test_import_export_prose_matches_the_response_model(
+    doc_text, openapi_schema, app_env, api_py_text, practice_py_text
+):
     section_name = "Getting everything in and out (issue #58)"
     section = _section(doc_text, section_name)
     # `SCHEMA_VERSION` names db.SCHEMA_VERSION, imported at module level
@@ -729,8 +870,18 @@ def test_import_export_prose_matches_the_response_model(doc_text, openapi_schema
     # no token in this section currently resolves to either identifier.
     universe = universe | _all_field_names(openapi_schema["components"], "TrainerAttemptOut")
     universe = universe | _all_field_names(openapi_schema["components"], "TrainerChordAttemptOut")
+    # `local_date is in the future` (#290's f3fadbc) quotes practice.py's own
+    # `raise ValueError("local_date is in the future")` verbatim - a quoted
+    # server message, not an identifier - checked via _check_quoted_message
+    # (see its own docstring) rather than a one-off allow-list entry.
     _assert_tokens_known(
-        section_name, _backticked_tokens(section), universe, openapi_schema, EXPORT_TABLE_NAMES, app_env
+        section_name,
+        _backticked_tokens(section),
+        universe,
+        openapi_schema,
+        EXPORT_TABLE_NAMES,
+        app_env,
+        message_sources=(api_py_text, practice_py_text),
     )
 
 
@@ -900,7 +1051,55 @@ def test_archive_contents_names_every_export_table(doc_text):
 # trainer_scope_presets_renamed as list[dict[str, str]], so OpenAPI has no
 # named properties to check it against) - pinned instead against the
 # literal strings api._derive_preset_renames actually writes.
+#
+# Checked against the CODE, docstring excluded: a hand-picked substring
+# search over the raw function source (the shape this module's own first
+# review left behind) is satisfied by a docstring merely DESCRIBING a
+# literal just as readily as by the code that actually emits it - #285's
+# second review found exactly that gap by renaming the "cleaned" literal to
+# "tidied" in code alone and watching the test stay green, because the
+# docstring above it still said "cleaned". _string_constants_excluding_docstring
+# walks the function's AST and excludes only its own docstring node, so the
+# check is blind to prose ABOUT the code and sees only the code itself.
 # ---------------------------------------------------------------------------
+
+
+def _function_node(module_text: str, func_name: str):
+    """The ast.FunctionDef for the first top-level (or nested) function
+    named `func_name` in `module_text`, or None. Reads the real syntax tree
+    rather than a regex slice ending at the next `\\ndef ` - a regex slice
+    can straddle a decorator boundary (see _refuse_stale_edit, immediately
+    followed by `@router.put(...)` before the next `def`) and hand back text
+    that is not valid Python on its own, which ast.parse would then refuse
+    to parse at all."""
+    tree = ast.parse(module_text)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+            return node
+    return None
+
+
+def _string_constants_excluding_docstring(func_node) -> set:
+    """Every string literal `ast.Constant` reachable inside `func_node`,
+    EXCLUDING its own docstring (the first statement, when it is itself a
+    bare string expression) - so a check phrased as "does the function's
+    source contain this string" cannot be satisfied by prose ABOUT the code
+    instead of the code that actually emits it."""
+    docstring_node = None
+    if (
+        func_node.body
+        and isinstance(func_node.body[0], ast.Expr)
+        and isinstance(func_node.body[0].value, ast.Constant)
+        and isinstance(func_node.body[0].value.value, str)
+    ):
+        docstring_node = func_node.body[0].value
+    literals: set = set()
+    for node in ast.walk(func_node):
+        if node is docstring_node:
+            continue
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            literals.add(node.value)
+    return literals
 
 
 def test_import_renames_reason_vocabulary_matches_the_source(doc_text, api_py_text):
@@ -911,15 +1110,14 @@ def test_import_renames_reason_vocabulary_matches_the_source(doc_text, api_py_te
         assert re.search(rf'`reason:\s*"{word}"`', section), (
             f"docs/api.md's import section no longer documents reason: {word!r}"
         )
-    func_match = re.search(
-        r"def _derive_preset_renames\(.*?(?=\ndef |\Z)", api_py_text, re.S
-    )
-    assert func_match, "api._derive_preset_renames not found - renamed or moved?"
-    func_src = func_match.group(0)
-    for literal in ('"reason"', '"cleaned"', '"collision"', '"from"', '"to"'):
-        assert literal in func_src, (
-            f"docs/api.md documents the import-rename key/value {literal}, but "
-            "api._derive_preset_renames's source no longer contains it"
+    func_node = _function_node(api_py_text, "_derive_preset_renames")
+    assert func_node, "api._derive_preset_renames not found - renamed or moved?"
+    literals = _string_constants_excluding_docstring(func_node)
+    for literal in ("reason", "cleaned", "collision", "from", "to"):
+        assert literal in literals, (
+            f"docs/api.md documents the import-rename key/value {literal!r}, but "
+            "api._derive_preset_renames's own CODE (its docstring does not "
+            "count) no longer contains it"
         )
 
 
@@ -935,11 +1133,12 @@ def test_stale_transcription_example_matches_the_source(doc_text, api_py_text):
     for key in ('"error"', '"message"', '"updated_at"', '"source"', '"stale_transcription"'):
         assert key in example, f"docs/api.md's #267 JSON example no longer has {key}"
 
-    func_match = re.search(r"def _refuse_stale_edit\(.*?(?=\ndef |\Z)", api_py_text, re.S)
-    assert func_match, "api._refuse_stale_edit not found - renamed or moved?"
-    func_src = func_match.group(0)
-    for key in ('"error"', '"message"', '"updated_at"', '"source"', '"stale_transcription"'):
-        assert key in func_src, (
-            f"docs/api.md's #267 JSON example names {key}, but "
-            "api._refuse_stale_edit's source no longer contains it"
+    func_node = _function_node(api_py_text, "_refuse_stale_edit")
+    assert func_node, "api._refuse_stale_edit not found - renamed or moved?"
+    literals = _string_constants_excluding_docstring(func_node)
+    for key in ("error", "message", "updated_at", "source", "stale_transcription"):
+        assert key in literals, (
+            f"docs/api.md's #267 JSON example names {key!r}, but "
+            "api._refuse_stale_edit's own CODE (its docstring does not count) "
+            "no longer contains it"
         )
