@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/fretboard-trainer.spec.js",
+  "count": 1,
+  "reason": "review follow-up to #287: on a 24-fret instrument, a tap at each fret's own drawn hit-circle edge (document.elementFromPoint, the real hit-testing path) resolves to that fret rather than a narrowing neighbour - the overlapping-hit-circle regression this follow-up fixes."
+}

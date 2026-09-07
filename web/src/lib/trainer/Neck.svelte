@@ -44,7 +44,7 @@
   // how that stays legible and touch-target-sized down to tablet width
   // without a break-point, which issue #25 asks for directly.
   import { DEFAULT_FRET_COUNT, inlayDots, noteAt, pitchClass, posKey } from "./neck.js";
-  import { fretMarkerX, fretX } from "./neck-geometry.js";
+  import { fretMarkerX, fretX, hitRadius } from "./neck-geometry.js";
 
   let {
     strings = [],
@@ -90,6 +90,17 @@
 
   function positionX(fret) {
     return fret === 0 ? NUT_GAP / 2 : NUT_GAP + fretMarkerX(fret, fretCount, boardWidth);
+  }
+
+  // The invisible tap target's radius - fixed at the open string (fret 0
+  // sits in NUT_GAP, off the fretted board that narrows), clamped per fret
+  // everywhere else so real fret spacing (issue #287) can never let two
+  // neighbouring hit circles overlap and steal a tap for the wrong fret
+  // (found in review of #287 - see neck-geometry.js's hitRadius). The DRAWN
+  // marker (the visible ".mark" circle) keeps its fixed MARKER_R regardless;
+  // only the larger, invisible touch target is ever clamped.
+  function positionHitR(fret) {
+    return fret === 0 ? MARKER_R + 8 : hitRadius(fret, fretCount, boardWidth);
   }
 
   const fretWires = $derived(
@@ -233,7 +244,7 @@
             <!-- a large, invisible hit area - the touch target is bigger
                  than what is drawn, per this app's tablet-at-a-music-stand
                  sizing (issue #25's "big touch targets"). -->
-            <circle class="hit" cx={positionX(fret)} cy={stringY(i)} r={MARKER_R + 8} />
+            <circle class="hit" cx={positionX(fret)} cy={stringY(i)} r={positionHitR(fret)} />
             {#if kind}
               <circle class="mark {kind}" cx={positionX(fret)} cy={stringY(i)} r={MARKER_R} />
             {/if}

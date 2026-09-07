@@ -47,3 +47,37 @@ export function fretX(fret, fretCount, width) {
 export function fretMarkerX(fret, fretCount, width) {
   return (fretX(fret - 1, fretCount, width) + fretX(fret, fretCount, width)) / 2;
 }
+
+// Neck.svelte's touch-target sizing, duplicated here (not imported) because
+// this module has no dependency on the component - see the module comment
+// on why fretX/fretMarkerX are the one place x-position lives. These two
+// numbers MUST match Neck.svelte's own MARKER_R and its hit-circle padding
+// (`MARKER_R + 8`) or the clamp below stops describing what is actually
+// drawn.
+const MARKER_R = 14;
+const MAX_HIT_R = MARKER_R + 8;
+
+/** The radius of a fret-N marker's invisible tap target, clamped so that
+ * adjacent hit circles never overlap.
+ *
+ * Under real (non-linear) fret spacing, marker-centre spacing shrinks toward
+ * the body - by fret 22 on a 24-fret neck it is well under the fixed
+ * MAX_HIT_R * 2 the old linear layout could always afford, so a fixed radius
+ * makes neighbouring hit circles overlap and steals taps for the wrong fret
+ * (issue #287's regression, found in review). This clamps fret N's own
+ * radius to just under half of fret N's own cell width - the distance
+ * between the two fret wires the marker sits between - minus a 1-unit
+ * safety margin. Because that cell's far wire is shared with the NEXT
+ * fret's own cell, and that neighbour is clamped by the exact same rule
+ * against the same shared wire, no two adjacent markers can ever be given
+ * enough radius to reach each other: each one stops at least 1 unit short
+ * of the wire between them, leaving a real (if small) gap rather than a
+ * point of tangency.
+ *
+ * Not meant to be called for fret 0 (the open string marker, drawn off the
+ * fretted board entirely in NUT_GAP space) - callers keep that position's
+ * fixed radius, the same way positionX() special-cases it. */
+export function hitRadius(fret, fretCount, width) {
+  const cellWidth = fretX(fret, fretCount, width) - fretX(fret - 1, fretCount, width);
+  return Math.min(MAX_HIT_R, cellWidth / 2 - 1);
+}

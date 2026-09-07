@@ -188,6 +188,53 @@ test("a saved instrument's own tuning drives the neck, not a hardcoded six strin
   ).toHaveAttribute("data-note", "B");
 });
 
+// Regression found in review of #287: real fret spacing narrows toward the
+// body, but Neck.svelte's invisible tap target used to have a FIXED radius
+// sized for the old, evenly-spaced layout. On a 24-fret neck the high frets
+// sit close enough together that two neighbouring fixed-radius hit circles
+// overlapped, so a tap near the shared edge resolved to the WRONG fret's
+// target (measured in the built app: fret 22's right edge hit fret 23's
+// target, and fret 23's hit fret 24's). This reads the actual rendered
+// geometry - getBoundingClientRect of the hit circle Neck.svelte draws, not
+// any assumption about where a fret "should" be - and asks the browser's own
+// hit-testing (document.elementFromPoint), the same call a real tap goes
+// through, exactly where the earlier regression was found: one pixel inside
+// the drawn circle's right edge.
+test("a tap at any fret's hit-circle edge resolves to that fret, not its narrowing neighbour", async ({
+  page,
+  request,
+}) => {
+  await addInstrument(request, SEVEN_STRING);
+  await page.reload();
+  await expect(drill(page)).toBeVisible();
+
+  await page.selectOption(".scope-source", { label: "Seven-string guitar" });
+  await startButton(page).click();
+  await expect(page.locator(".neck")).toHaveAttribute("data-fret-count", "24");
+
+  const stringNumber = "1";
+  for (let fret = 1; fret <= 24; fret++) {
+    const resolvedFret = await page.evaluate(
+      ({ stringNumber, fret }) => {
+        const pos = document.querySelector(
+          `g.position[data-string="${stringNumber}"][data-fret="${fret}"]`,
+        );
+        const hit = pos.querySelector("circle.hit");
+        const rect = hit.getBoundingClientRect();
+        // One pixel inside the drawn hit circle's own right edge, in CSS
+        // pixels - the same point the regression this test guards against
+        // was measured at.
+        const x = rect.x + rect.width - 1;
+        const y = rect.y + rect.height / 2;
+        const resolved = document.elementFromPoint(x, y)?.closest(".position");
+        return resolved ? resolved.dataset.fret : null;
+      },
+      { stringNumber, fret },
+    );
+    expect(resolvedFret, `fret ${fret}'s own hit-circle edge`).toBe(String(fret));
+  }
+});
+
 // ---------------------------------------------------------------------------
 // A tap highlights/identifies (#25's interaction contract).
 // ---------------------------------------------------------------------------
