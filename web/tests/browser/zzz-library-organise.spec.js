@@ -456,6 +456,52 @@ test("practice on a deleted score still counts, and stops being a way into it", 
   await expect(sessionAfter.locator("a")).toHaveCount(0);
 });
 
+test("uploading the same name twice is refused until Replace is pressed, and the file is untouched until then", async ({
+  page,
+  request,
+}) => {
+  // Issue #293: the upload route used to overwrite a same-named file
+  // silently, with no receipt of any kind (Library.svelte's onUpload
+  // discarded the response). This drives the real file input, the way a
+  // person actually uploads, rather than posting to /api/upload directly.
+  const name = "organise-upload-conflict.musicxml";
+  const original = Buffer.concat([fs.readFileSync(FIXTURE), Buffer.from(`<!-- ${name} original -->\n`)]);
+  const replacement = Buffer.concat([
+    fs.readFileSync(FIXTURE),
+    Buffer.from(`<!-- ${name} replacement -->\n`),
+  ]);
+
+  await page.goto("/#/");
+  const input = page.locator('input[type="file"]');
+
+  await input.setInputFiles({ name, mimeType: "application/xml", buffer: original });
+  await expect(page.locator(".notice")).toContainText(`Saved as Uploads/${name}`);
+  await expect(async () => {
+    const scores = await (await request.get("/api/scores")).json();
+    expect(scores.find((s) => s.path === `Uploads/${name}`), `${name} never appeared`).toBeTruthy();
+  }).toPass({ timeout: SCAN_DEADLINE_MS });
+  await scanSettled(request);
+
+  // The second upload of the same name is refused, and shown as a decision
+  // still waiting to be made - not as a receipt of something already done.
+  await input.setInputFiles({ name, mimeType: "application/xml", buffer: replacement });
+  const conflict = page.locator(".upload-conflict");
+  await expect(conflict).toContainText(`Uploads/${name}`);
+  const replaceButton = conflict.locator(".conflict-replace");
+  await expect(replaceButton).toBeVisible();
+  expect(fs.readFileSync(path.join(libraryDir(), "Uploads", name))).toEqual(original);
+
+  // Pressing Replace is the second, deliberate request that actually changes
+  // the file - and only now does it change.
+  await replaceButton.click();
+  await expect(page.locator(".notice")).toContainText(`Replaced Uploads/${name}`);
+  await expect(conflict).toHaveCount(0);
+  await expect(async () => {
+    expect(fs.readFileSync(path.join(libraryDir(), "Uploads", name))).toEqual(replacement);
+  }).toPass({ timeout: SCAN_DEADLINE_MS });
+  await scanSettled(request);
+});
+
 test("a batch move shows every line, and a collision is blocked rather than overwritten", async ({
   page,
   request,

@@ -845,6 +845,12 @@ class ScanTriggerOut(ScanStatusOut):
 
 class UploadOut(BaseModel):
     saved: str
+    # Whether this call overwrote a file already at `saved` (issue #293) -
+    # false for the ordinary case of landing on a path nothing claimed, true
+    # only when the request set `replace=true` on top of an existing file. A
+    # caller that only shows `saved` cannot otherwise tell a fresh save from
+    # one that just replaced something.
+    replaced: bool
 
 
 # ---------------------------------------------------------------------------

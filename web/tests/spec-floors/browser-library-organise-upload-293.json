@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/zzz-library-organise.spec.js",
+  "count": 1,
+  "reason": "issue #293: uploading the same name twice through the real file input is refused with a decision still waiting (a path named, a Replace control) rather than a silent overwrite, and the stored bytes are untouched until Replace is actually pressed."
+}

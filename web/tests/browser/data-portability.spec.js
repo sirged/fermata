@@ -164,9 +164,10 @@ test("a preview names the newer tables too, when the archive actually carries th
   // import path this test actually means to exercise, never the POST
   // routes), and the counts read before and after prove neither table was
   // touched.
-  // /api/upload answers with only { saved: <path> } - the score row it
-  // starts a scan to create is read back separately, the same way
-  // zzz-library-organise.spec.js's own upload() helper does.
+  // /api/upload answers with { saved: <path>, replaced: <bool> } (#293), not
+  // a score row - the row it starts a scan to create is read back
+  // separately, the same way zzz-library-organise.spec.js's own upload()
+  // helper does.
   const uploadName = "data-portability-seed.musicxml";
   await request.post("/api/upload?folder=Uploads", {
     multipart: {

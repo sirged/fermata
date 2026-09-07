@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/practice.spec.js",
+  "count": 1,
+  "reason": "issue #293: the practice page's Last 7 days section renders week_seconds, week_sessions and top_scores from GET /api/practice/summary - a rolling window distinct from This week's calendar-week arithmetic, and previously fetched nowhere in the interface."
+}

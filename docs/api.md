@@ -142,13 +142,24 @@ onto a score whose `key` is still null; a hand-set key, or one filled in this
 way already, is never overwritten by a later (re-)transcription.
 
 A move or a delete is refused with `409` while a library scan is running, and a
-scan declines to start while one is being applied. One thing that **moves or
-removes an existing file** runs at a time: a scan decides what to write from a
-directory listing taken when it started, so a file moving underneath it would
-read as a file that went missing. `POST /api/upload` and `POST
-/api/library/folders` are deliberately outside that rule — the first only ever
-creates a file at a path nothing claims, the second creates a directory — and
-`scanner.hold_library_still` documents why each is safe.
+scan declines to start while one is being applied. One thing that **moves,
+removes or overwrites an existing file** runs at a time: a scan decides what to
+write from a directory listing taken when it started, so a file changing
+underneath it would read as a file that went missing or was silently
+rewritten. `POST /api/upload` is outside that rule only for a FRESH
+destination — a file landing at a path nothing claims cannot invalidate a
+scan's listing — and `POST /api/library/folders` is outside it entirely, since
+it only ever creates a directory; `scanner.hold_library_still` documents why
+each is safe.
+
+Uploading onto a path that already holds a file is refused with `409`, naming
+the path, unless the request sends `replace=true` — the stored bytes are
+untouched until then, and a replace that does go ahead is held against a
+running scan the same way a move or a delete is (issue #293). Every upload's
+receipt names the path a file was saved under (`saved`) and whether that call
+`replaced` an existing one, so a client can show where a file went and
+whether it overwrote something without inferring either from the request it
+sent.
 
 ### What a deleted score may still be asked for
 

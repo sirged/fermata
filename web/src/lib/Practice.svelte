@@ -50,6 +50,13 @@
   let current = $state(null);
   let review = $state(null);
   let history = $state(null);
+  // A rolling last 7 days (today and the six before it), from
+  // GET /api/practice/summary - deliberately NOT the same window as "This
+  // week" above, which is the preference-anchored calendar week and can name
+  // a different span. Fetched separately rather than reworked out of
+  // `history` (issue #293): the two windows genuinely disagree near a week
+  // boundary, and where they disagree this route is the one that counts.
+  let summary = $state(null);
   let scores = $state([]);
   let sessions = $state([]);
   // Named drill scopes (issue #236), fetched once per load so a session's
@@ -118,15 +125,17 @@
   async function refresh() {
     error = "";
     try {
-      const [nextCurrent, nextReview, nextHistory, nextScores] = await Promise.all([
+      const [nextCurrent, nextReview, nextHistory, nextSummary, nextScores] = await Promise.all([
         api.currentGoal(today),
         api.practiceReview(REVIEW_WEEKS, today),
         api.practiceHistory(HISTORY_DAYS, today),
+        api.practiceSummary(),
         api.scores(),
       ]);
       current = nextCurrent;
       review = nextReview;
       history = nextHistory;
+      summary = nextSummary;
       scores = nextScores;
       // Fired, not awaited: presets only supply the scope NAME a session's
       // preset_id is shown under (issue #276), and a failure here is not a
@@ -333,9 +342,9 @@
 
     {#if loading}
       <p class="quiet">Loading…</p>
-    {:else if !current || !review || !history}
+    {:else if !current || !review || !history || !summary}
       <!-- The load failed, and the message above says why. Everything below
-           reads from these three answers, and rendering it without them put
+           reads from these four answers, and rendering it without them put
            "NaN undefined" on screen where the week should be - a page that
            looks broken rather than one that says what happened. -->
       <p class="quiet">
@@ -469,6 +478,47 @@
               {goal ? "Adjust this goal" : "Set a goal for this week"}
             </button>
           </div>
+        {/if}
+      </section>
+
+      <!-- --------------------------------------------------- last 7 days -->
+      <!-- Deliberately its own window, not a restatement of "This week"
+           above. That section's week is the preference-anchored calendar
+           week ("This week" started Monday, say); this one is a rolling last
+           seven days from GET /api/practice/summary, and the two can name a
+           different span near a week boundary. Where they disagree this is
+           the one that counts (issue #293). -->
+      <section class="last7">
+        <div class="section-head">
+          <h2>Last 7 days</h2>
+          <span class="quiet">today and the six before it</span>
+        </div>
+        <p class="statement-text totals last7-totals">
+          {#if summary.week_seconds}
+            {formatDuration(summary.week_seconds)} across {summary.week_sessions}
+            session{summary.week_sessions === 1 ? "" : "s"}.
+          {:else}
+            No practice recorded in the last 7 days.
+          {/if}
+        </p>
+        {#if summary.top_scores.length}
+          <ul class="spent last7-scores">
+            {#each summary.top_scores as row (row.id)}
+              <li>
+                {#if row.deleted}
+                  <span
+                    class="deleted-piece"
+                    title="This score is in the trash. The practice still counts."
+                  >
+                    {row.title} <span class="deleted-mark">deleted</span>
+                  </span>
+                {:else}
+                  <a href={"#/score/" + row.id}>{row.title}</a>
+                {/if}
+                <span class="quiet">{formatDuration(row.practice_seconds)}</span>
+              </li>
+            {/each}
+          </ul>
         {/if}
       </section>
 

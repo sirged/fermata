@@ -2714,17 +2714,27 @@ _SAFE_SEGMENT = re.compile(r"^[^/\\]+$")
 
 
 @router.post("/upload", tags=[TAG_LIBRARY], response_model=UploadOut)
-async def upload(file: UploadFile, folder: str = "Uploads"):
+async def upload(file: UploadFile, folder: str = "Uploads", replace: bool = False):
     """Save a file into the library under `folder` (created if needed) and
     trigger a scan to pick it up. `folder` may not contain `..` or an
     absolute path segment.
 
+    Refused with `409`, naming the path, when the destination already holds a
+    file - unless `replace=true` is sent, in which case the existing bytes are
+    overwritten and the receipt says so (`UploadOut.replaced`). The stored
+    file is untouched until a replace is actually applied: the check runs
+    before anything is opened for writing.
+
     DELIBERATELY NOT HELD against a running scan or a move, unlike the
-    library-management routes below. This only ever creates a file at a path
-    nothing claims - it never moves or removes one - so it cannot invalidate a
-    scan's listing, and holding it would refuse the second of two uploads in a
-    row for the scan the first one started. See scanner.hold_library_still for
-    the full argument and for what catches the one overlap that matters."""
+    library-management routes below, for a FRESH destination only. Creating a
+    file at a path nothing claims cannot invalidate a scan's listing, and
+    holding it would refuse the second of two uploads in a row for the scan
+    the first one started. See scanner.hold_library_still for the full
+    argument and for what catches the one overlap that matters. A REPLACE is
+    the one way this route can change a file a scan might already be reading,
+    so - unlike the fresh-destination case - it IS held the same way a move
+    or a delete is, and answers the same `409` (via `_busy`) when a scan is
+    running."""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in FILE_TYPES:
         raise HTTPException(422, f"unsupported file type {suffix!r}")
@@ -2752,10 +2762,34 @@ async def upload(file: UploadFile, folder: str = "Uploads"):
     dest_dir = LIBRARY_DIR.joinpath(*parts)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / name
-    with dest.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
+    existed = dest.exists()
+    # .as_posix(), not str() (which was the whole of this line before #293) -
+    # every other relative path this codebase reports uses it too (see
+    # scanner.py's own disk_paths and _library_files), and str() on Windows
+    # answers with backslashes, which is not the path a client sent or would
+    # recognise.
+    rel = dest.relative_to(LIBRARY_DIR).as_posix()
+    if existed and not replace:
+        raise HTTPException(
+            409,
+            f"there is already a file at {rel} - resend the upload with replace=true to "
+            "replace it, or choose a different name",
+        )
+    if existed:
+        # Overwriting a path a score already claims, unlike the fresh-file case
+        # above - held against a running scan for the same reason a move or a
+        # delete is (see the docstring's REPLACE paragraph).
+        try:
+            with scanner.hold_library_still():
+                with dest.open("wb") as out:
+                    shutil.copyfileobj(file.file, out)
+        except scanner.LibraryBusy as exc:
+            raise _busy(exc) from None
+    else:
+        with dest.open("wb") as out:
+            shutil.copyfileobj(file.file, out)
     scanner.start_scan()
-    return {"saved": str(dest.relative_to(LIBRARY_DIR))}
+    return {"saved": str(rel), "replaced": existed}
 
 
 # ---------------------------------------------------------------------------
