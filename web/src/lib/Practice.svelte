@@ -31,6 +31,7 @@
     periodLabel,
     formatDays,
     periodStatement,
+    presetLabel,
     rangeLabel,
     sessionSubject,
     tempoLabel,
@@ -51,6 +52,10 @@
   let history = $state(null);
   let scores = $state([]);
   let sessions = $state([]);
+  // Named drill scopes (issue #236), fetched once per load so a session's
+  // preset_id can be shown as the name it was saved under (issue #276)
+  // instead of the id no row anywhere else prints.
+  let presets = $state([]);
   let loading = $state(true);
   let error = $state("");
 
@@ -113,16 +118,18 @@
   async function refresh() {
     error = "";
     try {
-      const [nextCurrent, nextReview, nextHistory, nextScores] = await Promise.all([
+      const [nextCurrent, nextReview, nextHistory, nextScores, nextPresets] = await Promise.all([
         api.currentGoal(today),
         api.practiceReview(REVIEW_WEEKS, today),
         api.practiceHistory(HISTORY_DAYS, today),
         api.scores(),
+        api.trainerPresets(),
       ]);
       current = nextCurrent;
       review = nextReview;
       history = nextHistory;
       scores = nextScores;
+      presets = nextPresets;
       // Sent after the first call, because the week to ask for comes back from
       // it - the server decides which seven days "this week" is, from the
       // week-start preference, and asking for a week the client worked out
@@ -147,6 +154,9 @@
 
   let goal = $derived(current?.goal ?? null);
   let statements = $derived(goalStatements(goal));
+  // id -> name, for presetLabel() below. Built once per load rather than
+  // looked up per row.
+  let presetsById = $derived(Object.fromEntries(presets.map((p) => [p.id, p.name])));
   // The period on screen is the GOAL's when there is one, and the canonical
   // week from the preference only when there is not. A goal stores the dates it
   // was set for, so after the week-start preference changes the two differ -
@@ -706,7 +716,12 @@
                 </span>
                 <span class="session-length">{formatDuration(session.seconds)}</span>
                 <span class="quiet session-extra">
-                  {[rangeLabel(session), tempoLabel(session), session.note]
+                  {[
+                    rangeLabel(session),
+                    tempoLabel(session),
+                    presetLabel(session, presetsById),
+                    session.note,
+                  ]
                     .filter(Boolean)
                     .join(" · ")}
                 </span>

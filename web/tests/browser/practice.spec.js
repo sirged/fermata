@@ -44,6 +44,12 @@ async function reset(request) {
     await (await request.get("/api/practice/sessions?limit=1000")).json()
   ).sessions;
   for (const session of sessions) await request.delete(`/api/practice/sessions/${session.id}`);
+  // Presets last, after every session referencing one is already gone - a
+  // named scope one of these tests saved would otherwise leak into the next
+  // test's history page.
+  for (const preset of await (await request.get("/api/trainer/presets")).json()) {
+    await request.delete(`/api/trainer/presets/${preset.id}`);
+  }
   await request.put("/api/settings", { data: { week_starts_on: "monday" } });
 }
 
@@ -338,6 +344,37 @@ test("practice that is not a piece is logged here and lands in the record", asyn
     cells.filter((c) => Number(c.dataset.seconds) > 0).map((c) => c.dataset.day),
   );
   expect(withPractice).toEqual([today]);
+});
+
+test("a session logged under a named scope shows that scope's name, and one logged without shows none", async ({
+  page,
+  request,
+}) => {
+  // Issue #276: #236 gave a preset-scoped session `preset_id` instead of a
+  // scope sentence in `note`, and nothing on this page ever read the column -
+  // the history showed the drill and nothing about what it was scoped to.
+  const preset = await request.post("/api/trainer/presets", {
+    data: { name: "Top two, fifth position", start_fret: 5, end_fret: 9, strings: [1, 2] },
+  });
+  expect(preset.ok(), await preset.text()).toBe(true);
+  const presetId = (await preset.json()).id;
+
+  const scoped = await request.post("/api/practice/sessions", {
+    data: { activity: "fretboard", seconds: 120, local_date: today, preset_id: presetId },
+  });
+  expect(scoped.ok(), await scoped.text()).toBe(true);
+  const unscoped = await request.post("/api/practice/sessions", {
+    data: { activity: "fretboard", seconds: 60, local_date: today },
+  });
+  expect(unscoped.ok(), await unscoped.text()).toBe(true);
+
+  await page.reload();
+  await expect(sessionRows(page)).toHaveCount(2);
+  const rowText = await sessionRows(page).allInnerTexts();
+  const scopedRow = rowText.find((t) => t.includes("2m"));
+  const unscopedRow = rowText.find((t) => t.includes("1m"));
+  expect(scopedRow, rowText.join("\n")).toContain("Top two, fifth position");
+  expect(unscopedRow, rowText.join("\n")).not.toContain("Top two, fifth position");
 });
 
 test("a finished week asks whether the goal was realistic, and remembers the answer", async ({
