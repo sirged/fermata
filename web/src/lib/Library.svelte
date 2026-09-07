@@ -982,11 +982,16 @@
            Attributed to the LAST SCAN rather than stated as a bare number,
            because that is what it is - the counter resets when a scan starts.
 
-           A restored file is very often also an UPDATE - the scanner cannot
-           tell "put back unchanged" from "put back with a new mtime" apart,
-           and rewriting bytes back to disk almost always changes the mtime -
-           so the added/updated note above and this one are frequently both on
-           screen together. Its own testid, rather than sharing `.scan-note`
+           A restored file is NOT usually also an update: scanner.py's own
+           remount shortcut (_scan_file's size/mtime check, around line 733)
+           clears missing_since and returns before the updated counter can
+           ever increment, whenever the file came back with the exact size
+           and mtime it left with - the ordinary case for a drive that was
+           simply unplugged and plugged back in unchanged. The two notes CAN
+           still appear together, but only when the file's bytes were
+           actually rewritten (which changes the mtime) - a real update, not
+           a consequence of the restore itself. Its own testid, rather than
+           sharing `.scan-note`
            with every other note here, is what lets a test address this one
            without also matching whichever of its siblings happens to be
            showing. -->

@@ -28,7 +28,25 @@
 // resolved. Nothing reads /api/export or /api/import's result through the
 // request context and assumes it landed - a click's promise resolving is not
 // the write (or, here, the read) actually finishing.
+//
+// WHAT NEVER GOES THROUGH THE API HERE: a POST to /api/trainer/attempts or
+// /api/trainer/chord-attempts. Neither table has a DELETE route (see
+// fret-weak-spots.spec.js's own file header on why trainer_attempts has to
+// stay untouched by every OTHER spec in this shared-database suite), so a
+// row logged here would leak into the rest of the run with no way to clean
+// it back up. The "newer tables" test below needs a real, nonzero fact in
+// both of those tables anyway - so it edits a real exported archive's own
+// manifest.json directly (via tests/browser/fixtures/zip.js) rather than
+// seed either table through its endpoint. That is exactly the path under
+// test - _apply_import reads `tables["trainer_attempts"]` verbatim, never
+// anything about how the row got into the archive - and it leaves the live
+// tables exactly as they were found, proved by reading their counts before
+// and after.
+import fs from "node:fs";
+
 import { expect, test } from "@playwright/test";
+
+import { buildZip, readZip } from "./fixtures/zip.js";
 
 const exportButton = (page) => page.getByTestId("export-button");
 const fileInput = (page) => page.getByTestId("import-file-input");
@@ -101,11 +119,26 @@ test("a preview names the newer tables too, when the archive actually carries th
   request,
 }) => {
   // ImportOut carries counts for setlists, saved drill scopes and drill
-  // history that the preview never named before this (issue #284). Seeded
-  // here so each is a real, nonzero fact in the exported archive rather than
-  // depending on whatever the shared library happens to hold when this spec
-  // runs - and torn down in `finally` regardless of how the assertions come
-  // out, the same discipline the rename test above uses.
+  // history that the preview never named before this (issue #284). The
+  // setlist, its membership and the preset below are seeded through the
+  // real API and torn down in `finally` regardless of how the assertions
+  // come out, the same discipline the rename test above uses - every one of
+  // those tables has a real DELETE route, so a real POST here leaves
+  // nothing behind.
+  //
+  // trainer_attempts and trainer_chord_attempts are the two exceptions:
+  // NEITHER has a delete route at all (see fret-weak-spots.spec.js's own
+  // file header on why trainer_attempts has to stay untouched by every
+  // OTHER spec in this shared-database suite - the same is true of
+  // trainer_chord_attempts, just not yet load-bearing for an ordering
+  // rule). A row POSTed to either endpoint here would leak into every later
+  // spec in this run with no way to clean it up again - which is exactly
+  // what a real archive's own export/import round trip already carries
+  // without ever touching those live tables: the two rows below are
+  // written directly into a REAL exported archive's own manifest.json (the
+  // import path this test actually means to exercise, never the POST
+  // routes), and the counts read before and after prove neither table was
+  // touched.
   // /api/upload answers with only { saved: <path> } - the score row it
   // starts a scan to create is read back separately, the same way
   // zzz-library-organise.spec.js's own upload() helper does.
@@ -144,29 +177,12 @@ test("a preview names the newer tables too, when the archive actually carries th
       },
     })
   ).json();
+  const attemptsBefore = (await (await request.get("/api/trainer/attempts")).json()).total;
+  const chordAttemptsBefore = (
+    await (await request.get("/api/trainer/chord-attempts")).json()
+  ).total;
   try {
     await request.post(`/api/setlists/${setlist.id}/scores`, { data: { score_id: score.id } });
-    await request.post("/api/trainer/attempts", {
-      data: {
-        drill: "fret_to_note",
-        direction: "position_to_note",
-        target_string: 6,
-        target_fret: 3,
-        target_note: "G",
-        given_note: "G",
-      },
-    });
-    await request.post("/api/trainer/chord-attempts", {
-      data: {
-        drill: "chord_flashcards",
-        direction: "shape_to_name",
-        target_root: "C",
-        target_quality: "major",
-        target_shape: [{ string: 5, fret: 3 }],
-        given_root: "C",
-        given_quality: "major",
-      },
-    });
 
     await page.goto("/#/settings");
     const downloadPromise = page.waitForEvent("download");
@@ -174,7 +190,55 @@ test("a preview names the newer tables too, when the archive actually carries th
     const download = await downloadPromise;
     const archivePath = await download.path();
 
-    await fileInput(page).setInputFiles(archivePath);
+    // The real export, edited rather than replayed through the two POST
+    // routes that leak (see the comment above): read its own manifest.json
+    // back out, add one fret-to-note and one chord attempt directly to the
+    // tables the import path reads, and re-pack the SAME files/ entries
+    // (untouched, still hashing to what the manifest already claims for
+    // them) into a new archive. Every OTHER table here - the score, the
+    // setlist, the preset - is still the real export's own real row;
+    // nothing about this fabricates a whole manifest from nothing (that is
+    // the OTHER new test in this file, which needs exactly that).
+    const entries = readZip(fs.readFileSync(archivePath));
+    const manifestEntry = entries.find((e) => e.name === "manifest.json");
+    const manifest = JSON.parse(manifestEntry.data.toString("utf-8"));
+    manifest.tables.trainer_attempts.push({
+      owner: "local",
+      session_id: null,
+      drill: "fret_to_note",
+      direction: "position_to_note",
+      target_string: 6,
+      target_fret: 3,
+      target_note: "G",
+      given_string: null,
+      given_fret: null,
+      given_note: "G",
+      correct: 1,
+      response_ms: null,
+    });
+    manifest.tables.trainer_chord_attempts.push({
+      owner: "local",
+      session_id: null,
+      drill: "chord_flashcards",
+      direction: "shape_to_name",
+      target_root: "C",
+      target_quality: "major",
+      target_shape: JSON.stringify([{ string: 5, fret: 3 }]),
+      given_root: "C",
+      given_quality: "major",
+      given_notes: null,
+      given_shape: null,
+      correct: 1,
+      response_ms: null,
+    });
+    manifestEntry.data = Buffer.from(JSON.stringify(manifest), "utf-8");
+    const editedArchive = buildZip(entries);
+
+    await fileInput(page).setInputFiles({
+      name: "edited-export.zip",
+      mimeType: "application/zip",
+      buffer: editedArchive,
+    });
     const preview = importPreview(page);
     await expect(preview).toBeVisible();
     // One count named for each table this component could not say anything
@@ -192,6 +256,94 @@ test("a preview names the newer tables too, when the archive actually carries th
     await request.delete(`/api/scores/${score.id}`);
     await request.delete(`/api/trash/${score.id}`);
   }
+  // Neither trainer table was ever written to - the archive was edited, not
+  // replayed through the POST routes that leak - so both counts are exactly
+  // what they were before this test ran.
+  expect((await (await request.get("/api/trainer/attempts")).json()).total).toBe(attemptsBefore);
+  expect((await (await request.get("/api/trainer/chord-attempts")).json()).total).toBe(
+    chordAttemptsBefore,
+  );
+});
+
+test("previewing an archive that carries only scores names just that, with every other count folded away", async ({
+  page,
+}) => {
+  // importSummaryText's zero-fold (issue #284): every IMPORT_COUNT_FIELD
+  // that is 0 disappears into one closing clause rather than being named
+  // one by one, and the ALL-zero case gets its own sentence rather than
+  // reusing that clause with nothing named first - see that function's own
+  // comment on the wording bug this replaced ("This archive holds nothing
+  // else was in the archive"). None of the five tests above build an
+  // archive isolated enough to prove the PARTIAL fold - one real count,
+  // every other one genuinely zero - still reads correctly: the shared
+  // library's own export always carries a mix of nonzero counts. So this
+  // one is built from nothing rather than downloaded and edited, with a
+  // single scores row and every other table empty - format, schema_version,
+  // exported_at and fermata_version are still the real export's own (read
+  // back the same way the test above does), only `tables` is replaced, so
+  // this is never a guess at what a valid manifest looks like.
+  await page.goto("/#/settings");
+  const downloadPromise = page.waitForEvent("download");
+  await exportButton(page).click();
+  const download = await downloadPromise;
+  const real = JSON.parse(
+    readZip(fs.readFileSync(await download.path()))
+      .find((e) => e.name === "manifest.json")
+      .data.toString("utf-8"),
+  );
+
+  const onlyScores = {
+    ...real,
+    tables: {
+      instruments: [],
+      tags: [],
+      // file_included: false, so nothing here needs a matching files/ entry
+      // (see api.py's _referenced_files) - only the row, which is all this
+      // preview ever reads a count from.
+      scores: [
+        {
+          id: 1,
+          path: "Uploads/only-scores-preview.musicxml",
+          hash: "0".repeat(40),
+          deleted_at: null,
+          file_included: false,
+        },
+      ],
+      score_tags: [],
+      transcriptions: [],
+      practice_sessions: [],
+      practice_goals: [],
+      settings: [],
+      setlists: [],
+      setlist_scores: [],
+      trainer_attempts: [],
+      trainer_chord_attempts: [],
+      trainer_scope_presets: [],
+      trainer_scope_preset_strings: [],
+    },
+  };
+  const archive = buildZip([
+    { name: "manifest.json", data: Buffer.from(JSON.stringify(onlyScores), "utf-8") },
+  ]);
+
+  await fileInput(page).setInputFiles({
+    name: "only-scores.zip",
+    mimeType: "application/zip",
+    buffer: archive,
+  });
+  await expect(importPreview(page)).toBeVisible();
+  // The exact sentence importSummaryText produces when exactly one count is
+  // real and every other one folds away - not a substring, so a mutation
+  // that breaks that fold (dropping the "- nothing else..." clause, or
+  // reusing the all-zero branch's own wording here instead) shows up as a
+  // mismatch here rather than passing unnoticed the way it did before this
+  // test existed.
+  const expected =
+    `This archive holds 1 score - nothing else was in the archive, written ` +
+    `${real.exported_at} by Fermata ${real.fermata_version}. Read from a schema version ` +
+    `${real.schema_version} archive into this Fermata's own schema version ` +
+    `${real.schema_version}.`;
+  await expect(page.getByTestId("import-counts")).toHaveText(expected);
 });
 
 test("previewing an archive that collides with a preset already here shows the rename", async ({

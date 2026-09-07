@@ -61,8 +61,8 @@ const NAMES = {
   // `errors` count - only a file the scan cannot even OPEN is (see
   // scanner._scan's per-file OSError handler and its own test in
   // server/tests/test_scanner.py). A .gp file is hashed and nothing else, so
-  // locking it below is what actually reaches that handler.
-  locked: "scan-poll-locked.gp",
+  // denying it read permission below is what actually reaches that handler.
+  unreadable: "scan-poll-unreadable.gp",
 };
 
 const libraryDir = () => {
@@ -355,8 +355,8 @@ test("a file the scan cannot read shows an errors line naming what went wrong", 
   // screen, exactly like one that finished cleanly. The file is denied read
   // permission for the whole scan rather than only briefly, so this is not
   // a race against the scanner - the OSError is guaranteed, not hoped for.
-  placeFile(NAMES.locked);
-  const repair = breakFileForReading(filePath(NAMES.locked));
+  placeFile(NAMES.unreadable);
+  const repair = breakFileForReading(filePath(NAMES.unreadable));
   let status;
   try {
     status = await scanAndWait(request);
@@ -364,15 +364,16 @@ test("a file the scan cannot read shows an errors line naming what went wrong", 
     repair();
   }
   expect(status.errors, JSON.stringify(status)).toBe(1);
-  expect(status.last_error, JSON.stringify(status)).toContain(relPath(NAMES.locked));
+  expect(status.last_error, JSON.stringify(status)).toContain(relPath(NAMES.unreadable));
 
   await page.goto("/#/");
   const errorsLine = page.locator('[data-testid="scan-errors"]');
   await expect(errorsLine).toContainText("1 file could not be read");
-  await expect(errorsLine).toContainText(relPath(NAMES.locked));
+  await expect(errorsLine).toContainText(relPath(NAMES.unreadable));
 
-  // A second, real scan (the lock is gone now) proves the file was only ever
-  // unreadable rather than genuinely broken, and lets afterEach's cleanup
-  // find the row it expects instead of a file that was never added.
+  // A second, real scan (the permission denial is undone now) proves the
+  // file was only ever unreadable rather than genuinely broken, and lets
+  // afterEach's cleanup find the row it expects instead of a file that was
+  // never added.
   await scanAndWait(request);
 });
