@@ -980,8 +980,17 @@
            statement that anything had been recovered (issue #103).
 
            Attributed to the LAST SCAN rather than stated as a bare number,
-           because that is what it is - the counter resets when a scan starts. -->
-      <p class="scan-note">
+           because that is what it is - the counter resets when a scan starts.
+
+           A restored file is very often also an UPDATE - the scanner cannot
+           tell "put back unchanged" from "put back with a new mtime" apart,
+           and rewriting bytes back to disk almost always changes the mtime -
+           so the added/updated note above and this one are frequently both on
+           screen together. Its own testid, rather than sharing `.scan-note`
+           with every other note here, is what lets a test address this one
+           without also matching whichever of its siblings happens to be
+           showing. -->
+      <p class="scan-note" data-testid="scan-restored">
         Last scan: {scan.restored} score{scan.restored === 1 ? "" : "s"} found again
         {scan.restored === 1 ? "at the path it" : "at the paths they"} went missing from.
       </p>
