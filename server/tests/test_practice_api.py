@@ -181,6 +181,30 @@ def test_an_impossible_length_or_rating_is_refused_with_a_reason(client, score):
         assert expected in res.text, (body, res.text)
 
 
+def test_a_session_dated_into_the_future_or_too_far_past_is_refused_by_the_route(client):
+    """The two bounds normalise_session's day window enforces, exercised
+    through the route itself rather than the function directly - #290's
+    fix to the import path (max_backdate_days) must leave neither of these
+    changed. A date far enough in the future to clear MAX_FUTURE_DAYS and a
+    date far enough in the past to clear MAX_BACKDATE_DAYS both still 422,
+    exactly as they did before that fix existed."""
+    future = (date.today() + timedelta(days=30)).isoformat()
+    res = client.post(
+        "/api/practice/sessions",
+        json={"seconds": 600, "activity": "technique", "local_date": future},
+    )
+    assert res.status_code == 422, res.text
+    assert "local_date is in the future" in res.text, res.text
+
+    too_old = (date.today() - timedelta(days=500)).isoformat()
+    res = client.post(
+        "/api/practice/sessions",
+        json={"seconds": 600, "activity": "technique", "local_date": too_old},
+    )
+    assert res.status_code == 422, res.text
+    assert "local_date is more than" in res.text and "days ago" in res.text, res.text
+
+
 # ---------------------------------------------------------------------------
 # Adding detail afterwards, and taking it back
 # ---------------------------------------------------------------------------

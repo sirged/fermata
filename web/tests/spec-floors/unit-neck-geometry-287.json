@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/neck-geometry.spec.js",
+  "count": 5,
+  "reason": "issue #287: real fret spacing strictly decreases toward the body, the twelfth fret sits at half the open-string (unfretted scale) length, the last drawn fret lands exactly at the board's total width with the nut pinned at the origin, a marker centre sits midway between its two fret wires, and a linear (constant-spacing) layout is shown to fail the two geometry claims - the mutation this issue's Done-when asks to see red."
+}
