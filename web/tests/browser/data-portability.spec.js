@@ -53,6 +53,31 @@ const fileInput = (page) => page.getByTestId("import-file-input");
 const importError = (page) => page.getByTestId("import-error");
 const importPreview = (page) => page.getByTestId("import-preview");
 const importRenames = (page) => page.getByTestId("import-renames");
+const importCleaned = (page) => page.getByTestId("import-cleaned");
+
+// The 14 tables a manifest's `tables` object always carries (api.py's
+// EXPORT_TABLE_NAMES) - every key `_read_and_validate_manifest` requires
+// present as a list, empty unless a test below fills one in. Kept once here
+// rather than repeated per test, the way the "only scores" manifest above
+// builds its own inline (that one predates this helper).
+function emptyTables() {
+  return {
+    instruments: [],
+    tags: [],
+    scores: [],
+    score_tags: [],
+    transcriptions: [],
+    practice_sessions: [],
+    practice_goals: [],
+    settings: [],
+    setlists: [],
+    setlist_scores: [],
+    trainer_attempts: [],
+    trainer_chord_attempts: [],
+    trainer_scope_presets: [],
+    trainer_scope_preset_strings: [],
+  };
+}
 
 test("exporting the library downloads a real archive", async ({ page }) => {
   await page.goto("/#/settings");
@@ -388,5 +413,131 @@ test("previewing an archive that collides with a preset already here shows the r
     );
   } finally {
     await request.delete(`/api/trainer/presets/${created.id}`);
+  }
+});
+
+test("a row a normaliser only tidies is reported before AND after the import, and a clean archive says nothing", async ({
+  page,
+  request,
+}) => {
+  // ImportOut.cleaned (#286): the counts above name what arrived, but never
+  // said which of those rows a normaliser had to tidy on the way in - a
+  // lowercase pitch stored as "E2", say. This is the guaranteed case
+  // instruments.normalise makes (see server/tests/test_portability_api.py's
+  // own `test_an_archived_instrument_is_imported_with_its_name_and_pitches_cleaned`,
+  // which proves the same fact server-side): a POST to /api/instruments
+  // already normalises, so no instrument stored through the real API is
+  // ever dirty - the only way to get one INTO an archive is to hand-edit a
+  // manifest directly, exactly as the newer-tables test above does for
+  // trainer_attempts and trainer_chord_attempts.
+  //
+  // Two manifests, built from nothing rather than downloaded and edited
+  // (the "only scores" test's own technique) so applying the dirty one
+  // never touches anything already in the shared library: format,
+  // schema_version, exported_at and fermata_version are the real export's
+  // own, only `tables` is replaced, with a single instruments row and every
+  // other table empty.
+  await page.goto("/#/settings");
+  const downloadPromise = page.waitForEvent("download");
+  await exportButton(page).click();
+  const download = await downloadPromise;
+  const real = JSON.parse(
+    readZip(fs.readFileSync(await download.path()))
+      .find((e) => e.name === "manifest.json")
+      .data.toString("utf-8"),
+  );
+
+  const instrumentName = "Data portability cleaning check";
+  const baseRow = {
+    id: 1,
+    owner: "local",
+    kind: "string",
+    name: instrumentName,
+    fretted: 1,
+    string_count: 6,
+    fret_count: 19,
+    capo: 0,
+    reference_pitch: 440.0,
+    created_at: "2024-01-01T00:00:00",
+    updated_at: "2024-01-01T00:00:00",
+  };
+
+  // The column holds text written by Python's own `json.dumps` (api.py's
+  // create_instrument, and _apply_import's own `_store_cleaned` call, both
+  // use its default separators - see server/fermata/api.py) - `", "`
+  // between items, not JS's compact `JSON.stringify`. A "clean" row's
+  // string_pitches has to be byte-identical to what the normaliser would
+  // itself produce, or `_store_cleaned`'s own `row[key] != value` string
+  // comparison sees a spacing difference as a change and (wrongly, for the
+  // purposes of this test) counts the row as cleaned.
+  function pyJsonStringArray(items) {
+    return `[${items.map((item) => JSON.stringify(item)).join(", ")}]`;
+  }
+
+  function archiveWith(stringPitches) {
+    const manifest = {
+      ...real,
+      tables: {
+        ...emptyTables(),
+        instruments: [{ ...baseRow, string_pitches: pyJsonStringArray(stringPitches) }],
+      },
+    };
+    return buildZip([
+      { name: "manifest.json", data: Buffer.from(JSON.stringify(manifest), "utf-8") },
+    ]);
+  }
+
+  // Nothing to tidy: every pitch is already the canonical spelling
+  // instruments.normalise would store, so `cleaned` is `{}` and no line
+  // renders at all - the common case this line must stay silent for.
+  const cleanArchive = archiveWith(["E2", "A2", "D3", "G3", "B3", "E4"]);
+  await fileInput(page).setInputFiles({
+    name: "clean-instrument.zip",
+    mimeType: "application/zip",
+    buffer: cleanArchive,
+  });
+  await expect(importPreview(page)).toBeVisible();
+  await expect(importCleaned(page)).toHaveCount(0);
+
+  // One pitch spelled lowercase - a row instruments.normalise tidies rather
+  // than refuses. Choosing a new file resets this component's own import
+  // state (chooseFile calls resetImportState first), so the clean preview
+  // above is gone before this one is built.
+  const dirtyArchive = archiveWith(["e2", "A2", "D3", "G3", "B3", "E4"]);
+  await fileInput(page).setInputFiles({
+    name: "dirty-instrument.zip",
+    mimeType: "application/zip",
+    buffer: dirtyArchive,
+  });
+  await expect(importPreview(page)).toBeVisible();
+  // BEFORE anything is applied - the whole point of a dry run reporting this
+  // at all - a person sees the exact row that will be changed.
+  await expect(importCleaned(page)).toHaveText(
+    "1 instrument row was tidied to the stored form.",
+  );
+
+  let insertedId;
+  try {
+    await page.getByTestId("import-confirm").click();
+    await expect(page.getByTestId("import-success")).toBeVisible();
+    // AFTER applying, the same receipt - identical wording, since `cleaned`
+    // reads the same on a dry run and an applied import (ImportOut.cleaned's
+    // own docstring).
+    await expect(importCleaned(page)).toHaveText(
+      "1 instrument row was tidied to the stored form.",
+    );
+
+    const stored = (await (await request.get("/api/instruments")).json()).find(
+      (i) => i.name === instrumentName,
+    );
+    expect(stored, `${instrumentName} never appeared in the library`).toBeTruthy();
+    insertedId = stored.id;
+    // The value POST would have stored, not the raw one the archive
+    // carried - "E2", never "e2".
+    expect(stored.string_pitches[0]).toBe("E2");
+  } finally {
+    if (insertedId !== undefined) {
+      await request.delete(`/api/instruments/${insertedId}`);
+    }
   }
 });

@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/data-portability.spec.js",
+  "count": 1,
+  "reason": "issue #284 follow-up: ImportOut.cleaned is rendered too, not just the counts - an archive with one instrument row a normaliser only tidies (a lowercase pitch) shows the exact tidied-row line in the preview BEFORE the import is applied, shows the identical line again in the applied block after, and an archive with nothing to tidy shows no such line at all."
+}

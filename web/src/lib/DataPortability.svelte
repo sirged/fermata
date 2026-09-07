@@ -71,6 +71,42 @@
     return `${verb} ${body}${tail}`;
   }
 
+  // ImportOut.cleaned's own closed list of tables (#286) - a table name to
+  // the singular noun this component already uses for that table's own
+  // *_imported count above, in the same order IMPORT_COUNT_FIELDS lists
+  // them. A table with no rule of its own (scores, tags, score_tags,
+  // transcriptions, settings, setlist_scores, trainer_scope_preset_strings)
+  // can never appear in `cleaned` at all - see ImportOut.cleaned's own
+  // docstring in api_models.py.
+  const CLEANED_TABLE_LABELS = [
+    ["instruments", "instrument"],
+    ["practice_sessions", "practice session"],
+    ["practice_goals", "practice goal"],
+    ["setlists", "setlist"],
+    ["trainer_attempts", "fret-to-note drill attempt"],
+    ["trainer_chord_attempts", "chord drill attempt"],
+    ["trainer_scope_presets", "saved drill scope"],
+  ];
+
+  /** One sentence per table `cleaned` names with a non-zero count - the
+   * receipt for the half of #286 the counts above never show: a row a
+   * normaliser only tidied (a lowercase pitch stored as "E2", say) is
+   * imported rather than refused, and this is the one thing that tells a
+   * person it happened, BEFORE they apply an import as much as after (a dry
+   * run reports the identical map - see ImportOut.cleaned's own docstring).
+   * Empty when `cleaned` is `{}`, the common case: a row nothing needed to
+   * touch is not itself news, so no "0 cleaned" line is ever shown for it. */
+  function cleanedText(cleaned) {
+    const lines = [];
+    for (const [table, noun] of CLEANED_TABLE_LABELS) {
+      const n = cleaned?.[table] ?? 0;
+      if (n === 0) continue;
+      const verb = n === 1 ? "was" : "were";
+      lines.push(`${n} ${noun} row${n === 1 ? "" : "s"} ${verb} tidied to the stored form.`);
+    }
+    return lines.join(" ");
+  }
+
   /** One rename line, saying why the archived name did not survive - #260's
    * plain collision, or #268's cleaning (with or without a second collision
    * behind it). */
@@ -210,6 +246,9 @@
     {#if preview}
       <div class="preview" data-testid="import-preview">
         <p data-testid="import-counts">{importSummaryText(preview)}</p>
+        {#if cleanedText(preview.cleaned)}
+          <p class="hint" data-testid="import-cleaned">{cleanedText(preview.cleaned)}</p>
+        {/if}
         <p class="hint">
           Importing adds this to your library - it never replaces or overwrites what is already
           there. Import into an empty library to restore a backup exactly.
@@ -234,6 +273,9 @@
     {/if}
     {#if applied}
       <p class="success" data-testid="import-success">{importSummaryText(applied)}</p>
+      {#if cleanedText(applied.cleaned)}
+        <p class="hint" data-testid="import-cleaned">{cleanedText(applied.cleaned)}</p>
+      {/if}
       {#if applied.trainer_scope_presets_renamed?.length}
         <p class="hint" data-testid="import-renames">
           Renamed on import: {joinList(
