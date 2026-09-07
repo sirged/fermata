@@ -78,6 +78,11 @@ test.describe("ScoreCompare transcription-analysis sentence", () => {
     });
     await page.goto("/#/score/1");
 
+    // Wait for the analysis-based branch to actually be selected (loadAnalysis
+    // is async) before reading the paragraph - innerText() alone does not
+    // retry, and reading too early would race the "No staff transcription
+    // yet" fallback the component starts in.
+    await expect(page.locator(".empty-state h3")).toHaveText("No tab to extract");
     const text = await page.locator(".empty-state p").first().innerText();
     expect(text).toBe("could not open pdf: corrupt xref table");
     expect(text).not.toContain("standard staff");
