@@ -269,7 +269,9 @@ the questions rather than around the tables.
   disagree with the practice page about when they last played something, and a
   back-dated session counts from the day it says it happened. `last_practiced`
   on a score is that day, not a timestamp.
-- `GET /api/practice/summary` - the last seven days, for the library header.
+- `GET /api/practice/summary?today=` - the last seven days, for the library
+  header: `today` and the six practice days before it, parsed and defaulted
+  exactly as it is on `/practice/history`.
 
 ### Goals and the review
 

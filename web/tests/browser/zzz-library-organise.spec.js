@@ -29,8 +29,15 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test } from "@playwright/test";
 
+import { localDay } from "../../src/lib/practice.js";
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(here, "..", "..", "test-fixtures", "notation-only.musicxml");
+// The browser's own date, the same way Viewer.svelte stamps a practice
+// session (Viewer.svelte:558) - not the server's UTC date, which stamped
+// these sessions one day into the future on a machine west of Greenwich
+// after 18:00 local, dropping them off the practice page's local-day window.
+const today = localDay();
 
 const libraryDir = () => {
   const dir = process.env.FERMATA_TEST_LIBRARY_DIR;
@@ -151,7 +158,7 @@ test("a move is previewed before it happens, and the move that happens is the on
   // Practice on it FIRST, so what survives the move is something a person put
   // there rather than an empty row.
   const logged = await request.post(`/api/scores/${score.id}/practice`, {
-    data: { seconds: 1800, note: "before the move" },
+    data: { seconds: 1800, note: "before the move", local_date: today },
   });
   expect(logged.ok(), await logged.text()).toBe(true);
 
@@ -240,7 +247,7 @@ test("deleting a score takes it to the trash with its history, and one press bri
 }) => {
   const score = await upload(request, "organise-delete.musicxml");
   await request.post(`/api/scores/${score.id}/practice`, {
-    data: { seconds: 3600, note: "hours on this" },
+    data: { seconds: 3600, note: "hours on this", local_date: today },
   });
   // ScoreDeleteOut's tags_kept and goals_kept were never named in the receipt
   // (issue #284) - seeded here so deleting actually carries a nonzero count
@@ -365,7 +372,9 @@ test("destroying a score takes two presses and says what it destroys", async ({
 }) => {
   const score = await upload(request, "organise-destroy.musicxml");
   const logged = await (
-    await request.post(`/api/scores/${score.id}/practice`, { data: { seconds: 600 } })
+    await request.post(`/api/scores/${score.id}/practice`, {
+      data: { seconds: 600, local_date: today },
+    })
   ).json();
   // ScorePurgeOut's goals_kept and file_deleted were never named in the
   // "gone for good" receipt (issue #284) - a goal here makes the first
@@ -422,7 +431,7 @@ test("practice on a deleted score still counts, and stops being a way into it", 
   // being is a LINK, into a library that no longer holds the score.
   const score = await upload(request, "organise-history.musicxml");
   const logged = await request.post(`/api/scores/${score.id}/practice`, {
-    data: { seconds: 2700, note: "before it went" },
+    data: { seconds: 2700, note: "before it went", local_date: today },
   });
   expect(logged.ok(), await logged.text()).toBe(true);
 
@@ -492,6 +501,11 @@ test("uploading the same name twice is refused until Replace is pressed, and the
   await input.setInputFiles({ name, mimeType: "application/xml", buffer: replacement });
   const conflict = page.locator(".upload-conflict");
   await expect(conflict).toContainText(`Uploads/${name}`);
+  // This batch was one file and it 409'd, so it posts no receipt of its own -
+  // and must not leave the PREVIOUS batch's "Saved as ..." sitting beside the
+  // conflict sentence, naming a file that already existed as if this upload
+  // had just written it.
+  await expect(receipt).toHaveCount(0);
   const replaceButton = conflict.locator(".conflict-replace");
   await expect(replaceButton).toBeVisible();
   expect(fs.readFileSync(path.join(libraryDir(), "Uploads", name))).toEqual(original);

@@ -766,6 +766,11 @@
   async function onUpload(ev) {
     const files = [...ev.target.files];
     ev.target.value = "";
+    // Cleared here, not left to the receipts below: a batch that is entirely
+    // 409s pushes nothing into `receipts`, and without this a stale "Saved as
+    // ..." from a previous upload sat beside this batch's conflict sentence,
+    // naming a file that was not this one.
+    notice = "";
     // Every upload's own receipt, and a conflict for anything the server
     // refused with 409 (issue #293) - collected rather than shown one at a
     // time, so a multi-file upload does not make the ones that landed wait on
@@ -847,7 +852,7 @@
       {#if identity}
         <!-- Display only (issue #293) - nothing here changes what the
              application does with what it reads. -->
-        <span class="identity-tag" title="Reverse-proxy identity">{identity}</span>
+        <span class="identity-tag">{identity}</span>
       {/if}
     </div>
 

@@ -87,7 +87,8 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then(j),
-  practiceSummary: () => fetch("/api/practice/summary").then(j),
+  practiceSummary: (today) =>
+    fetch(`/api/practice/summary?today=${today}`).then(j),
   // How one piece is going (#57): its whole record, the window's per-day
   // totals, the tempo each session was practised at, how the time split
   // between section work and run-throughs, the sessions with their notes, and

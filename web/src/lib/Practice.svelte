@@ -129,7 +129,7 @@
         api.currentGoal(today),
         api.practiceReview(REVIEW_WEEKS, today),
         api.practiceHistory(HISTORY_DAYS, today),
-        api.practiceSummary(),
+        api.practiceSummary(today),
         api.scores(),
       ]);
       current = nextCurrent;

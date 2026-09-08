@@ -1222,16 +1222,21 @@ def list_sessions(
 
 
 @router.get("/practice/summary", tags=[TAG_PRACTICE], response_model=PracticeSummaryOut)
-def practice_summary():
+def practice_summary(today: str | None = None):
     """The last seven days, for the library header.
 
-    Counted over practice DAYS - today and the six before it - rather than over
-    a rolling 168 hours of UTC timestamps, so this and the practice page cannot
-    disagree about which sessions were "this week". `date('now')` is UTC, which
-    can put the window's edge a few hours out for somebody far from Greenwich;
-    over seven days that moves nothing anybody would notice, and unlike the
-    goal endpoints this one has no period whose end has to be got exactly right.
+    Counted over practice DAYS - `today` and the six before it - rather than
+    over a rolling 168 hours of UTC timestamps, so this and the practice page
+    cannot disagree about which sessions were "this week". `today` is parsed
+    and defaulted exactly like `GET /practice/history`'s parameter of the same
+    name - see `_today()` - because the server's own UTC date is not the
+    practiser's date, and a client with sessions on eight distinct local days
+    got a six-session, six-day answer to a "last 7 days" question when this
+    route computed the window from `date('now')` instead.
     """
+    end = _today(today)
+    start = (end - timedelta(days=6)).isoformat()
+    end_s = end.isoformat()
     conn = connect()
     # Scoped to the owner like every other practice query. Nothing else exists
     # to aggregate across today, but the day accounts arrive this is a site
@@ -1241,8 +1246,8 @@ def practice_summary():
     week = conn.execute(
         f"""SELECT COALESCE(SUM(p.seconds), 0) AS total_seconds, COUNT(*) AS session_count
             FROM practice_sessions p
-            WHERE p.owner = ? AND {practice.LOCAL_DATE_SQL} >= date('now', '-6 days')""",
-        (DEFAULT_OWNER,),
+            WHERE p.owner = ? AND {practice.LOCAL_DATE_SQL} BETWEEN ? AND ?""",
+        (DEFAULT_OWNER, start, end_s),
     ).fetchone()
     # A DELETED SCORE IS STILL COUNTED HERE, AND NOW SAYS THAT IT IS (#56).
     # Dropping it would be the wrong fix twice over: the hours were spent, and
@@ -1255,9 +1260,9 @@ def practice_summary():
         f"""SELECT s.id, s.title, SUM(p.seconds) AS practice_seconds,
                    s.deleted_at IS NOT NULL AS deleted
             FROM practice_sessions p JOIN scores s ON s.id = p.score_id
-            WHERE p.owner = ? AND {practice.LOCAL_DATE_SQL} >= date('now', '-6 days')
+            WHERE p.owner = ? AND {practice.LOCAL_DATE_SQL} BETWEEN ? AND ?
             GROUP BY p.score_id ORDER BY practice_seconds DESC LIMIT 5""",
-        (DEFAULT_OWNER,),
+        (DEFAULT_OWNER, start, end_s),
     ).fetchall()
     return {
         "week_seconds": week["total_seconds"],
@@ -2763,7 +2768,6 @@ async def upload(file: UploadFile, folder: str = "Uploads", replace: bool = Fals
             "that. See docs/deployment.md.",
         )
     dest_dir = LIBRARY_DIR.joinpath(*parts)
-    dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / name
     existed = dest.exists()
     # .as_posix(), not str() (which was the whole of this line before #293) -
@@ -2778,10 +2782,15 @@ async def upload(file: UploadFile, folder: str = "Uploads", replace: bool = Fals
             f"there is already a file at {rel} - resend the upload with replace=true to "
             "replace it, or choose a different name",
         )
+    # Created only now that the upload is actually going to happen - checked
+    # first, so a refused upload into a folder that does not exist yet leaves
+    # no trace of it: no folder for a client to see and wonder whether
+    # anything landed there.
+    dest_dir.mkdir(parents=True, exist_ok=True)
     with dest.open("wb") as out:
         shutil.copyfileobj(file.file, out)
     scanner.start_scan()
-    return {"saved": str(rel), "replaced": existed}
+    return {"saved": rel, "replaced": existed}
 
 
 # ---------------------------------------------------------------------------
