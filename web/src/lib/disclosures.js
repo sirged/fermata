@@ -1,15 +1,25 @@
 // The structural-form and inference disclosures TranscriptionOut carries
-// beside the Rule 8 conformance figures (issue #155).
+// beside the Rule 8 conformance figures (issue #155), plus the five Rule 8
+// bar counters that are themselves structural disclosures with no other
+// reader (issue #294).
 //
 // Every one of these counters was computed, stored, reloaded through the
 // API, and mirrored in the response model - and then read by no interface
-// code. Only the warning PROSE reached a reader, through ScoreCompare.svelte's
-// generic warnings list; the count each sentence is built from never did. See
-// api_models.py's TranscriptionOut for the authoritative field list this
-// mirrors - every field it carries in the "_BAR_KEYS" group past
-// bars_overfull/bars_short/bars_defective/bars_measured/bars_padded/
-// bars_unread (which already reach a reader through ScoreCompare's bar-count
-// headline and the warning prose the *_bars lists feed) has a row here.
+// code. This file used to claim bars_overfull/bars_short/bars_padded/
+// bars_unread/bars_anacrusis "already reach a reader through ScoreCompare's
+// bar-count headline and the warning prose the *_bars lists feed" - that was
+// WRONG (issue #294): the bar-count headline reads only bars_defective and
+// bars_measured (ScoreCompare.svelte's bar-headline block), and the warning
+// PROSE those five feed is server-built text in the generic warnings list -
+// the count each sentence is built from never reaches web/src by field name,
+// only as already-formatted words inside a string nothing here parses back
+// apart. `grep -rn "bars_overfull\|bars_short\|bars_padded\|bars_unread\|
+// bars_anacrusis" web/src` matched only this comment. They get rows below
+// like every other counter. See api_models.py's TranscriptionOut for the
+// authoritative field list this mirrors - every field it carries in the
+// "_BAR_KEYS" group past bars_defective/bars_measured (the two Rule 8
+// figures that genuinely do reach a reader through ScoreCompare's bar-count
+// headline, and stay off this list for that reason) has a row here.
 //
 // ONE ROW PER COUNTER, on purpose - the issue's own fix shape is "decide the
 // presentation once for the family... the next decoder disclosure should
@@ -33,9 +43,9 @@
 // row-selection rules (what's hidden, what's "not measured") can be tested
 // without a browser. What actually renders is Disclosures.svelte.
 export const DISCLOSURE_ROWS = [
-  { key: "repeats_unread", label: "Repeat marks not read", barsKey: "repeats_unread_bars" },
-  { key: "endings_unread", label: "Volta (ending) brackets not read", barsKey: "endings_unread_bars" },
-  { key: "endings_truncated", label: "Volta endings truncated", barsKey: "endings_truncated_bars" },
+  { key: "repeats_unread", label: "Repeat marks not read", barsKey: "repeats_unread_bars", family: "structural" },
+  { key: "endings_unread", label: "Volta (ending) brackets not read", barsKey: "endings_unread_bars", family: "structural" },
+  { key: "endings_truncated", label: "Volta endings truncated", barsKey: "endings_truncated_bars", family: "structural" },
   // A FLAG, not a count - tabextract.py:5172 trips it on ANY gap in the
   // volta numbers actually read, not only a missing "1" (seen_ints !=
   // range(1, seen_ints[-1] + 1) catches [1, 3] just as it catches [2, 3]),
@@ -43,7 +53,7 @@ export const DISCLOSURE_ROWS = [
   // bare "1" in a column of counts reads as "one thing", which is the wrong
   // claim for a yes/no fact - kind: "flag" renders it as presence, not a
   // number.
-  { key: "endings_incomplete", label: "Volta numbering has gaps", kind: "flag" },
+  { key: "endings_incomplete", label: "Volta numbering has gaps", kind: "flag", family: "structural" },
   // OVERSTATES if read as "repeat/volta marks": tabextract.py:1156 folds a
   // plain bar-style group (a final or double barline, carrying no <repeat>
   // and no <ending> at all - see docs/musicxml-tab-profile.md's "bar-style
@@ -57,6 +67,7 @@ export const DISCLOSURE_ROWS = [
     label: "Repeat/volta/bar-style marks with no bar to anchor to",
     barsKey: "form_marks_unanchored_bars",
     barsLabel: "near bar",
+    family: "structural",
   },
   // Counted per BAR, not per mark: tabextract.py:2163-2164 counts one bar
   // once even when two navigation instructions close on it together.
@@ -64,28 +75,30 @@ export const DISCLOSURE_ROWS = [
     key: "nav_marks_unresolved",
     label: "Bars whose navigation marks name no target this transcription holds",
     barsKey: "nav_marks_unresolved_bars",
+    family: "structural",
   },
   // No barsKey: a navigation mark with no bar to name has no bar number to
   // report (docs/musicxml-tab-profile.md, Rule 16 / issue #134 phase 2).
-  { key: "nav_marks_unanchored", label: "Navigation marks with no bar to anchor to" },
+  { key: "nav_marks_unanchored", label: "Navigation marks with no bar to anchor to", family: "structural" },
   // "System" here means a staff-sized GROUP OF LINES the page-scan found and
   // could not read as a staff (neither 5 nor 6 lines) - tabextract.py:
   // 344-346. Whether that group was actually a musical system is inferred
   // from its size, not confirmed - a stray staff-sized rule or decoration
   // would count the same way. The list beside this one is PAGES, not bars,
   // for the reason api_models.py's comment on systems_unread_pages gives.
-  { key: "systems_unread", label: "Staff-sized line groups not read as a system", barsKey: "systems_unread_pages", barUnit: "page" },
+  { key: "systems_unread", label: "Staff-sized line groups not read as a system", barsKey: "systems_unread_pages", barUnit: "page", family: "structural" },
   // Counted once per coincident GROUP (glyph_rhythm.py:3103-3113,
   // specifically the `coincident_unsplit_pairs += 1` at line 3111, inside
   // the loop over `_dup_groups` - one increment per group regardless of how
   // many duplicate copies it holds), not once per notehead.
-  { key: "coincident_unsplit_pairs", label: "Coincident notehead groups not split across voices" },
-  { key: "staves_coincident_unsplit", label: "Staves with an unsplit coincident group" },
-  { key: "unison_digits_shared", label: "Notes given another note's fret number" },
-  { key: "dots_unassigned", label: "Augmentation dots not assigned to a note" },
+  { key: "coincident_unsplit_pairs", label: "Coincident notehead groups not split across voices", family: "structural" },
+  { key: "staves_coincident_unsplit", label: "Staves with an unsplit coincident group", family: "structural" },
+  { key: "unison_digits_shared", label: "Notes given another note's fret number", family: "structural" },
+  { key: "dots_unassigned", label: "Augmentation dots not assigned to a note", family: "structural" },
   {
     key: "dots_unassigned_no_candidate",
     label: "Unassigned dots with no notehead or rest nearby",
+    family: "structural",
   },
   // glyph_rhythm.py:2957-2959: this dot DID reach a candidate notehead/rest,
   // but every one it reached already carried a dot at a conflicting tier
@@ -95,8 +108,9 @@ export const DISCLOSURE_ROWS = [
   {
     key: "dots_unassigned_eliminated",
     label: "Unassigned dots whose only candidates already had a conflicting or duplicate dot",
+    family: "structural",
   },
-  { key: "staves_dots_unassigned", label: "Staves with an unassigned dot" },
+  { key: "staves_dots_unassigned", label: "Staves with an unassigned dot", family: "structural" },
   // Quarter-note heads or shorter ONLY - glyph_rhythm.py:2934-2950 counts a
   // stemless filled (or x/diamond) notehead here specifically because a
   // missing stem costs its DURATION (the flag/beam that would say which
@@ -105,15 +119,15 @@ export const DISCLOSURE_ROWS = [
   // shape can carry a flag or beam in any notation, so a missing stem on one
   // of those costs only the voice signal, not the duration, and is not
   // counted here.
-  { key: "notes_no_stem", label: "Noteheads read with no stem (quarter or shorter)" },
-  { key: "staves_no_stem", label: "Staves with a stemless notehead" },
+  { key: "notes_no_stem", label: "Noteheads read with no stem (quarter or shorter)", family: "structural" },
+  { key: "staves_no_stem", label: "Staves with a stemless notehead", family: "structural" },
   // A whole notation staff whose stem/beam vector pass found NO stems at all,
   // though it decoded noteheads that must carry one (issue #91). Stronger than
   // the row above: not "one head lost its stem" but "no stem, flag or beam
   // anywhere on the staff was read", so its durations came from the notehead
   // shapes alone and the staff is degraded rather than reported as read
   // directly from its glyphs.
-  { key: "staves_stemless", label: "Staves with stem-bearing noteheads but no stems found at all" },
+  { key: "staves_stemless", label: "Staves with stem-bearing noteheads but no stems found at all", family: "structural" },
   // HOW THE DURATIONS WERE OBTAINED (issue #117). tabextract.py counted both
   // of these on every extraction from the start, inside `rhythm_provenance` -
   // a field nothing stores, nothing returns and no interface code reads - so
@@ -127,11 +141,13 @@ export const DISCLOSURE_ROWS = [
     key: "staves_spacing_rhythm",
     label: "Staves whose durations came from note spacing, not from glyphs",
     barsKey: "spacing_bars",
+    family: "structural",
   },
   {
     key: "staves_degraded_rhythm",
     label: "Staves read from the engraving with something on them left unread",
     barsKey: "degraded_bars",
+    family: "structural",
   },
   // A REFUSAL, not a defect in what was read (issue #129): a time signature
   // printed on the page whose digits include a glyph the decoder has no
@@ -142,6 +158,7 @@ export const DISCLOSURE_ROWS = [
   {
     key: "meter_digits_unreadable",
     label: "Printed time signatures refused over an unrecognised digit glyph",
+    family: "structural",
   },
   // Counted per tie END, not per tie (issue #81): a start with no stop and a
   // stop no start reached are each one, because there is no way to tell which
@@ -153,7 +170,35 @@ export const DISCLOSURE_ROWS = [
     key: "tie_ends_unpaired",
     label: "Tie ends whose other end was not found",
     barsKey: "tie_ends_unpaired_bars",
+    family: "structural",
   },
+  // The five Rule 8 bar counters (issue #294) - `bars_defective` and
+  // `bars_measured` stay off this list because ScoreCompare's bar-count
+  // headline already reads those two directly; the other five _BAR_KEYS
+  // members had no reader anywhere until now (see this file's top comment).
+  // No barsKey: neither api_models.py's TranscriptionOut nor
+  // tabextract.py's ExtractionResult carries an `overfull_bars` or
+  // `short_bars` list - _bar_conformance only ever counted these two, it
+  // never kept which bars.
+  { key: "bars_overfull", label: "Bars with more beats than the time signature allows", family: "bar" },
+  { key: "bars_short", label: "Bars with fewer beats than the time signature requires", family: "bar" },
+  { key: "bars_padded", label: "Bars padded to length", barsKey: "padded_bars", family: "bar" },
+  { key: "bars_unread", label: "Bars that could not be read", barsKey: "unread_bars", family: "bar" },
+  // A Rule 8 exemption, not a defect - the count of bars a first-bar pickup
+  // let Rule 8 excuse, not bars that are wrong. NOT "Pickup bars": in the
+  // compensated pairing _anacrusis_bars recognises (tabextract.py's
+  // _anacrusis_bars, the "final_short" branch), the counter and bars list
+  // include the score's FINAL bar too - the one that corroborates the
+  // pickup by being short in exactly the complementary way, not a pickup
+  // itself. "Pickup bars" would call that final bar a pickup, which it is
+  // not. The label instead names what _bar_conformance's `excused` list
+  // actually is (tabextract.py, the loop building `excused` right after
+  // `anacrusis = _anacrusis_bars(...)`): bars lifted out of the
+  // short/defective counts because a first-bar pickup excused them. Still a
+  // fact worth a row: it says which of the score's bars was assumed to be
+  // part of a pickup, an assumption about the page a reader must be able to
+  // check.
+  { key: "bars_anacrusis", label: "Bars excused by a first-bar pickup", barsKey: "anacrusis_bars", family: "bar" },
 ];
 
 /**
@@ -170,31 +215,64 @@ export const DISCLOSURE_ROWS = [
  *   - a `*_bars` (or `*_pages`) list rides along as the counter's detail:
  *     the bar/page numbers it exists to name.
  *
- * The one thing that gates the WHOLE section rather than one row: if every
- * single counter below is null, nothing here was ever computed for this row
- * at all (the common shape of a hand-edited row - see saveEdit() in
- * ScoreCompare.svelte, which states every one of these `null` on purpose).
- * That state already renders as nothing elsewhere on this panel (no bar
- * headline, no warnings block), and a wall of one "not measured" row per
- * counter above would be exactly the noise this function exists to avoid
- * (there were seventeen of them when issue #155 wrote this, and the list only
- * grows, which is why the sentence no longer names a number) - so this
- * returns no rows at all rather than that wall. A row that measured SOME of
- * these counters (a real extraction whose schema predates one particular
- * counter) still shows the gap on that one counter specifically, because in
- * that case something else on this same object is a real number and the
- * absence of this one is worth knowing.
+ * The gate that used to cover the WHOLE section now applies PER FAMILY (the
+ * five `family: "bar"` Rule 8 counters, versus every other, "structural",
+ * counter): if every counter in a family is null, nothing in that family was
+ * ever computed for this row, and that family renders no rows at all rather
+ * than a wall of "not measured" lines. A family with at least one real number
+ * still shows the gap on any null counter of ITS OWN family specifically,
+ * unchanged from before - the null-vs-zero contract inside a rendered family
+ * is untouched by this.
+ *
+ * This is a legacy-blob problem, not a hypothetical one: disclosures live in
+ * one stored `confidence` JSON blob that is never backfilled, and the two
+ * families were added to storage at different times - the seventeen
+ * structural counters by issue #155, `bars_padded`/`bars_unread` by #101 and
+ * `bars_anacrusis` by #174 (issue #294 added nothing to storage; it only
+ * gave the five bar counters a reader on the web side - see this file's top
+ * comment). A blob stored before whichever family arrived later on its
+ * timeline carries real numbers for the family that already existed and
+ * simply has no keys at all (`undefined`, not zero) for the one that
+ * didn't yet - a single whole-object gate would have rendered that missing
+ * family as a wall of "not measured" rows beside the real ones, stating a
+ * total absence of measurement as fact for counters that were never even
+ * asked for on that extraction. The gate has to work symmetrically: whichever
+ * family a given stored blob lacks, only the other family's rows should
+ * render.
+ *
+ * Before the five bar counters got their own family tag there was only one
+ * family (this is why the original gate used a single `anyMeasured`, and why
+ * there were seventeen counters in it - the list only grows, which is why
+ * the sentence no longer names a number).
  */
+const BAR_FAMILY = "bar";
+
+// `family` is required on every DISCLOSURE_ROWS entry, not defaulted -
+// a defaulted "structural" fallback would silently misfile a future bar
+// row that forgot to set `family: "bar"` into the wrong family instead of
+// failing loudly. See disclosures.spec.js's guard on this.
+function familyOf(row) {
+  if (!row.family) {
+    throw new Error(`disclosure row "${row.key}" has no family`);
+  }
+  return row.family;
+}
+
 export function disclosureRows(t) {
   if (!t) return [];
-  const anyMeasured = DISCLOSURE_ROWS.some((row) => t[row.key] !== null && t[row.key] !== undefined);
-  if (!anyMeasured) return [];
+  const isMeasured = (row) => t[row.key] !== null && t[row.key] !== undefined;
+  const familyHasMeasurement = {
+    [BAR_FAMILY]: DISCLOSURE_ROWS.some((row) => familyOf(row) === BAR_FAMILY && isMeasured(row)),
+    structural: DISCLOSURE_ROWS.some((row) => familyOf(row) === "structural" && isMeasured(row)),
+  };
+  if (!familyHasMeasurement[BAR_FAMILY] && !familyHasMeasurement.structural) return [];
 
   const rows = [];
   for (const row of DISCLOSURE_ROWS) {
+    if (!familyHasMeasurement[familyOf(row)]) continue; // whole family unmeasured - no row
     const value = t[row.key];
     if (value === 0) continue; // hidden - good news needs no row
-    const measured = value !== null && value !== undefined;
+    const measured = isMeasured(row);
     const barsRaw = row.barsKey ? t[row.barsKey] : null;
     rows.push({
       key: row.key,

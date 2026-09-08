@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-compare-disclosures.spec.js",
+  "count": 2,
+  "reason": "issue #294: the five Rule 8 bar counters (bars_overfull, bars_short, bars_padded, bars_unread, bars_anacrusis) that fed only server-built warning prose now render their own row each, with a bar list only where the API keeps one, and a real zero on all five is hidden the same way every other counter's zero is."
+}

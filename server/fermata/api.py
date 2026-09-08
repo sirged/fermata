@@ -1680,16 +1680,17 @@ def _transcription_row(conn, score_id: int):
 _BAR_KEYS = ("bars_overfull", "bars_short", "bars_defective", "bars_measured",
              "bars_padded", "bars_unread",
              # `bars_anacrusis` (issue #174): how many bars a first-bar pickup
-             # let Rule 8 excuse. A Rule 8 CONFORMANCE figure, not a structural
-             # disclosure - it is the bars_short/bars_defective arithmetic
+             # let Rule 8 excuse - the bars_short/bars_defective arithmetic
              # itself, adjusted for a pickup that is normal notation rather than
-             # a misread, and is shown through the bar-count headline and the
-             # warning prose (which names `anacrusis_bars`) like its
-             # bars_padded / bars_unread neighbours, not the disclosures panel.
-             # So it is listed in test_disclosure_keys._RULE8_CONFORMANCE_KEYS
-             # and stays OFF the web mirror. It still has to survive a reload
-             # for the same reason the rest do: a reader reopening a stored
-             # transcription must see that a first bar was excused, and which.
+             # a misread. Unlike bars_defective/bars_measured (the two Rule 8
+             # figures the bar-count headline reads directly, and which DO stay
+             # off the web mirror via test_disclosure_keys._RULE8_CONFORMANCE_
+             # KEYS), this one had no reader anywhere until issue #294 gave it a
+             # disclosures-panel row: it is a structural disclosure like its
+             # bars_padded / bars_unread neighbours, not a headline figure. It
+             # still has to survive a reload for the same reason the rest do: a
+             # reader reopening a stored transcription must see that a first bar
+             # was excused, and which.
              "bars_anacrusis", "notes_no_stem", "staves_no_stem",
              # `staves_stemless` (issue #91): a notation staff whose stem/beam
              # vector pass found NO stems at all, though it decoded noteheads
