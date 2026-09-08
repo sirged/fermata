@@ -87,7 +87,8 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then(j),
-  practiceSummary: () => fetch("/api/practice/summary").then(j),
+  practiceSummary: (today) =>
+    fetch(`/api/practice/summary?today=${today}`).then(j),
   // How one piece is going (#57): its whole record, the window's per-day
   // totals, the tempo each session was practised at, how the time split
   // between section work and run-throughs, the sessions with their notes, and
@@ -157,13 +158,16 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
     }).then(j),
-  upload: (file, folder = "Uploads") => {
+  // `replace` (#293) resends the same call after a 409 named the path
+  // already there - the stored bytes are untouched unless this is true, and
+  // the receipt's `replaced` says which happened.
+  upload: (file, folder = "Uploads", replace = false) => {
     const fd = new FormData();
     fd.append("file", file);
-    return fetch(`/api/upload?folder=${encodeURIComponent(folder)}`, {
-      method: "POST",
-      body: fd,
-    }).then(j);
+    return fetch(
+      `/api/upload?folder=${encodeURIComponent(folder)}&replace=${replace}`,
+      { method: "POST", body: fd },
+    ).then(j);
   },
   // --- Managing the library (issue #56) ------------------------------------
   // The one part of this API that writes to the user's own files. Two habits
@@ -328,6 +332,11 @@ export const api = {
     }).then(j),
   deleteTrainerPreset: (id) => fetch(`/api/trainer/presets/${id}`, { method: "DELETE" }).then(j),
   version: () => fetch("/api/version").then(j),
+  // The identity, if any, a trusted reverse proxy vouched for on this request
+  // (issue #16, #293) - display only, always 200. `enabled` is whether
+  // reverse-proxy auth is configured at all; `username` is null whenever it
+  // is not, or when it is but this request carried none.
+  me: () => fetch("/api/me").then(j),
   settings: () => fetch("/api/settings").then(j),
   putSettings: (values) =>
     fetch("/api/settings", {

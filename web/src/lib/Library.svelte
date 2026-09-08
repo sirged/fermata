@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
 
   import { api } from "./api.js";
+  import { identityLabel } from "./identity.js";
   import { keySignatureLabel } from "./provenance.js";
 
   let scores = $state([]);
@@ -58,6 +59,12 @@
   let selected = $state([]);
   let notice = $state("");
   let busy = $state(false);
+  // An upload that landed on a path a file already has (issue #293) - one
+  // entry per file still waiting on a decision, so several conflicts from one
+  // multi-file upload can each be resolved on their own. `file` is the real
+  // File the input already read, kept so Replace can resend it without
+  // asking the person to choose it again.
+  let uploadConflicts = $state([]);
 
   let folders = $state([]);
   let moveOpen = $state(false);
@@ -315,6 +322,13 @@
       : "",
   );
 
+  // The identity, if any, a trusted reverse proxy vouched for on this request
+  // (issue #16) - fetched once, quietly, the same as buildInfo above. Shows
+  // nothing while reverse-proxy auth is off, which is every install that has
+  // never turned it on (issue #293).
+  let me = $state(null);
+  const identity = $derived(identityLabel(me));
+
   const KINDS = [
     ["", "All"],
     ["notation", "Notation"],
@@ -399,6 +413,10 @@
 
   $effect(() => {
     api.version().then((v) => (buildInfo = v));
+  });
+
+  $effect(() => {
+    api.me().then((m) => (me = m));
   });
 
   // The scan poll. Both of the shapes #223 fixed in the background-batch poll
@@ -747,9 +765,49 @@
 
   async function onUpload(ev) {
     const files = [...ev.target.files];
-    for (const f of files) await api.upload(f);
     ev.target.value = "";
+    // Cleared here, not left to the receipts below: a batch that is entirely
+    // 409s pushes nothing into `receipts`, and without this a stale "Saved as
+    // ..." from a previous upload sat beside this batch's conflict sentence,
+    // naming a file that was not this one.
+    notice = "";
+    // Every upload's own receipt, and a conflict for anything the server
+    // refused with 409 (issue #293) - collected rather than shown one at a
+    // time, so a multi-file upload does not make the ones that landed wait on
+    // a decision about the one that did not.
+    const receipts = [];
+    const conflicts = [];
+    for (const f of files) {
+      try {
+        const result = await api.upload(f);
+        receipts.push(result.replaced ? `Replaced ${result.saved}` : `Saved as ${result.saved}`);
+      } catch (err) {
+        if (err?.status === 409) {
+          conflicts.push({ file: f, message: err.message });
+        } else {
+          receipts.push(err?.message ?? `Fermata could not upload ${f.name}.`);
+        }
+      }
+    }
+    if (receipts.length) notice = receipts.join(" ");
+    if (conflicts.length) uploadConflicts = [...uploadConflicts, ...conflicts];
     setTimeout(refresh, 1200);
+  }
+
+  async function replaceUpload(conflict) {
+    try {
+      const result = await api.upload(conflict.file, "Uploads", true);
+      notice = `Replaced ${result.saved}`;
+    } catch (err) {
+      notice = err?.message ?? "Fermata could not replace that file.";
+    } finally {
+      uploadConflicts = uploadConflicts.filter((c) => c !== conflict);
+      await refresh();
+    }
+  }
+
+  function dismissUploadConflict(conflict) {
+    uploadConflicts = uploadConflicts.filter((c) => c !== conflict);
   }
 
   async function toggleFavorite(score, ev) {
@@ -791,6 +849,11 @@
         <circle cx="16" cy="22" r="3" fill="var(--brass)" />
       </svg>
       <h1>fermata</h1>
+      {#if identity}
+        <!-- Display only (issue #293) - nothing here changes what the
+             application does with what it reads. -->
+        <span class="identity-tag">{identity}</span>
+      {/if}
     </div>
 
     <nav>
@@ -1035,6 +1098,20 @@
         <button class="notice-dismiss" onclick={() => (notice = "")}>Dismiss</button>
       </p>
     {/if}
+
+    {#each uploadConflicts as conflict (conflict.file)}
+      <!-- Refuse-or-replace (issue #293): the server would not overwrite a
+           file already at this path, and named it. The file itself is
+           untouched until Replace is pressed - this is a decision waiting to
+           be made, not a report of one already applied. -->
+      <p class="notice upload-conflict" role="status">
+        {conflict.message}
+        <button class="conflict-replace" onclick={() => replaceUpload(conflict)}>Replace</button>
+        <button class="notice-dismiss" onclick={() => dismissUploadConflict(conflict)}>
+          Dismiss
+        </button>
+      </p>
+    {/each}
 
     {#if showTrash}
       <header>
@@ -1467,6 +1544,11 @@
     font-weight: 600;
     letter-spacing: 0.5px;
     color: var(--brass-bright);
+  }
+
+  .identity-tag {
+    font-size: 12px;
+    color: var(--ink-dim);
   }
 
   nav {
@@ -1922,6 +2004,15 @@
     margin-left: 10px;
     font-size: 12px;
     padding: 4px 12px;
+  }
+
+  .conflict-replace {
+    margin-left: 10px;
+    font-size: 12px;
+    padding: 4px 12px;
+    background: var(--brass);
+    border-color: var(--brass);
+    color: #241d0f;
   }
 
   .dialog-scrim {

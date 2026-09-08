@@ -63,7 +63,11 @@ async function waitForScore(request, name) {
 }
 
 async function uploadNamed(request, name, title) {
-  const res = await request.post("/api/upload?folder=Uploads", {
+  // replace=true (#293): this file's own beforeEach calls this with the SAME
+  // two names every test and leaves the files in place between tests on
+  // purpose (see this file's own header) - a genuine, intentional overwrite,
+  // not the accidental collision refuse-or-replace exists to catch.
+  const res = await request.post("/api/upload?folder=Uploads&replace=true", {
     multipart: {
       file: { name, mimeType: "application/xml", buffer: fs.readFileSync(FIXTURE) },
     },

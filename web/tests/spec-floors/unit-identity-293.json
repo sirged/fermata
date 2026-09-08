@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/identity.spec.js",
+  "count": 3,
+  "reason": "issue #293: the header's vouched-name display is a pure function of GET /api/me's shape - nothing shown when reverse-proxy auth is off, the username when it is on and the request carried one, and a distinct sentence when it is on but this request carried none."
+}

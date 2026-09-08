@@ -1276,6 +1276,78 @@ def test_an_upload_will_not_recreate_the_library_folder_either(client, library, 
     assert not gone.exists(), "the upload created the library folder"
 
 
+# ---------------------------------------------------------------------------
+# Refuse-or-replace on an upload that collides with an existing file (#293).
+# ---------------------------------------------------------------------------
+
+
+def _upload(client, name: str, content: bytes, *, folder: str = "Uploads", replace: bool = False):
+    return client.post(
+        f"/api/upload?folder={folder}&replace={'true' if replace else 'false'}",
+        files={"file": (name, content, "application/octet-stream")},
+    )
+
+
+def test_uploading_the_same_name_twice_is_refused_with_409_naming_the_path(client, library):
+    first = _upload(client, "collide.gp", b"the first bytes")
+    assert first.status_code == 200
+    body = first.json()
+    assert body["saved"] == "Uploads/collide.gp"
+    assert body["replaced"] is False
+
+    second = _upload(client, "collide.gp", b"a second set of bytes")
+
+    assert second.status_code == 409
+    assert "Uploads/collide.gp" in second.json()["detail"]
+    # The bytes are UNCHANGED - the refusal is checked before anything is
+    # opened for writing.
+    assert (library / "Uploads" / "collide.gp").read_bytes() == b"the first bytes"
+
+
+def test_replace_true_overwrites_and_the_receipt_says_so(client, library):
+    _upload(client, "collide-replace.gp", b"original bytes")
+    # Drained before the replace below, so the FIRST upload's own background
+    # scan (every upload starts one) cannot still be running and hand the
+    # replace a real 409 of its own - a race this test must not have.
+    _wait_for_scan()
+
+    replaced = _upload(client, "collide-replace.gp", b"replacement bytes", replace=True)
+
+    assert replaced.status_code == 200
+    body = replaced.json()
+    assert body["saved"] == "Uploads/collide-replace.gp"
+    assert body["replaced"] is True
+    assert (library / "Uploads" / "collide-replace.gp").read_bytes() == b"replacement bytes"
+
+
+def test_a_fresh_upload_is_not_held_against_a_running_scan(client, library, monkeypatch):
+    """The exemption `scanner.hold_library_still` documents: this only ever
+    writes at a path the client itself named, never one discovered by
+    walking the library, so it cannot invalidate a scan's own listing."""
+    monkeypatch.setitem(scanner._state, "scanning", True)
+
+    res = _upload(client, "fresh-during-scan.gp", b"bytes")
+
+    assert res.status_code == 200
+    assert res.json() == {"saved": "Uploads/fresh-during-scan.gp", "replaced": False}
+
+
+def test_a_replace_is_also_not_held_against_a_running_scan(client, library, monkeypatch):
+    """The same exemption, and for the same reason, covers a replace too: it
+    still only ever writes at a path this request named, so holding it would
+    only refuse the second of two legitimate re-uploads in a row - exactly
+    the friction the fresh-destination exemption above exists to avoid."""
+    _upload(client, "collide-during-scan.gp", b"original bytes")
+    _wait_for_scan()
+    monkeypatch.setitem(scanner._state, "scanning", True)
+
+    res = _upload(client, "collide-during-scan.gp", b"new bytes", replace=True)
+
+    assert res.status_code == 200
+    assert res.json() == {"saved": "Uploads/collide-during-scan.gp", "replaced": True}
+    assert (library / "Uploads" / "collide-during-scan.gp").read_bytes() == b"new bytes"
+
+
 def test_the_config_folder_is_still_ours_to_create(tmp_path, monkeypatch):
     """The asymmetry is the point, so it is asserted rather than implied.
 

@@ -936,6 +936,31 @@ def test_the_weekly_summary_still_answers(client, score):
     assert [s["title"] for s in summary["top_scores"]] == ["Study in C"]
 
 
+def test_the_weekly_summary_accepts_a_today_override(client, score):
+    """`today` picks the window's end the same way it does for
+    /practice/history (issue #293 follow-up): a practiser whose local day is
+    ahead of the server's UTC day was otherwise missing a session that
+    happened on their "today" but the server's "yesterday", and the reverse.
+
+    The eight logged days sit 200-207 days before the real date the suite
+    runs on - far enough that a regression back to `date('now')` sees none of
+    them and this test goes red no matter the host's UTC offset.
+    """
+    end = date.today() - timedelta(days=200)
+    days = [(end - timedelta(days=i)).isoformat() for i in range(8)]  # newest first
+    for i, day in enumerate(days):
+        log(client, day=day, seconds=100 * (i + 1), score_id=score)
+
+    newest = client.get(f"/api/practice/summary?today={end.isoformat()}").json()
+    assert newest["week_sessions"] == 7
+    assert newest["week_seconds"] == sum(100 * (i + 1) for i in range(7))  # oldest day excluded
+
+    one_earlier = (end - timedelta(days=1)).isoformat()
+    shifted = client.get(f"/api/practice/summary?today={one_earlier}").json()
+    assert shifted["week_sessions"] == 7
+    assert shifted["week_seconds"] == sum(100 * (i + 1) for i in range(1, 8))  # newest day excluded
+
+
 def _delete_score(score_id: int) -> None:
     """Remove a score row the way the scanner does when its file has gone.
 

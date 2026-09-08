@@ -11,9 +11,16 @@
 // screen, the colours it reaches it in, the values that survive a reload, and
 // the fact that a session logged from this page lands in the record the server
 // keeps.
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { expect, test } from "@playwright/test";
 
 import { addDays, forbiddenWord, localDay, weekStart } from "../../src/lib/practice.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURE = path.join(here, "..", "..", "test-fixtures", "notation-only.musicxml");
 
 const week = (page) => page.locator("section.week");
 const statements = (page) => page.locator("section.week .statement");
@@ -609,4 +616,62 @@ test("nothing on this page says anything that grades the person", async ({ page,
 
   const text = await page.locator("main").innerText();
   expect(forbiddenWord(text), text).toBeNull();
+});
+
+test("the last 7 days section shows the route's own totals, a different window than This week", async ({
+  page,
+  request,
+}) => {
+  // Issue #293: GET /api/practice/summary (week_seconds, week_sessions,
+  // top_scores) had zero callers. Practised against a real piece, so
+  // top_scores has something to name, and this file's own beforeEach
+  // refuses to run against a library that has scores in it - so this test
+  // uploads its own score and is the one that removes it again, in `finally`,
+  // regardless of how the assertions below turn out.
+  const name = "practice-summary-293.musicxml";
+  const uploaded = await request.post("/api/upload?folder=Uploads", {
+    multipart: {
+      file: { name, mimeType: "application/xml", buffer: fs.readFileSync(FIXTURE) },
+    },
+  });
+  expect(uploaded.ok(), await uploaded.text()).toBe(true);
+  let score;
+  await expect(async () => {
+    const scores = await (await request.get("/api/scores")).json();
+    score = scores.find((s) => s.path === `Uploads/${name}`);
+    expect(score, `${name} never appeared in the library`).toBeTruthy();
+  }).toPass({ timeout: 30_000 });
+  await expect(async () => {
+    const status = await (await request.get("/api/scan/status")).json();
+    expect(status.scanning).toBe(false);
+  }).toPass({ timeout: 30_000 });
+
+  const sessionIds = [];
+  try {
+    const piece = await (
+      await request.post(`/api/scores/${score.id}/practice`, {
+        data: { seconds: 1800, local_date: today },
+      })
+    ).json();
+    sessionIds.push(piece.session.id);
+    const other = await request.post("/api/practice/sessions", {
+      data: { activity: "technique", seconds: 900, local_date: today },
+    });
+    expect(other.ok(), await other.text()).toBe(true);
+    sessionIds.push((await other.json()).id);
+
+    await page.reload();
+    const summary = page.locator("section.last7");
+    await expect(summary).toBeVisible();
+    // 1800s + 900s = 2700s = 45m, across the 2 sessions just logged - the
+    // route's own arithmetic, not this page reworking history itself.
+    await expect(summary.locator(".last7-totals")).toContainText("45m across 2 sessions");
+    const row = summary.locator(".last7-scores li", { hasText: score.title });
+    await expect(row).toContainText("30m");
+    await expect(row.locator("a")).toHaveAttribute("href", `#/score/${score.id}`);
+  } finally {
+    for (const id of sessionIds) await request.delete(`/api/practice/sessions/${id}`);
+    await request.delete(`/api/scores/${score.id}`);
+    await request.delete(`/api/trash/${score.id}`);
+  }
 });

@@ -147,8 +147,21 @@ removes an existing file** runs at a time: a scan decides what to write from a
 directory listing taken when it started, so a file moving underneath it would
 read as a file that went missing. `POST /api/upload` and `POST
 /api/library/folders` are deliberately outside that rule — the first only ever
-creates a file at a path nothing claims, the second creates a directory — and
-`scanner.hold_library_still` documents why each is safe.
+writes at a path the client itself named, never one it discovered by walking
+the library, so it cannot invalidate a scan's listing the way a move or a
+delete could; the second creates a directory — and `scanner.hold_library_still`
+documents why each is safe.
+
+Uploading onto a path that already holds a file is refused with `409`, naming
+the path, unless the request sends `replace=true` — the stored bytes are
+untouched until then (issue #293). A replace is not held against a running
+scan either, the same as a fresh upload: whichever content that scan reads
+back from the path, it reads as an ordinary file that changed on disk, which
+is what a person editing the file by hand while a scan runs already produces.
+Every upload's receipt names the path a file was saved under (`saved`) and
+whether that call `replaced` an existing one, so a client can show where a
+file went and whether it overwrote something without inferring either from
+the request it sent.
 
 ### What a deleted score may still be asked for
 
