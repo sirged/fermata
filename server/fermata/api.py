@@ -2726,15 +2726,17 @@ async def upload(file: UploadFile, folder: str = "Uploads", replace: bool = Fals
     before anything is opened for writing.
 
     DELIBERATELY NOT HELD against a running scan or a move, unlike the
-    library-management routes below, for a FRESH destination only. Creating a
-    file at a path nothing claims cannot invalidate a scan's listing, and
-    holding it would refuse the second of two uploads in a row for the scan
-    the first one started. See scanner.hold_library_still for the full
-    argument and for what catches the one overlap that matters. A REPLACE is
-    the one way this route can change a file a scan might already be reading,
-    so - unlike the fresh-destination case - it IS held the same way a move
-    or a delete is, and answers the same `409` (via `_busy`) when a scan is
-    running."""
+    library-management routes below - a REPLACE included. This only ever
+    writes at a path a client itself named, nothing it discovered by walking
+    the library, so it cannot invalidate a scan's own listing the way a move
+    or a delete could: whichever content a concurrently running scan reads
+    back from that path, it reads as an ordinary file that changed on disk
+    (an `updated` count, or a fresh `added` one), which is exactly what a
+    person editing the file by hand while a scan runs already produces and
+    this application does not otherwise guard against. Holding this against a
+    scan would refuse the second of two uploads in a row for the scan the
+    first one started - see scanner.hold_library_still for the full argument
+    the library-management routes below DO need it for."""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in FILE_TYPES:
         raise HTTPException(422, f"unsupported file type {suffix!r}")
@@ -2775,19 +2777,8 @@ async def upload(file: UploadFile, folder: str = "Uploads", replace: bool = Fals
             f"there is already a file at {rel} - resend the upload with replace=true to "
             "replace it, or choose a different name",
         )
-    if existed:
-        # Overwriting a path a score already claims, unlike the fresh-file case
-        # above - held against a running scan for the same reason a move or a
-        # delete is (see the docstring's REPLACE paragraph).
-        try:
-            with scanner.hold_library_still():
-                with dest.open("wb") as out:
-                    shutil.copyfileobj(file.file, out)
-        except scanner.LibraryBusy as exc:
-            raise _busy(exc) from None
-    else:
-        with dest.open("wb") as out:
-            shutil.copyfileobj(file.file, out)
+    with dest.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
     scanner.start_scan()
     return {"saved": str(rel), "replaced": existed}
 

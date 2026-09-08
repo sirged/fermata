@@ -55,7 +55,12 @@ async function waitForScore(request, name) {
 }
 
 async function upload(request, name) {
-  const res = await request.post("/api/upload?folder=Uploads", {
+  // replace=true (#293): beforeEach below uploads to this SAME path every
+  // test, on purpose (see this file's own "WHY THE FILES ARE NOT TAKEN BACK
+  // OUT" comment) - the file genuinely already exists here from the previous
+  // test in this run, and this is the one spec that means to overwrite it
+  // rather than to be refused for colliding with itself.
+  const res = await request.post("/api/upload?folder=Uploads&replace=true", {
     multipart: {
       file: { name, mimeType: "application/xml", buffer: fs.readFileSync(FIXTURE) },
     },

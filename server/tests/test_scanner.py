@@ -1321,8 +1321,9 @@ def test_replace_true_overwrites_and_the_receipt_says_so(client, library):
 
 
 def test_a_fresh_upload_is_not_held_against_a_running_scan(client, library, monkeypatch):
-    """The exemption `scanner.hold_library_still` documents still applies to a
-    destination nothing claims - only a REPLACE has to wait its turn."""
+    """The exemption `scanner.hold_library_still` documents: this only ever
+    writes at a path the client itself named, never one discovered by
+    walking the library, so it cannot invalidate a scan's own listing."""
     monkeypatch.setitem(scanner._state, "scanning", True)
 
     res = _upload(client, "fresh-during-scan.gp", b"bytes")
@@ -1331,19 +1332,20 @@ def test_a_fresh_upload_is_not_held_against_a_running_scan(client, library, monk
     assert res.json() == {"saved": "Uploads/fresh-during-scan.gp", "replaced": False}
 
 
-def test_a_replace_is_refused_while_a_scan_is_running(client, library, monkeypatch):
-    """Unlike a fresh destination, a replace overwrites a file a running scan
-    may already be reading - so it is held the same way a move or a delete
-    is, and answers the same `409` scanner.hold_library_still gives those."""
+def test_a_replace_is_also_not_held_against_a_running_scan(client, library, monkeypatch):
+    """The same exemption, and for the same reason, covers a replace too: it
+    still only ever writes at a path this request named, so holding it would
+    only refuse the second of two legitimate re-uploads in a row - exactly
+    the friction the fresh-destination exemption above exists to avoid."""
     _upload(client, "collide-during-scan.gp", b"original bytes")
     _wait_for_scan()
     monkeypatch.setitem(scanner._state, "scanning", True)
 
     res = _upload(client, "collide-during-scan.gp", b"new bytes", replace=True)
 
-    assert res.status_code == 409
-    assert "scan is running" in res.json()["detail"]
-    assert (library / "Uploads" / "collide-during-scan.gp").read_bytes() == b"original bytes"
+    assert res.status_code == 200
+    assert res.json() == {"saved": "Uploads/collide-during-scan.gp", "replaced": True}
+    assert (library / "Uploads" / "collide-during-scan.gp").read_bytes() == b"new bytes"
 
 
 def test_the_config_folder_is_still_ours_to_create(tmp_path, monkeypatch):

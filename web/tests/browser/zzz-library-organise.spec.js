@@ -474,8 +474,13 @@ test("uploading the same name twice is refused until Replace is pressed, and the
   await page.goto("/#/");
   const input = page.locator('input[type="file"]');
 
+  // ".notice:not(.upload-conflict)" throughout, not plain ".notice" - the
+  // conflict paragraph below carries "notice" too (issue #293's own upload
+  // receipt uses the same styling as every other receipt on this page), and
+  // once both are on screen at once a plain ".notice" is not one element.
+  const receipt = page.locator(".notice:not(.upload-conflict)");
   await input.setInputFiles({ name, mimeType: "application/xml", buffer: original });
-  await expect(page.locator(".notice")).toContainText(`Saved as Uploads/${name}`);
+  await expect(receipt).toContainText(`Saved as Uploads/${name}`);
   await expect(async () => {
     const scores = await (await request.get("/api/scores")).json();
     expect(scores.find((s) => s.path === `Uploads/${name}`), `${name} never appeared`).toBeTruthy();
@@ -494,7 +499,7 @@ test("uploading the same name twice is refused until Replace is pressed, and the
   // Pressing Replace is the second, deliberate request that actually changes
   // the file - and only now does it change.
   await replaceButton.click();
-  await expect(page.locator(".notice")).toContainText(`Replaced Uploads/${name}`);
+  await expect(receipt).toContainText(`Replaced Uploads/${name}`);
   await expect(conflict).toHaveCount(0);
   await expect(async () => {
     expect(fs.readFileSync(path.join(libraryDir(), "Uploads", name))).toEqual(replacement);
