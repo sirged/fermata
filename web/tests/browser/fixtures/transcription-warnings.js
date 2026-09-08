@@ -346,8 +346,16 @@ export function editedTranscriptionResponse() {
  * `editedTranscriptionResponse()` and DELETE (revert) to always answer with
  * `transcription` again - modeling "hand-edit this extracted row, then
  * revert" regardless of what the test actually types into the editor.
+ *
+ * `analysis` overrides the GET /transcription/analysis body (the
+ * TranscriptionAnalysisOut shape - `extractable`, `reason`, `vector`,
+ * `tab_staff_count`, `standard_staff_count`, `page_count`). Defaults to
+ * `{ extractable: true }`, which is only ever read by ScoreCompare.svelte
+ * when `transcription` is falsy (a 404 on GET /transcription), since
+ * loadAnalysis() only runs on that path - see issue #294's non-extractable
+ * empty-state sentence.
  */
-export async function stubScoreApi(page, transcription, { editRevert = false } = {}) {
+export async function stubScoreApi(page, transcription, { editRevert = false, analysis = null } = {}) {
   await page.route("**/api/scores/1", (route) => route.fulfill({ json: SCORE }));
   await page.route("**/api/scores/1/file", (route) =>
     route.fulfill({ body: MIN_PDF, contentType: "application/pdf" }),
@@ -356,7 +364,7 @@ export async function stubScoreApi(page, transcription, { editRevert = false } =
     route.fulfill({ json: { total_seconds: 0, sessions: [] } }),
   );
   await page.route("**/api/scores/1/transcription/analysis", (route) =>
-    route.fulfill({ json: { extractable: true } }),
+    route.fulfill({ json: analysis ?? { extractable: true } }),
   );
   if (editRevert) {
     await page.route("**/api/scores/1/transcription", (route) => {

@@ -1,0 +1,5 @@
+{
+  "file": "tests/unit/disclosures.spec.js",
+  "count": 1,
+  "reason": "issue #294 review nit: familyOf() used to default an unrecognised family to \"structural\", so a future bar row that forgot family: \"bar\" would silently misfile into the wrong family instead of failing loudly. family is now required on every DISCLOSURE_ROWS row - disclosureRows() throws when a row has none - and this test proves that by pushing a family-less row and asserting the throw."
+}

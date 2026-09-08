@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-compare-analysis.spec.js",
+  "count": 1,
+  "reason": "issue #294 review finding 1: the old raster test stubbed vector: false with standard_staff_count: 1, a response no server path emits - tabextract.py's raster branch (page_count > 0, every page fails the vector test) always returns standard_staff_count: 0 because _detect_staves is never called on a raster page. That test is now two realistic ones: a raster stub (vector: false, standard_staff_count: 0) asserting no staff count is shown at all, and a vector stub (vector: true, standard_staff_count: 2) asserting the measured count does show - net +1 test over the original file."
+}

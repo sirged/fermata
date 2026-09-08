@@ -425,6 +425,86 @@ test.describe("ScoreCompare structural disclosures", () => {
     await expect(page.locator('[data-disclosure="tie_ends_unpaired"]')).toHaveCount(0);
   });
 
+  test("the five Rule 8 bar counters each get their own row, with a bar list only where the API keeps one", async ({
+    page,
+  }) => {
+    // Issue #294: bars_overfull, bars_short, bars_padded, bars_unread and
+    // bars_anacrusis had no reader anywhere before this - only
+    // bars_defective/bars_measured reach ScoreCompare's bar-count headline.
+    // bars_overfull/bars_short have no *_bars list on the API at all (see
+    // disclosures.js's comment on these two rows); bars_padded/bars_unread/
+    // bars_anacrusis do.
+    await stubScoreApi(
+      page,
+      transcriptionResponse({
+        warnings: [],
+        confidence: CLEAN_CONFIDENCE,
+        disclosures: {
+          ...zeroDisclosures(),
+          bars_overfull: 3,
+          bars_short: 2,
+          bars_padded: 1,
+          padded_bars: [5],
+          bars_unread: 4,
+          unread_bars: [7, 8, 9, 10],
+          bars_anacrusis: 1,
+          anacrusis_bars: [1],
+        },
+      }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+
+    const overfull = page.locator('[data-disclosure="bars_overfull"]');
+    await expect(overfull).toContainText("Bars with more beats than the time signature allows");
+    await expect(overfull.locator(".disclosure-value")).toHaveText("3");
+    await expect(overfull.locator(".disclosure-bars")).toHaveCount(0);
+
+    const short = page.locator('[data-disclosure="bars_short"]');
+    await expect(short).toContainText("Bars with fewer beats than the time signature requires");
+    await expect(short.locator(".disclosure-value")).toHaveText("2");
+    await expect(short.locator(".disclosure-bars")).toHaveCount(0);
+
+    const padded = page.locator('[data-disclosure="bars_padded"]');
+    await expect(padded).toContainText("Bars padded to length");
+    await expect(padded.locator(".disclosure-value")).toHaveText("1");
+    await expect(padded.locator(".disclosure-bars")).toHaveText("bar 5");
+
+    const unread = page.locator('[data-disclosure="bars_unread"]');
+    await expect(unread).toContainText("Bars that could not be read");
+    await expect(unread.locator(".disclosure-value")).toHaveText("4");
+    await expect(unread.locator(".disclosure-bars")).toHaveText("bars 7, 8, 9, 10");
+
+    const anacrusis = page.locator('[data-disclosure="bars_anacrusis"]');
+    await expect(anacrusis).toContainText("Bars excused by a first-bar pickup");
+    await expect(anacrusis.locator(".disclosure-value")).toHaveText("1");
+    await expect(anacrusis.locator(".disclosure-bars")).toHaveText("bar 1");
+
+    await expect(page.locator(".disclosure-row")).toHaveCount(5);
+  });
+
+  test("a zero Rule 8 bar counter follows the same hidden-row convention as any other counter", async ({
+    page,
+  }) => {
+    // The other half of the rule above: a real, measured zero on all five is
+    // noise, not news, exactly like every other counter this panel hides.
+    await stubScoreApi(
+      page,
+      transcriptionResponse({
+        warnings: [],
+        confidence: CLEAN_CONFIDENCE,
+        disclosures: { ...zeroDisclosures(), repeats_unread: 1, repeats_unread_bars: [2] },
+      }),
+    );
+    await page.goto("/#/score/1");
+    await page.waitForSelector(".staff-render");
+
+    for (const key of ["bars_overfull", "bars_short", "bars_padded", "bars_unread", "bars_anacrusis"]) {
+      await expect(page.locator(`[data-disclosure="${key}"]`)).toHaveCount(0);
+    }
+    await expect(page.locator(".disclosure-row")).toHaveCount(1);
+  });
+
   test("gig mode drops the disclosures panel along with the rest of the review chrome", async ({
     page,
   }) => {

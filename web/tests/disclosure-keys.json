@@ -1,4 +1,9 @@
 [
+  "bars_anacrusis",
+  "bars_overfull",
+  "bars_padded",
+  "bars_short",
+  "bars_unread",
   "coincident_unsplit_pairs",
   "dots_unassigned",
   "dots_unassigned_eliminated",

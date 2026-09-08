@@ -312,6 +312,52 @@
     }
   }
 
+  // The empty-state sentence for a score with nothing to extract (issue
+  // #294): built from every field TranscriptionAnalysisOut carries that says
+  // WHY, not just THAT - `vector`, `tab_staff_count`, `standard_staff_count`
+  // and `reason`. This is the only interface code that calls
+  // api.transcriptionAnalysis (see disclosures.js's top comment for the
+  // grep), so it lives here rather than in a shared pure-logic module: it
+  // describes one endpoint's response, not a family of counters with a
+  // row-per-counter shape the way DISCLOSURE_ROWS does.
+  //
+  // `reason` is the primary clause - tabextract.analyze() always sets one
+  // whenever `extractable` is false (a raster scan, a corrupt pdf, a
+  // standard-notation-only page, ...) and it already says WHY in words no
+  // fixed string here could match for every path. The staff-count summary
+  // rides along in parentheses so the two numbers this component would
+  // otherwise never show (tab_staff_count, standard_staff_count) reach a
+  // reader beside the reason they're evidence for. `reason` is only ever
+  // absent on a defensive path nothing in tabextract.py takes today (every
+  // return with extractable: false sets one) - the fallback exists so a
+  // future non-extractable path that forgets to set `reason` still shows
+  // something sensible instead of "undefined".
+  //
+  // `page_count === 0` means the file was never analysed at all - open
+  // failed, or the pdf had no pages - and analyze() hardcodes vector: false
+  // and both staff counts to 0 on those paths as unmeasured placeholders,
+  // not as a measured "raster, no staves" finding. Showing the parenthetical
+  // there would state those placeholders as fact, so it is only shown once
+  // page_count > 0 proves the fields were actually measured.
+  //
+  // page_count > 0 with vector: false is a SECOND unmeasured case, not the
+  // same as page_count === 0 (tabextract.py:5465-5473): the raster branch
+  // returns as soon as every page in the pdf fails _page_is_raster's vector
+  // check, `continue`-ing past `_detect_staves` for every one of them, so
+  // standard_staff_count is 0 there because staves were never counted, not
+  // because none were found. `vector` itself IS measured on every
+  // page_count > 0 path (it is exactly "did any page look like vector
+  // content"), so the reason - which always names the raster scan on this
+  // path - is trustworthy on its own; the staff-count parenthetical is only
+  // ever appended once `vector` is true and _detect_staves has actually run.
+  function analysisSentence(a) {
+    if (a.page_count === 0) return a.reason || "No tab staff found";
+    if (!a.vector) return a.reason || "No tab staff found: raster scan, staves were never counted";
+    const staffNoun = a.standard_staff_count === 1 ? "staff" : "staves";
+    const counts = `${a.standard_staff_count} standard ${staffNoun}, vector PDF`;
+    return a.reason ? `${a.reason} (${counts})` : `No tab staff found: ${counts}`;
+  }
+
   async function loadTranscription() {
     // read via scoreId, not score.id: this runs synchronously (up to the
     // first await) inside the $effect below, and reading score.id directly
@@ -605,9 +651,15 @@
     {:else if transcriptionState === "none"}
       <div class="empty-state">
         <div class="empty-icon">𝄢</div>
-        {#if analysis && !analysis.extractable}
+        {#if analysis && (!analysis.extractable || analysis.tab_staff_count === 0)}
+          <!-- The two conditions are the same fact today - tabextract.analyze()
+               always sets `extractable` to exactly `tab_staff_count > 0` - but
+               checked separately since they are two different fields on the
+               response and either changing on its own in the future should
+               still land here rather than silently falling to the "no
+               transcription yet" branch below. -->
           <h3>No tab to extract</h3>
-          <p>{analysis.reason || "This PDF doesn't contain extractable tab or standard notation staves."}</p>
+          <p>{analysisSentence(analysis)}</p>
         {:else}
           <h3>No staff transcription yet</h3>
           <p>
