@@ -8,6 +8,7 @@ import re
 import shutil
 import sqlite3
 import zipfile
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Annotated
@@ -4565,6 +4566,11 @@ def _read_and_validate_manifest(zf: zipfile.ZipFile, conn) -> dict:
         raise HTTPException(
             422, f"the archive has no {EXPORT_MANIFEST_NAME} - this is not a Fermata export"
         ) from None
+    except (zipfile.BadZipFile, zlib.error):
+        raise HTTPException(
+            422, f"the archive's {EXPORT_MANIFEST_NAME} could not be read - the archive is "
+            "corrupt. Nothing has been imported."
+        ) from None
     try:
         manifest = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -5556,6 +5562,11 @@ async def import_library(file: UploadFile, dry_run: bool = True):
         except KeyError:
             raise HTTPException(
                 422, f"the archive is missing the file it names for {name}"
+            ) from None
+        except (zipfile.BadZipFile, zlib.error):
+            raise HTTPException(
+                422, f"the archive's {name} could not be read - the archive is corrupt. "
+                "Nothing has been imported."
             ) from None
         # The same identity the rest of this feature relies on (sha1 of the
         # bytes), applied here to bytes still only in the archive - nothing
