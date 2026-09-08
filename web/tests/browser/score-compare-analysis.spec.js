@@ -38,25 +38,59 @@ test.describe("ScoreCompare transcription-analysis sentence", () => {
     await expect(page.locator('button:has-text("Transcribe this PDF")')).toHaveCount(0);
   });
 
-  test("a raster scan is named as raster, not vector, and a single staff is singular", async ({
+  test("a raster scan (page_count > 0, vector: false) shows only the reason - staff counts are never appended, because tabextract.py's raster branch never called _detect_staves", async ({
     page,
   }) => {
+    // Every page failed the raster/vector test, so analyze() returns before
+    // ever counting staves - standard_staff_count: 0 here is an unmeasured
+    // placeholder, exactly like the page_count === 0 case, and must not be
+    // shown as if it were a measured "0 standard staves" finding.
     await stubScoreApi(page, null, {
       analysis: {
         extractable: false,
         reason: "no fonts, no vector drawings, no text on any page - pdf is a raster scan",
         vector: false,
         tab_staff_count: 0,
-        standard_staff_count: 1,
-        page_count: 1,
+        standard_staff_count: 0,
+        page_count: 3,
       },
     });
     await page.goto("/#/score/1");
 
+    // Wait for the analysis-based branch before reading the paragraph -
+    // loadAnalysis() is async and reading too early races the "No staff
+    // transcription yet" fallback the component starts in.
+    await expect(page.locator(".empty-state h3")).toHaveText("No tab to extract");
     const text = await page.locator(".empty-state p").first().innerText();
-    expect(text).toContain("1 standard staff,");
-    expect(text).toContain("raster PDF");
+    expect(text).toBe("no fonts, no vector drawings, no text on any page - pdf is a raster scan");
+    expect(text).not.toContain("standard staff");
     expect(text).not.toContain("standard staves");
+    expect(text).not.toContain("PDF");
+  });
+
+  test("a vector pdf with no tab staff shows the reason plus the measured standard-staff count", async ({
+    page,
+  }) => {
+    // vector: true means _detect_staves actually ran on every page, so the
+    // staff counts here are real measurements and the parenthetical is
+    // trustworthy - unlike the raster case above.
+    await stubScoreApi(page, null, {
+      analysis: {
+        extractable: false,
+        reason:
+          "no 6-line tab staff groups found - pages are vector but appear to be standard-notation only (fingering numbers are not fret numbers)",
+        vector: true,
+        tab_staff_count: 0,
+        standard_staff_count: 2,
+        page_count: 3,
+      },
+    });
+    await page.goto("/#/score/1");
+
+    await expect(page.locator(".empty-state h3")).toHaveText("No tab to extract");
+    const text = await page.locator(".empty-state p").first().innerText();
+    expect(text).toContain("2 standard staves");
+    expect(text).toContain("vector PDF");
   });
 
   test("a corrupt pdf that was never analysed shows the reason alone, with no unmeasured staff/vector clause", async ({

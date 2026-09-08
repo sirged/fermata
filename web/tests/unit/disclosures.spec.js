@@ -118,7 +118,7 @@ test("no transcription at all renders no rows", () => {
   expect(disclosureRows(undefined)).toEqual([]);
 });
 
-test("undefined is treated the same as null for both the per-row and whole-row gates", () => {
+test("undefined is treated the same as null for both the per-row and per-family gates", () => {
   const t = baseTranscription({ repeats_unread: 5 });
   delete t.nav_marks_unresolved;
   const navRow = disclosureRows(t).find((r) => r.key === "nav_marks_unresolved");
@@ -143,13 +143,17 @@ test("undefined is treated the same as null for both the per-row and whole-row g
 // checked against DISCLOSURE_ROWS here, in BOTH directions, so a config row
 // that goes missing OR a vendored key nothing renders each fail by name.
 // Per-family gate (issue #294 follow-up): disclosures live in one stored
-// `confidence` JSON blob that is never backfilled, so a pre-#294
-// transcription carries the five bar counters as `undefined` while its
-// structural counters (issue #155's seventeen) are real numbers, or vice
-// versa. A single whole-object gate would render either an "all bar rows
-// missing" wall beside real structural rows, or the converse - both state
-// an absence of measurement as fact for a family that just predates the
-// other one. The fix gates each family independently.
+// `confidence` JSON blob that is never backfilled, and the two families
+// were added to storage at different times - issue #155's seventeen
+// structural counters, then `bars_padded`/`bars_unread` (#101) and
+// `bars_anacrusis` (#174) (#294 itself added nothing to storage; it only
+// gave the five bar counters a reader on the web side). So a transcription
+// stored before whichever family arrived later carries that family's
+// counters as `undefined` while the other family's are real numbers, or
+// vice versa. A single whole-object gate would render either an "all bar
+// rows missing" wall beside real structural rows, or the converse - both
+// state an absence of measurement as fact for a family that just predates
+// the other one. The fix gates each family independently.
 const BAR_KEYS = DISCLOSURE_ROWS.filter((row) => row.family === "bar").map((row) => row.key);
 const STRUCTURAL_KEYS = DISCLOSURE_ROWS.filter((row) => row.family !== "bar").map((row) => row.key);
 
@@ -184,6 +188,21 @@ test("the converse legacy blob - structural counters measured, bars null - rende
   for (const row of rows) {
     expect(row.measured).toBe(true);
     expect(row.value).toBe(2);
+  }
+});
+
+test("family is required on every row - a row with no family throws rather than silently defaulting to structural", () => {
+  // Guards against familyOf() ever going back to defaulting an unrecognised
+  // family to "structural" - that default would silently misfile a future
+  // bar row that forgot `family: "bar"` into the wrong family instead of
+  // failing loudly. DISCLOSURE_ROWS is a real, shared array, so the bad row
+  // is pushed and popped rather than replacing the array outright.
+  const bad = { key: "__test_row_with_no_family__" };
+  DISCLOSURE_ROWS.push(bad);
+  try {
+    expect(() => disclosureRows({ __test_row_with_no_family__: 1 })).toThrow();
+  } finally {
+    DISCLOSURE_ROWS.pop();
   }
 });
 

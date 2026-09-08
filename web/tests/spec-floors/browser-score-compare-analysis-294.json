@@ -1,5 +1,5 @@
 {
   "file": "tests/browser/score-compare-analysis.spec.js",
   "count": 4,
-  "reason": "issue #294: TranscriptionAnalysisOut's vector/tab_staff_count/standard_staff_count/reason had zero consumers in web/src - a non-extractable score now shows one sentence built from all four, an extractable-but-not-yet-transcribed score still gets the ordinary transcribe offering, singular/plural staff wording is checked directly, and a never-analysed pdf (page_count: 0) renders the reason alone with no unmeasured staff/vector clause."
+  "reason": "issue #294: TranscriptionAnalysisOut's vector/tab_staff_count/standard_staff_count/reason had zero consumers in web/src - a non-extractable vector score now shows one sentence built from all four, an extractable-but-not-yet-transcribed score still gets the ordinary transcribe offering, a raster score is named as raster, and a never-analysed pdf (page_count: 0) renders the reason alone with no unmeasured staff/vector clause. See browser-score-compare-analysis-294-review.json for the second-review fix to the raster case."
 }
