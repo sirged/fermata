@@ -849,15 +849,25 @@ def _scan_file(conn, path, rel: str, seen_paths: set, disk_paths: set) -> None:
             # 'scan' (#298's second half). A relink matches on the file's
             # BYTES, not its path - it is the same content docs/api.md already
             # trusts for the move endpoint's own identity test - so it is the
-            # same piece a person named, and a relink is exactly the case
-            # docs/api.md states the principle for: title, composer and
-            # source "can have been corrected by hand", which the move
-            # endpoint already respects by re-deriving only collection/series.
-            # Without this guard a hand-typed title survives a same-path
-            # replacement but not a rename-then-relink, AND the row is left
-            # reading 'user' while holding a value nobody typed - stuck
-            # against every future scan, since patch_score has no way to hand
-            # metadata_source back to 'scan' once a person's edit set it.
+            # same piece a person named, and title/composer get the same
+            # protection the move endpoint already gives them: re-derived
+            # only when nobody has said otherwise. Without this guard a
+            # hand-typed title survives a same-path replacement but not a
+            # rename-then-relink, AND the row is left reading 'user' while
+            # holding a value nobody typed - stuck against every future scan,
+            # since patch_score has no way to hand metadata_source back to
+            # 'scan' once a person's edit set it.
+            #
+            # source is deliberately NOT part of this guard and stays
+            # unconditional below, in both branches - it has no provenance
+            # flag of its own (only title/composer set metadata_source), and
+            # gating it on that column would miss exactly the rows it was
+            # supposed to protect: a row whose source was hand-corrected but
+            # whose title/composer were not still reads 'scan'. source is
+            # path-derived and re-derived here on purpose, same as
+            # collection/series/file_type/content_kind below; whether it
+            # needs its own provenance tracking is a separate question, out
+            # of scope for this change.
             if old["metadata_source"] == "scan":
                 conn.execute(
                     """UPDATE scores SET title=?, composer=?, collection=?, series=?,

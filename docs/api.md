@@ -135,7 +135,9 @@ elsewhere and is relinked by content hash, exactly as if it had just been
 added - **unless** a person has set either field by hand through `PATCH
 /api/scores/{id}`, in which case both are frozen against every future scan of
 that file (whichever bytes it holds, at whichever path), the same guarantee
-the paragraph above already gives a moved file's title.
+the paragraph above already gives a moved file's title. `source` is not part
+of this: it stays path-derived and is re-derived on every scan whether or not
+it has been hand-corrected, unlike `title` and `composer`.
 
 **Key, tempo and difficulty (issue #8).** Three more fields `PATCH
 /api/scores/{id}` accepts, each within a closed range and each clearable with
