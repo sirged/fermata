@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-editor-structure-300.spec.js",
+  "count": 22,
+  "reason": "issue #300: bar-scoped editing - key, meter, insert and delete a bar; the Rule 8 refusal, the repeat refusal, the attributes that move when the opening bar goes, and the guard that refuses an edit the model cannot be rebuilt from."
+}

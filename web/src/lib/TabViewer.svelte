@@ -260,6 +260,13 @@
   let selOnset = $state(null);
   let selRenderVoice = $state(null);
   let selVoiceOptions = $state([]);
+  // The BAR the selection sits in (#300), or null when nothing is selected -
+  // doc.measureAt's own shape: { index, number, count, fifths, beats,
+  // beatType, ownKey, ownTime, voices, duration }. Held as state, and
+  // recomputed wherever the selection or the document changes, for the same
+  // reason selRange is: `doc` is deliberately non-reactive, so a template that
+  // read it directly would not re-read it after a rebuild.
+  let selBar = $state(null);
   // The cross-check the evaluation asks for: the renderer's own read of the
   // selected note (through the importer and the positional map) against the
   // document's read of the same note. In this single-source-of-truth design
@@ -371,10 +378,29 @@
     divergenceOk = true;
     overlays = [];
     selRange = [];
+    selBar = null;
     editWarn = "";
     // A fresh selection (or none) starts a fresh two-digit fret window - a
     // digit typed on a new note must never extend the last note's fret.
     fretEntry = null;
+  }
+
+  // The bar the current selection sits in (#300). One place, called from every
+  // path that changes what is selected or rebuilds the document, so the bar
+  // controls can never describe a bar the selection has left.
+  function refreshBar() {
+    if (!doc) {
+      selBar = null;
+      return;
+    }
+    const sel =
+      selectedOrdinal != null
+        ? { ordinal: selectedOrdinal }
+        : selectedRest != null
+          ? { restOrdinal: selectedRest.restOrdinal }
+          : null;
+    const index = sel ? doc.measureIndexOf(sel) : -1;
+    selBar = index >= 0 ? doc.measureAt(index) : null;
   }
 
   function enterEdit() {
@@ -469,6 +495,7 @@
     fretEntry = null;
     selRestString = defaultStringForVoice(d.voice);
     selectedRest = d;
+    refreshBar();
   }
 
   // ------------------------------------------- the multi-note selection (#251)
@@ -566,6 +593,7 @@
       v.fret === d.fret &&
       v.midi === d.midi &&
       (v.voice == null || v.voice === d.voice);
+    refreshBar();
     updateOverlay();
   }
 
@@ -670,8 +698,23 @@
     return { ok: divergences.length === 0, docCount, renderCount, divergences };
   }
 
-  async function applyEdit(mutate, refusal) {
-    if (selectedOrdinal == null || !doc || !view) return;
+  // `opts.structural` (#300): the edit changes the SHAPE of the document - how
+  // many measures it has, or which key a later pitch will be spelled against -
+  // rather than one note's own values. Two things follow, and nothing else
+  // does: the model is rebuilt from the new text (every list and map
+  // createDocument reads is computed once at parse, so an insert or a delete
+  // leaves them describing the previous document), and the selection is
+  // re-resolved against the rebuilt model instead of simply refreshed. The
+  // undo snapshot, the refusal path, the dirty flag and the re-render are the
+  // same ones every other edit uses - this is one edit path, with a branch,
+  // not a second one.
+  async function applyEdit(mutate, refusal, opts) {
+    const structural = opts?.structural === true;
+    if (!doc || !view) return;
+    // Note-scoped edits need a selected NOTE. A bar-scoped edit also runs from
+    // a selected REST, because a bar of silence - an inserted one, say - holds
+    // no note to select and still has to be deletable.
+    if (selectedOrdinal == null && !(structural && selectedRest != null)) return;
     const before = doc.text();
     // The document refuses an edit it cannot write - a fret whose pitch has no
     // valid <octave> (Rule 11), a string out of range. Say so plainly rather
@@ -684,11 +727,91 @@
     editWarn = "";
     const after = doc.text();
     if (after === before) return;
+    // The rebuild happens BEFORE anything is committed, and its failure is a
+    // refusal like any other (#300).
+    //
+    // A structural edit has already mutated the live DOM by the time this
+    // runs - `mutate()` writes in place - so a createDocument that throws on
+    // the result leaves the session holding a document this very editor cannot
+    // read back: no tuning, more than one part, whatever it was. Before this
+    // guard the throw escaped applyEdit entirely, so the reload never ran, the
+    // dirty flag stayed true and Save stayed live over a document that could
+    // not be reopened after saving it. The pre-edit text is known-parseable -
+    // it is what the model was built from - so re-parsing it puts the document
+    // back exactly as it was, and the screen (never reloaded) still matches it.
+    let rebuilt = null;
+    if (structural) {
+      try {
+        rebuilt = createDocument(after);
+      } catch (e) {
+        doc = createDocument(before);
+        // Reselect FIRST: a rest reselection clears editWarn, so a message set
+        // before it would never be seen (the same order applyRestToNote keeps).
+        reselectAfterRebuild();
+        editWarn = `That change would leave a transcription the editor cannot open (${String(e?.message ?? e)}), so it was not applied.`;
+        return;
+      }
+    }
     undoStack = [...undoStack, before];
     redoStack = [];
     dirty = true;
+    if (rebuilt) {
+      doc = rebuilt;
+      editStringCount = doc.stringCount;
+    }
     await view.editor.reload(after);
-    refreshSelection();
+    if (structural) {
+      // A structural edit COLLAPSES a multi-note range to its anchor (#300,
+      // #251). A range is a span of ordinals, and inserting or deleting a bar
+      // renumbers them: kept, it would leave the panel claiming "4 notes
+      // selected" over four notes the player never selected, and the next
+      // range operation - a delete above all - would act on them in one undo
+      // entry with no warning. Clamping the extent into the new document
+      // (which is all refreshSelection does) bounds that span without making
+      // it mean anything.
+      //
+      // Here and NOT in reselectAfterRebuild, which undo's restore also calls:
+      // an undo puts back the very document the range was made in, so it keeps
+      // its range, exactly as it did before bar editing existed.
+      selExtent = null;
+      reselectAfterRebuild();
+    } else refreshSelection();
+  }
+
+  // Put the selection back after the model was rebuilt underneath it - a
+  // structural edit (#300) or an undo/redo restore. The same address is kept
+  // where it still names something; where the document shrank past it, the
+  // nearest remaining one is taken, and where nothing is left the selection
+  // clears. Deliberately NOT "clear and start again": deleting a bar and
+  // landing on the bar that slid into its place is what a reader expects, and
+  // an undo that dropped the selection would read as having done more than it
+  // did.
+  //
+  // A multi-note range is left ALONE here, and collapsed by the one caller
+  // that has a reason to (applyEdit's structural branch - see it). Undo goes
+  // through this function too, and an undo restores the very document a range
+  // was made in, so it must not be the thing that throws the range away.
+  function reselectAfterRebuild() {
+    if (!doc || !view) return;
+    if (selectedRest != null) {
+      const count = doc.restCount();
+      if (count === 0) {
+        clearSelection();
+        return;
+      }
+      selectRest(Math.min(selectedRest.restOrdinal, count - 1));
+      return;
+    }
+    if (selectedOrdinal == null) return;
+    const count = doc.count();
+    if (count === 0) {
+      clearSelection();
+      return;
+    }
+    if (selectedOrdinal >= count) selectedOrdinal = count - 1;
+    if (selExtent === selectedOrdinal) selExtent = null;
+    if (doc.noteAt(selectedOrdinal)) refreshSelection();
+    else clearSelection();
   }
 
   // ------------------------------------------------- range operations (#251)
@@ -901,6 +1024,127 @@
     else clearSelection();
   }
 
+  // ------------------------------------------------- bar-scoped editing (#300)
+  //
+  // The editor could change any note and nothing about the bars around them.
+  // These four run doc's measure-addressed mutators through the SAME applyEdit
+  // every note edit uses (with its structural branch - see applyEdit), so undo,
+  // redo, the dirty flag, the refusal message and the re-render are the ones
+  // already there, not a second set.
+  //
+  // The bar acted on is the one the selection sits in (selBar, refreshed
+  // wherever the selection changes) - a selected note's bar, or a selected
+  // rest's, which is how a bar of pure silence is reachable at all.
+
+  const KEY_REFUSAL = "A key signature is between 7 flats and 7 sharps.";
+
+  // The key signatures a <fifths> can name, labelled by the major key each one
+  // signs - the way a player reads a key signature off a page. The minor is
+  // deliberately not spelled out beside it: this writes <fifths> and nothing
+  // else, and a document with no <mode> makes no claim about major or minor.
+  const KEY_OPTIONS = [
+    { fifths: -7, label: "7♭ (C♭)" },
+    { fifths: -6, label: "6♭ (G♭)" },
+    { fifths: -5, label: "5♭ (D♭)" },
+    { fifths: -4, label: "4♭ (A♭)" },
+    { fifths: -3, label: "3♭ (E♭)" },
+    { fifths: -2, label: "2♭ (B♭)" },
+    { fifths: -1, label: "1♭ (F)" },
+    { fifths: 0, label: "0 (C)" },
+    { fifths: 1, label: "1♯ (G)" },
+    { fifths: 2, label: "2♯ (D)" },
+    { fifths: 3, label: "3♯ (A)" },
+    { fifths: 4, label: "4♯ (E)" },
+    { fifths: 5, label: "5♯ (B)" },
+    { fifths: 6, label: "6♯ (F♯)" },
+    { fifths: 7, label: "7♯ (C♯)" },
+  ];
+  // The meters offered. Not every meter MusicXML can write - document.js
+  // accepts any whole number of beats over any note value, and a bar already
+  // carrying one this list does not name keeps it as its own option rather
+  // than being silently re-signed to a neighbour.
+  const TIME_OPTIONS = [
+    "2/4",
+    "3/4",
+    "4/4",
+    "5/4",
+    "6/4",
+    "2/2",
+    "3/2",
+    "3/8",
+    "5/8",
+    "6/8",
+    "7/8",
+    "9/8",
+    "12/8",
+  ];
+
+  function changeKey(value) {
+    const v = Number(value);
+    if (selBar == null || !Number.isInteger(v)) return;
+    return applyEdit(() => doc.setKey(selBar.index, v), KEY_REFUSAL, { structural: true });
+  }
+
+  // The meter arrives as one "beats/beat-type" string from one control, and
+  // that is deliberate: the two numbers are validated TOGETHER against the
+  // bar's content, so changing them one at a time would refuse every route
+  // from 4/4 to 2/2 (4/2 and 2/4 are each the wrong length) even though the
+  // destination fits perfectly. One gesture, one check, one undo entry.
+  //
+  // The refusal text is the document's own (doc.timeChangeRefusal), because the
+  // reason names a bar and two sums that only the document knows; setTime
+  // refuses in exactly the cases that returns a sentence for.
+  async function changeTime(value, el) {
+    if (selBar == null || !doc) return;
+    const [beats, beatType] = String(value).split("/");
+    const b = Number(beats);
+    const t = Number(beatType);
+    if (Number.isInteger(b) && Number.isInteger(t)) {
+      const refusal = doc.timeChangeRefusal(selBar.index, b, t);
+      await applyEdit(
+        () => doc.setTime(selBar.index, b, t),
+        refusal ?? "That time signature can't be written at this bar.",
+        { structural: true },
+      );
+    } else {
+      editWarn = "A time signature is two whole numbers.";
+    }
+    // Put the control back in step with the document, whatever happened (#300).
+    // A refused change leaves the <select> showing the meter that was refused -
+    // and because selBar does not change, nothing re-applies the `value`
+    // binding, so the control goes on misreporting the bar's meter through
+    // every later selection. The document is the source of truth here as
+    // everywhere else, so it is re-read rather than trusted to have followed.
+    if (el) el.value = selBar?.beats != null ? `${selBar.beats}/${selBar.beatType}` : "";
+  }
+
+  function insertBarAfter() {
+    if (selBar == null) return;
+    return applyEdit(
+      () => doc.insertMeasure(selBar.index),
+      // The one way an insert is refused: the bar to copy has no length to
+      // copy - no meter in force anywhere in the document, and no music of its
+      // own to measure - so there is nothing to make a bar's worth of silence
+      // out of.
+      "This bar has no length to copy - it carries no music, and the transcription declares no time signature - so an empty bar can't be built to match it.",
+      { structural: true },
+    );
+  }
+
+  // The refusal text is the document's own (doc.deleteMeasureRefusal), like the
+  // meter's: it names the bar, and which of the reasons applies - the only bar
+  // left, or a bar whose repeat or volta ending would be left pointing at
+  // nothing.
+  function deleteBar() {
+    if (selBar == null || !doc) return;
+    const refusal = doc.deleteMeasureRefusal(selBar.index);
+    return applyEdit(
+      () => doc.deleteMeasure(selBar.index),
+      refusal ?? "That bar can't be deleted.",
+      { structural: true },
+    );
+  }
+
   // ----------------------------------------------- the keyboard core loop (#186)
   //
   // Arrows move the selection, a digit sets the fret, Backspace deletes - all on
@@ -1081,13 +1325,24 @@
 
   async function restore(text) {
     // Undo and redo both work by re-importing a whole document snapshot - the
-    // cheapest correct thing when the model IS the document text. createDocument
-    // cannot fail here: the snapshot was produced by our own serializer.
+    // cheapest correct thing when the model IS the document text.
+    //
+    // createDocument cannot fail here, and what keeps that true is worth
+    // stating because a structural edit (#300) could otherwise break it: being
+    // produced by our own serializer is NOT on its own enough - a bar deletion
+    // can serialize a document with no staff tuning, which this file refuses to
+    // open. The invariant is that no such text ever reaches this stack:
+    // applyEdit's structural branch parses the result BEFORE pushing the undo
+    // entry and refuses the edit if that parse throws, so every snapshot here
+    // is one that parsed at the moment it was made.
     doc = createDocument(text);
     editStringCount = doc.stringCount;
     dirty = true;
     await view.editor.reload(text);
-    refreshSelection();
+    // Through reselectAfterRebuild rather than refreshSelection: a snapshot can
+    // hold a different NUMBER of bars than the one on screen now (#300), so the
+    // selected note - or rest - may no longer be at the address it was at.
+    reselectAfterRebuild();
   }
 
   async function undo() {
@@ -1232,6 +1487,10 @@
           viewInfo: (ordinal) => v.editor.viewInfo(ordinal),
           noteCount: () => v.editor.noteCount(),
           boundsCount: () => v.editor.boundsCount(),
+          // The renderer's own bar reads (#300) - see score-render.js's
+          // barCount/barInfo. Read-only like everything else on this hook.
+          barCount: () => v.editor.barCount(),
+          barInfo: (index) => v.editor.barInfo(index),
           // The whole-model re-import cross-check (#189). Read-only like the rest
           // of this hook - it re-parses the written document and compares, it
           // does not write. Exposed here so the fuzz spec can assert on the same
@@ -1255,6 +1514,11 @@
             // restCount/restAt address the rests, not the sounding notes.
             restCount: () => (doc ? doc.restCount() : 0),
             restAt: (restOrdinal) => (doc ? doc.restAt(restOrdinal) : null),
+            // The bar-scoped read surface (#300), parallel to the two above -
+            // measureCount/measureAt address MEASURES. Read-only, like them:
+            // the bar edits themselves go through the panel's own controls.
+            measureCount: () => (doc ? doc.measureCount() : 0),
+            measureAt: (index) => (doc ? doc.measureAt(index) : null),
             text: () => (doc ? doc.text() : null),
             select: (ordinal) => {
               if (doc == null || ordinal == null || ordinal < 0 || ordinal >= doc.count()) return null;
@@ -1869,6 +2133,12 @@
   data-editor-selected-rest-type={selectedRest?.type}
   data-editor-selected-rest-dots={selectedRest ? selDots : null}
   data-editor-selected-rest-string={selectedRest ? selRestString : null}
+  data-editor-bar-index={selBar?.index}
+  data-editor-bar-number={selBar?.number}
+  data-editor-bar-count={selBar?.count}
+  data-editor-bar-fifths={selBar?.fifths}
+  data-editor-bar-beats={selBar?.beats}
+  data-editor-bar-beat-type={selBar?.beatType}
 >
   {#if gigMode}
     <!-- gig mode: hide the practice toolbar chrome, but playback and the way
@@ -2220,6 +2490,70 @@
           {saving ? "Saving…" : "Save"}
         </button>
       </div>
+      {#if !editError}
+        <!-- The BAR the selection sits in (#300) - its key, its meter, and the
+             two structural buttons. Rendered in EVERY selection state, disabled
+             rather than absent when nothing is selected, deliberately: the panel
+             sits directly above the staff, so a row that appeared on selection
+             would push the staff down between a note-head being measured and
+             being clicked. The paragraph above has the same constraint and says
+             so; this keeps the panel's height the same whatever is selected. -->
+        <div class="edit-fields bar-fields">
+          <span class="hint">
+            {#if selBar}Bar {selBar.number ?? selBar.index + 1} of {selBar.count}{:else}Bar —{/if}
+          </span>
+          <label title="The key signature written at this bar. It carries forward to the bars after it, until one states its own. No note is re-spelled: the notes already written keep the spelling they carry.">
+            Key
+            <select
+              disabled={!selBar}
+              value={String(selBar?.fifths ?? 0)}
+              onchange={(e) => changeKey(e.target.value)}
+            >
+              {#each KEY_OPTIONS as k}
+                <option value={String(k.fifths)}>{k.label}</option>
+              {/each}
+            </select>
+          </label>
+          <label title="The time signature written at this bar, carried forward like the key. A meter this bar's music does not already add up to is refused, naming the bar and both sums — the notes are never re-barred to fit.">
+            Time
+            <select
+              class="meter"
+              disabled={!selBar}
+              value={selBar?.beats != null ? `${selBar.beats}/${selBar.beatType}` : ""}
+              onchange={(e) => changeTime(e.target.value, e.target)}
+            >
+              {#if selBar?.beats == null}
+                <!-- The document states no meter anywhere, so there is none to
+                     show. Choosing one writes it at this bar. -->
+                <option value="" disabled>—</option>
+              {:else if !TIME_OPTIONS.includes(`${selBar.beats}/${selBar.beatType}`)}
+                <option value={`${selBar.beats}/${selBar.beatType}`}>
+                  {selBar.beats}/{selBar.beatType}
+                </option>
+              {/if}
+              {#each TIME_OPTIONS as t}
+                <option value={t}>{t}</option>
+              {/each}
+            </select>
+          </label>
+          <button
+            class="bar-insert"
+            disabled={!selBar}
+            onclick={insertBarAfter}
+            title="Insert an empty bar after this one — one whole-bar rest in each voice this bar is written in"
+          >
+            + Bar
+          </button>
+          <button
+            class="bar-delete"
+            disabled={!selBar}
+            onclick={deleteBar}
+            title="Delete this bar, and the music in it"
+          >
+            − Bar
+          </button>
+        </div>
+      {/if}
       {#if saveConflict}
         <!-- A save the server refused (#267). Nothing was written, and what is
              typed here is still here - so this states what happened and offers
@@ -2554,6 +2888,24 @@
 
   .edit-fields input {
     width: 64px;
+  }
+  /* The bar row (#300). Its own line under the note fields, separated by a
+     hairline rather than by space, so the panel reads as two scopes - this
+     note, this bar - and stays the same height whatever is selected. */
+  .edit-fields.bar-fields {
+    /* Its own full-width line, always. The panel is a wrapping flex ROW, so a
+       row that merely followed the note fields would share a line with them
+       when they are short and take one of its own when they are long - and the
+       panel's height would then change as the selection changes, which moves
+       the staff under a note-head a test (or a finger) has already aimed at.
+       100% of the basis pins it to a line of its own in every state. */
+    flex: 0 0 100%;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+  }
+  .bar-fields button {
+    font-size: 12.5px;
+    padding: 2px 8px;
   }
 
   .edit-fields .tie-toggle,

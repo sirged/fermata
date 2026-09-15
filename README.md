@@ -40,10 +40,16 @@ them.
   their rhythm in the music font's own glyphs, so Fermata reads both directly
   instead of guessing at pixels, and renders the result as a playable,
   editable staff beside the original page. The same editor works on a native
-  MusicXML score too — turning a rest into a note, and extending a selection
+  MusicXML score too — turning a rest into a note, extending a selection
   across a run of notes so a passage's durations, dots, spelling or string
   change at once rather than one note at a time (fret entry, ties and voice
-  moves stay per note) — and it refuses to open at all on a score
+  moves stay per note), and editing the bars themselves: the key signature, the
+  time signature, and inserting or deleting a whole bar. A meter the bar's
+  music does not already add up to is refused, naming the bar and saying how
+  many beats it holds against how many the meter asks for, rather than being
+  applied over a bar that would then be wrong; deleting a bar that carries half
+  of a repeat is refused for the same reason. It refuses to open at all on a
+  score
   with more than one part, rather than silently editing just the first. Three
   music-font vocabularies are calibrated: Finale's Maestro, Sibelius's Opus,
   and any font following the

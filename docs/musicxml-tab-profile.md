@@ -123,6 +123,41 @@ plausible timbre rather than a default piano. A reader must not require them.
 string. A later measure carries an `<attributes>` element only where the meter
 changes, and then only a `<time>`.
 
+That is what the *extractor* writes. The note editor, which edits a document
+after the fact, may also write a `<key>` at a later measure — a person changing
+the key signature at bar 9 is asking for exactly that, and MusicXML carries a
+key forward from wherever it is stated. It writes at the selected measure only,
+never at the ones after it. Deleting a measure moves whatever `<attributes>` it
+declared onto the measure that follows, except where that measure already
+declares the same child itself: without that, deleting the first bar would take
+the document's divisions, clef and staff tuning with it. Every child is written
+or moved into its schema position in the table below, so a document edited this
+way validates exactly as an extracted one does.
+
+`<staff-details>` is the one child of that move that is merged into rather than
+skipped whole. `<key>`, `<time>` and `<clef>` are each one complete statement,
+and a measure restating one replaces it; `<staff-details>` describes the
+instrument, and a measure may legitimately restate part of it — `<staff-lines>`
+alone, say — so treating that as "this measure declares its own" drops every
+`<staff-tuning>` of the measure being deleted and leaves a document with no
+tuning at all.
+
+Inside that merge, a `<staff-tuning>` is matched by the `line` it tunes and not
+by its tag: there is one per string, so six of them are six statements and not
+six copies of one. Restating *some* of the tunings and not others is how a
+scordatura or a dropped bottom string is written, and matching by tag alone
+would read a measure that restates two of six as having restated all six — the
+same loss as above, one level down, and a quieter one, because a staff with two
+strings still parses and still renders.
+
+What the editor will **not** do is move a `<barline>`. A repeat or a volta
+ending is a *pair* spanning measures (Rule 15), and it is a child of
+`<measure>`, not of `<attributes>`, so it goes with a deleted measure: delete
+the measure holding a forward repeat and the backward repeat that remains means
+"repeat from the start of the piece", which silently changes the form of every
+measure before it. Deleting a measure carrying a repeat or an ending is refused,
+naming it, rather than re-anchored by guesswork.
+
 The order is not a style preference. `<attributes>`, `<note>`,
 `<staff-details>` and `<staff-tuning>` are all `xs:sequence` in the schema, so
 each has exactly one legal child order and any other fails validation. The
