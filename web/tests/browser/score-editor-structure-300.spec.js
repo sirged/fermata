@@ -51,6 +51,25 @@
 //     the ids collide -> "an inserted bar leaves the bars a numbered run" red.
 //   - skip the doc rebuild in applyEdit's structural branch: the model still
 //     reports the old bar count -> every insert/delete test red.
+//   - skip an <attributes> child whenever the next bar has one of the same
+//     name, rather than merging <staff-details> into it: the six staff tunings
+//     go with the deleted bar -> "an attribute the next bar only partly
+//     restates is still carried forward" red.
+//   - drop applyEdit's rebuild GUARD (let createDocument throw out of it): the
+//     session keeps a mutated document it cannot reopen, with Save live over
+//     it -> "a bar edit that would leave an unopenable transcription is
+//     refused" red.
+//   - leave the range extent to refreshSelection's clamp instead of collapsing
+//     it: the panel still claims four notes over renumbered survivors -> "a
+//     multi-note selection is collapsed by a structural edit" red.
+//   - drop the repeat/ending check from deleteMeasureRefusal: the bar goes and
+//     its half of the repeat with it -> "a bar carrying a repeat is refused"
+//     red.
+//   - renumber from 1 rather than from the number the document already started
+//     at: an excerpt's bar 40 becomes bar 1 -> "an excerpt keeps the numbers
+//     its bars already had" red.
+//   - report the sums in <divisions> again: the refusal stops saying how many
+//     beats the bar holds -> both refusal tests red.
 import { test, expect } from "@playwright/test";
 
 import { EDITOR_MUSICXML, CHORD_MUSICXML, stubEditorApi } from "./fixtures/editor-score.js";
@@ -84,6 +103,24 @@ async function enterEditor(page, expected) {
   await expect(wrap(page)).toHaveAttribute("data-editor-active", "true");
   await expect.poll(() => page.evaluate(() => window.__scoreEditor?.noteCount() ?? 0)).toBe(expected);
   await expect.poll(() => page.evaluate(() => window.__scoreEditorHarness?.count() ?? 0)).toBe(expected);
+}
+
+// As openEditor, but waiting only on the MODEL - for a document whose staff
+// legitimately draws no note-head bounds (see the unstrung-staff guard, #165).
+// Nothing else differs: the same stub, the same edit mode, the same panel.
+async function openEditorNoHeads(page, content, expected) {
+  await page.addInitScript(() => {
+    window.__fermataEditorHarness = true;
+  });
+  const handle = await stubEditorApi(page, content);
+  await page.goto("/#/score/1");
+  await page.waitForSelector(".staff-render");
+  await page.getByRole("button", { name: "Staff", exact: true }).click();
+  await renderedOk(page);
+  await page.getByRole("button", { name: "Edit notes" }).click();
+  await expect(wrap(page)).toHaveAttribute("data-editor-active", "true");
+  await expect.poll(() => page.evaluate(() => window.__scoreEditorHarness?.count() ?? 0)).toBe(expected);
+  return handle;
 }
 
 async function openEditor(page, content, expected) {
@@ -124,6 +161,53 @@ const LONG_SECOND_BAR = EDITOR_MUSICXML.replace(
     m
       .replace(/<duration>480<\/duration>/g, "<duration>960</duration>")
       .replace(/<type>quarter<\/type>/g, "<type>half</type>"),
+);
+
+// The staff description this fixture declares in its opening bar, lifted out so
+// the documents below can put it somewhere else.
+const TUNING_BLOCK = EDITOR_MUSICXML.match(/<staff-details>[\s\S]*?<\/staff-details>/)[0];
+
+// Bar 2 restates PART of the staff description - its line count, and nothing
+// else. A legal document, and the shape that catches a migration which skips a
+// whole <attributes> child whenever the next bar has one of the same name: the
+// six <staff-tuning> elements live inside bar 1's <staff-details>, and bar 2
+// having a <staff-details> of its own is not the same as having them.
+const PARTIAL_STAFF_DETAILS = EDITOR_MUSICXML.replace(
+  '<measure number="2">',
+  '<measure number="2">\n      <attributes><staff-details><staff-lines>6</staff-lines></staff-details></attributes>',
+);
+
+// The tuning declared in the LAST bar and nowhere else. Unusual, and legal -
+// the model reads a tuning from wherever in the document it is written - and
+// the one shape where deleting a bar leaves a document with no tuning at all
+// however carefully its attributes are migrated, because there is no later bar
+// to migrate them to.
+const TUNING_IN_LAST_BAR = EDITOR_MUSICXML.replace(
+  TUNING_BLOCK,
+  "<staff-details><staff-lines>6</staff-lines></staff-details>",
+).replace('<measure number="2">', `<measure number="2">\n      <attributes>${TUNING_BLOCK}</attributes>`);
+
+// Bar 2 opens a repeated section (Rule 15). Deleting it would leave the
+// backward repeat that closes the section pointing at the start of the piece.
+const FORWARD_REPEAT = EDITOR_MUSICXML.replace(
+  '<measure number="2">',
+  '<measure number="2">\n      <barline location="left"><bar-style>heavy-light</bar-style>' +
+    '<repeat direction="forward"/></barline>',
+);
+
+// Bar 2 ends with a plain final barline, which carries no repeat and no ending
+// - the common case, and one this must go on allowing.
+const FINAL_BARLINE = EDITOR_MUSICXML.replace(
+  "</measure>\n  </part>",
+  '  <barline location="right"><bar-style>light-heavy</bar-style></barline>\n    </measure>\n  </part>',
+);
+
+// An excerpt: the same two bars, numbered as bars 40 and 41 of something
+// longer. Nothing in the editor put those numbers there, and nothing in a bar
+// edit should take them away.
+const EXCERPT_FROM_BAR_40 = EDITOR_MUSICXML.replace('<measure number="1">', '<measure number="40">').replace(
+  '<measure number="2">',
+  '<measure number="41">',
 );
 
 // The <measure number=> attributes in document order, as written.
@@ -284,9 +368,11 @@ test.describe("bar-scoped editing", () => {
     const warn = await wrap(page).getAttribute("data-editor-warn");
     // Both sums, in the divisions the document is written in: what the bar
     // holds, and what the meter asks for.
-    expect(warn).toContain("1920");
-    expect(warn).toContain("1440");
-    expect(warn).toContain("3/4");
+    // Said in beats, not in <divisions>: "1920" means nothing to a reader who
+    // does not know this document declares 480 of them to a quarter note.
+    expect(warn).toContain("4 quarter-notes");
+    expect(warn).toContain("3/4 holds 3");
+    expect(warn).not.toContain("1920");
 
     // Nothing was written, and nothing was pushed onto the undo stack.
     expect(await modelText(page)).toBe(before);
@@ -308,8 +394,8 @@ test.describe("bar-scoped editing", () => {
     await timeSelect(page).selectOption("2/2");
     const warn = await wrap(page).getAttribute("data-editor-warn");
     expect(warn).toContain("Bar 2");
-    expect(warn).toContain("3840");
-    expect(warn).toContain("1920");
+    expect(warn).toContain("4 half-notes");
+    expect(warn).toContain("2/2 holds 2");
     expect(await modelText(page)).toBe(before);
     await expect(wrap(page)).toHaveAttribute("data-editor-can-undo", "false");
   });
@@ -396,6 +482,157 @@ test.describe("bar-scoped editing", () => {
     // And the render survived it, with the meter the moved attributes carry.
     await renderedOk(page);
     await expect.poll(() => renderedBar(page, 0)).toMatchObject({ beats: 4, beatType: 4 });
+  });
+
+  test("an attribute the next bar only partly restates is still carried forward", async ({ page }) => {
+    // Bar 2 declares a <staff-details> holding its line count and nothing else.
+    // Deleting bar 1 has to merge the six <staff-tuning> elements INTO that
+    // element rather than treat the bar as having declared its own.
+    await openEditor(page, PARTIAL_STAFF_DETAILS, 8);
+    await selectNote(page, 0);
+    await deleteBar(page).click();
+
+    await expect.poll(() => measureCount(page)).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.__scoreEditorHarness.count())).toBe(4);
+    expect(await page.evaluate(() => window.__scoreEditorHarness.stringCount())).toBe(6);
+    const after = await modelText(page);
+    expect(after.match(/<staff-tuning line=/g)).toHaveLength(6);
+    // One <staff-details>, not two: they were merged, not stacked.
+    expect(after.match(/<staff-details>/g)).toHaveLength(1);
+    expect(after).toContain("<staff-lines>6</staff-lines>");
+    await renderedOk(page);
+  });
+
+  test("a bar edit that would leave an unopenable transcription is refused, not written", async ({ page }) => {
+    // The guard this pins is general, not about tunings: a structural mutator
+    // writes into the LIVE document, so a result the model cannot be rebuilt
+    // from has already been written by the time that is discovered. The
+    // pre-edit text is put back and the edit is refused. Without the guard, the
+    // rebuild throws out of applyEdit: the re-render never runs, the dirty flag
+    // stays true, and Save stays live over a document that cannot be reopened
+    // once it is saved.
+    //
+    // The staff of this fixture draws no note HEADS - its staff definition
+    // carries no <staff-tuning>, so the renderer's unstrung-tab guard (#165)
+    // drops the bounds - which is why the selection here is made through the
+    // model harness rather than by clicking one. That is a property of this
+    // deliberately odd document, not of the behaviour under test: every
+    // assertion below is on the document and the panel, both of which work
+    // exactly as they do on any other score.
+    await openEditorNoHeads(page, TUNING_IN_LAST_BAR, 8);
+    const before = await modelText(page);
+    expect(before).toContain("<staff-tuning line=");
+
+    // Bar 2 is the last bar, and the only one that declares the tuning - there
+    // is no later bar for its attributes to move to, so deleting it leaves a
+    // document with no tuning at all: one createDocument refuses to open.
+    await page.evaluate(() => window.__scoreEditorHarness.select(4));
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected", "4");
+    await expect(wrap(page)).toHaveAttribute("data-editor-bar-index", "1");
+    await deleteBar(page).click();
+
+    await expect(wrap(page)).toHaveAttribute("data-editor-warn", /cannot open/);
+    // Nothing written, nothing on the undo stack, and Save still not offered.
+    expect(await modelText(page)).toBe(before);
+    await expect.poll(() => measureCount(page)).toBe(2);
+    await expect(wrap(page)).toHaveAttribute("data-editor-dirty", "false");
+    await expect(wrap(page)).toHaveAttribute("data-editor-can-undo", "false");
+    // And the session still holds a document it can read: the tuning is still
+    // there, and the model still answers for every note.
+    expect(await page.evaluate(() => window.__scoreEditorHarness.stringCount())).toBe(6);
+    expect(await everyNote(page)).toHaveLength(8);
+    // The selection survived the refusal, on the bar it was made on.
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected", "4");
+    await expect(wrap(page)).toHaveAttribute("data-editor-bar-index", "1");
+  });
+
+  test("a multi-note selection is collapsed by a structural edit, not carried over it", async ({ page }) => {
+    // A range is a span of ORDINALS, and a bar deletion renumbers them. Carried
+    // over, the panel would claim a run of notes the player never selected, and
+    // the next range operation - a delete above all - would act on them in one
+    // undo entry with no warning.
+    await openEditor(page, EDITOR_MUSICXML, 8);
+    await selectNote(page, 2);
+    for (let i = 0; i < 3; i++) await page.keyboard.press("Shift+ArrowRight");
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected-count", "4");
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected-ordinals", "2,3,4,5");
+
+    await deleteBar(page).click(); // the anchor's own bar
+    await expect.poll(() => measureCount(page)).toBe(1);
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected-count", "1");
+    await expect(wrap(page)).not.toHaveAttribute("data-editor-selected-extent", /.+/);
+
+    // And a Backspace now destroys exactly the one selected note.
+    const notesBefore = await everyNote(page);
+    await page.keyboard.press("Backspace");
+    await expect.poll(() => page.evaluate(() => window.__scoreEditorHarness.restCount())).toBe(1);
+    expect(await everyNote(page)).toHaveLength(notesBefore.length - 1);
+  });
+
+  test("a bar carrying a repeat is refused, naming it, rather than losing the repeat with the bar", async ({
+    page,
+  }) => {
+    // A <barline> is a child of <measure>, not of <attributes>, so a deletion
+    // takes it with the bar. A repeat is a PAIR: delete the half that opens the
+    // section and the half that closes it means "repeat from the start of the
+    // piece", silently changing the form of every bar before it. Re-anchoring
+    // that pair is its own piece of work; this refuses instead of guessing.
+    await openEditor(page, FORWARD_REPEAT, 8);
+    const before = await modelText(page);
+    await selectNote(page, 4);
+    await expect(wrap(page)).toHaveAttribute("data-editor-bar-index", "1");
+
+    await deleteBar(page).click();
+    const warn = await wrap(page).getAttribute("data-editor-warn");
+    expect(warn).toContain("Bar 2");
+    expect(warn).toContain("repeat");
+    expect(await modelText(page)).toBe(before);
+    await expect.poll(() => measureCount(page)).toBe(2);
+    await expect(wrap(page)).toHaveAttribute("data-editor-dirty", "false");
+  });
+
+  test("a bar carrying only a plain final barline is still deletable", async ({ page }) => {
+    // The refusal above is about repeats and endings, not about barlines: a
+    // final double bar carries neither, and a bar with one has to stay
+    // deletable or the last bar of every finished transcription is stuck.
+    await openEditor(page, FINAL_BARLINE, 8);
+    await selectNote(page, 4);
+    await deleteBar(page).click();
+    await expect.poll(() => measureCount(page)).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.__scoreEditorHarness.count())).toBe(4);
+    await expect(wrap(page)).toHaveAttribute("data-editor-dirty", "true");
+  });
+
+  test("an excerpt keeps the numbers its bars already had", async ({ page }) => {
+    // Nothing in this editor gave these bars their numbers, and a bar edit is
+    // not a reason to renumber someone's excerpt from 1 - the panel would start
+    // naming a different bar than the page the person is reading from.
+    await openEditor(page, EXCERPT_FROM_BAR_40, 8);
+    await selectNote(page, 0);
+    await expect(wrap(page)).toHaveAttribute("data-editor-bar-number", "40");
+
+    await insertBar(page).click();
+    await expect.poll(() => measureCount(page)).toBe(3);
+    expect(measureNumbers(await modelText(page))).toEqual([40, 41, 42]);
+    await expect(wrap(page)).toHaveAttribute("data-editor-bar-number", "40");
+  });
+
+  test("a refused meter leaves the control reading the bar's real meter", async ({ page }) => {
+    // The <select> holds the value that was refused otherwise, and because the
+    // bar did not change, nothing re-applies the binding - so the control goes
+    // on reporting a meter the document does not have, through every later
+    // selection.
+    await openEditor(page, EDITOR_MUSICXML, 8);
+    await selectNote(page, 0);
+    await timeSelect(page).selectOption("3/4");
+    await expect(wrap(page)).toHaveAttribute("data-editor-warn", /Bar 1/);
+
+    await expect(timeSelect(page)).toHaveValue("4/4");
+    // Still true after moving the selection somewhere else and back.
+    await selectNote(page, 4);
+    await expect(timeSelect(page)).toHaveValue("4/4");
+    await selectNote(page, 0);
+    await expect(timeSelect(page)).toHaveValue("4/4");
   });
 
   test("a structurally edited document survives the save and re-import", async ({ page }) => {

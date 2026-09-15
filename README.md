@@ -45,9 +45,11 @@ them.
   change at once rather than one note at a time (fret entry, ties and voice
   moves stay per note), and editing the bars themselves: the key signature, the
   time signature, and inserting or deleting a whole bar. A meter the bar's
-  music does not already add up to is refused, naming the bar and both sums,
-  rather than being applied over a bar that would then be wrong. It refuses to
-  open at all on a score
+  music does not already add up to is refused, naming the bar and saying how
+  many beats it holds against how many the meter asks for, rather than being
+  applied over a bar that would then be wrong; deleting a bar that carries half
+  of a repeat is refused for the same reason. It refuses to open at all on a
+  score
   with more than one part, rather than silently editing just the first. Three
   music-font vocabularies are calibrated: Finale's Maestro, Sibelius's Opus,
   and any font following the

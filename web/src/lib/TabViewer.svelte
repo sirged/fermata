@@ -727,17 +727,43 @@
     editWarn = "";
     const after = doc.text();
     if (after === before) return;
+    // The rebuild happens BEFORE anything is committed, and its failure is a
+    // refusal like any other (#300).
+    //
+    // A structural edit has already mutated the live DOM by the time this
+    // runs - `mutate()` writes in place - so a createDocument that throws on
+    // the result leaves the session holding a document this very editor cannot
+    // read back: no tuning, more than one part, whatever it was. Before this
+    // guard the throw escaped applyEdit entirely, so the reload never ran, the
+    // dirty flag stayed true and Save stayed live over a document that could
+    // not be reopened after saving it. The pre-edit text is known-parseable -
+    // it is what the model was built from - so re-parsing it puts the document
+    // back exactly as it was, and the screen (never reloaded) still matches it.
+    let rebuilt = null;
+    if (structural) {
+      try {
+        rebuilt = createDocument(after);
+      } catch (e) {
+        doc = createDocument(before);
+        // Reselect FIRST: a rest reselection clears editWarn, so a message set
+        // before it would never be seen (the same order applyRestToNote keeps).
+        reselectAfterRebuild();
+        editWarn = `That change would leave a transcription the editor cannot open (${String(e?.message ?? e)}), so it was not applied.`;
+        return;
+      }
+    }
     undoStack = [...undoStack, before];
     redoStack = [];
     dirty = true;
-    if (structural) {
-      doc = createDocument(after);
+    if (rebuilt) {
+      doc = rebuilt;
       editStringCount = doc.stringCount;
     }
     await view.editor.reload(after);
     if (structural) reselectAfterRebuild();
     else refreshSelection();
   }
+
 
   // Put the selection back after the model was rebuilt underneath it - a
   // structural edit (#300) or an undo/redo restore. The same address is kept
@@ -749,6 +775,16 @@
   // did.
   function reselectAfterRebuild() {
     if (!doc || !view) return;
+    // The RANGE is collapsed to its anchor, always (#300). A range is a span of
+    // ordinals, and a structural edit renumbers them: keeping it would leave
+    // the panel claiming "4 notes selected" over four notes the player never
+    // selected, and every range operation - a delete above all - would then act
+    // on them in one undo entry with no warning. Clamping the extent into the
+    // new document (which is all refreshSelection does) bounds that span
+    // without making it mean anything. Collapsing is the honest one: the anchor
+    // survives, the span does not, and re-extending is two keystrokes.
+    selExtent = null;
+
     if (selectedRest != null) {
       const count = doc.restCount();
       if (count === 0) {
@@ -1050,21 +1086,28 @@
   // The refusal text is the document's own (doc.timeChangeRefusal), because the
   // reason names a bar and two sums that only the document knows; setTime
   // refuses in exactly the cases that returns a sentence for.
-  function changeTime(value) {
+  async function changeTime(value, el) {
     if (selBar == null || !doc) return;
     const [beats, beatType] = String(value).split("/");
     const b = Number(beats);
     const t = Number(beatType);
-    if (!Number.isInteger(b) || !Number.isInteger(t)) {
+    if (Number.isInteger(b) && Number.isInteger(t)) {
+      const refusal = doc.timeChangeRefusal(selBar.index, b, t);
+      await applyEdit(
+        () => doc.setTime(selBar.index, b, t),
+        refusal ?? "That time signature can't be written at this bar.",
+        { structural: true },
+      );
+    } else {
       editWarn = "A time signature is two whole numbers.";
-      return;
     }
-    const refusal = doc.timeChangeRefusal(selBar.index, b, t);
-    return applyEdit(
-      () => doc.setTime(selBar.index, b, t),
-      refusal ?? "That time signature can't be written at this bar.",
-      { structural: true },
-    );
+    // Put the control back in step with the document, whatever happened (#300).
+    // A refused change leaves the <select> showing the meter that was refused -
+    // and because selBar does not change, nothing re-applies the `value`
+    // binding, so the control goes on misreporting the bar's meter through
+    // every later selection. The document is the source of truth here as
+    // everywhere else, so it is re-read rather than trusted to have followed.
+    if (el) el.value = selBar?.beats != null ? `${selBar.beats}/${selBar.beatType}` : "";
   }
 
   function insertBarAfter() {
@@ -1074,14 +1117,20 @@
     });
   }
 
+  // The refusal text is the document's own (doc.deleteMeasureRefusal), like the
+  // meter's: it names the bar, and which of the reasons applies - the only bar
+  // left, or a bar whose repeat or volta ending would be left pointing at
+  // nothing.
   function deleteBar() {
-    if (selBar == null) return;
+    if (selBar == null || !doc) return;
+    const refusal = doc.deleteMeasureRefusal(selBar.index);
     return applyEdit(
       () => doc.deleteMeasure(selBar.index),
-      "This is the only bar in the transcription, so it can't be deleted.",
+      refusal ?? "That bar can't be deleted.",
       { structural: true },
     );
   }
+
 
   // ----------------------------------------------- the keyboard core loop (#186)
   //
@@ -1263,8 +1312,16 @@
 
   async function restore(text) {
     // Undo and redo both work by re-importing a whole document snapshot - the
-    // cheapest correct thing when the model IS the document text. createDocument
-    // cannot fail here: the snapshot was produced by our own serializer.
+    // cheapest correct thing when the model IS the document text.
+    //
+    // createDocument cannot fail here, and what keeps that true is worth
+    // stating because a structural edit (#300) could otherwise break it: being
+    // produced by our own serializer is NOT on its own enough - a bar deletion
+    // can serialize a document with no staff tuning, which this file refuses to
+    // open. The invariant is that no such text ever reaches this stack:
+    // applyEdit's structural branch parses the result BEFORE pushing the undo
+    // entry and refuses the edit if that parse throws, so every snapshot here
+    // is one that parsed at the moment it was made.
     doc = createDocument(text);
     editStringCount = doc.stringCount;
     dirty = true;
@@ -2450,7 +2507,7 @@
               class="meter"
               disabled={!selBar}
               value={selBar?.beats != null ? `${selBar.beats}/${selBar.beatType}` : ""}
-              onchange={(e) => changeTime(e.target.value)}
+              onchange={(e) => changeTime(e.target.value, e.target)}
             >
               {#if selBar?.beats == null}
                 <!-- The document states no meter anywhere, so there is none to

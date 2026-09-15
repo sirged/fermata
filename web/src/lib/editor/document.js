@@ -1511,6 +1511,115 @@ export function createDocument(xml) {
     return attrs;
   }
 
+  // <staff-details>' own child sequence, for the merge below. Unlike <key>,
+  // <time> and <clef>, a later measure can restate PART of it - a bar that
+  // re-declares <staff-lines> and nothing else is a valid document - so it is
+  // the one attribute child that has to be merged into rather than treated as
+  // a complete restatement.
+  const STAFF_DETAILS_ORDER = [
+    "staff-type",
+    "staff-lines",
+    "line-detail",
+    "staff-tuning",
+    "capo",
+    "staff-size",
+  ];
+
+  // Insert `el` into `parent` at its position in `order` - before the first
+  // child that sorts after it, else at the end. A tag that may repeat
+  // (<staff-tuning>) lands after its own earlier siblings, because "sorts
+  // after" is strict.
+  function insertInOrder(parent, el, order) {
+    const at = order.indexOf(el.tagName);
+    let before = null;
+    for (const child of parent.children) {
+      if (order.indexOf(child.tagName) > at) {
+        before = child;
+        break;
+      }
+    }
+    parent.insertBefore(el, before); // insertBefore MOVES an element already in the tree
+  }
+
+  /**
+   * Move every child of `source` that `target` does not already have into
+   * `target`, in schema order - the carry-forward a deleted measure's
+   * <attributes> needs, so what it declared for the measures after it survives
+   * its removal.
+   *
+   * "Already have" is by TAG, and for <key>, <time> and <clef> that is the
+   * whole story: each is one complete musical statement, and a measure that
+   * restates one replaces it outright. <staff-details> is different and is
+   * recursed into: it describes the INSTRUMENT (how many lines, how each
+   * string is tuned, a capo), not a musical statement, and a measure may
+   * legitimately restate one part of it - <staff-lines> alone, say. Skipping
+   * it whole on that basis dropped every <staff-tuning> with it, which leaves
+   * a document this file itself refuses to open.
+   *
+   * The tags present in `target` are read ONCE, before anything moves, so a
+   * repeating child (every <staff-tuning> of a six-string staff) moves as a
+   * set rather than the first one making the rest look already present.
+   */
+  function mergeMissingChildren(target, source, order) {
+    const present = new Set([...target.children].map((c) => c.tagName));
+    for (const child of [...source.children]) {
+      if (!present.has(child.tagName)) {
+        insertInOrder(target, child, order);
+        continue;
+      }
+      if (child.tagName === "staff-details") {
+        const existing = firstChildTag(target, "staff-details");
+        if (existing) mergeMissingChildren(existing, child, STAFF_DETAILS_ORDER);
+      }
+    }
+  }
+
+  // Whether this measure carries a repeat or a volta ending (Rule 15). Both
+  // live in a <barline>, which is a child of <measure> and not of
+  // <attributes>, so a deletion takes them with the bar - see
+  // deleteMeasureRefusal.
+  function repeatStructureIn(measureEl) {
+    for (const barline of measureEl.getElementsByTagName("barline")) {
+      if (barline.getElementsByTagName("repeat").length) return "repeat";
+      if (barline.getElementsByTagName("ending").length) return "ending";
+    }
+    return null;
+  }
+
+  /**
+   * Why the measure at `index` cannot be deleted - a sentence - or null when it
+   * can. deleteMeasure refuses in exactly these cases.
+   *
+   * A bar carrying a repeat or an ending is refused rather than have its
+   * barline migrated anywhere. A repeat is a PAIR: delete the bar holding the
+   * forward repeat and the backward one that remains means "repeat from the
+   * start of the piece", which silently changes the form of every bar before
+   * it. Re-anchoring that pair is its own piece of work; this states plainly
+   * that it will not guess.
+   */
+  function deleteMeasureRefusal(index) {
+    const els = measureEls();
+    const measureEl = els[index];
+    if (!measureEl) return "That bar is not in this document.";
+    if (els.length <= 1) {
+      return "This is the only bar in the transcription, so it can't be deleted.";
+    }
+    const mark = repeatStructureIn(measureEl);
+    if (mark === "repeat") {
+      return (
+        `Bar ${measureEl.getAttribute("number") ?? index + 1} carries a repeat sign, and deleting it would ` +
+        `leave the other half of that repeat pointing somewhere else. Remove the repeat first.`
+      );
+    }
+    if (mark === "ending") {
+      return (
+        `Bar ${measureEl.getAttribute("number") ?? index + 1} carries a volta ending, and deleting it would ` +
+        `leave the other endings of that set incomplete. Remove the ending first.`
+      );
+    }
+    return null;
+  }
+
   // A child of <attributes> by tag, created in ATTRIBUTE_ORDER position if
   // absent.
   function ensureAttributeChild(attrs, tag) {
@@ -1564,6 +1673,36 @@ export function createDocument(xml) {
     return true;
   }
 
+  // The note value each beat of a meter counts, named the way a player says it.
+  const BEAT_VALUE_NAMES = {
+    1: "whole-note",
+    2: "half-note",
+    4: "quarter-note",
+    8: "eighth-note",
+    16: "16th-note",
+    32: "32nd-note",
+    64: "64th-note",
+  };
+
+  // `total` divisions said in the beats of a `beatType` meter - "4
+  // quarter-notes", "3.5 eighth-notes". The refusal below counts in these and
+  // not in <divisions>, because divisions is an internal unit: "1920" tells a
+  // reader nothing at all unless they also know this document declares 480 of
+  // them to a quarter note, and the one number they can act on - how many beats
+  // the bar is holding against how many it would need - is exactly what the
+  // division by the beat value gives.
+  function beatsOfMusic(total, beatType) {
+    const unit = divisionsForMeter(1, beatType);
+    const name = BEAT_VALUE_NAMES[beatType] ?? `1/${beatType} note`;
+    if (!unit) return `${total} divisions`;
+    const count = total / unit;
+    // Trimmed rather than fixed: a bar that holds a whole number of beats says
+    // "4", one that does not says "3.5" instead of rounding away the half beat
+    // that is the whole reason it does not fit.
+    const said = Number.isInteger(count) ? String(count) : String(Math.round(count * 100) / 100);
+    return `${said} ${name}${count === 1 ? "" : "s"}`;
+  }
+
   /**
    * Why a time-signature change at `index` cannot be written - a sentence
    * naming the bar and both sums - or null when it can.
@@ -1607,7 +1746,7 @@ export function createDocument(xml) {
         if (total === expected) continue;
         const where = sums.size > 1 ? `Bar ${num}, voice ${voice},` : `Bar ${num}`;
         return (
-          `${where} holds ${total} divisions of music and ${beats}/${beatType} is ${expected}, ` +
+          `${where} holds ${beatsOfMusic(total, beatType)} of music and ${beats}/${beatType} holds ${beats}, ` +
           `so the time signature can't change here. Change the durations in that bar first.`
         );
       }
@@ -1631,28 +1770,30 @@ export function createDocument(xml) {
     return true;
   }
 
-  // Renumber every measure in document order into one consecutive run, so an
-  // insert or a delete leaves no gap and no repeated number (two bars sharing
-  // a number would make the model's own bar-to-bar navigation, which reads
-  // `number`, jump to the wrong one).
+  // The number the document's bars start at: the first measure's own, or 1 when
+  // it carries none that reads as a number.
+  function firstMeasureNumber(els) {
+    const n = Number(els[0]?.getAttribute("number"));
+    return Number.isFinite(n) ? n : 1;
+  }
+
+  // Renumber every measure in document order into one consecutive run starting
+  // at `start`, so an insert or a delete leaves no gap and no repeated number
+  // (two bars sharing a number would make the model's own bar-to-bar
+  // navigation, which reads `number`, jump to the wrong one).
   //
-  // The run starts at 1, or at 0 when the document opens with a pickup bar
-  // numbered 0 - the one convention that means something other than "the Nth
-  // bar". Deliberately NOT "whatever the first measure is numbered now": after
-  // the opening bar is deleted the bar that becomes first is numbered 2, and a
-  // score whose first bar is bar 2 misstates its own length. A document
-  // numbered from something else (an excerpt starting at bar 40) is normalised
-  // to a run by a structural edit; this profile's own emitter always writes
-  // 1..N, so that is a third-party import, and a consecutive run is still true
-  // of it.
+  // `start` is the number the document ALREADY started at, captured before the
+  // change - so an excerpt whose bars are numbered 40, 41 stays numbered from
+  // 40 rather than being renamed to bar 1, and a pickup numbered 0 stays 0.
+  // The one adjustment is the caller's: deleting the pickup itself passes 1,
+  // because the bar that becomes first is a whole bar and 0 means pickup.
   //
   // A Rule 17 note id names a POSITION and carries its measure number, so every
   // measure whose number moved has its ids re-derived; one whose number did not
   // is left alone, so this never rewrites ids in a bar nobody touched.
-  function renumberMeasures() {
+  function renumberMeasures(start) {
     const els = measureEls();
     if (els.length === 0) return;
-    const start = Number(els[0].getAttribute("number")) === 0 ? 0 : 1;
     els.forEach((el, i) => {
       const want = String(start + i);
       if (el.getAttribute("number") !== want) {
@@ -1679,6 +1820,7 @@ export function createDocument(xml) {
     const els = measureEls();
     const prev = els[afterIndex];
     if (!prev) return false;
+    const startNumber = firstMeasureNumber(els);
     const force = inForceAt(afterIndex);
     // The meter in force says how long a bar is here. With no <time> anywhere
     // in the document there is no meter to ask, so the preceding bar's own
@@ -1703,7 +1845,7 @@ export function createDocument(xml) {
       measureEl.appendChild(makeRest(dur, v));
     });
     prev.parentNode.insertBefore(measureEl, prev.nextSibling);
-    renumberMeasures();
+    renumberMeasures(startNumber);
     return true;
   }
 
@@ -1719,34 +1861,29 @@ export function createDocument(xml) {
    * measure outright would leave a document with no tuning - one this very
    * file refuses to open. Each attribute the removed measure declared is
    * therefore moved to the measure that follows it, EXCEPT where that measure
-   * already declares its own, which wins. The music after the deletion reads
-   * exactly as it did.
+   * already declares its own, which wins - see mergeMissingChildren for why
+   * <staff-details> is merged into rather than skipped whole. The music after
+   * the deletion reads exactly as it did.
+   *
+   * Refuses, leaving the document untouched, exactly where
+   * deleteMeasureRefusal has a sentence: the only bar, or a bar carrying a
+   * repeat or an ending.
    */
   function deleteMeasure(index) {
+    if (deleteMeasureRefusal(index) != null) return false;
     const els = measureEls();
     const measureEl = els[index];
     if (!measureEl) return false;
-    if (els.length <= 1) return false;
 
+    const startNumber = firstMeasureNumber(els);
     const attrs = firstChildTag(measureEl, "attributes");
     const next = els[index + 1];
-    if (attrs && next) {
-      const nextAttrs = ensureAttributes(next);
-      for (const child of [...attrs.children]) {
-        if (firstChildTag(nextAttrs, child.tagName)) continue; // the next bar states its own
-        const at = ATTRIBUTE_ORDER.indexOf(child.tagName);
-        let before = null;
-        for (const existing of nextAttrs.children) {
-          if (ATTRIBUTE_ORDER.indexOf(existing.tagName) > at) {
-            before = existing;
-            break;
-          }
-        }
-        nextAttrs.insertBefore(child, before); // insertBefore MOVES the element
-      }
-    }
+    if (attrs && next) mergeMissingChildren(ensureAttributes(next), attrs, ATTRIBUTE_ORDER);
     measureEl.parentNode.removeChild(measureEl);
-    renumberMeasures();
+    // Deleting a PICKUP bar (the one convention a 0 encodes) leaves a document
+    // whose first bar is a whole bar, so the run starts at 1 rather than
+    // numbering an ordinary opening bar 0.
+    renumberMeasures(index === 0 && startNumber === 0 ? 1 : startNumber);
     return true;
   }
 
@@ -1788,6 +1925,7 @@ export function createDocument(xml) {
     measureAt,
     measureIndexOf,
     timeChangeRefusal,
+    deleteMeasureRefusal,
     setKey,
     setTime,
     insertMeasure,

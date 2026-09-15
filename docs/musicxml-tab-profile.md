@@ -134,6 +134,22 @@ the document's divisions, clef and staff tuning with it. Every child is written
 or moved into its schema position in the table below, so a document edited this
 way validates exactly as an extracted one does.
 
+`<staff-details>` is the one child of that move that is merged into rather than
+skipped whole. `<key>`, `<time>` and `<clef>` are each one complete statement,
+and a measure restating one replaces it; `<staff-details>` describes the
+instrument, and a measure may legitimately restate part of it — `<staff-lines>`
+alone, say — so treating that as "this measure declares its own" drops every
+`<staff-tuning>` of the measure being deleted and leaves a document with no
+tuning at all.
+
+What the editor will **not** do is move a `<barline>`. A repeat or a volta
+ending is a *pair* spanning measures (Rule 15), and it is a child of
+`<measure>`, not of `<attributes>`, so it goes with a deleted measure: delete
+the measure holding a forward repeat and the backward repeat that remains means
+"repeat from the start of the piece", which silently changes the form of every
+measure before it. Deleting a measure carrying a repeat or an ending is refused,
+naming it, rather than re-anchored by guesswork.
+
 The order is not a style preference. `<attributes>`, `<note>`,
 `<staff-details>` and `<staff-tuning>` are all `xs:sequence` in the schema, so
 each has exactly one legal child order and any other fails validation. The
