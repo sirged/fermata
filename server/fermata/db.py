@@ -521,7 +521,8 @@ _SCORES_COLUMNS = """(
     added_at TEXT NOT NULL DEFAULT (datetime('now')),
     key INTEGER,
     tempo INTEGER,
-    difficulty INTEGER
+    difficulty INTEGER,
+    metadata_source TEXT NOT NULL DEFAULT 'scan'
 )"""
 
 SCHEMA = (
@@ -850,6 +851,15 @@ CREATE INDEX IF NOT EXISTS idx_setlist_scores_order ON setlist_scores(setlist_id
 # cannot do because it has no route to. Nothing is resurrected, hidden or
 # destroyed by the older code, so bumping would only strand a rollback over
 # data that was never at risk.
+#
+# METADATA_SOURCE (#298) DOES NOT BUMP THIS EITHER, same rule again. The
+# previous release's same-path scan branch never selects or writes this
+# column - it always ran `UPDATE scores SET hash=?, size=?, mtime=?, pages=?`
+# and nothing else - so it neither reads the provenance flag nor needs to: it
+# simply goes on not re-reading title/composer on a content change, which is
+# the bug this column exists to fix forward from, not a regression the old
+# release could cause by not knowing about the fix. Nothing is resurrected,
+# hidden or destroyed by rolling back onto a database carrying this column.
 SCHEMA_VERSION = 5
 
 # Columns added to a table that had already shipped. CREATE TABLE IF NOT EXISTS
@@ -933,6 +943,15 @@ COLUMN_ADDITIONS = {
         "key": "INTEGER",
         "tempo": "INTEGER",
         "difficulty": "INTEGER",
+        # #298's one: which of title/composer's values a person can trust to
+        # be about the CURRENT bytes at `path`, not whatever file used to be
+        # there. Every row that exists was written by a scanner that only
+        # ever filled these two from a file it had just parsed, never by a
+        # person - patch_score is the only other writer, and it did not exist
+        # before this column did - so 'scan' is right for every row without a
+        # backfill. See scanner._scan_file's same-path branch and
+        # api.patch_score for the two writers this now distinguishes.
+        "metadata_source": "TEXT NOT NULL DEFAULT 'scan'",
     },
     # #236's one, on a table that shipped long ago. It is exactly the kind of
     # change this mechanism is for - nullable, and needing no backfill because

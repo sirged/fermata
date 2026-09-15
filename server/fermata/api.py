@@ -837,6 +837,13 @@ def patch_score(score_id: RowId, patch: ScorePatch):
                 fields[field] = getattr(patch, field)
         if "favorite" in fields:
             fields["favorite"] = int(fields["favorite"])
+        # A person setting title or composer by hand is the one write this
+        # column exists to distinguish from a scan's own (#298) - see
+        # scanner._scan_file's same-path branch, which re-reads these two
+        # fields from freshly parsed metadata only while this still reads
+        # 'scan'. Once it reads 'user' nothing here ever turns it back.
+        if "title" in fields or "composer" in fields:
+            fields["metadata_source"] = "user"
         if fields:
             sets = ", ".join(f"{k} = ?" for k in fields)
             conn.execute(
