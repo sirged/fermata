@@ -1327,6 +1327,429 @@ export function createDocument(xml) {
     return newOrdinal >= 0 ? newOrdinal : null;
   }
 
+  // ------------------------------------------------ bar-scoped editing (#300)
+  //
+  // Everything above this line is addressed by NOTE ordinal. These are
+  // addressed by MEASURE INDEX - the 0-based position of a <measure> in
+  // document order, which is not its `number` attribute (a pickup may be
+  // numbered 0, and this file renumbers after a structural change; see
+  // renumberMeasures). They write the measure's own <attributes>, or add and
+  // remove whole <measure> elements, and return a boolean exactly as the
+  // note-addressed mutators do.
+  //
+  // Read LIVE from the DOM, never from the parse-time caches above
+  // (fifthsByMeasure, measureNums, measureDurByEl, noteEls): an insert or a
+  // delete invalidates every one of them, and the caller rebuilds the model
+  // from the new text the same way undo's restore does. Nothing here consults
+  // a cache, so nothing here can be stale.
+
+  // MusicXML orders <attributes>' children; a child created here goes in its
+  // schema position rather than at the end, so the document stays valid
+  // against the XSD the server checks on save. (The full sequence is longer;
+  // these are the ones this profile writes - see docs/musicxml-tab-profile.md.)
+  const ATTRIBUTE_ORDER = [
+    "divisions",
+    "key",
+    "time",
+    "staves",
+    "part-symbol",
+    "instruments",
+    "clef",
+    "staff-details",
+    "transpose",
+    "directive",
+    "measure-style",
+  ];
+
+  function measureEls() {
+    return [...doc.getElementsByTagName("measure")];
+  }
+
+  function measureCount() {
+    return measureEls().length;
+  }
+
+  // The measure's OWN <time> / <key><fifths>, or null when it states none and
+  // inherits (MusicXML carries both forward until restated).
+  function ownTimeOf(measureEl) {
+    const attrs = firstChildTag(measureEl, "attributes");
+    const timeEl = attrs ? firstChildTag(attrs, "time") : null;
+    if (!timeEl) return null;
+    const beats = Number(tagText(timeEl, "beats"));
+    const beatType = Number(tagText(timeEl, "beat-type"));
+    return Number.isFinite(beats) && Number.isFinite(beatType) ? { beats, beatType } : null;
+  }
+
+  function ownFifthsOf(measureEl) {
+    const attrs = firstChildTag(measureEl, "attributes");
+    const keyEl = attrs ? firstChildTag(attrs, "key") : null;
+    const f = keyEl ? Number(tagText(keyEl, "fifths")) : NaN;
+    return Number.isFinite(f) ? f : null;
+  }
+
+  // The key and time IN FORCE at measure `index`, carried forward from the
+  // last measure that stated one. fifths defaults to 0 (MusicXML's own
+  // no-key-signature default, Rule 13); time stays null when the document
+  // declares none anywhere, because "no meter was ever written" is not the
+  // same claim as 4/4 and this file does not invent one.
+  function inForceAt(index) {
+    const els = measureEls();
+    let fifths = 0;
+    let time = null;
+    for (let i = 0; i <= index && i < els.length; i++) {
+      const f = ownFifthsOf(els[i]);
+      if (f != null) fifths = f;
+      const t = ownTimeOf(els[i]);
+      if (t) time = t;
+    }
+    return { fifths, beats: time?.beats ?? null, beatType: time?.beatType ?? null };
+  }
+
+  // One measure's length in <divisions> for a meter, or null when this
+  // document's divisions cannot express it exactly (7/16 under divisions=1,
+  // say). divisions is per QUARTER note, so a measure is beats * 4/beatType
+  // quarters.
+  function divisionsForMeter(beats, beatType) {
+    if (!Number.isInteger(beats) || beats < 1) return null;
+    if (!Number.isInteger(beatType) || beatType < 1) return null;
+    if (!Number.isFinite(divisions) || divisions <= 0) return null;
+    const value = (divisions * 4 * beats) / beatType;
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+
+  // What each voice in this measure actually sums to, in <divisions> - the
+  // Rule 8 arithmetic, read from the element rather than from the parse-time
+  // measureDurByEl so it is correct on a document this session has already
+  // edited. A chord member shares its head's onset and adds nothing (Rule 7);
+  // a <backup> rewinds and adds nothing; a <forward> is counted into its own
+  // voice, because Rule 14 inferred silence still occupies the bar.
+  function measureVoiceSums(measureEl) {
+    const sums = new Map();
+    const add = (v, dur) => sums.set(v, (sums.get(v) ?? 0) + dur);
+    for (const child of measureEl.children) {
+      if (child.tagName === "note") {
+        if (hasChord(child)) continue;
+        add(voiceNumber(child) ?? 1, intDuration(child));
+      } else if (child.tagName === "forward") {
+        add(voiceNumber(child) ?? 1, intDuration(child));
+      }
+    }
+    return sums;
+  }
+
+  // The measure's own length: the longest voice in it. An empty measure is 0.
+  function measureDuration(measureEl) {
+    let max = 0;
+    for (const total of measureVoiceSums(measureEl).values()) if (total > max) max = total;
+    return max;
+  }
+
+  // The voice numbers written in this measure, sounding or resting, ascending -
+  // what an inserted measure fills with rests so every voice present keeps
+  // spanning the bar (Rule 6/8). At least [1]: a bar with no notes at all still
+  // gets one voice of silence rather than nothing.
+  function voicesWritten(measureEl) {
+    const seen = new Set();
+    for (const note of measureEl.getElementsByTagName("note")) {
+      const v = voiceNumber(note);
+      if (v != null && v > 0) seen.add(v);
+    }
+    if (seen.size === 0) seen.add(1);
+    return [...seen].sort((a, b) => a - b);
+  }
+
+  /**
+   * What the bar controls read: the measure at `index`, the key and time in
+   * force there (whether stated in it or inherited), whether it states either
+   * of them itself, and its Rule 8 arithmetic. null for an index outside the
+   * document.
+   */
+  function measureAt(index) {
+    const els = measureEls();
+    const el = els[index];
+    if (!el) return null;
+    const force = inForceAt(index);
+    const num = Number(el.getAttribute("number"));
+    const sums = [...measureVoiceSums(el).values()];
+    return {
+      index,
+      number: Number.isFinite(num) ? num : null,
+      count: els.length,
+      fifths: force.fifths,
+      beats: force.beats,
+      beatType: force.beatType,
+      ownKey: ownFifthsOf(el) != null,
+      ownTime: ownTimeOf(el) != null,
+      voices: voicesWritten(el).length,
+      duration: sums.length ? Math.max(...sums) : 0,
+    };
+  }
+
+  /**
+   * The measure index a SELECTION sits in - `{ ordinal }` for a sounding note
+   * or `{ restOrdinal }` for a rest, the same two-space address stepAny takes.
+   * -1 when the selection names nothing. This is how a bar-scoped edit is
+   * addressed from a selection that is still a note or a rest.
+   */
+  function measureIndexOf(sel) {
+    let el = null;
+    if (sel?.ordinal != null) el = noteEls[sel.ordinal];
+    else if (sel?.restOrdinal != null) el = restEls[sel.restOrdinal];
+    const measureEl = el?.closest ? el.closest("measure") : null;
+    if (!measureEl) return -1;
+    return measureEls().indexOf(measureEl);
+  }
+
+  // The <attributes> of a measure, created as its FIRST child if absent - the
+  // position this profile's emitter writes it in, and the only one the
+  // importer reads an opening key or meter from.
+  function ensureAttributes(measureEl) {
+    const existing = firstChildTag(measureEl, "attributes");
+    if (existing) return existing;
+    const attrs = doc.createElement("attributes");
+    measureEl.insertBefore(attrs, measureEl.firstChild);
+    return attrs;
+  }
+
+  // A child of <attributes> by tag, created in ATTRIBUTE_ORDER position if
+  // absent.
+  function ensureAttributeChild(attrs, tag) {
+    const existing = firstChildTag(attrs, tag);
+    if (existing) return existing;
+    const el = doc.createElement(tag);
+    const at = ATTRIBUTE_ORDER.indexOf(tag);
+    let before = null;
+    for (const child of attrs.children) {
+      const idx = ATTRIBUTE_ORDER.indexOf(child.tagName);
+      if (idx > at) {
+        before = child;
+        break;
+      }
+    }
+    attrs.insertBefore(el, before);
+    return el;
+  }
+
+  function setTagText(parent, tag, value) {
+    let el = firstChildTag(parent, tag);
+    if (!el) {
+      el = doc.createElement(tag);
+      parent.appendChild(el);
+    }
+    el.textContent = String(value);
+  }
+
+  /**
+   * Set the key signature at measure `index` to `fifths` (-7..7), writing
+   * `<key><fifths>` in that measure's own `<attributes>` and NOTHING else.
+   *
+   * The notes keep the spelling they carry. `fifths` drives spellPitch/keyAlter
+   * for pitches this editor RECOMPUTES (a fret change, a rest converted to a
+   * note), so the next such edit is spelled in the new key - but no existing
+   * <pitch>, <alter> or <accidental> is touched, and no printed pitch changes.
+   * Re-spelling an existing note is what cycleSpelling and the accidental
+   * control already do, one note at a time, deliberately.
+   *
+   * MusicXML carries a key forward until a later measure restates one, so this
+   * changes the key of every following measure that does not state its own.
+   * That is the meaning of writing a key signature at a bar; a later measure
+   * with its own <key> is left exactly as it is.
+   */
+  function setKey(index, fifths) {
+    const measureEl = measureEls()[index];
+    if (!measureEl) return false;
+    if (!Number.isInteger(fifths) || fifths < -7 || fifths > 7) return false;
+    const keyEl = ensureAttributeChild(ensureAttributes(measureEl), "key");
+    setTagText(keyEl, "fifths", fifths);
+    return true;
+  }
+
+  /**
+   * Why a time-signature change at `index` cannot be written - a sentence
+   * naming the bar and both sums - or null when it can.
+   *
+   * setTime returns false in exactly the cases this returns a sentence for, so
+   * the caller can show the reason without this file knowing anything about a
+   * panel. (The two are held together by a test that walks both.)
+   *
+   * A measure's content is NOT re-barred to fit a new meter - reflowing notes
+   * across barlines is a different piece of work - so a signature that the
+   * content does not already sum to is refused rather than applied over a bar
+   * that would then break Rule 8.
+   *
+   * The check spans every measure the change actually governs: the selected
+   * one, and each following measure that states no <time> of its own and so
+   * inherits this one. Checking only the selected measure would let a change
+   * at bar 1 silently leave bar 2 counting 4 beats of music against 3/4 -
+   * Rule 8 is a property of the whole document, and this edit is the one that
+   * would break it there.
+   */
+  function timeChangeRefusal(index, beats, beatType) {
+    const els = measureEls();
+    const measureEl = els[index];
+    if (!measureEl) return "That bar is not in this document.";
+    if (!Number.isInteger(beats) || beats < 1 || beats > 32) {
+      return "A time signature's top number is a whole number of beats, 1 to 32.";
+    }
+    if (!Number.isInteger(beatType) || ![1, 2, 4, 8, 16, 32, 64].includes(beatType)) {
+      return "A time signature's bottom number is a note value: 1, 2, 4, 8, 16, 32 or 64.";
+    }
+    const expected = divisionsForMeter(beats, beatType);
+    if (expected == null) {
+      return `${beats}/${beatType} is not a whole number of this transcription's divisions (${divisions} per quarter note), so it cannot be written here.`;
+    }
+    for (let i = index; i < els.length; i++) {
+      if (i > index && ownTimeOf(els[i])) break; // it states its own meter - untouched
+      const el = els[i];
+      const sums = measureVoiceSums(el);
+      const num = el.getAttribute("number") ?? String(i + 1);
+      for (const [voice, total] of sums) {
+        if (total === expected) continue;
+        const where = sums.size > 1 ? `Bar ${num}, voice ${voice},` : `Bar ${num}`;
+        return (
+          `${where} holds ${total} divisions of music and ${beats}/${beatType} is ${expected}, ` +
+          `so the time signature can't change here. Change the durations in that bar first.`
+        );
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Set the time signature at measure `index`, writing `<time><beats>` and
+   * `<beat-type>` in that measure's own `<attributes>`. Refuses - leaving the
+   * document untouched - exactly where timeChangeRefusal has a sentence: see
+   * it for which bars are checked and why.
+   */
+  function setTime(index, beats, beatType) {
+    if (timeChangeRefusal(index, beats, beatType) != null) return false;
+    const measureEl = measureEls()[index];
+    if (!measureEl) return false;
+    const timeEl = ensureAttributeChild(ensureAttributes(measureEl), "time");
+    setTagText(timeEl, "beats", beats);
+    setTagText(timeEl, "beat-type", beatType);
+    return true;
+  }
+
+  // Renumber every measure in document order into one consecutive run, so an
+  // insert or a delete leaves no gap and no repeated number (two bars sharing
+  // a number would make the model's own bar-to-bar navigation, which reads
+  // `number`, jump to the wrong one).
+  //
+  // The run starts at 1, or at 0 when the document opens with a pickup bar
+  // numbered 0 - the one convention that means something other than "the Nth
+  // bar". Deliberately NOT "whatever the first measure is numbered now": after
+  // the opening bar is deleted the bar that becomes first is numbered 2, and a
+  // score whose first bar is bar 2 misstates its own length. A document
+  // numbered from something else (an excerpt starting at bar 40) is normalised
+  // to a run by a structural edit; this profile's own emitter always writes
+  // 1..N, so that is a third-party import, and a consecutive run is still true
+  // of it.
+  //
+  // A Rule 17 note id names a POSITION and carries its measure number, so every
+  // measure whose number moved has its ids re-derived; one whose number did not
+  // is left alone, so this never rewrites ids in a bar nobody touched.
+  function renumberMeasures() {
+    const els = measureEls();
+    if (els.length === 0) return;
+    const start = Number(els[0].getAttribute("number")) === 0 ? 0 : 1;
+    els.forEach((el, i) => {
+      const want = String(start + i);
+      if (el.getAttribute("number") !== want) {
+        el.setAttribute("number", want);
+        renumberMeasure(el);
+      }
+    });
+  }
+
+  /**
+   * Insert an empty measure AFTER the measure at `afterIndex`.
+   *
+   * Its content is one whole-measure rest per voice written in the preceding
+   * measure, built with the same makeRest the voice rebuild uses, each voice
+   * after the first preceded by a <backup> to the bar start (Rule 6) - so the
+   * new bar satisfies Rule 8 by construction, in exactly the voices the music
+   * around it is written in.
+   *
+   * The bar's length is the meter IN FORCE there. The new measure states no
+   * <attributes> of its own: it inherits the key and time of the bar before
+   * it, which is what an inserted bar means.
+   */
+  function insertMeasure(afterIndex) {
+    const els = measureEls();
+    const prev = els[afterIndex];
+    if (!prev) return false;
+    const force = inForceAt(afterIndex);
+    // The meter in force says how long a bar is here. With no <time> anywhere
+    // in the document there is no meter to ask, so the preceding bar's own
+    // length stands in; with neither, there is nothing to make a bar out of.
+    const metered = force.beats != null ? divisionsForMeter(force.beats, force.beatType) : null;
+    const dur = metered ?? measureDuration(prev);
+    if (!(dur > 0)) return false;
+
+    const measureEl = doc.createElement("measure");
+    // A placeholder number; renumberMeasures below gives every measure its
+    // real one, this one included.
+    measureEl.setAttribute("number", "0");
+    const voices = voicesWritten(prev);
+    voices.forEach((v, i) => {
+      if (i > 0) {
+        const backup = doc.createElement("backup");
+        const bd = doc.createElement("duration");
+        bd.textContent = String(dur);
+        backup.appendChild(bd);
+        measureEl.appendChild(backup);
+      }
+      measureEl.appendChild(makeRest(dur, v));
+    });
+    prev.parentNode.insertBefore(measureEl, prev.nextSibling);
+    renumberMeasures();
+    return true;
+  }
+
+  /**
+   * Remove the measure at `index`, with the music in it.
+   *
+   * Refuses on a single-measure document: a score with no bars is not a score,
+   * and nothing else here can put one back.
+   *
+   * An <attributes> the removed measure carried is not lost with it. The
+   * document's divisions, key, meter, clef and staff tuning are declared once
+   * in the opening measure (Rule 4) and carried forward, so removing that
+   * measure outright would leave a document with no tuning - one this very
+   * file refuses to open. Each attribute the removed measure declared is
+   * therefore moved to the measure that follows it, EXCEPT where that measure
+   * already declares its own, which wins. The music after the deletion reads
+   * exactly as it did.
+   */
+  function deleteMeasure(index) {
+    const els = measureEls();
+    const measureEl = els[index];
+    if (!measureEl) return false;
+    if (els.length <= 1) return false;
+
+    const attrs = firstChildTag(measureEl, "attributes");
+    const next = els[index + 1];
+    if (attrs && next) {
+      const nextAttrs = ensureAttributes(next);
+      for (const child of [...attrs.children]) {
+        if (firstChildTag(nextAttrs, child.tagName)) continue; // the next bar states its own
+        const at = ATTRIBUTE_ORDER.indexOf(child.tagName);
+        let before = null;
+        for (const existing of nextAttrs.children) {
+          if (ATTRIBUTE_ORDER.indexOf(existing.tagName) > at) {
+            before = existing;
+            break;
+          }
+        }
+        nextAttrs.insertBefore(child, before); // insertBefore MOVES the element
+      }
+    }
+    measureEl.parentNode.removeChild(measureEl);
+    renumberMeasures();
+    return true;
+  }
+
   function text() {
     const body = new XMLSerializer().serializeToString(root);
     // DOMParser drops the XML declaration; the server sniffs "starts with <"
@@ -1360,6 +1783,15 @@ export function createDocument(xml) {
     setTie,
     deleteNote,
     moveToVoice,
+    // Bar-scoped editing (#300) - addressed by MEASURE INDEX, not note ordinal.
+    measureCount,
+    measureAt,
+    measureIndexOf,
+    timeChangeRefusal,
+    setKey,
+    setTime,
+    insertMeasure,
+    deleteMeasure,
     text,
   };
 }

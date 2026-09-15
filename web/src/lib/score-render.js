@@ -3706,6 +3706,24 @@ export function createScoreView(host, opts = {}) {
       headPoint: noteHeadPoint,
       reload: reloadScore,
       noteCount: () => notesInOrder.length,
+      // The RENDERER's own read of a bar (#300) - how many bars the imported
+      // score has, and the key signature and meter alphaTab read for one of
+      // them. Read-only, exactly like viewInfo above and for the same reason:
+      // a bar-scoped edit is written to the document, and this is the
+      // independent evidence that the re-import actually carries it, rather
+      // than the document being checked against itself. `keySignature` is
+      // alphaTab's own -7..7, the same number MusicXML's <fifths> carries.
+      barCount: () => api.score?.masterBars?.length ?? 0,
+      barInfo(index) {
+        const mb = api.score?.masterBars?.[index];
+        if (!mb) return null;
+        return {
+          index,
+          keySignature: mb.keySignature ?? null,
+          beats: mb.timeSignatureNumerator ?? null,
+          beatType: mb.timeSignatureDenominator ?? null,
+        };
+      },
       // How many note-head rectangles the render produced across every staff.
       // With the notation staff off this equals the sounding-note count (one
       // tab digit each); with it on it doubles (a tab digit and a notation

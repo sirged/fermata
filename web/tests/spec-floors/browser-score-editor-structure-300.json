@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-editor-structure-300.spec.js",
+  "count": 13,
+  "reason": "issue #300: bar-scoped editing - key, meter, insert and delete a bar, with the Rule 8 refusal and the attributes that move when the opening bar goes."
+}
