@@ -426,6 +426,64 @@ def test_a_hand_edited_title_survives_a_same_path_replacement(client, library):
     assert after["composer"] == "A. Composer"
 
 
+def test_a_hand_edited_composer_freezes_the_title_too(client, library):
+    """The other direction of the same whole-row freeze: patch_score is only
+    ever called with `composer` here, never `title`, and the title must still
+    survive a same-path replacement afterwards. Pinned separately from
+    test_a_hand_edited_title_survives_a_same_path_replacement (which edits
+    title and checks composer survives) so both directions of the freeze are
+    on record rather than just the one the original defect report used."""
+    put(library, "Classical/Piece.musicxml", _musicxml("Sound Waves", "A. Composer"))
+    scanner._scan()
+    score_id = rows()["Classical/Piece.musicxml"]["id"]
+
+    resp = client.patch(f"/api/scores/{score_id}", json={"composer": "My Own Composer"})
+    assert resp.status_code == 200
+    edited = rows()["Classical/Piece.musicxml"]
+    assert edited["composer"] == "My Own Composer"
+    assert edited["metadata_source"] == "user"
+
+    put(library, "Classical/Piece.musicxml", _musicxml("Night Drive", "B. Writer"))
+    scanner._scan()
+
+    after = rows()["Classical/Piece.musicxml"]
+    assert after["composer"] == "My Own Composer", "a hand-edited composer must survive a rescan"
+    assert after["title"] == "Sound Waves", "title was never hand-edited, but freezes too"
+
+
+def test_a_hand_edited_title_survives_a_rename_that_relinks_by_content(client, library):
+    """The relink branch (the `len(candidates) == 1` branch below the
+    same-path branch) matches a row by content hash rather than by path, and
+    must respect the same metadata_source guard - it was found writing
+    title/composer unconditionally, from a candidate query that did not even
+    select the column (adversarial review on this PR, before merge).
+
+    Without the guard this fails two ways at once: the hand-typed title is
+    replaced by the renamed file's own title, AND the row is left reading
+    'user' while holding a value nobody typed - stuck against every future
+    scan, since ScorePatch has no field that can hand metadata_source back to
+    'scan'. A relink matches on the file's bytes, which is the same identity
+    test docs/api.md already trusts for the move endpoint - so it is the same
+    piece a person named, exactly like a same-path replacement.
+    """
+    put(library, "Classical/Piece.musicxml", _musicxml("Sound Waves", "A. Composer"))
+    scanner._scan()
+    score_id = rows()["Classical/Piece.musicxml"]["id"]
+
+    resp = client.patch(f"/api/scores/{score_id}", json={"title": "My Own Title"})
+    assert resp.status_code == 200
+
+    (library / "Classical" / "Piece.musicxml").rename(
+        library / "Classical" / "Renamed.musicxml"
+    )
+    scanner._scan()
+
+    after = rows()["Classical/Renamed.musicxml"]
+    assert after["id"] == score_id
+    assert after["title"] == "My Own Title", "a hand-edited title must survive a relink"
+    assert after["metadata_source"] == "user", "must not come unstuck from a relink either"
+
+
 # ---------------------------------------------------------------------------
 # The proportional guard, and its floor.
 # ---------------------------------------------------------------------------

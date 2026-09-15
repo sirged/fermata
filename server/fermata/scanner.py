@@ -818,14 +818,15 @@ def _scan_file(conn, path, rel: str, seen_paths: set, disk_paths: set) -> None:
         candidates = [
             r
             for r in conn.execute(
-                "SELECT id, path, missing_since FROM scores"
+                "SELECT id, path, missing_since, metadata_source FROM scores"
                 " WHERE hash = ? AND deleted_at IS NULL",
                 (file_hash,),
             ).fetchall()
             if r["path"] not in disk_paths
         ]
         if len(candidates) == 1:
-            old_id = candidates[0]["id"]
+            old = candidates[0]
+            old_id = old["id"]
             # A RELINK IS NOT COUNTED AS A RESTORE, and that is a correction
             # rather than an omission. `restored` is presented as evidence that
             # a remount really did recover, and only the by-path case above can
@@ -843,27 +844,62 @@ def _scan_file(conn, path, rel: str, seen_paths: set, disk_paths: set) -> None:
             #
             # missing_since is cleared here regardless: a row whose file this
             # scan is looking at is not missing, however it was found.
-            conn.execute(
-                """UPDATE scores SET title=?, composer=?, collection=?, series=?, source=?,
-                   path=?, file_type=?, content_kind=?, pages=?, hash=?, size=?, mtime=?,
-                   missing_since=NULL
-                   WHERE id=?""",
-                (
-                    meta.title,
-                    meta.composer,
-                    meta.collection,
-                    meta.series,
-                    meta.source,
-                    rel,
-                    file_type,
-                    meta.content_kind,
-                    pages,
-                    file_hash,
-                    stat.st_size,
-                    stat.st_mtime,
-                    old_id,
-                ),
-            )
+            #
+            # title/composer are re-read here ONLY while the row still reads
+            # 'scan' (#298's second half). A relink matches on the file's
+            # BYTES, not its path - it is the same content docs/api.md already
+            # trusts for the move endpoint's own identity test - so it is the
+            # same piece a person named, and a relink is exactly the case
+            # docs/api.md states the principle for: title, composer and
+            # source "can have been corrected by hand", which the move
+            # endpoint already respects by re-deriving only collection/series.
+            # Without this guard a hand-typed title survives a same-path
+            # replacement but not a rename-then-relink, AND the row is left
+            # reading 'user' while holding a value nobody typed - stuck
+            # against every future scan, since patch_score has no way to hand
+            # metadata_source back to 'scan' once a person's edit set it.
+            if old["metadata_source"] == "scan":
+                conn.execute(
+                    """UPDATE scores SET title=?, composer=?, collection=?, series=?,
+                       source=?, path=?, file_type=?, content_kind=?, pages=?, hash=?,
+                       size=?, mtime=?, missing_since=NULL
+                       WHERE id=?""",
+                    (
+                        meta.title,
+                        meta.composer,
+                        meta.collection,
+                        meta.series,
+                        meta.source,
+                        rel,
+                        file_type,
+                        meta.content_kind,
+                        pages,
+                        file_hash,
+                        stat.st_size,
+                        stat.st_mtime,
+                        old_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """UPDATE scores SET collection=?, series=?, source=?, path=?,
+                       file_type=?, content_kind=?, pages=?, hash=?, size=?, mtime=?,
+                       missing_since=NULL
+                       WHERE id=?""",
+                    (
+                        meta.collection,
+                        meta.series,
+                        meta.source,
+                        rel,
+                        file_type,
+                        meta.content_kind,
+                        pages,
+                        file_hash,
+                        stat.st_size,
+                        stat.st_mtime,
+                        old_id,
+                    ),
+                )
             with _state_lock:
                 _state["updated"] += 1
         else:

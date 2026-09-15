@@ -126,6 +126,17 @@ have been corrected by hand, and are edited with `PATCH /api/scores/{id}`
 instead - which is why renaming a file and renaming a piece are two different
 requests here.
 
+**A rescan can now change `title` and `composer` (issue #298).** Before this,
+replacing the file at an already-known path left the row's `title` and
+`composer` at whatever the previous file's were, forever - a scan re-parsed
+the new file's metadata but never wrote it back. A scan now re-reads both
+fields from the file at that path, including when the file reappears
+elsewhere and is relinked by content hash, exactly as if it had just been
+added - **unless** a person has set either field by hand through `PATCH
+/api/scores/{id}`, in which case both are frozen against every future scan of
+that file (whichever bytes it holds, at whichever path), the same guarantee
+the paragraph above already gives a moved file's title.
+
 **Key, tempo and difficulty (issue #8).** Three more fields `PATCH
 /api/scores/{id}` accepts, each within a closed range and each clearable with
 an explicit `null` the same way `instrument_id` already is: `key` is a
