@@ -303,3 +303,22 @@ test("the session reaches the library's own view of the score", async ({ page, r
   await page.goto("/#/");
   await expect(page.locator(".card .practiced")).toHaveText("practiced today");
 });
+
+test("the library asks for scores with the browser's today, like the practice page's own calls (#299)", async ({
+  page,
+}) => {
+  // The library's `practiced=recent`/`neglected` filters window on `today`
+  // server-side (see practice.LOCAL_DATE_SQL's use in list_scores), but that
+  // is only half the fix: api.js's convention is that every route taking
+  // `today` gets the BROWSER's date from its caller (practiceSummary,
+  // practiceHistory, scoreProgress, currentGoal, goals and setGoal all do
+  // this already), and a server test that only calls the route directly
+  // cannot see whether the library page actually follows that convention.
+  // This one watches the real request the page sends.
+  const [request] = await Promise.all([
+    page.waitForRequest((r) => r.url().includes("/api/scores?")),
+    page.goto("/#/"),
+  ]);
+  const url = new URL(request.url());
+  expect(url.searchParams.get("today")).toBe(localDay());
+});

@@ -3,6 +3,7 @@
 
   import { api } from "./api.js";
   import { identityLabel } from "./identity.js";
+  import { localDay } from "./practice.js";
   import { keySignatureLabel } from "./provenance.js";
 
   let scores = $state([]);
@@ -380,6 +381,11 @@
     loading = true;
     try {
       [scores, collections, tags] = await Promise.all([
+        // `today` is the BROWSER's date (see api.js), so `practiced=recent`/
+        // `neglected` window on the same day the practice page would (#299) -
+        // without it the server falls back to its own UTC date, and the two
+        // pages can disagree about which side of the 14-/30-day boundary a
+        // session on the edge falls.
         api.scores({
           search,
           collection,
@@ -390,6 +396,7 @@
           transcribed,
           key,
           difficulty,
+          today: localDay(),
         }),
         api.collections(),
         api.tags(),
