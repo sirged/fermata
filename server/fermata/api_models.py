@@ -193,6 +193,12 @@ class ScoreOut(BaseModel):
     key: int | None
     tempo: int | None
     difficulty: int | None
+    # Which writer last set title/composer (#298): 'scan' for a row still
+    # trusting the scanner's own reads, 'user' once a person has set either by
+    # hand through patch_score. See db.COLUMN_ADDITIONS["scores"]["metadata_
+    # source"] and scanner._scan_file's same-path branch, the two places this
+    # is read and written.
+    metadata_source: str
     tags: list[str]
     has_transcription: bool
     practice_seconds: int
