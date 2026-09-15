@@ -725,7 +725,8 @@ def _scan_file(conn, path, rel: str, seen_paths: set, disk_paths: set) -> None:
     seen_paths.add(rel)
     stat = path.stat()
     row = conn.execute(
-        "SELECT id, size, mtime, missing_since FROM scores WHERE path = ?", (rel,)
+        "SELECT id, size, mtime, missing_since, metadata_source FROM scores WHERE path = ?",
+        (rel,),
     ).fetchone()
     if row and row["missing_since"] is not None:
         # The file came back at the path it left from - a remount, or a restore.
@@ -761,10 +762,37 @@ def _scan_file(conn, path, rel: str, seen_paths: set, disk_paths: set) -> None:
         meta.content_kind = "both"
 
     if row:
-        conn.execute(
-            """UPDATE scores SET hash=?, size=?, mtime=?, pages=? WHERE id=?""",
-            (file_hash, stat.st_size, stat.st_mtime, pages, row["id"]),
-        )
+        # title/composer are re-read from the freshly parsed `meta` ONLY while
+        # this row still reads its own scans (#298). A row a person has hand-
+        # edited through patch_score reads 'user' from that moment on, and
+        # this branch never turns it back to 'scan' - so a hand-typed title
+        # survives every future content change at this path, while a row
+        # nobody has touched picks up the new file's title and composer
+        # instead of keeping whatever the old bytes at this path were called.
+        # file_type and content_kind are NOT at risk the way title/composer
+        # are and stay out of this UPDATE on purpose: both derive only from
+        # the path and its suffix, which this branch holds fixed by
+        # definition, so they cannot go stale the way a piece's own title and
+        # composer can when the bytes underneath the path change.
+        if row["metadata_source"] == "scan":
+            conn.execute(
+                """UPDATE scores SET hash=?, size=?, mtime=?, pages=?,
+                   title=?, composer=? WHERE id=?""",
+                (
+                    file_hash,
+                    stat.st_size,
+                    stat.st_mtime,
+                    pages,
+                    meta.title,
+                    meta.composer,
+                    row["id"],
+                ),
+            )
+        else:
+            conn.execute(
+                """UPDATE scores SET hash=?, size=?, mtime=?, pages=? WHERE id=?""",
+                (file_hash, stat.st_size, stat.st_mtime, pages, row["id"]),
+            )
         with _state_lock:
             _state["updated"] += 1
     else:
@@ -790,14 +818,15 @@ def _scan_file(conn, path, rel: str, seen_paths: set, disk_paths: set) -> None:
         candidates = [
             r
             for r in conn.execute(
-                "SELECT id, path, missing_since FROM scores"
+                "SELECT id, path, missing_since, metadata_source FROM scores"
                 " WHERE hash = ? AND deleted_at IS NULL",
                 (file_hash,),
             ).fetchall()
             if r["path"] not in disk_paths
         ]
         if len(candidates) == 1:
-            old_id = candidates[0]["id"]
+            old = candidates[0]
+            old_id = old["id"]
             # A RELINK IS NOT COUNTED AS A RESTORE, and that is a correction
             # rather than an omission. `restored` is presented as evidence that
             # a remount really did recover, and only the by-path case above can
@@ -815,27 +844,72 @@ def _scan_file(conn, path, rel: str, seen_paths: set, disk_paths: set) -> None:
             #
             # missing_since is cleared here regardless: a row whose file this
             # scan is looking at is not missing, however it was found.
-            conn.execute(
-                """UPDATE scores SET title=?, composer=?, collection=?, series=?, source=?,
-                   path=?, file_type=?, content_kind=?, pages=?, hash=?, size=?, mtime=?,
-                   missing_since=NULL
-                   WHERE id=?""",
-                (
-                    meta.title,
-                    meta.composer,
-                    meta.collection,
-                    meta.series,
-                    meta.source,
-                    rel,
-                    file_type,
-                    meta.content_kind,
-                    pages,
-                    file_hash,
-                    stat.st_size,
-                    stat.st_mtime,
-                    old_id,
-                ),
-            )
+            #
+            # title/composer are re-read here ONLY while the row still reads
+            # 'scan' (#298's second half). A relink matches on the file's
+            # BYTES, not its path - it is the same content docs/api.md already
+            # trusts for the move endpoint's own identity test - so it is the
+            # same piece a person named, and title/composer get the same
+            # protection the move endpoint already gives them: re-derived
+            # only when nobody has said otherwise. Without this guard a
+            # hand-typed title survives a same-path replacement but not a
+            # rename-then-relink, AND the row is left reading 'user' while
+            # holding a value nobody typed - stuck against every future scan,
+            # since patch_score has no way to hand metadata_source back to
+            # 'scan' once a person's edit set it.
+            #
+            # source is deliberately NOT part of this guard and stays
+            # unconditional below, in both branches - it has no provenance
+            # flag of its own (only title/composer set metadata_source), and
+            # gating it on that column would miss exactly the rows it was
+            # supposed to protect: a row whose source was hand-corrected but
+            # whose title/composer were not still reads 'scan'. source is
+            # path-derived and re-derived here on purpose, same as
+            # collection/series/file_type/content_kind below; whether it
+            # needs its own provenance tracking is a separate question, out
+            # of scope for this change.
+            if old["metadata_source"] == "scan":
+                conn.execute(
+                    """UPDATE scores SET title=?, composer=?, collection=?, series=?,
+                       source=?, path=?, file_type=?, content_kind=?, pages=?, hash=?,
+                       size=?, mtime=?, missing_since=NULL
+                       WHERE id=?""",
+                    (
+                        meta.title,
+                        meta.composer,
+                        meta.collection,
+                        meta.series,
+                        meta.source,
+                        rel,
+                        file_type,
+                        meta.content_kind,
+                        pages,
+                        file_hash,
+                        stat.st_size,
+                        stat.st_mtime,
+                        old_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """UPDATE scores SET collection=?, series=?, source=?, path=?,
+                       file_type=?, content_kind=?, pages=?, hash=?, size=?, mtime=?,
+                       missing_since=NULL
+                       WHERE id=?""",
+                    (
+                        meta.collection,
+                        meta.series,
+                        meta.source,
+                        rel,
+                        file_type,
+                        meta.content_kind,
+                        pages,
+                        file_hash,
+                        stat.st_size,
+                        stat.st_mtime,
+                        old_id,
+                    ),
+                )
             with _state_lock:
                 _state["updated"] += 1
         else:

@@ -303,3 +303,73 @@ test("the session reaches the library's own view of the score", async ({ page, r
   await page.goto("/#/");
   await expect(page.locator(".card .practiced")).toHaveText("practiced today");
 });
+
+test("the library asks for scores with the browser's today, like the practice page's own calls (#299)", async ({
+  page,
+}) => {
+  // The library's `practiced=recent`/`neglected` filters window on `today`
+  // server-side (see practice.LOCAL_DATE_SQL's use in list_scores), but that
+  // is only half the fix: api.js's convention is that every route taking
+  // `today` gets the BROWSER's date from its caller (practiceSummary,
+  // scoreProgress, practiceHistory, currentGoal, goals, setGoal, patchGoal
+  // and practiceReview all do this already), and a server test that only
+  // calls the route directly cannot see whether the library page actually
+  // follows that convention. This one watches the real request the page
+  // sends.
+  const [request] = await Promise.all([
+    page.waitForRequest((r) => r.url().includes("/api/scores?")),
+    page.goto("/#/"),
+  ]);
+  const url = new URL(request.url());
+  expect(url.searchParams.get("today")).toBe(localDay());
+});
+
+test("a rejected scores query surfaces an error rather than leaving the previous list under a filter it no longer matches (#299)", async ({
+  page,
+  request,
+}) => {
+  // A device clock skewed far enough sends a `today` _today() 422s on -
+  // reproduced against a real build with the page clock shifted forward five
+  // days. Refresh()'s destructuring assignment never runs on a rejection, so
+  // with no catch at all `scores` simply kept whichever list the PREVIOUS
+  // query returned, rendered under whatever filter is active NOW - a wrong
+  // answer with nothing on screen marking it as suspect, which is the exact
+  // shape _today()'s own docstring calls "the worst kind of wrong answer".
+  // The 422 is simulated here (rather than an actual clock skew) so this
+  // test is deterministic regardless of the real host clock; what matters is
+  // the rejection, not its cause.
+  // So that "Recently practiced" genuinely has something to show once the
+  // retried request reaches the real server - the assertion below needs the
+  // FILTERED grid non-empty, not merely the unfiltered one.
+  const logged = await request.post(`/api/scores/${score.id}/practice`, {
+    data: { seconds: 600 },
+  });
+  expect(logged.ok(), await logged.text()).toBe(true);
+
+  await page.goto("/#/");
+  await expect(page.locator(".card").first()).toBeVisible();
+
+  let intercepted = false;
+  await page.route("**/api/scores?*", async (route) => {
+    if (intercepted) return route.continue();
+    intercepted = true;
+    await route.fulfill({
+      status: 422,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "today must be between 2024-01-01 and 2099-01-01" }),
+    });
+  });
+
+  await page.locator(".side-item", { hasText: "Recently practiced" }).click();
+
+  // Not the stale, unfiltered grid still sitting under this heading -
+  const error = page.locator(".load-error");
+  await expect(error).toBeVisible();
+  await expect(page.locator(".grid")).toHaveCount(0);
+
+  // - and recoverable: the mocked route only rejects once, so pressing the
+  // control the error offers reaches the real server and succeeds.
+  await error.getByRole("button", { name: "Try again" }).click();
+  await expect(error).toHaveCount(0);
+  await expect(page.locator(".card").first()).toBeVisible();
+});

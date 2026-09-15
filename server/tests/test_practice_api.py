@@ -866,6 +866,34 @@ def test_the_library_views_go_by_the_practice_day_not_the_timestamp(client, scor
     assert listed[score]["last_practiced"] == long_ago
 
 
+def test_the_library_views_accept_a_today_override_like_the_practice_page(client, score, other_score):
+    """`recent`/`neglected` anchor to the caller's `today`, exactly like
+    `/practice/history`'s parameter of the same name (issue #299) - because a
+    client whose local day is ahead of or behind the server's UTC day must not
+    get a different verdict from the library than from the practice page about
+    the same session.
+
+    `today` sits 200 days before the real date the suite runs on, and the one
+    session logged is 5 days before THAT - so a regression back to
+    `date('now')` compares it to the real host date instead (roughly 205 days
+    away) and gets both filters backwards: it drops the session from `recent`
+    and, because nothing stops `neglected` from also matching a NOT of the
+    same stale comparison, adds it to `neglected` too. No host UTC offset
+    makes that regression pass by accident.
+    """
+    end = date.today() - timedelta(days=200)
+    today = end.isoformat()
+    recent_day = (end - timedelta(days=5)).isoformat()
+    log(client, day=recent_day, seconds=600, score_id=score)
+
+    recent = {s["id"] for s in client.get(f"/api/scores?practiced=recent&today={today}").json()}
+    neglected = {
+        s["id"] for s in client.get(f"/api/scores?practiced=neglected&today={today}").json()
+    }
+    assert recent == {score}
+    assert neglected == {other_score}
+
+
 def test_an_orphaned_session_does_not_empty_the_neglected_view(client, score, other_score):
     """SQL's NOT IN against a set containing NULL is never true. Now that a
     session can have no score, one orphaned row anywhere used to be enough to

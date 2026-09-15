@@ -3,6 +3,7 @@
 
   import { api } from "./api.js";
   import { identityLabel } from "./identity.js";
+  import { localDay } from "./practice.js";
   import { keySignatureLabel } from "./provenance.js";
 
   let scores = $state([]);
@@ -27,6 +28,14 @@
   let difficulty = $state("");
   let scan = $state(null);
   let loading = $state(true);
+  // Set when a refresh's query was REJECTED - a 422 `today` out of range
+  // (issue #299) chief among them, though anything api.scores() can throw
+  // counts. Deliberately checked before `scores.length` in the template: a
+  // rejected request must not leave whatever the grid last held sitting
+  // under a filter heading (the active sidebar item) that no longer
+  // describes it, which is a wrong answer with nothing marking it as
+  // suspect - see _today()'s own docstring on that shape of failure.
+  let loadError = $state("");
   let uploadInput;
   let showDuplicates = $state(false);
   let duplicates = $state([]);
@@ -380,6 +389,11 @@
     loading = true;
     try {
       [scores, collections, tags] = await Promise.all([
+        // `today` is the BROWSER's date (see api.js), so `practiced=recent`/
+        // `neglected` window on the same day the practice page would (#299) -
+        // without it the server falls back to its own UTC date, and the two
+        // pages can disagree about which side of the 14-/30-day boundary a
+        // session on the edge falls.
         api.scores({
           search,
           collection,
@@ -390,10 +404,21 @@
           transcribed,
           key,
           difficulty,
+          today: localDay(),
         }),
         api.collections(),
         api.tags(),
       ]);
+      loadError = "";
+    } catch (err) {
+      // A device clock skewed far enough sends a `today` _today() rejects
+      // with a 422 (issue #299). Left uncaught, the destructuring above
+      // never runs and `scores` simply keeps whatever the PREVIOUS query
+      // returned - which the template would then render under whichever
+      // filter is active now, an answer to a question nobody asked and
+      // nothing on screen marking it as suspect. See loadError's own
+      // declaration and the template branch that checks it first.
+      loadError = err?.message ?? "Fermata could not load the library.";
     } finally {
       loading = false;
     }
@@ -1240,7 +1265,12 @@
         </div>
       {/if}
 
-      {#if loading && !scores.length}
+      {#if loadError}
+        <p class="empty load-error" role="alert">
+          {loadError}
+          <button onclick={refresh}>Try again</button>
+        </p>
+      {:else if loading && !scores.length}
         <p class="empty">Loading…</p>
       {:else if !scores.length}
         <p class="empty">
@@ -1698,6 +1728,15 @@
     color: var(--ink-dim);
     margin-top: 60px;
     text-align: center;
+  }
+
+  .load-error {
+    color: var(--danger);
+  }
+
+  .load-error button {
+    display: block;
+    margin: 12px auto 0;
   }
 
   .grid {
