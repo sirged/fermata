@@ -64,6 +64,11 @@ async function j(res) {
 }
 
 export const api = {
+  // `params.today`, when the caller passes one, is the BROWSER's date - see
+  // the note on that convention further down, by currentGoal. The library's
+  // `practiced=recent`/`neglected` filters window on it exactly like the
+  // practice page's own queries do (#299), so the two pages cannot disagree
+  // about which side of the window a session on the boundary day falls.
   scores: (params = {}) => {
     const q = new URLSearchParams(
       Object.fromEntries(Object.entries(params).filter(([, v]) => v)),

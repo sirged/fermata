@@ -1660,10 +1660,12 @@ def test_import_is_transactional_on_a_collision_in_the_target_library(
 # version - and so which keys a manifest written at that version could not
 # have carried. Read off db.py's own history: instrument_id came with 1,
 # missing_since with 4, deleted_at/deleted_from with the 4 -> 5 step (#56),
-# and key/tempo/difficulty (#8) plus practice_sessions.preset_id (#236) came
-# after 5 was already stamped, so no pre-5 archive can hold any of them.
+# and key/tempo/difficulty (#8), practice_sessions.preset_id (#236) and
+# scores.metadata_source (#298) all came after 5 was already stamped (none of
+# the three bumped it - see db.SCHEMA_VERSION's own comment for why each one
+# didn't need to), so no pre-5 archive can hold any of them either.
 _ABSENT_BELOW_5 = {
-    "scores": ("deleted_at", "deleted_from", "key", "tempo", "difficulty"),
+    "scores": ("deleted_at", "deleted_from", "key", "tempo", "difficulty", "metadata_source"),
     "practice_sessions": ("preset_id",),
 }
 _ABSENT_BELOW_4 = {"scores": ("missing_since",)}
@@ -1709,10 +1711,18 @@ def test_an_archive_from_the_schema_before_this_one_imports(client, add_score):
     does not carry taking their schema defaults rather than being demanded of
     it. `schema_version_read` is what says which version was actually read;
     `schema_version` is the one the rows now live under."""
-    add_score("Prelude.pdf", title="Prelude")
+    score_id = add_score("Prelude.pdf", title="Prelude")
+    # Hand-edit the title before export so this score's metadata_source reads
+    # 'user' (#298). A genuine version-4 archive could never carry that value
+    # - the column did not exist yet - so _as_written_by_schema must strip it
+    # here exactly as it strips deleted_at/preset_id below; a manifest that
+    # still carried it would be a synthetic v4 archive claiming a fact no
+    # v4 release could ever have recorded.
+    assert client.patch(f"/api/scores/{score_id}", json={"title": "Prelude, edited"}).status_code == 200
     client.post("/api/practice/sessions", json={"seconds": 300, "activity": "fretboard"})
     older = _as_written_by_schema(_exported_manifest(client), 4)
     assert "deleted_at" not in older["tables"]["scores"][0]
+    assert "metadata_source" not in older["tables"]["scores"][0]
     assert "preset_id" not in older["tables"]["practice_sessions"][0]
 
     resp = client.post(
@@ -1729,8 +1739,15 @@ def test_an_archive_from_the_schema_before_this_one_imports(client, add_score):
     assert summary["trainer_presets_imported"] == 0
 
     # Import ADDS, so the source rows and the restored ones are both here.
-    titles = sorted(s["title"] for s in client.get("/api/scores").json())
-    assert titles == ["Prelude", "Prelude"]
+    scores = client.get("/api/scores").json()
+    titles = sorted(s["title"] for s in scores)
+    assert titles == ["Prelude, edited", "Prelude, edited"]
+    # The column a version-4 archive could not carry (#298) filled from the
+    # schema default on the IMPORTED row - 'scan', same as preset_id's NULL
+    # below - even though the source row (still live alongside it) reads
+    # 'user'. Importing a v4 archive must not be able to manufacture a
+    # provenance claim a v4 release never had the column to make.
+    assert sorted(s["metadata_source"] for s in scores) == ["scan", "user"]
     restored = client.get("/api/practice/sessions").json()["sessions"]
     assert [s["seconds"] for s in restored] == [300, 300]
     # The column the archive could not carry filled from the schema, not from

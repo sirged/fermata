@@ -571,6 +571,7 @@ def list_scores(
     difficulty: Annotated[int | None, Query(ge=MIN_DIFFICULTY, le=MAX_DIFFICULTY)] = None,
     tempo_min: Annotated[int | None, Query(ge=MIN_TEMPO_BPM, le=MAX_TEMPO_BPM)] = None,
     tempo_max: Annotated[int | None, Query(ge=MIN_TEMPO_BPM, le=MAX_TEMPO_BPM)] = None,
+    today: str | None = None,
 ):
     """The library, filtered and searched. `search` matches title, composer,
     source or series; `practiced` is 'recent' (practised in the last 14 days)
@@ -580,6 +581,13 @@ def list_scores(
     is 'yes' (has a transcription, extracted or hand-edited - this filter
     draws no distinction between the two) or 'no' (its exact complement,
     which is also every score a scan judged non-extractable) (#190).
+
+    `today` names the day the `practiced` window counts back from, parsed and
+    defaulted exactly like `GET /practice/history`'s parameter of the same
+    name - see `_today()`. It matters only alongside `practiced`, because a
+    client's local day and the server's UTC day can disagree about which side
+    of the 14- or 30-day boundary a session on the edge falls, and this list
+    has to agree with the practice page about that.
 
     `key` is an exact match on the stored `fifths` count (#8) - -7..7, never a
     key name (see ScorePatch.key). `difficulty` is an exact match on the 1-5
@@ -643,11 +651,13 @@ def list_scores(
     # different clocks. A back-dated session counts from the day it says it
     # happened, which is the whole point of being able to enter one.
     if practiced == "recent":
+        recent_cutoff = (_today(today) - timedelta(days=14)).isoformat()
         where.append(
             f"""s.id IN (SELECT p.score_id FROM practice_sessions p
                          GROUP BY p.score_id
-                         HAVING MAX({practice.LOCAL_DATE_SQL}) >= date('now', '-14 days'))"""
+                         HAVING MAX({practice.LOCAL_DATE_SQL}) >= ?)"""
         )
+        params.append(recent_cutoff)
     elif practiced == "neglected":
         # A score whose file is not there is excluded from this one view, and
         # only this one. "Needs attention" answers "what should I work on next",
@@ -682,8 +692,9 @@ def list_scores(
             f"""(NOT EXISTS (SELECT 1 FROM practice_sessions p WHERE p.score_id = s.id)
                  OR s.id IN (SELECT p.score_id FROM practice_sessions p
                              GROUP BY p.score_id
-                             HAVING MAX({practice.LOCAL_DATE_SQL}) < date('now', '-30 days')))"""
+                             HAVING MAX({practice.LOCAL_DATE_SQL}) < ?))"""
         )
+        params.append((_today(today) - timedelta(days=30)).isoformat())
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY s.title COLLATE NOCASE"
@@ -826,6 +837,13 @@ def patch_score(score_id: RowId, patch: ScorePatch):
                 fields[field] = getattr(patch, field)
         if "favorite" in fields:
             fields["favorite"] = int(fields["favorite"])
+        # A person setting title or composer by hand is the one write this
+        # column exists to distinguish from a scan's own (#298) - see
+        # scanner._scan_file's same-path branch, which re-reads these two
+        # fields from freshly parsed metadata only while this still reads
+        # 'scan'. Once it reads 'user' nothing here ever turns it back.
+        if "title" in fields or "composer" in fields:
+            fields["metadata_source"] = "user"
         if fields:
             sets = ", ".join(f"{k} = ?" for k in fields)
             conn.execute(
