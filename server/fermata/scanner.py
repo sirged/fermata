@@ -725,7 +725,8 @@ def _scan_file(conn, path, rel: str, seen_paths: set, disk_paths: set) -> None:
     seen_paths.add(rel)
     stat = path.stat()
     row = conn.execute(
-        "SELECT id, size, mtime, missing_since FROM scores WHERE path = ?", (rel,)
+        "SELECT id, size, mtime, missing_since, metadata_source FROM scores WHERE path = ?",
+        (rel,),
     ).fetchone()
     if row and row["missing_since"] is not None:
         # The file came back at the path it left from - a remount, or a restore.
@@ -761,10 +762,37 @@ def _scan_file(conn, path, rel: str, seen_paths: set, disk_paths: set) -> None:
         meta.content_kind = "both"
 
     if row:
-        conn.execute(
-            """UPDATE scores SET hash=?, size=?, mtime=?, pages=? WHERE id=?""",
-            (file_hash, stat.st_size, stat.st_mtime, pages, row["id"]),
-        )
+        # title/composer are re-read from the freshly parsed `meta` ONLY while
+        # this row still reads its own scans (#298). A row a person has hand-
+        # edited through patch_score reads 'user' from that moment on, and
+        # this branch never turns it back to 'scan' - so a hand-typed title
+        # survives every future content change at this path, while a row
+        # nobody has touched picks up the new file's title and composer
+        # instead of keeping whatever the old bytes at this path were called.
+        # file_type and content_kind are NOT at risk the way title/composer
+        # are and stay out of this UPDATE on purpose: both derive only from
+        # the path and its suffix, which this branch holds fixed by
+        # definition, so they cannot go stale the way a piece's own title and
+        # composer can when the bytes underneath the path change.
+        if row["metadata_source"] == "scan":
+            conn.execute(
+                """UPDATE scores SET hash=?, size=?, mtime=?, pages=?,
+                   title=?, composer=? WHERE id=?""",
+                (
+                    file_hash,
+                    stat.st_size,
+                    stat.st_mtime,
+                    pages,
+                    meta.title,
+                    meta.composer,
+                    row["id"],
+                ),
+            )
+        else:
+            conn.execute(
+                """UPDATE scores SET hash=?, size=?, mtime=?, pages=? WHERE id=?""",
+                (file_hash, stat.st_size, stat.st_mtime, pages, row["id"]),
+            )
         with _state_lock:
             _state["updated"] += 1
     else:

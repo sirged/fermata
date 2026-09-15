@@ -360,6 +360,73 @@ def test_a_file_that_comes_back_under_another_name_stops_being_missing(library):
 
 
 # ---------------------------------------------------------------------------
+# Same-path content replacement (#298): title and composer must follow a
+# genuinely new file at a known path, but must not follow it over a title a
+# person typed by hand - see the metadata_source column in db.py.
+# ---------------------------------------------------------------------------
+
+
+def _musicxml(title: str, composer: str) -> bytes:
+    """The minimum MusicXML metadata._musicxml_info actually reads: a work
+    title and a composer-typed creator, so a same-path replacement has
+    content-derived title/composer to differ on. .gp bytes cannot serve this -
+    the scanner never parses them, so their title/composer come only from the
+    path, which is unchanged by definition in a same-path replacement."""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <work><work-title>{title}</work-title></work>
+  <identification>
+    <creator type="composer">{composer}</creator>
+  </identification>
+  <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
+  <part id="P1"><measure number="1"><note><rest/><duration>4</duration></note></measure></part>
+</score-partwise>
+""".encode()
+
+
+def test_a_same_path_replacement_updates_title_and_composer_from_the_new_bytes(library):
+    """The defect as filed: a scan that sees new content at a known path must
+    re-read title and composer from it rather than keep the old file's."""
+    put(library, "Classical/Piece.musicxml", _musicxml("Sound Waves", "A. Composer"))
+    scanner._scan()
+    before = rows()["Classical/Piece.musicxml"]
+    assert (before["title"], before["composer"]) == ("Sound Waves", "A. Composer")
+    assert before["metadata_source"] == "scan"
+
+    put(library, "Classical/Piece.musicxml", _musicxml("Night Drive", "B. Writer"))
+    scanner._scan()
+
+    after = rows()["Classical/Piece.musicxml"]
+    assert after["id"] == before["id"]
+    assert (after["title"], after["composer"]) == ("Night Drive", "B. Writer")
+
+
+def test_a_hand_edited_title_survives_a_same_path_replacement(client, library):
+    """The data-loss guard: a title set through patch_score must not be
+    clobbered the next time the file at its path merely changes content."""
+    put(library, "Classical/Piece.musicxml", _musicxml("Sound Waves", "A. Composer"))
+    scanner._scan()
+    score_id = rows()["Classical/Piece.musicxml"]["id"]
+
+    resp = client.patch(f"/api/scores/{score_id}", json={"title": "My Own Title"})
+    assert resp.status_code == 200
+    edited = rows()["Classical/Piece.musicxml"]
+    assert edited["title"] == "My Own Title"
+    assert edited["metadata_source"] == "user"
+
+    put(library, "Classical/Piece.musicxml", _musicxml("Night Drive", "B. Writer"))
+    scanner._scan()
+
+    after = rows()["Classical/Piece.musicxml"]
+    assert after["id"] == score_id
+    assert after["title"] == "My Own Title", "a hand-edited title must survive a rescan"
+    # composer was never hand-edited here, but it stays put too: the whole row
+    # is frozen against re-reads once metadata_source reads 'user', not just
+    # whichever field the edit happened to touch.
+    assert after["composer"] == "A. Composer"
+
+
+# ---------------------------------------------------------------------------
 # The proportional guard, and its floor.
 # ---------------------------------------------------------------------------
 
