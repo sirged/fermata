@@ -77,6 +77,12 @@
 //     meter's own length: a coarse-divisions document falls back to the
 //     internal unit -> "counts in beats even where a beat is a fraction of a
 //     division" red.
+//   - drop the line-order branch from insertInOrder: a non-contiguous
+//     restatement serialises its tunings 2,4,1,3,5,6 -> the line-sequence
+//     assertion in "a bar restating some of the tunings" red, and nothing
+//     else, which is the point - the document stays schema-valid and the model
+//     reads them into a map either way, so that assertion is the only thing
+//     holding the profile's own order.
 import { test, expect } from "@playwright/test";
 
 import { EDITOR_MUSICXML, CHORD_MUSICXML, stubEditorApi } from "./fixtures/editor-score.js";
@@ -217,16 +223,28 @@ const EXCERPT_FROM_BAR_40 = EDITOR_MUSICXML.replace('<measure number="1">', '<me
   '<measure number="41">',
 );
 
-// Bar 2 restates TWO of the six tunings and nothing else - the bottom string
-// dropped a tone, which is how a scordatura is written: the strings that
-// changed are restated, the rest are not. The shape that catches a merge
-// keying presence by TAG name, which reads "this bar has staff-tunings" as
-// "this bar has declared all of them" and drops the other four.
+// Bar 2 restates TWO of the six tunings and nothing else, the way a scordatura
+// is written: the strings that changed are restated, the rest are not. The
+// shape that catches a merge keying presence by TAG name, which reads "this bar
+// has staff-tunings" as "this bar has declared all of them" and drops the other
+// four.
+//
+// The two are lines 2 and 4, NOT a contiguous run from line 1, and that is the
+// point of picking them: four tunings appended after a restated 1 and 2 land in
+// 1..6 order whether or not anything ordered them, so a contiguous restatement
+// cannot tell an ordered merge from an unordered one. From 2 and 4, an
+// unordered merge serialises 2,4,1,3,5,6.
+//
+// Line 5 is deliberately not one of them: the notes that survive this fixture's
+// deletion are written on <string>2</string>, which reads its pitch from line 5
+// (Rule 5's mirror), so restating THAT one would move their sounding pitch and
+// red the model/render agreement below for a reason that has nothing to do with
+// the merge.
 const PARTIAL_TUNINGS = EDITOR_MUSICXML.replace(
   '<measure number="2">',
   '<measure number="2">\n      <attributes><staff-details>' +
-    '<staff-tuning line="1"><tuning-step>D</tuning-step><tuning-octave>2</tuning-octave></staff-tuning>' +
-    '<staff-tuning line="2"><tuning-step>A</tuning-step><tuning-octave>2</tuning-octave></staff-tuning>' +
+    '<staff-tuning line="2"><tuning-step>G</tuning-step><tuning-octave>2</tuning-octave></staff-tuning>' +
+    '<staff-tuning line="4"><tuning-step>A</tuning-step><tuning-octave>3</tuning-octave></staff-tuning>' +
     "</staff-details></attributes>",
 );
 
@@ -665,9 +683,11 @@ test.describe("bar-scoped editing", () => {
   });
 
   test("a bar restating some of the tunings keeps the ones it did not restate", async ({ page }) => {
-    // Bar 2 restates two of the six strings. Deleting bar 1 has to carry the
-    // other four forward: a <staff-tuning> is one per STRING, keyed by the line
-    // it tunes, so two of them are not a restatement of all six. Losing four is
+    // Bar 2 restates two of the six strings - lines 2 and 4, not a contiguous
+    // run; see the fixture for why that matters. Deleting bar 1 has to carry
+    // the other four forward: a <staff-tuning> is one per STRING, keyed by the
+    // line it tunes, so two of them are not a restatement of all six, and the
+    // four that come across land in their own places. Losing four is
     // silent - a two-string staff still parses and still draws - so nothing
     // refuses and nothing warns; the only sign is every pitch disagreeing with
     // the render.
@@ -679,13 +699,23 @@ test.describe("bar-scoped editing", () => {
     expect(await page.evaluate(() => window.__scoreEditorHarness.stringCount())).toBe(6);
     const after = await modelText(page);
     expect(after.match(/<staff-tuning line=/g)).toHaveLength(6);
-    // Bar 2's own two win where they were restated - the dropped bottom string
-    // is still dropped - and the four it did not restate came with the bar.
-    expect(after).toContain('<staff-tuning line="1"><tuning-step>D</tuning-step>');
+    // Bar 2's own two win where they were restated - the re-tuned strings stay
+    // re-tuned - and the four it did not restate came across with their own
+    // values.
+    expect(after).toContain('<staff-tuning line="2"><tuning-step>G</tuning-step>');
+    expect(after).toContain('<staff-tuning line="4"><tuning-step>A</tuning-step>');
+    expect(after).toContain('<staff-tuning line="1"><tuning-step>E</tuning-step>');
     expect(after).toContain('<staff-tuning line="3"><tuning-step>D</tuning-step>');
+    expect(after).toContain('<staff-tuning line="5"><tuning-step>B</tuning-step>');
     expect(after).toContain('<staff-tuning line="6"><tuning-step>E</tuning-step>');
-    // One <staff-details>, and its tunings still run from the lowest string up.
     expect(after.match(/<staff-details>/g)).toHaveLength(1);
+    // And they still run from the lowest string up. The profile writes them in
+    // that order (Rule 5 numbers `line` from the bottom), and a merge must not
+    // be the thing that stops that being true. Nothing else holds it: repeats
+    // of one tag are not ordered by xs:sequence, so the document is schema-valid
+    // either way, the model reads them into a map and does not care, and the
+    // render is unchanged - this assertion is the only falsifier the ordering
+    // has, and it only bites because the restatement above is non-contiguous.
     expect([...after.matchAll(/<staff-tuning line="(\d)"/g)].map((m) => Number(m[1]))).toEqual([
       1, 2, 3, 4, 5, 6,
     ]);
