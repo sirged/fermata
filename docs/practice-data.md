@@ -263,7 +263,7 @@ the questions rather than around the tables.
   text, and no field here compares one point to another. `latest_target` is the
   target most recently written down, not the highest ever set - somebody who
   decided 140 was too fast and set 110 is aiming at 110.
-- `GET /api/scores?practiced=recent|neglected` - the library's own views.
+- `GET /api/scores?practiced=recent|neglected&today=` - the library's own views.
   *Which pieces have I neglected.* Windowed on the practice day, like
   everything else: the library is the view a person sees first, so it must not
   disagree with the practice page about when they last played something, and a

@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/viewer-practice.spec.js",
+  "count": 2,
+  "reason": "issue #299: the library page must ask GET /api/scores for its recent/neglected windows with the browser's own today, not silently fall back to the server's UTC one - and a rejected query (a 422'd today, chief among them) must surface as an error rather than leave the previous list sitting under a filter heading it no longer matches."
+}
