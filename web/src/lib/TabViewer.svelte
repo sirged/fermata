@@ -760,10 +760,23 @@
       editStringCount = doc.stringCount;
     }
     await view.editor.reload(after);
-    if (structural) reselectAfterRebuild();
-    else refreshSelection();
+    if (structural) {
+      // A structural edit COLLAPSES a multi-note range to its anchor (#300,
+      // #251). A range is a span of ordinals, and inserting or deleting a bar
+      // renumbers them: kept, it would leave the panel claiming "4 notes
+      // selected" over four notes the player never selected, and the next
+      // range operation - a delete above all - would act on them in one undo
+      // entry with no warning. Clamping the extent into the new document
+      // (which is all refreshSelection does) bounds that span without making
+      // it mean anything.
+      //
+      // Here and NOT in reselectAfterRebuild, which undo's restore also calls:
+      // an undo puts back the very document the range was made in, so it keeps
+      // its range, exactly as it did before bar editing existed.
+      selExtent = null;
+      reselectAfterRebuild();
+    } else refreshSelection();
   }
-
 
   // Put the selection back after the model was rebuilt underneath it - a
   // structural edit (#300) or an undo/redo restore. The same address is kept
@@ -773,18 +786,13 @@
   // landing on the bar that slid into its place is what a reader expects, and
   // an undo that dropped the selection would read as having done more than it
   // did.
+  //
+  // A multi-note range is left ALONE here, and collapsed by the one caller
+  // that has a reason to (applyEdit's structural branch - see it). Undo goes
+  // through this function too, and an undo restores the very document a range
+  // was made in, so it must not be the thing that throws the range away.
   function reselectAfterRebuild() {
     if (!doc || !view) return;
-    // The RANGE is collapsed to its anchor, always (#300). A range is a span of
-    // ordinals, and a structural edit renumbers them: keeping it would leave
-    // the panel claiming "4 notes selected" over four notes the player never
-    // selected, and every range operation - a delete above all - would then act
-    // on them in one undo entry with no warning. Clamping the extent into the
-    // new document (which is all refreshSelection does) bounds that span
-    // without making it mean anything. Collapsing is the honest one: the anchor
-    // survives, the span does not, and re-extending is two keystrokes.
-    selExtent = null;
-
     if (selectedRest != null) {
       const count = doc.restCount();
       if (count === 0) {
@@ -1112,9 +1120,15 @@
 
   function insertBarAfter() {
     if (selBar == null) return;
-    return applyEdit(() => doc.insertMeasure(selBar.index), "A bar can't be inserted here.", {
-      structural: true,
-    });
+    return applyEdit(
+      () => doc.insertMeasure(selBar.index),
+      // The one way an insert is refused: the bar to copy has no length to
+      // copy - no meter in force anywhere in the document, and no music of its
+      // own to measure - so there is nothing to make a bar's worth of silence
+      // out of.
+      "This bar has no length to copy - it carries no music, and the transcription declares no time signature - so an empty bar can't be built to match it.",
+      { structural: true },
+    );
   }
 
   // The refusal text is the document's own (doc.deleteMeasureRefusal), like the
@@ -1130,7 +1144,6 @@
       { structural: true },
     );
   }
-
 
   // ----------------------------------------------- the keyboard core loop (#186)
   //

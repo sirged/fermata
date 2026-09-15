@@ -142,6 +142,14 @@ alone, say — so treating that as "this measure declares its own" drops every
 `<staff-tuning>` of the measure being deleted and leaves a document with no
 tuning at all.
 
+Inside that merge, a `<staff-tuning>` is matched by the `line` it tunes and not
+by its tag: there is one per string, so six of them are six statements and not
+six copies of one. Restating *some* of the tunings and not others is how a
+scordatura or a dropped bottom string is written, and matching by tag alone
+would read a measure that restates two of six as having restated all six — the
+same loss as above, one level down, and a quieter one, because a staff with two
+strings still parses and still renders.
+
 What the editor will **not** do is move a `<barline>`. A repeat or a volta
 ending is a *pair* spanning measures (Rule 15), and it is a child of
 `<measure>`, not of `<attributes>`, so it goes with a deleted measure: delete

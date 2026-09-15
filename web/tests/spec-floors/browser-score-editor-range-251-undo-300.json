@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/score-editor-range-251.spec.js",
+  "count": 1,
+  "reason": "issue #300: a range survives a plain undo - the behaviour this file always had and never asserted, which let a bar edit's range collapse be added to the shared rebuild path and reach undo too."
+}

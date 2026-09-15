@@ -1525,17 +1525,51 @@ export function createDocument(xml) {
     "staff-size",
   ];
 
+  // What makes a child of <attributes> (or of <staff-details>) THE SAME child
+  // as another, for the merge below.
+  //
+  // Tag name, except for <staff-tuning>: there is one per string and the string
+  // it tunes is the `line` attribute, so six of them are six different
+  // statements and not six copies of one. Keying those by tag name says a
+  // measure restating two of the six has restated all six - and the other four
+  // then go with the deleted measure, silently, because a staff with two
+  // strings still parses and still renders. Restating some of the tunings and
+  // not others is not exotic: it is how a scordatura or a dropped bottom
+  // string is written.
+  //
+  // <key>, <time>, <clef> and <staff-lines> need no such key: each is one
+  // complete statement of its own kind, and a measure restating one has
+  // replaced it. (MusicXML can carry several <clef>s or <staff-details>
+  // distinguished by a `number` attribute, for a part written on more than one
+  // staff. That is outside this profile - the model reads ONE tuning map for
+  // one tab staff - so this does not pretend to handle it.)
+  function sameChildKey(el) {
+    if (el.tagName === "staff-tuning") return `staff-tuning@${el.getAttribute("line") ?? ""}`;
+    return el.tagName;
+  }
+
   // Insert `el` into `parent` at its position in `order` - before the first
-  // child that sorts after it, else at the end. A tag that may repeat
-  // (<staff-tuning>) lands after its own earlier siblings, because "sorts
-  // after" is strict.
+  // child that sorts after it, else at the end. Among <staff-tuning> siblings,
+  // which all share one position in `order`, the `line` they tune orders them,
+  // so a migrated tuning lands between the restated ones rather than after all
+  // of them: the profile writes them from the lowest string up, and a merge
+  // should not be the thing that stops that being true.
   function insertInOrder(parent, el, order) {
     const at = order.indexOf(el.tagName);
+    const line = el.tagName === "staff-tuning" ? Number(el.getAttribute("line")) : null;
     let before = null;
     for (const child of parent.children) {
-      if (order.indexOf(child.tagName) > at) {
+      const idx = order.indexOf(child.tagName);
+      if (idx > at) {
         before = child;
         break;
+      }
+      if (idx === at && Number.isFinite(line)) {
+        const theirs = Number(child.getAttribute("line"));
+        if (Number.isFinite(theirs) && theirs > line) {
+          before = child;
+          break;
+        }
       }
     }
     parent.insertBefore(el, before); // insertBefore MOVES an element already in the tree
@@ -1547,23 +1581,19 @@ export function createDocument(xml) {
    * <attributes> needs, so what it declared for the measures after it survives
    * its removal.
    *
-   * "Already have" is by TAG, and for <key>, <time> and <clef> that is the
-   * whole story: each is one complete musical statement, and a measure that
-   * restates one replaces it outright. <staff-details> is different and is
-   * recursed into: it describes the INSTRUMENT (how many lines, how each
-   * string is tuned, a capo), not a musical statement, and a measure may
-   * legitimately restate one part of it - <staff-lines> alone, say. Skipping
-   * it whole on that basis dropped every <staff-tuning> with it, which leaves
-   * a document this file itself refuses to open.
+   * "Already have" is sameChildKey's question, not the tag name's - see it.
+   * <staff-details> is recursed into rather than skipped whole: it describes
+   * the INSTRUMENT (how many lines, how each string is tuned, a capo), not a
+   * musical statement, and a measure may legitimately restate one part of it.
    *
-   * The tags present in `target` are read ONCE, before anything moves, so a
-   * repeating child (every <staff-tuning> of a six-string staff) moves as a
-   * set rather than the first one making the rest look already present.
+   * The keys present in `target` are read ONCE, before anything moves, so a
+   * repeating child moves as a set rather than the first one making the rest
+   * look already present.
    */
   function mergeMissingChildren(target, source, order) {
-    const present = new Set([...target.children].map((c) => c.tagName));
+    const present = new Set([...target.children].map(sameChildKey));
     for (const child of [...source.children]) {
-      if (!present.has(child.tagName)) {
+      if (!present.has(sameChildKey(child))) {
         insertInOrder(target, child, order);
         continue;
       }
@@ -1684,17 +1714,27 @@ export function createDocument(xml) {
     64: "64th-note",
   };
 
-  // `total` divisions said in the beats of a `beatType` meter - "4
-  // quarter-notes", "3.5 eighth-notes". The refusal below counts in these and
-  // not in <divisions>, because divisions is an internal unit: "1920" tells a
-  // reader nothing at all unless they also know this document declares 480 of
-  // them to a quarter note, and the one number they can act on - how many beats
-  // the bar is holding against how many it would need - is exactly what the
-  // division by the beat value gives.
-  function beatsOfMusic(total, beatType) {
-    const unit = divisionsForMeter(1, beatType);
+  // `total` divisions said in the beats of a meter that is `expected` divisions
+  // long and `beats` beats to the bar - "4 quarter-notes", "8 eighth-notes",
+  // "3.5 eighth-notes". The refusal below counts in these and not in
+  // <divisions>, because divisions is an internal unit: "1920" tells a reader
+  // nothing at all unless they also know this document declares 480 of them to
+  // a quarter note, and the one number they can act on - how many beats the bar
+  // is holding against how many it would need - is exactly what dividing by the
+  // beat gives.
+  //
+  // The beat is derived from the meter's OWN measured length (expected/beats)
+  // rather than re-derived from the divisions, so it is exact and it is never
+  // missing: a beat that is a fraction of a division is still a beat. A
+  // document written with <divisions>1</divisions> - ordinary in a third-party
+  // import, where this profile's own emitter always writes 480 - has a
+  // half-division eighth note, and SIX of the meters this editor offers have an
+  // eighth or smaller denominator. Falling back to "N divisions" there was
+  // worse than the message it replaced: it put an internal unit on one side of
+  // a comparison and beats on the other, in one sentence.
+  function beatsOfMusic(total, expected, beats, beatType) {
+    const unit = expected / beats; // > 0: expected and beats are both positive integers
     const name = BEAT_VALUE_NAMES[beatType] ?? `1/${beatType} note`;
-    if (!unit) return `${total} divisions`;
     const count = total / unit;
     // Trimmed rather than fixed: a bar that holds a whole number of beats says
     // "4", one that does not says "3.5" instead of rounding away the half beat
@@ -1746,7 +1786,8 @@ export function createDocument(xml) {
         if (total === expected) continue;
         const where = sums.size > 1 ? `Bar ${num}, voice ${voice},` : `Bar ${num}`;
         return (
-          `${where} holds ${beatsOfMusic(total, beatType)} of music and ${beats}/${beatType} holds ${beats}, ` +
+          `${where} holds ${beatsOfMusic(total, expected, beats, beatType)} of music and ` +
+          `${beats}/${beatType} holds ${beats}, ` +
           `so the time signature can't change here. Change the durations in that bar first.`
         );
       }

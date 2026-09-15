@@ -70,6 +70,13 @@
 //     its bars already had" red.
 //   - report the sums in <divisions> again: the refusal stops saying how many
 //     beats the bar holds -> both refusal tests red.
+//   - key the <staff-details> merge by tag name rather than per <staff-tuning>
+//     line: a bar restating two of six tunings loses the other four -> "a bar
+//     restating some of the tunings" red.
+//   - count the beats from the document's divisions instead of from the
+//     meter's own length: a coarse-divisions document falls back to the
+//     internal unit -> "counts in beats even where a beat is a fraction of a
+//     division" red.
 import { test, expect } from "@playwright/test";
 
 import { EDITOR_MUSICXML, CHORD_MUSICXML, stubEditorApi } from "./fixtures/editor-score.js";
@@ -209,6 +216,28 @@ const EXCERPT_FROM_BAR_40 = EDITOR_MUSICXML.replace('<measure number="1">', '<me
   '<measure number="2">',
   '<measure number="41">',
 );
+
+// Bar 2 restates TWO of the six tunings and nothing else - the bottom string
+// dropped a tone, which is how a scordatura is written: the strings that
+// changed are restated, the rest are not. The shape that catches a merge
+// keying presence by TAG name, which reads "this bar has staff-tunings" as
+// "this bar has declared all of them" and drops the other four.
+const PARTIAL_TUNINGS = EDITOR_MUSICXML.replace(
+  '<measure number="2">',
+  '<measure number="2">\n      <attributes><staff-details>' +
+    '<staff-tuning line="1"><tuning-step>D</tuning-step><tuning-octave>2</tuning-octave></staff-tuning>' +
+    '<staff-tuning line="2"><tuning-step>A</tuning-step><tuning-octave>2</tuning-octave></staff-tuning>' +
+    "</staff-details></attributes>",
+);
+
+// The same two bars written with <divisions>1</divisions> - one division to the
+// quarter note. Legal, ordinary in a third-party import (this project's own
+// emitter always writes 480), and the shape where a beat of an eighth-note
+// meter is half a division.
+const COARSE_DIVISIONS = EDITOR_MUSICXML.replace(
+  "<divisions>480</divisions>",
+  "<divisions>1</divisions>",
+).replaceAll("<duration>480</duration>", "<duration>1</duration>");
 
 // The <measure number=> attributes in document order, as written.
 function measureNumbers(xml) {
@@ -633,6 +662,68 @@ test.describe("bar-scoped editing", () => {
     await expect(timeSelect(page)).toHaveValue("4/4");
     await selectNote(page, 0);
     await expect(timeSelect(page)).toHaveValue("4/4");
+  });
+
+  test("a bar restating some of the tunings keeps the ones it did not restate", async ({ page }) => {
+    // Bar 2 restates two of the six strings. Deleting bar 1 has to carry the
+    // other four forward: a <staff-tuning> is one per STRING, keyed by the line
+    // it tunes, so two of them are not a restatement of all six. Losing four is
+    // silent - a two-string staff still parses and still draws - so nothing
+    // refuses and nothing warns; the only sign is every pitch disagreeing with
+    // the render.
+    await openEditor(page, PARTIAL_TUNINGS, 8);
+    await selectNote(page, 0);
+    await deleteBar(page).click();
+
+    await expect.poll(() => measureCount(page)).toBe(1);
+    expect(await page.evaluate(() => window.__scoreEditorHarness.stringCount())).toBe(6);
+    const after = await modelText(page);
+    expect(after.match(/<staff-tuning line=/g)).toHaveLength(6);
+    // Bar 2's own two win where they were restated - the dropped bottom string
+    // is still dropped - and the four it did not restate came with the bar.
+    expect(after).toContain('<staff-tuning line="1"><tuning-step>D</tuning-step>');
+    expect(after).toContain('<staff-tuning line="3"><tuning-step>D</tuning-step>');
+    expect(after).toContain('<staff-tuning line="6"><tuning-step>E</tuning-step>');
+    // One <staff-details>, and its tunings still run from the lowest string up.
+    expect(after.match(/<staff-details>/g)).toHaveLength(1);
+    expect([...after.matchAll(/<staff-tuning line="(\d)"/g)].map((m) => Number(m[1]))).toEqual([
+      1, 2, 3, 4, 5, 6,
+    ]);
+    // And the model and the render agree about the notes that are left, which
+    // is the thing a lost tuning breaks.
+    await selectNote(page, 0);
+    await expect(wrap(page)).toHaveAttribute("data-editor-divergence-ok", "true");
+    const audit = await page.evaluate(() => window.__scoreEditorHarness.audit());
+    expect(audit.ok, JSON.stringify(audit.divergences)).toBe(true);
+  });
+
+  test("the refusal counts in beats even where a beat is a fraction of a division", async ({ page }) => {
+    // <divisions>1</divisions>: one division to the quarter note, so an eighth
+    // note is half a division and there is no whole number of divisions to
+    // count a 6/8 beat in. The sentence still has to compare like with like -
+    // eight eighth-notes against six - rather than fall back to the internal
+    // unit on one side of the comparison and beats on the other.
+    await openEditor(page, COARSE_DIVISIONS, 8);
+    await selectNote(page, 0);
+    await expect(wrap(page)).toHaveAttribute("data-editor-bar-beats", "4");
+
+    await timeSelect(page).selectOption("6/8");
+    const warn = await wrap(page).getAttribute("data-editor-warn");
+    expect(warn).toContain("Bar 1");
+    expect(warn).toContain("8 eighth-notes");
+    expect(warn).toContain("6/8 holds 6");
+    expect(warn).not.toContain("division");
+
+    // A meter this document's divisions genuinely cannot express is a different
+    // sentence, and that one names divisions on purpose: it is about them.
+    await timeSelect(page).selectOption("7/8");
+    const other = await wrap(page).getAttribute("data-editor-warn");
+    expect(other).toContain("7/8");
+    expect(other).toContain("divisions (1 per quarter note)");
+
+    // Neither wrote anything.
+    await expect(wrap(page)).toHaveAttribute("data-editor-dirty", "false");
+    await expect(wrap(page)).toHaveAttribute("data-editor-bar-beats", "4");
   });
 
   test("a structurally edited document survives the save and re-import", async ({ page }) => {

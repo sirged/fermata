@@ -332,6 +332,42 @@ test.describe("note editor - selecting and editing a run of notes", () => {
     expect(await measureSums(page)).toEqual(sumsBefore);
   });
 
+  // A range is state the UNDO path has to leave alone, and nothing here said so
+  // until a bar edit needed the opposite (#300): a structural edit collapses a
+  // range, because inserting or deleting a bar renumbers the ordinals a range
+  // is a span of. Putting that collapse in the shared "the model was rebuilt,
+  // re-resolve the selection" helper collapsed it on every undo too - a real
+  // regression of this file's behaviour that every test here passed through,
+  // because none of them undid anything with a range still selected.
+  test("a range survives a plain undo, and is still the same run of notes", async ({ page }) => {
+    await openEditor(page, RANGE_MUSICXML, RANGE_NOTE_COUNT);
+
+    await selectNote(page, 3);
+    await page.keyboard.press("Shift+ArrowRight");
+    await page.keyboard.press("Shift+ArrowRight");
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected-ordinals", "3,4,5");
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected-extent", "5");
+
+    await page.keyboard.press("Backspace");
+    await expect.poll(() => page.evaluate(() => window.__scoreEditorHarness.count())).toBe(RANGE_NOTE_COUNT - 3);
+
+    // Undo puts back the very document the range was made in, so the range is
+    // still a range - the same three notes, the same anchor and extent, and the
+    // same three marked heads on the staff.
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect.poll(() => page.evaluate(() => window.__scoreEditorHarness.count())).toBe(RANGE_NOTE_COUNT);
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected", "3");
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected-extent", "5");
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected-count", "3");
+    await expect(wrap(page)).toHaveAttribute("data-editor-selected-ordinals", "3,4,5");
+    await expect(marks(page)).toHaveCount(3);
+
+    // And it is still a WORKING range: the next range operation acts on all
+    // three, not on the anchor alone.
+    await page.keyboard.press("Backspace");
+    await expect.poll(() => page.evaluate(() => window.__scoreEditorHarness.count())).toBe(RANGE_NOTE_COUNT - 3);
+  });
+
   // The premise this bet re-derived: setDurationType had no <time-modification>
   // guard while setDots did, so retyping a tuplet member wrote a bar that no
   // longer summed. On main this test is red - the retype applies.
