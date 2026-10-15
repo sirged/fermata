@@ -65,6 +65,8 @@
   // Lets the spread button ask the effect below for the same re-layout a
   // resize gets, since changing the mode does not resize anything.
   let relayoutHook = null;
+  // The effect's quiet-pane stamp, reachable from requestScroll below.
+  let stampHook = null;
   // A page turn asked for before that page's canvas exists to scroll to.
   //
   // The document's page COUNT is known the moment its metadata parses, which
@@ -234,6 +236,11 @@
     let cancelled = false;
     let observer;
     let resizeObserver;
+    let pointerQuery;
+    function onPointerChange() {
+      evalSpread();
+      relayoutHook?.();
+    }
     let resizeTimer;
     let pdfDoc = null;
     let renderedWidth = 0;
@@ -506,6 +513,7 @@
         if (cancelled) return;
       }
       relayoutHook = relayout;
+      stampHook = stampWhenQuiet;
       // a spread decided before the first render, so pages are drawn at the
       // width they will be shown at and a saved page opens as the left page
       if (score.last_page > 1 && !turnedBeforeRestore) currentPage = Math.min(score.last_page, pageCount);
@@ -560,6 +568,9 @@
         }, 200);
       }
       resizeObserver.observe(container);
+      // a mouse plugged in, or a fold-state change, flips the pointer type
+      pointerQuery = window.matchMedia?.("(pointer: coarse)");
+      pointerQuery?.addEventListener("change", onPointerChange);
 
       // A programmatic turn hands tracking back to the reader when its own
       // arrival is observed. If that never happens - the reader grabbed the
@@ -626,6 +637,8 @@
     return () => {
       cancelled = true;
       relayoutHook = null;
+      stampHook = null;
+      pointerQuery?.removeEventListener("change", onPointerChange);
       container?.removeEventListener("scroll", onScroll);
       for (const kind of READER_INPUT) container?.removeEventListener(kind, onReaderInput);
       clearTimeout(settleTimer);
@@ -816,6 +829,9 @@
       endTravel();
     }
     markUnsettled();
+    // A request that moves nothing fires no scroll event, so nothing else
+    // would ever stamp the pane as at rest again (#317).
+    if (!scrollTravelling) stampHook?.();
   }
 
   // The pair is [left, left + 1], so left tops out one short of the end.
@@ -848,6 +864,9 @@
     if (spreadMode === "off") return false;
     const w = container.clientWidth;
     const h = container.clientHeight;
+    // Auto is for touch devices only: an ordinary desktop window is often
+    // wide enough by size alone, and those readers can still opt in.
+    if (!window.matchMedia?.("(pointer: coarse)").matches) return false;
     return w >= SPREAD_MIN_W && h >= SPREAD_MIN_H && w >= SPREAD_MIN_RATIO * h;
   }
 

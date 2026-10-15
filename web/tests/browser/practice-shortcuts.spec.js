@@ -34,22 +34,6 @@ import { expect, test } from "@playwright/test";
 import { stubMetronomeScore, stubMetronomeScoreRepeat } from "./fixtures/metronome-score.js";
 import { CLEAN_CONFIDENCE, MIN_PDF, SCORE, stubScoreApi, transcriptionResponse } from "./fixtures/transcription-warnings.js";
 
-// This file drives the PDF pane's single-column scroll logic (half-page turns,
-// scroll restore, the scroll-derived indicator). Gig mode gives that pane the
-// whole window, which at this suite's default viewport satisfies the two-page
-// spread's auto rule (#307) and would swap the scroll column for a pair, so
-// the stored spread choice is pinned to "off" here. pdf-spread.spec.js owns
-// the spread behaviour itself.
-test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
-    try {
-      localStorage.setItem("fermata.pdfSpreadMode", "off");
-    } catch {
-      // storage unavailable: the default applies
-    }
-  });
-});
-
 /**
  * A minimal, valid multi-page PDF, built (not hand-copied like
  * transcription-warnings.js's own single-page MIN_PDF) so its byte offsets

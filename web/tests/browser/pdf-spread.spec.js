@@ -79,6 +79,10 @@ async function open(page, score, size) {
   await expect(hud(page)).toBeVisible();
 }
 
+// Auto mode needs a coarse pointer; touch emulation is what makes
+// (pointer: coarse) match in Chromium. The no-touch test below turns it off.
+test.use({ hasTouch: true });
+
 test.describe("two-page spread in the PDF pane", () => {
   let score;
 
@@ -97,8 +101,38 @@ test.describe("two-page spread in the PDF pane", () => {
 
   test("a wide pane shows pages 1 and 2 only, and the HUD reads the pair", async ({ page }) => {
     await open(page, score, { width: 1000, height: 900 });
+    // the dependency the auto rule has, stated rather than assumed
+    expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(true);
     await expect(hud(page)).toHaveText("1-2 / 4");
     expect(await shownPages(page)).toEqual([1, 2]);
+  });
+
+  test.describe("without a touch device", () => {
+    test.use({ hasTouch: false });
+    test("a mouse-driven 1000x900 pane stays a single column and the HUD reads 1 / 4", async ({ page }) => {
+      await open(page, score, { width: 1000, height: 900 });
+      expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(false);
+      await expect(hud(page)).toHaveText("1 / 4");
+      expect(await shownPages(page)).toEqual([1, 2, 3, 4]);
+    });
+  });
+
+  test("a turn that cannot move in a single column still restores data-settle-seq", async ({ page }) => {
+    await open(page, score, { width: 600, height: 900 });
+    const pane = page.locator(".pages");
+    await expect(pane).toHaveAttribute("data-settle-seq", /\d+/, { timeout: 5000 });
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowLeft");
+    await expect(hud(page)).toHaveText("1 / 4");
+    await expect(pane).toHaveAttribute("data-settle-seq", /\d+/, { timeout: 5000 });
+  });
+
+  test("a clamped turn in a spread (ArrowLeft at 1-2) leaves data-settle-seq present", async ({ page }) => {
+    await open(page, score, { width: 1000, height: 900 });
+    const pane = page.locator(".pages");
+    await page.keyboard.press("ArrowLeft");
+    await expect(hud(page)).toHaveText("1-2 / 4");
+    await expect(pane).toHaveAttribute("data-settle-seq", /\d+/, { timeout: 5000 });
   });
 
   test("ArrowRight advances the pair by one page and ArrowLeft returns", async ({ page }) => {
