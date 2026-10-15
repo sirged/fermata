@@ -1,5 +1,5 @@
 {
   "file": "tests/browser/library-basics.spec.js",
   "count": 7,
-  "reason": "issue #308: against the real build and the real backend, search narrows the grid by title and by composer and shows the miss state, a favourite toggled on a card survives a reload and the favourites filter, a tag added and removed on the score page round-trips through the API and the tag filter, two byte-identical uploads form one duplicates group that leaves the view when one is trashed, a PDF card's thumbnail is served as a PNG while a MusicXML card's no-thumbnail behaviour is pinned, and every seeded row is purged so the library is empty afterwards."
+  "reason": "issue #308: against the real build and the real backend, search narrows the grid by title and by composer and shows the miss state, a favourite toggled on a card survives a reload and the favourites filter, a tag added and removed on the score page round-trips through the API and the tag filter, two byte-identical uploads form one duplicates group that leaves the view when one is trashed, a PDF card's thumbnail is served as a PNG while a MusicXML card's no-thumbnail behaviour is pinned, and every seeded score is trashed and purged so the library and trash are empty afterwards (only the tag test's zero-count tag name remains, since no route deletes a tag)."
 }

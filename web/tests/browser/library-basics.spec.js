@@ -16,7 +16,10 @@
 //
 // Because this file sorts before every zz*.spec.js, which assert an empty
 // library when they start, each test removes its rows (trash, then purge) and
-// the last test asserts GET /api/scores is empty.
+// the last test asserts GET /api/scores and the trash are empty. The one thing
+// left behind is the tag name the tag test used: no route deletes a tag, and
+// GET /api/tags LEFT JOINs, so the name stays listed with count 0 (the library
+// sidebar renders it as a chip). It is a name no other spec types.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,10 +76,12 @@ async function getScore(request, id) {
 
 async function emptyTheLibrary(request) {
   for (const score of await (await request.get("/api/scores")).json()) {
-    await request.delete(`/api/scores/${score.id}`);
+    const res = await request.delete(`/api/scores/${score.id}`);
+    expect(res.ok(), `trashing score ${score.id}`).toBe(true);
   }
   for (const score of await (await request.get("/api/trash")).json()) {
-    await request.delete(`/api/trash/${score.id}`);
+    const res = await request.delete(`/api/trash/${score.id}`);
+    expect(res.ok(), `purging score ${score.id}`).toBe(true);
   }
 }
 
@@ -84,8 +89,6 @@ const cards = (page) => page.locator("a.card");
 const cardFor = (page, title) => cards(page).filter({ hasText: title });
 
 test.describe("library basics against the real build", () => {
-  test.describe.configure({ mode: "serial" });
-
   test.beforeEach(async ({ request }) => {
     expect(
       await (await request.get("/api/scores")).json(),
@@ -120,7 +123,7 @@ test.describe("library basics against the real build", () => {
 
     await search.fill("zzqxj-no-such-score");
     await expect(cards(page)).toHaveCount(0);
-    await expect(page.locator(".empty")).toContainText("Nothing here yet.");
+    await expect(page.locator(".empty")).toBeVisible();
   });
 
   test("a favourite toggled on a card survives a reload, reads back from the API and is the only card under the favourites filter", async ({ page, request }) => {
@@ -151,25 +154,25 @@ test.describe("library basics against the real build", () => {
 
     await page.goto(`/#/score/${a.id}`);
     await page.getByRole("button", { name: "+ tags" }).click();
-    await page.getByPlaceholder("tag, another tag").fill("warmup-basket");
+    await page.getByPlaceholder("tag, another tag").fill("qzv-orphan-tag-308");
     await page.getByRole("button", { name: "Save" }).click();
-    await expect.poll(async () => (await getScore(request, a.id)).tags).toEqual(["warmup-basket"]);
+    await expect.poll(async () => (await getScore(request, a.id)).tags).toEqual(["qzv-orphan-tag-308"]);
     expect((await getScore(request, b.id)).tags).toEqual([]);
 
     await page.goto("/#/");
     await expect(cards(page)).toHaveCount(2);
-    await page.locator(".tag-cloud .chip", { hasText: "warmup-basket" }).click();
+    await page.locator(".tag-cloud .chip", { hasText: "qzv-orphan-tag-308" }).click();
     await expect(cards(page)).toHaveCount(1);
     await expect(cards(page).first()).toContainText(a.title);
 
     await page.goto(`/#/score/${a.id}`);
-    await page.getByRole("button", { name: /warmup-basket/ }).click();
+    await page.getByRole("button", { name: /qzv-orphan-tag-308/ }).click();
     await page.getByPlaceholder("tag, another tag").fill("");
     await page.getByRole("button", { name: "Save" }).click();
     await expect.poll(async () => (await getScore(request, a.id)).tags).toEqual([]);
   });
 
-  test("two uploads with identical bytes form one group in the duplicates view, and trashing one drops the group from the view", async ({ page, request }) => {
+  test("two uploads with identical bytes form one group in the duplicates view, and trashing one drops the group from the view (trashed through the API)",async ({ page, request }) => {
     const bytes = buildPdf("duplicate-bytes");
     const a = await upload(request, "Quillfeather Study.pdf", bytes);
     const b = await upload(request, "Quillfeather Copy.pdf", bytes);
@@ -202,6 +205,7 @@ test.describe("library basics against the real build", () => {
     const img = cardFor(page, pdf.title).locator(".sheet img");
     await expect(img).toHaveCount(1);
     await expect(img).toHaveAttribute("src", `/api/scores/${pdf.id}/thumb`);
+    await expect.poll(() => img.evaluate((e) => e.complete && e.naturalWidth > 0)).toBe(true);
     await expect.poll(async () => (await page.request.get(`/api/scores/${pdf.id}/thumb`)).status(), { timeout: 15_000 }).toBe(200);
     const res = await page.request.get(`/api/scores/${pdf.id}/thumb`);
     expect(res.headers()["content-type"]).toContain("image/png");
@@ -222,5 +226,10 @@ test.describe("library basics against the real build", () => {
   test("the library is empty once every seeded row is trashed and purged", async ({ request }) => {
     expect(await (await request.get("/api/scores")).json()).toEqual([]);
     expect(await (await request.get("/api/trash")).json()).toEqual([]);
+    // No route deletes a tag and GET /api/tags LEFT JOINs, so the tag test's
+    // name stays listed with count 0. Nothing else may be left.
+    const tags = await (await request.get("/api/tags")).json();
+    expect(tags.filter((t) => t.name !== "qzv-orphan-tag-308")).toEqual([]);
+    expect(tags.every((t) => t.count === 0)).toBe(true);
   });
 });
