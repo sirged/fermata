@@ -51,7 +51,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 
-import fitz
+import pymupdf as fitz
 import pytest
 
 from fermata import glyph_rhythm, musicxml, tabextract

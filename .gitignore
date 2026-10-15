@@ -1,5 +1,7 @@
 # personal sheet music library and runtime data — never committed
 library/
+# the owner's pre-upgrade copies of config/
+config-backup-*/
 config/
 *.pdf
 *.zip
