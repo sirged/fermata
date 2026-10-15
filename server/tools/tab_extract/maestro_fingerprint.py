@@ -36,7 +36,7 @@ import io
 import sys
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 from fontTools.ttLib import TTFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))

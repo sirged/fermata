@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf as fitz
 
 from .config import CACHE_DIR
 

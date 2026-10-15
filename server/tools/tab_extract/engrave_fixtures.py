@@ -1379,7 +1379,7 @@ def engrave(musescore):
 
 def synthesise_fake_music_font():
     """Draw a plausible-looking staff whose only music credential is a lie."""
-    import fitz
+    import pymupdf as fitz
 
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
@@ -1434,7 +1434,7 @@ def unmap_a_meter_digit():
     decoder has no category for - see UNMAPPED_DIGIT_FROM above."""
     import re
 
-    import fitz
+    import pymupdf as fitz
 
     src = FIXTURE_DIR / f"{UNMAPPED_DIGIT_FROM}.pdf"
     doc = fitz.open(src)
@@ -1482,7 +1482,7 @@ def bracket_some_fret_numbers():
     harmonics fails, rather than the two quietly disagreeing about which
     number is where.
     """
-    import fitz
+    import pymupdf as fitz
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from fermata import tabextract
@@ -1562,7 +1562,7 @@ def bracket_some_fret_numbers():
 
 def rasterise():
     """Flatten one engraved fixture to a page-sized image in a PDF wrapper."""
-    import fitz
+    import pymupdf as fitz
 
     src = fitz.open(FIXTURE_DIR / f"{RASTER_FROM}.pdf")
     out = fitz.open()

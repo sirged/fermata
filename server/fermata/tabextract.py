@@ -110,7 +110,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
 
-import fitz  # PyMuPDF
+import pymupdf as fitz
 
 from . import glyph_rhythm as glyph
 from . import musicxml as mxl
