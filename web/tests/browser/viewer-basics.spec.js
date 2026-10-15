@@ -16,6 +16,8 @@ import { expect, test } from "@playwright/test";
 const SCORE_NAME = "viewer-basics-fixture.pdf";
 const OWN_PATH = `Uploads/${SCORE_NAME}`;
 const PAGES = 4;
+// The computed filter of a canvas while the container is inverted.
+const INVERTED = "invert(0.92) hue-rotate(180deg)";
 
 // A minimal valid multi-page PDF, built so the xref offsets are right for any
 // page count.
@@ -85,15 +87,36 @@ async function atRest(page) {
   );
 }
 
+// Whether the page-n canvas intersects the .pages viewport: the HUD alone can
+// say "3 / 4" while the pane never moved.
+async function expectInView(page, n) {
+  await expect
+    .poll(() =>
+      page.evaluate((num) => {
+        const box = document.querySelector(".pages").getBoundingClientRect();
+        const r = document.querySelector(`canvas.pdf-page[data-page="${num}"]`).getBoundingClientRect();
+        return r.bottom > box.top && r.top < box.bottom;
+      }, n),
+    )
+    .toBe(true);
+}
+
+const pageOf = (text) => Number(text.split(" / ")[0]);
+
+async function expectPage(page, text) {
+  await expect(hud(page)).toHaveText(text);
+  await expectInView(page, pageOf(text));
+}
+
 async function pressAndExpect(page, key, text) {
   await page.keyboard.press(key);
-  await expect(hud(page)).toHaveText(text);
+  await expectPage(page, text);
 }
 
 async function pressAndExpectUnchanged(page, key, text) {
   await page.keyboard.press(key);
   await atRest(page);
-  await expect(hud(page)).toHaveText(text);
+  await expectPage(page, text);
 }
 
 let score;
@@ -128,7 +151,7 @@ test.describe("the PDF reader basics", () => {
     const filter = () => canvas(page, 1).evaluate((el) => getComputedStyle(el).filter);
     // The reader opens inverted: darkMode starts true in the component.
     await expect(pages(page)).toHaveClass(/\bdark\b/);
-    await expect.poll(filter).not.toBe("none");
+    await expect.poll(filter).toBe(INVERTED);
 
     await invertButton(page).click();
     await expect(pages(page)).not.toHaveClass(/\bdark\b/);
@@ -136,7 +159,7 @@ test.describe("the PDF reader basics", () => {
 
     await invertButton(page).click();
     await expect(pages(page)).toHaveClass(/\bdark\b/);
-    await expect.poll(filter).not.toBe("none");
+    await expect.poll(filter).toBe(INVERTED);
   });
 
   test("ArrowRight, PageDown and Space each turn forward one page and stop at the last", async ({ page }) => {
@@ -156,16 +179,16 @@ test.describe("the PDF reader basics", () => {
 
   test("the Next page and Previous page buttons move the HUD like the keys do", async ({ page }) => {
     await nextButton(page).click();
-    await expect(hud(page)).toHaveText(`2 / ${PAGES}`);
+    await expectPage(page, `2 / ${PAGES}`);
     await nextButton(page).click();
-    await expect(hud(page)).toHaveText(`3 / ${PAGES}`);
+    await expectPage(page, `3 / ${PAGES}`);
     await prevButton(page).click();
-    await expect(hud(page)).toHaveText(`2 / ${PAGES}`);
+    await expectPage(page, `2 / ${PAGES}`);
     await prevButton(page).click();
-    await expect(hud(page)).toHaveText(`1 / ${PAGES}`);
+    await expectPage(page, `1 / ${PAGES}`);
     await prevButton(page).click();
     await atRest(page);
-    await expect(hud(page)).toHaveText(`1 / ${PAGES}`);
+    await expectPage(page, `1 / ${PAGES}`);
   });
 
   test("the page turned to is stored after the debounce and restored on reopening", async ({ page, request }) => {
@@ -182,16 +205,7 @@ test.describe("the PDF reader basics", () => {
     await expect(pages(page)).toHaveCount(0);
     await page.goto(`/#/score/${score.id}`);
     await expect(canvas(page, 3)).toHaveCount(1, { timeout: 30_000 });
-    await expect(hud(page)).toHaveText(`3 / ${PAGES}`);
-    await expect
-      .poll(() =>
-        page.evaluate(() => {
-          const box = document.querySelector(".pages").getBoundingClientRect();
-          const r = document.querySelector('canvas.pdf-page[data-page="3"]').getBoundingClientRect();
-          return r.bottom > box.top && r.top < box.bottom;
-        }),
-      )
-      .toBe(true);
+    await expectPage(page, `3 / ${PAGES}`);
   });
 
   test("keys do not turn the page while a text field has focus", async ({ page }) => {
