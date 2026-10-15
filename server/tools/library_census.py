@@ -1,10 +1,10 @@
 """Measure what transcription actually yields over a library of PDFs.
 
 Usage:
-    python library_census.py <library-dir> [--csv PATH]
+    py -3.13 library_census.py <library-dir> [--csv PATH]
 
-For every *.pdf under the directory (folders named .fermata* or holding the
-word "trash" are skipped, case-insensitively) this runs
+For every *.pdf under the directory (only a top-level
+.fermata-trash folder is skipped, as the scanner does) this runs
 fermata.tabextract.analyze and, when the PDF has a readable tab staff,
 fermata.tabextract.extract. It prints a summary table (PDFs with a readable
 tab staff, rhythm confidence, scores with every bar adding up, bars that do
@@ -22,25 +22,42 @@ import argparse
 import csv
 import logging
 import os
+import subprocess
 import sys
 import time
 import warnings
 from pathlib import Path
 
-warnings.filterwarnings("ignore")
-logging.disable(logging.CRITICAL)  # fontTools logs through logging, not warnings
+tabextract = None  # imported by _load(), so importing this module has no side effects
 
-import pymupdf  # noqa: E402
 
-# PyMuPDF prints its own notices (the fitz deprecation, odd timestamps) to
-# stderr through its message hook, not through the warnings module.
-pymupdf.set_messages(path=os.devnull)
-pymupdf.TOOLS.mupdf_display_errors(False)
-pymupdf.TOOLS.mupdf_display_warnings(False)
+def _load():
+    """Silence library noise, then import the decoder."""
+    global tabextract
+    warnings.filterwarnings("ignore")
+    logging.disable(logging.CRITICAL)  # fontTools logs through logging, not warnings
+    import pymupdf
 
-from fermata import tabextract  # noqa: E402
+    # PyMuPDF prints its own notices (the fitz deprecation, odd timestamps) to
+    # stderr through its message hook, not through the warnings module.
+    pymupdf.set_messages(path=os.devnull)
+    pymupdf.TOOLS.mupdf_display_errors(False)
+    pymupdf.TOOLS.mupdf_display_warnings(False)
+    import fermata
+    from fermata import tabextract as te
 
-warnings.filterwarnings("ignore")
+    warnings.filterwarnings("ignore")
+    tabextract = te
+    return fermata
+
+
+def _commit_of(path: Path) -> str:
+    try:
+        out = subprocess.run(["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=10)
+        return out.stdout.strip() or "unknown" if out.returncode == 0 else "unknown"
+    except Exception:
+        return "unknown"
 
 FIELDS = [
     "file", "status", "bars", "bars_measured", "bars_defective",
@@ -58,8 +75,10 @@ def find_pdfs(root: Path):
     for p in sorted(root.rglob("*")):
         if not p.is_file() or p.suffix.lower() != ".pdf":
             continue
-        parts = [q.lower() for q in p.relative_to(root).parts[:-1]]
-        if any(q.startswith(".fermata") or "trash" in q for q in parts):
+        # Match the scanner: only a top-level folder named exactly
+        # .fermata-trash is skipped; any other folder is counted.
+        parts = p.relative_to(root).parts
+        if len(parts) > 1 and parts[0] == ".fermata-trash":
             continue
         yield p
 
@@ -98,6 +117,11 @@ def main(argv=None) -> int:
     if not args.library.is_dir():
         ap.error(f"not a directory: {args.library}")
 
+    fermata = _load()
+    mod_dir = Path(fermata.__file__).resolve().parent
+    print(f"fermata module: {fermata.__file__}")
+    print(f"commit: {_commit_of(mod_dir)}")
+    print()
     start = time.monotonic()
     rows, errors = [], 0
     for path in find_pdfs(args.library):
@@ -125,7 +149,8 @@ def main(argv=None) -> int:
     tuned = sum(r["tuning_source"] != tabextract.TUNING_ASSUMED_STANDARD
                 for r in ex)
 
-    extra = [f"{n_notation} notation-only", f"{n_raster} raster scan"]
+    extra = [f"{n_notation} notation-only",
+             f"{n_raster} raster scan{'' if n_raster == 1 else 's'}"]
     if n_other:
         extra.append(f"{n_other} not extractable")
     if errors:
@@ -138,8 +163,9 @@ def main(argv=None) -> int:
           f"low {conf['low']} |")
     print(f"| Scores with every bar adding up | {clean} of {len(ex)} |")
     print(f"| Bars that do not add up | {defective:,} of {measured:,} "
-          f"({over:,} overfull, {short:,} short of which {padded:,} are "
-          f"padded voices, {unread:,} unread) |")
+          f"({over:,} overfull and {short:,} short; a bar can be both. "
+          f"{padded:,} of the short bars had a voice padded with silence.) |")
+    print(f"| Bars with nothing readable, emitted as rests | {unread:,} |")
     print(f"| Tuning read from the score | {tuned} of {len(ex)}; the other "
           f"{len(ex) - tuned} assume standard |")
     print()

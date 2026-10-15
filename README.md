@@ -272,7 +272,8 @@ Measured 2026-10-14 over a 297-PDF personal library, on commit `eebca87`:
 | PDFs with a readable tab staff | 293 of 297 (3 notation-only, 1 raster scan) |
 | Rhythm confidence | high 6, medium 44, low 243 |
 | Scores with every bar adding up | 6 of 293 |
-| Bars that do not add up | 5,259 of 10,762 (1,535 overfull, 4,152 short of which 3,605 are padded voices, 20 unread) |
+| Bars that do not add up | 5,259 of 10,762 (1,535 overfull and 4,152 short; a bar can be both. 3,605 of the short bars had a voice padded with silence.) |
+| Bars with nothing readable, emitted as rests | 20 |
 | Tuning read from the score | 100 of 293; the other 193 assume standard |
 
 These figures come from `server/tools/library_census.py` and are re-derived by running it over a library, not maintained by hand.
