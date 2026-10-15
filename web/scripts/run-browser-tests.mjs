@@ -42,6 +42,36 @@ import { checkSpecFloors } from "../tests/spec-floor-guard.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.dirname(here);
 
+// The suite serves web/dist (playwright.config.js), not web/src, so a dist
+// older than the source it was built from means the run tests old code
+// without saying so. Checked before anything else runs. A missing dist is
+// left to playwright.config.js, which already throws for it.
+function newestSourceFile(dir) {
+  let best = null;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    const found = entry.isDirectory() ? newestSourceFile(full) : { file: full, mtimeMs: fs.statSync(full).mtimeMs };
+    if (found && (best == null || found.mtimeMs > best.mtimeMs)) best = found;
+  }
+  return best;
+}
+const distIndex = path.join(webRoot, "dist", "index.html");
+if (fs.existsSync(distIndex)) {
+  const newest = newestSourceFile(path.join(webRoot, "src"));
+  const distMs = fs.statSync(distIndex).mtimeMs;
+  if (newest && newest.mtimeMs > distMs) {
+    const message =
+      `run-browser-tests: ${path.relative(webRoot, newest.file)} (${new Date(newest.mtimeMs).toISOString()}) is newer than ` +
+      `dist/index.html (${new Date(distMs).toISOString()}); the suite serves web/dist, so this run would test old code.`;
+    if (process.env.PLAYWRIGHT_ALLOW_STALE_DIST === "1") {
+      console.error(`${message} Continuing because PLAYWRIGHT_ALLOW_STALE_DIST=1.`);
+    } else {
+      console.error(`${message} Run \`npm run build\` first.`);
+      process.exit(1);
+    }
+  }
+}
+
 const passedArgs = process.argv.slice(2);
 const filteredArgs = [];
 for (let i = 0; i < passedArgs.length; i++) {
