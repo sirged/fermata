@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/pdf-spread.spec.js",
+  "count": 18,
+  "reason": "issue #307: against the real upload endpoint and the real build, a PDF opens as a two-page spread on a touch device in a wide pane (1000x900 and the 830x690 foldable inner screen) and stays a single column for a mouse-driven pane, a pane under 480 tall (1000x640) or one narrower than 0.95 of its height (780x1100); turns move the pair by one page, clamp at the last pair, and save the left page as last_page; a turn pressed before the document loads is honoured and saved and beats a stored last_page; opening a score stored on its last page shows the clamped pair without writing it back, and a clamped turn sends no save; narrowing to a single column keeps the left page with every canvas unhidden; the button cycles auto/on/off with the choice surviving a reload; the half-page button is dropped in gig mode only while a spread shows; and a turn that cannot move still restores data-settle-seq."
+}

@@ -37,6 +37,36 @@
   let currentPage = $state(1);
   let halfPage = $state(false);
   let saveTimer;
+
+  // Two-page spread (#307): for a pane wide enough to hold two pages side by
+  // side (an unfolded phone, a tablet on a stand). "auto" decides from the
+  // pane's own size on every resize; "on"/"off" are the reader's override and
+  // are remembered between visits.
+  const SPREAD_KEY = "fermata.pdfSpreadMode";
+  const SPREAD_MIN_W = 760;
+  const SPREAD_MIN_H = 480;
+  const SPREAD_MIN_RATIO = 0.95;
+  // .pages padding and the gap between the two pages, in the spread layout
+  const SPREAD_PAD_X = 32;
+  const SPREAD_PAD_Y = 88;
+  const SPREAD_GAP = 18;
+  function loadSpreadMode() {
+    try {
+      const v = localStorage.getItem(SPREAD_KEY);
+      return v === "on" || v === "off" ? v : "auto";
+    } catch {
+      return "auto";
+    }
+  }
+  let spreadMode = $state(loadSpreadMode());
+  let spreadActive = $state(false);
+  // The page on the left of the pair while a spread is showing.
+  let left = $state(1);
+  // Lets the spread button ask the effect below for the same re-layout a
+  // resize gets, since changing the mode does not resize anything.
+  let relayoutHook = null;
+  // The effect's quiet-pane stamp, reachable from requestScroll below.
+  let stampHook = null;
   // A page turn asked for before that page's canvas exists to scroll to.
   //
   // The document's page COUNT is known the moment its metadata parses, which
@@ -206,6 +236,11 @@
     let cancelled = false;
     let observer;
     let resizeObserver;
+    let pointerQuery;
+    function onPointerChange() {
+      evalSpread();
+      relayoutHook?.();
+    }
     let resizeTimer;
     let pdfDoc = null;
     let renderedWidth = 0;
@@ -240,7 +275,16 @@
       }, 200);
     }
 
+    // page height / page width of the first page, read before the first
+    // render so the spread width can be chosen to fit the pane's height
+    let pageAspect = 1.4;
+
     function computeWidth() {
+      if (spreadActive) {
+        const byWidth = (container.clientWidth - SPREAD_PAD_X - SPREAD_GAP) / 2;
+        const byHeight = (container.clientHeight - SPREAD_PAD_Y) / pageAspect;
+        return Math.max(100, Math.min(byWidth, byHeight, 1100));
+      }
       return Math.min(container.clientWidth - 32, 1100);
     }
 
@@ -264,6 +308,7 @@
         canvas.className = "pdf-page";
         canvas.dataset.page = n;
         container.appendChild(canvas);
+        applyVisibility();
         await renderPageInto(page, canvas, width, dpr);
         // A turn pressed before this page existed. Clamped to the last page
         // here rather than in goto(), because goto() may well have run before
@@ -273,9 +318,13 @@
         if (pendingPage !== null && Math.min(pendingPage, pdfDoc.numPages) === n) {
           pendingPage = null;
           turnedBeforeRestore = true;
-          intendedPage = n;
-          setPage(n);
-          canvas.scrollIntoView({ block: "start" });
+          if (spreadActive) {
+            showLeft(n);
+          } else {
+            intendedPage = n;
+            setPage(n);
+            canvas.scrollIntoView({ block: "start" });
+          }
         }
       }
     }
@@ -349,7 +398,8 @@
       // now is rather than let it drift to an arbitrary pixel offset - the
       // same fraction down the same page, not merely that page's top
       const restored = offsetOf(target);
-      if (restored !== null) {
+      // no scroll to restore while a spread is showing
+      if (restored !== null && !spreadActive) {
         container.scrollTop = restored;
         restoredAtSeq = scrollRequestSeq;
         // Assigning scrollTop ends any smooth scroll that was still running,
@@ -397,7 +447,7 @@
           // down to 0.11 - and the HUD read "2 / 2" for as long as the score
           // stayed open. Re-deriving it once, here, is what closes that:
           // there is no crossing left to wait for.
-          const seen = visiblePage();
+          const seen = spreadActive ? null : visiblePage();
           if (seen !== null) {
             // Deliberately NOT deferred to a turn still marked in flight,
             // the way the observer's own crossings are (see trackVisible).
@@ -457,6 +507,20 @@
       pdfDoc = await pdfjs.getDocument(api.fileUrl(score.id)).promise;
       if (cancelled) return;
       pageCount = pdfDoc.numPages;
+      {
+        const first = (await pdfDoc.getPage(1)).getViewport({ scale: 1 });
+        pageAspect = first.height / first.width;
+        if (cancelled) return;
+      }
+      relayoutHook = relayout;
+      stampHook = stampWhenQuiet;
+      // a spread decided before the first render, so pages are drawn at the
+      // width they will be shown at and a saved page opens as the left page
+      // (a turn pressed before this point waits in pendingPage, and wins)
+      if (score.last_page > 1 && !turnedBeforeRestore && pendingPage === null) {
+        currentPage = Math.min(score.last_page, pageCount);
+      }
+      evalSpread();
 
       await renderAllPages(computeWidth());
       if (cancelled) return;
@@ -480,7 +544,7 @@
       );
       container.querySelectorAll(".pdf-page").forEach((c) => observer.observe(c));
 
-      if (score.last_page > 1 && !turnedBeforeRestore) {
+      if (score.last_page > 1 && !turnedBeforeRestore && !spreadActive) {
         container
           .querySelector(`[data-page="${score.last_page}"]`)
           ?.scrollIntoView({ block: "start" });
@@ -490,6 +554,11 @@
       // scroller, and pages need to re-render at the new width or they sit
       // at the old windowed size with wide margins
       resizeObserver = new ResizeObserver(() => {
+        // fold/unfold is a resize, and is what flips auto mode
+        evalSpread();
+        relayout();
+      });
+      function relayout() {
         // Said here rather than when the debounce fires: the pane is not idle
         // for those 200ms, it is waiting, and a turn that goes quiet inside
         // them must not be mistaken for the pane having finished.
@@ -500,8 +569,11 @@
           pendingWidth = computeWidth();
           if (!rerendering) flushResize();
         }, 200);
-      });
+      }
       resizeObserver.observe(container);
+      // a mouse plugged in, or a fold-state change, flips the pointer type
+      pointerQuery = window.matchMedia?.("(pointer: coarse)");
+      pointerQuery?.addEventListener("change", onPointerChange);
 
       // A programmatic turn hands tracking back to the reader when its own
       // arrival is observed. If that never happens - the reader grabbed the
@@ -567,6 +639,9 @@
 
     return () => {
       cancelled = true;
+      relayoutHook = null;
+      stampHook = null;
+      pointerQuery?.removeEventListener("change", onPointerChange);
       container?.removeEventListener("scroll", onScroll);
       for (const kind of READER_INPUT) container?.removeEventListener(kind, onReaderInput);
       clearTimeout(settleTimer);
@@ -643,6 +718,8 @@
   // one other place that has to reason about it - the re-derive above, which
   // deliberately does NOT follow it, and says why.
   function trackVisible(seen) {
+    // No scroll to observe in a spread; the left page is the position.
+    if (spreadActive) return;
     // A turn this component performed is already recorded (see intendedPage).
     // Until that scroll settles, the frames it passes through are not the
     // reader going anywhere - taking them would drag the indicator back onto
@@ -755,6 +832,93 @@
       endTravel();
     }
     markUnsettled();
+    // A request that moves nothing fires no scroll event, so nothing else
+    // would ever stamp the pane as at rest again (#317).
+    if (!scrollTravelling) stampHook?.();
+  }
+
+  // The pair is [left, left + 1], so left tops out one short of the end.
+  function showLeft(n) {
+    if (pageCount < 2) return;
+    const next = Math.max(1, Math.min(pageCount - 1, n));
+    // a turn that cannot move (clamped at either end) saves nothing
+    if (next === left && next === currentPage) return;
+    left = next;
+    setPage(left);
+  }
+
+  // Shows exactly the pair's two canvases and hides the rest with CSS, so the
+  // canvases stay rendered and switching is cheap.
+  function applyVisibility() {
+    if (!container) return;
+    container.classList.toggle("spread", spreadActive);
+    for (const canvas of container.querySelectorAll(".pdf-page")) {
+      const n = Number(canvas.dataset.page);
+      canvas.style.display = spreadActive && n !== left && n !== left + 1 ? "none" : "";
+    }
+  }
+  $effect(() => {
+    spreadActive;
+    left;
+    pageCount;
+    applyVisibility();
+  });
+
+  function wantSpread() {
+    if (pageCount < 2 || !container) return false;
+    if (spreadMode === "on") return true;
+    if (spreadMode === "off") return false;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    // Auto is for touch devices only: an ordinary desktop window is often
+    // wide enough by size alone, and those readers can still opt in.
+    if (!window.matchMedia?.("(pointer: coarse)").matches) return false;
+    return w >= SPREAD_MIN_W && h >= SPREAD_MIN_H && w >= SPREAD_MIN_RATIO * h;
+  }
+
+  // `explicit` is true only for the reader's own toggle. Clamping the page for
+  // display (a saved last page of 4 in a 4-page score shows as 3-4) is not
+  // something the reader did, so it is never written back on its own.
+  function evalSpread(explicit = false) {
+    const want = wantSpread();
+    if (want === spreadActive) return;
+    if (want) {
+      spreadActive = true;
+      if (pendingPage !== null) {
+        // A turn pressed before the page count was known (#168): it is the
+        // newest thing the reader asked for, so it outranks the saved page
+        // (#229) and is saved itself, exactly as the single column does.
+        const target = Math.max(1, Math.min(pageCount - 1, pendingPage));
+        pendingPage = null;
+        turnedBeforeRestore = true;
+        left = target;
+        currentPage = target;
+        setPage(target);
+      } else {
+        const target = Math.max(1, Math.min(pageCount - 1, currentPage));
+        left = target;
+        const changed = target !== currentPage;
+        currentPage = target;
+        if (explicit && changed) setPage(target);
+      }
+      applyVisibility();
+    } else {
+      spreadActive = false;
+      applyVisibility();
+      // keep the page being read on screen in the single column
+      goto(currentPage);
+    }
+  }
+
+  function cycleSpread() {
+    spreadMode = spreadMode === "auto" ? "on" : spreadMode === "on" ? "off" : "auto";
+    try {
+      localStorage.setItem(SPREAD_KEY, spreadMode);
+    } catch {
+      // storage may be missing or blocked; the choice just won't be kept
+    }
+    evalSpread(true);
+    relayoutHook?.();
   }
 
   function goto(page) {
@@ -763,6 +927,10 @@
     // where the reader already is - so only clamp once there is a count to
     // clamp to; renderAllPages() does the rest (see pendingPage above).
     const target = pageCount ? Math.max(1, Math.min(pageCount, page)) : Math.max(1, page);
+    if (spreadActive) {
+      showLeft(target);
+      return;
+    }
     const canvas = container.querySelector(`[data-page="${target}"]`);
     if (canvas) {
       pendingPage = null;
@@ -781,6 +949,11 @@
   }
 
   function turn(dir) {
+    if (spreadActive) {
+      // the right page becomes the left page; a new one appears on the right
+      showLeft(left + dir);
+      return;
+    }
     // The half-page step needs the current page's rendered height to measure
     // against; before that canvas exists there is nothing to measure and
     // nothing to scroll, so this falls through to goto() - which can at
@@ -856,10 +1029,18 @@
   ></div>
   <div class="hud">
     <button onclick={() => turn(-1)} title="Previous page">‹</button>
-    <span>{currentPage} / {pageCount || "…"}</span>
+    <span>{spreadActive ? `${left}-${left + 1}` : currentPage} / {pageCount || "…"}</span>
     <button onclick={() => turn(1)} title="Next page">›</button>
     <button class:on={darkMode} onclick={() => (darkMode = !darkMode)} title="Invert for practice in the dark">
       ◐
+    </button>
+    <button
+      class:on={spreadActive}
+      data-spread-mode={spreadMode}
+      onclick={cycleSpread}
+      title="Two-page spread"
+    >
+      ▯▯ <small>{spreadMode}</small>
     </button>
     {#if gigMode}
       {#if practiceLabel}
@@ -867,7 +1048,9 @@
           ● {practiceLabel}
         </button>
       {/if}
-      <button class:on={halfPage} onclick={() => (halfPage = !halfPage)} title="Half-page turns">½</button>
+      {#if !spreadActive}
+        <button class:on={halfPage} onclick={() => (halfPage = !halfPage)} title="Half-page turns">½</button>
+      {/if}
       <button onclick={onToggleGig} title="Exit gig mode (Esc)">⤢</button>
     {/if}
   </div>
@@ -889,6 +1072,15 @@
     align-items: center;
     gap: 18px;
     padding: 24px 16px 80px;
+  }
+
+  .pages:global(.spread) {
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+    gap: 18px;
+    padding: 16px 16px 72px;
   }
 
   .pages :global(.pdf-page) {
