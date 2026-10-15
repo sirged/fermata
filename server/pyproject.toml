@@ -11,7 +11,7 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "pymupdf>=1.24",
+    "pymupdf>=1.24.3",
     "python-multipart>=0.0.9",
     "fonttools>=4.50",
     # A schema-aware XML parser - the standard library has none. Two things

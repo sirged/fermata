@@ -57,7 +57,11 @@ function newestSourceFile(dir) {
 }
 const distIndex = path.join(webRoot, "dist", "index.html");
 if (fs.existsSync(distIndex)) {
-  const newest = newestSourceFile(path.join(webRoot, "src"));
+  // web/index.html is Vite's entry page and lives outside src.
+  const entryPage = path.join(webRoot, "index.html");
+  const candidates = [newestSourceFile(path.join(webRoot, "src"))];
+  if (fs.existsSync(entryPage)) candidates.push({ file: entryPage, mtimeMs: fs.statSync(entryPage).mtimeMs });
+  const newest = candidates.filter(Boolean).reduce((a, b) => (b.mtimeMs > a.mtimeMs ? b : a), { mtimeMs: -Infinity });
   const distMs = fs.statSync(distIndex).mtimeMs;
   if (newest && newest.mtimeMs > distMs) {
     const message =
