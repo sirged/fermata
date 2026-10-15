@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/pdf-spread.spec.js",
+  "count": 8,
+  "reason": "issue #307: against the real upload endpoint and the real build, a 4-page PDF opens as a two-page spread in a 1000x900 pane (pages 1 and 2 laid out, 3 and 4 not, HUD 1-2 / 4), turns by one page with the arrow keys and clamps at 3-4, saves the left page as last_page, falls back to a single column with every canvas unhidden when the pane narrows, cycles its button auto/on/off with the choice surviving a reload, and drops the half-page button in gig mode only while a spread shows."
+}
