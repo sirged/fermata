@@ -817,7 +817,12 @@ guess. Where one voice of a bar does have to be filled out with silence — a
 voice that enters halfway through the bar has to start halfway through the bar,
 or its notes play early — the transcription names the bars that happened in,
 counts that silence as missing rather than as read, and marks it in the
-MusicXML so another program can tell it from a rest that was printed.
+MusicXML so another program can tell it from a rest that was printed. If you
+are deciding whether to deploy for this, the README's
+["What transcription actually yields"](../README.md#what-transcription-actually-yields)
+table has the measured numbers over a real library: most scores transcribe, few
+have every bar adding up. `server/tools/library_census.py` re-derives that
+table for your own library.
 
 **A harmonic is marked but not sounded as one.** A note the engraving marks
 as a harmonic — a diamond notehead, or a fret number in guillemets — is
