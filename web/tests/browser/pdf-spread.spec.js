@@ -47,9 +47,9 @@ async function emptyTheLibrary(request) {
   }
 }
 
-async function uploadPdf(request) {
+async function uploadPdf(request, pages = PAGES) {
   const res = await request.post("/api/upload?folder=Uploads", {
-    multipart: { file: { name: OWN_NAME, mimeType: "application/pdf", buffer: buildPdf(PAGES) } },
+    multipart: { file: { name: OWN_NAME, mimeType: "application/pdf", buffer: buildPdf(pages) } },
   });
   expect(res.ok(), await res.text()).toBe(true);
   for (let attempt = 0; attempt < 60; attempt += 1) {
@@ -103,6 +103,112 @@ test.describe("two-page spread in the PDF pane", () => {
     await open(page, score, { width: 1000, height: 900 });
     // the dependency the auto rule has, stated rather than assumed
     expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(true);
+    await expect(hud(page)).toHaveText("1-2 / 4");
+    expect(await shownPages(page)).toEqual([1, 2]);
+  });
+
+  // The PATCH bodies the page sends for this score, in order.
+  function recordPatches(page) {
+    const bodies = [];
+    page.on("request", (req) => {
+      if (req.method() === "PATCH" && new URL(req.url()).pathname === `/api/scores/${score.id}`) {
+        bodies.push(req.postDataJSON());
+      }
+    });
+    return bodies;
+  }
+
+  // Holds the document body so the pane is open with no page count and no
+  // canvases, which is where a turn can arrive before anything exists.
+  async function holdBody(page) {
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    await page.route(`**/api/scores/${score.id}/file`, async (route) => {
+      await held;
+      await route.continue();
+    });
+    return release;
+  }
+
+  async function reseed(request, pages, lastPage) {
+    await emptyTheLibrary(request);
+    score = await uploadPdf(request, pages);
+    if (lastPage) {
+      const res = await request.patch(`/api/scores/${score.id}`, { data: { last_page: lastPage } });
+      expect(res.ok()).toBe(true);
+    }
+  }
+
+  test("a turn pressed before the document has loaded is honoured when the spread activates", async ({
+    page,
+    request,
+  }) => {
+    await reseed(request, 6);
+    const release = await holdBody(page);
+    await page.setViewportSize({ width: 1000, height: 900 });
+    await page.goto(`/#/score/${score.id}`);
+    await expect(hud(page)).toHaveText("1 / …");
+    await expect(page.locator(".pdf-page")).toHaveCount(0);
+    await page.keyboard.press("ArrowRight");
+    release();
+    await expect(page.locator(".pdf-page")).toHaveCount(6, { timeout: 30_000 });
+    await expect(hud(page)).toHaveText("2-3 / 6");
+    expect(await shownPages(page)).toEqual([2, 3]);
+  });
+
+  test("a turn pressed before render beats the stored last_page and is saved", async ({ page, request }) => {
+    await reseed(request, 6, 4);
+    const patches = recordPatches(page);
+    const release = await holdBody(page);
+    await page.setViewportSize({ width: 1000, height: 900 });
+    await page.goto(`/#/score/${score.id}`);
+    await expect(hud(page)).toHaveText("1 / …");
+    await page.keyboard.press("ArrowLeft");
+    release();
+    await expect(page.locator(".pdf-page")).toHaveCount(6, { timeout: 30_000 });
+    await expect(hud(page)).toHaveText("1-2 / 6");
+    await expect.poll(() => patches.map((b) => b.last_page).join(","), { timeout: 5000 }).toBe("1");
+    expect((await (await request.get(`/api/scores/${score.id}`)).json()).last_page).toBe(1);
+  });
+
+  test("opening a score stored on its last page shows the clamped pair without writing it back", async ({
+    page,
+    request,
+  }) => {
+    await reseed(request, 4, 4);
+    const patches = recordPatches(page);
+    await open(page, score, { width: 1000, height: 900 });
+    await expect(hud(page)).toHaveText("3-4 / 4");
+    await page.waitForTimeout(1800);
+    expect(patches).toEqual([]);
+    expect((await (await request.get(`/api/scores/${score.id}`)).json()).last_page).toBe(4);
+  });
+
+  test("a clamped forward turn at the last pair sends no save", async ({ page, request }) => {
+    await reseed(request, 4, 3);
+    const patches = recordPatches(page);
+    await open(page, score, { width: 1000, height: 900 });
+    await expect(hud(page)).toHaveText("3-4 / 4");
+    await page.keyboard.press("ArrowRight");
+    await expect(hud(page)).toHaveText("3-4 / 4");
+    await page.waitForTimeout(1800);
+    expect(patches).toEqual([]);
+  });
+
+  test("a pane under 480 tall stays a single column at 1000x640", async ({ page }) => {
+    await open(page, score, { width: 1000, height: 640 });
+    await expect(hud(page)).toHaveText("1 / 4");
+    expect(await shownPages(page)).toEqual([1, 2, 3, 4]);
+  });
+
+  test("a pane narrower than 0.95 of its height stays a single column at 780x1100", async ({ page }) => {
+    await open(page, score, { width: 780, height: 1100 });
+    await expect(hud(page)).toHaveText("1 / 4");
+    expect(await shownPages(page)).toEqual([1, 2, 3, 4]);
+  });
+
+  test("the 830x690 inner screen of a foldable shows a spread outside gig mode", async ({ page }) => {
+    await open(page, score, { width: 830, height: 690 });
     await expect(hud(page)).toHaveText("1-2 / 4");
     expect(await shownPages(page)).toEqual([1, 2]);
   });
