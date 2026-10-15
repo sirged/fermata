@@ -19,8 +19,8 @@ them.
 
 - **Library scanning** — walks your music folder, extracts titles, composers,
   collections, and page counts from folder structure and embedded PDF
-  metadata, and generates cover thumbnails.
-- **PDF practice reader** — continuous or paged reading, keyboard/pedal page
+  metadata, and generates cover thumbnails for PDFs only.
+- **PDF practice reader** — continuous reading, keyboard/pedal page
   turns (any Bluetooth pedal that sends arrow keys works), remembers your last
   page per piece, and a dark "practice room" inversion mode.
 - **Notation / tab / both** — MusicXML files render interactively and can be
@@ -143,7 +143,7 @@ them.
 - **Gig mode** — fullscreen, screen kept awake, oversized tap targets and
   half-page turns for a tablet on a music stand.
 - **Organize** — collections (from your folder layout), free-form tags,
-  favorites, content-type labels (notation / tab / both), full-text search,
+  favorites, content-type labels (notation / tab / both), search by title, composer, source and series,
   and duplicate detection by file contents. A key signature, a tempo and a
   1-5 difficulty rating can be set per score too — the key is filled in on
   its own from a transcription's decoded key when one is transcribed and left
@@ -263,6 +263,21 @@ structured formats — and to a transcription made from a PDF, which is what the
 side-by-side view is for. There's a bundled demo (sidebar → *Notation/tab
 demo*) if your library is PDF-only so far.
 
+### What transcription actually yields
+
+Measured 2026-10-14 over a 297-PDF personal library, on commit `eebca87`:
+
+| Measure | Result |
+| --- | --- |
+| PDFs with a readable tab staff | 293 of 297 (3 notation-only, 1 raster scan) |
+| Rhythm confidence | high 6, medium 44, low 243 |
+| Scores with every bar adding up | 6 of 293 |
+| Bars that do not add up | 5,259 of 10,762 (1,535 overfull and 4,152 short; a bar can be both. 3,605 of the short bars had a voice padded with silence.) |
+| Bars with nothing readable, emitted as rests | 20 |
+| Tuning read from the score | 100 of 293; the other 193 assume standard |
+
+These figures come from `server/tools/library_census.py` and are re-derived by running it over a library, not maintained by hand.
+
 [^gp]: Checked against a real, original Guitar Pro 7 (`.gp`) fixture: `web/test-fixtures/guitar-pro-import-fixture.gp`, a few original bars built with alphaTab's own exporter from the alphaTeX source committed beside it, never a borrowed arrangement. `web/tests/browser/guitar-pro-import.spec.js` uploads it through the real `/api/upload` path and the real scanner, opens it through the real `Viewer` → `TabViewer` → `score-render.js` path, and checks the bar count, note count and tuning the real importer actually produced.
 
 ## Roadmap
@@ -278,23 +293,10 @@ demo*) if your library is PDF-only so far.
 - **Instrument-aware transcription** — reading a score against the instrument it
   is written for, instead of assuming standard six-string tuning whatever the
   score says
-- **Score creation from scratch** — a blank staff built in the browser,
-  instrument-agnostic with first-class guitar tablature support. Editing the
-  notes, rhythms and spellings of a staff that already exists works today;
-  starting from nothing does not
-- **More import formats** — MIDI and plain-text tab in particular, since those
-  accompany most freely-licensed sheet music you can download
 - **Interval and reach drills** — finding the third, the fifth or the octave
   from a given position, and widening a fret span on purpose. The fretboard
   drills that exist today test recall, not reach
-- Recognition for what you have accomplished over time
-- Annotations on PDFs (fingerings, markings)
-- Multi-user accounts (reverse proxy authentication - trusting a login a
-  proxy in front of Fermata already did - shipped; see
-  docs/deployment.md#reverse-proxy-authentication)
-- Splitting compilation books into individual pieces
-- Tablet-first PWA mode with pedal-friendly full-screen
-- Recognition for scanned PDFs, which carry no readable text or glyphs
+- **A two-page spread for wide and foldable screens** — being built under #307
 
 ## License
 
