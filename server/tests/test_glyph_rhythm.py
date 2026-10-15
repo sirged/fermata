@@ -44,7 +44,7 @@ def _tol(spacing=REF, staff_height=None, staff_width=500.0):
 
 def _embedded_maestro_bytes(pdf_path):
     """The raw bytes of the first embedded font named Maestro in a PDF."""
-    import fitz
+    import pymupdf as fitz
 
     doc = fitz.open(pdf_path)
     try:
@@ -217,7 +217,7 @@ def test_an_unrelated_renamed_font_is_not_mistaken_for_maestro(engraved):
     committed fixture (FreeSans, from notation_and_tab.pdf) rather than a
     synthesised one, so this is exercising the same code path on real bytes
     the way the Maestro-recognition tests above do."""
-    import fitz
+    import pymupdf as fitz
 
     doc = fitz.open(engraved("notation_and_tab"))
     try:
@@ -247,7 +247,7 @@ def test_a_generically_renamed_font_resource_still_draws_glyph_events_on_every_p
     now yields a non-zero count, and the segno sign issue #134 taught this
     decoder to read (also invisible while the font was rejected) is drawn on
     the first page."""
-    import fitz
+    import pymupdf as fitz
 
     doc = fitz.open(score_ah_pdf)
     try:
@@ -2109,7 +2109,7 @@ def test_glyph_positions_land_on_the_staffs_own_grid(score_a_pdf):
     So: read a real Maestro score and check that every notehead's position
     lands on the staff's own grid, and that the metrics-box centre does not.
     """
-    import fitz
+    import pymupdf as fitz
 
     doc = fitz.open(score_a_pdf)
     ink, metrics = [], []

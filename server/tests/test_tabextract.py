@@ -7,7 +7,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import pytest
 
 from fermata import glyph_rhythm
@@ -3960,7 +3960,7 @@ def _page_with_rules(rules, width=612.0, height=792.0):
     input to _detect_staves is line primitives and nothing else, so a page
     of line primitives exercises exactly the code under test and no more.
     """
-    import fitz
+    import pymupdf as fitz
 
     doc = fitz.open()
     page = doc.new_page(width=width, height=height)
@@ -4180,7 +4180,7 @@ def test_the_two_systems_on_one_band_are_separate_staves(
     right-hand system is ruled HIGHER (683.9 against 684.2), so `top` alone
     orders that band right to left.
     """
-    import fitz
+    import pymupdf as fitz
 
     with fitz.open(score_ad_pdf) as doc:
         staves, anomalies = tabextract._detect_staves(doc[1])
