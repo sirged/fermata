@@ -44,7 +44,7 @@
   // are remembered between visits.
   const SPREAD_KEY = "fermata.pdfSpreadMode";
   const SPREAD_MIN_W = 760;
-  const SPREAD_MIN_H = 500;
+  const SPREAD_MIN_H = 480;
   const SPREAD_MIN_RATIO = 0.95;
   // .pages padding and the gap between the two pages, in the spread layout
   const SPREAD_PAD_X = 32;
@@ -516,7 +516,10 @@
       stampHook = stampWhenQuiet;
       // a spread decided before the first render, so pages are drawn at the
       // width they will be shown at and a saved page opens as the left page
-      if (score.last_page > 1 && !turnedBeforeRestore) currentPage = Math.min(score.last_page, pageCount);
+      // (a turn pressed before this point waits in pendingPage, and wins)
+      if (score.last_page > 1 && !turnedBeforeRestore && pendingPage === null) {
+        currentPage = Math.min(score.last_page, pageCount);
+      }
       evalSpread();
 
       await renderAllPages(computeWidth());
@@ -837,7 +840,10 @@
   // The pair is [left, left + 1], so left tops out one short of the end.
   function showLeft(n) {
     if (pageCount < 2) return;
-    left = Math.max(1, Math.min(pageCount - 1, n));
+    const next = Math.max(1, Math.min(pageCount - 1, n));
+    // a turn that cannot move (clamped at either end) saves nothing
+    if (next === left && next === currentPage) return;
+    left = next;
     setPage(left);
   }
 
@@ -870,15 +876,31 @@
     return w >= SPREAD_MIN_W && h >= SPREAD_MIN_H && w >= SPREAD_MIN_RATIO * h;
   }
 
-  function evalSpread() {
+  // `explicit` is true only for the reader's own toggle. Clamping the page for
+  // display (a saved last page of 4 in a 4-page score shows as 3-4) is not
+  // something the reader did, so it is never written back on its own.
+  function evalSpread(explicit = false) {
     const want = wantSpread();
     if (want === spreadActive) return;
     if (want) {
       spreadActive = true;
-      pendingPage = null;
-      const target = Math.max(1, Math.min(pageCount - 1, currentPage));
-      left = target;
-      if (target !== currentPage) setPage(target);
+      if (pendingPage !== null) {
+        // A turn pressed before the page count was known (#168): it is the
+        // newest thing the reader asked for, so it outranks the saved page
+        // (#229) and is saved itself, exactly as the single column does.
+        const target = Math.max(1, Math.min(pageCount - 1, pendingPage));
+        pendingPage = null;
+        turnedBeforeRestore = true;
+        left = target;
+        currentPage = target;
+        setPage(target);
+      } else {
+        const target = Math.max(1, Math.min(pageCount - 1, currentPage));
+        left = target;
+        const changed = target !== currentPage;
+        currentPage = target;
+        if (explicit && changed) setPage(target);
+      }
       applyVisibility();
     } else {
       spreadActive = false;
@@ -895,7 +917,7 @@
     } catch {
       // storage may be missing or blocked; the choice just won't be kept
     }
-    evalSpread();
+    evalSpread(true);
     relayoutHook?.();
   }
 
