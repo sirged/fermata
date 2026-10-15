@@ -1,0 +1,5 @@
+{
+  "file": "tests/browser/viewer-basics.spec.js",
+  "count": 6,
+  "reason": "issue #309: the PDF reader's invert toggle (container class and computed canvas filter, both directions), forward and backward page-turn keys with clamping at both ends, the Next/Previous HUD buttons, the debounced last_page write and its restore on reopening, and the turn keys staying out of a focused number input, all against a four-page PDF uploaded through the real endpoint."
+}
