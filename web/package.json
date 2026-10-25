@@ -14,7 +14,7 @@
     "@playwright/test": "^1.62.1",
     "@sveltejs/vite-plugin-svelte": "^6.2.4",
     "svelte": "^5.0.0",
-    "vite": "^7.3.6"
+    "vite": "^7.3.7"
   },
   "dependencies": {
     "@coderline/alphatab": "^1.8.4",
